@@ -1,0 +1,52 @@
+<!-- agent-doc-type: design -->
+<!-- agent-doc-schema: 2 -->
+# Runtime and CLI Design
+
+- Status: Approved
+- Owning Issue: [Issue #1](https://github.com/puchinya/ai-agent-workflow/issues/1)
+- Related specification: [Runtime and CLI Specification](../specs/runtime-spec.md)
+
+## Context and goals
+
+The CLI must be easy to run from a consumer checkout, fakeable in tests, and safe when GitHub or local state is uncertain. Python 3.10+ standard library supplies filesystem, hashing, process, and JSON support. There is no MCP server, dependency service, or daemon.
+
+## Requirements traceability
+
+| Requirement | Design consequence |
+|---|---|
+| GitHub operations have one owner | `github.py` is the only module that invokes `gh api`; callers use typed repository/Issue/PR operations. |
+| Fail before side effects on malformed input | `profile.py`, `contracts.py`, and `review.py` expose pure validators used before `process.py` or GitHub calls. |
+| Exact payload bytes and atomic mirrors | Contract codecs operate on `bytes`; `documents.py` owns same-repository Markdown path checks; a shared atomic writer uses sibling temporary files and `os.replace`. |
+| Stable sequential hook composition | `profile.py` returns an ordered immutable command/skip plan before `process.py` executes it. |
+| Current state gates delivery | `delivery.py` composes fresh Issue, PR, review, and Required Check responses; it never trusts a local submitted claim alone. |
+
+## Architecture
+
+`cli.py` parses commands and converts domain errors into stable nonzero exit codes. `profile.py` validates Schema 1/2 and selects components/targets. `context.py` formats routing output only. `documents.py` validates durable Markdown structure and local links. `contracts.py` owns exact bytes, pointer format, mirror state, and publication/restore flows. `review.py` owns checklist extraction, evidence validation, and exact-HEAD review records. `delivery.py` owns handoff and merged gates. `github.py` owns repository identity for GitHub operations and every `gh api` invocation. `process.py` owns non-GitHub subprocess execution and safe fallback between Python aliases.
+
+The dependency direction is CLI -> domain modules -> injected GitHub/process boundaries. Pure validators do not make network calls. GitHub functions return parsed JSON or raise explicit operation errors; they do not print payloads. Runtime code never imports files from the reference repository.
+
+## Data flow and ownership
+
+1. Parse arguments and discover repository root.
+2. Load and validate all local profile/document state needed for the command.
+3. Resolve scope and build an immutable plan.
+4. For remote workflows, read authoritative metadata, validate all identity/pointer preconditions, and prepare a temporary structured payload.
+5. Perform one mutation only after preconditions pass; read it back and validate it.
+6. Commit local state with atomic replacement only after remote verification, or keep old verified bytes on failure.
+7. Clean temporary files in `finally` paths and print bounded diagnostics.
+
+## Failure handling
+
+`gh api` receives argument arrays. Large body values travel through JSON temporary files, not command arguments. The environment owns authentication. Subprocess output is captured and failures identify a safe endpoint/command without token or payload. Issue identifiers, repository owner/name, remote URLs, returned comment/PR associations, hashes, and lengths are all checked before success. Atomic writes preserve previous verified data on ordinary failures.
+
+## Alternatives considered
+
+- One monolithic `agent_tool.py` would couple profile, GitHub, and review logic. Focused modules make fake transports and focused tests possible.
+- A general HTTP client would need a new credential boundary. The existing authenticated `gh api` transport is explicit and testable.
+- GitHub mutations carry user data as structured JSON over stdin and never interpolate payloads into a shell command. Explicit local hook strings run in the user's shell because the profile is trusted configuration; child output is suppressed to avoid disclosure.
+- Parallel hook execution would destroy declared order and complicate failure evidence. Hooks remain sequential.
+
+## Verification strategy
+
+Each module has pure boundary tests, while API workflows inject a fake `github.py` interface. Tests assert both expected calls and forbidden calls, especially zero hook execution on invalid profiles, no unrelated-comment fetch on restore, no write on bad identity, and no mutation on failed delivery checks.
