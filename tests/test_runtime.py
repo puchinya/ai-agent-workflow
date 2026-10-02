@@ -286,7 +286,9 @@ class DocumentTests(unittest.TestCase):
             repo = Path(temporary)
             (repo / "a.md").write_text("[x](b.md#missing)\n", encoding="utf-8")
             (repo / "b.md").write_text("# Exists\n", encoding="utf-8")
-            self.assertTrue(any("fragment" in e for e in validate_markdown_file(repo / "a.md", repo)))
+            errors = validate_markdown_file(repo / "a.md", repo)
+            self.assertTrue(any("fragment" in error for error in errors))
+            self.assertTrue(any("b.md" in error for error in errors))
 
     def test_reference_link_targets_and_missing_references_are_checked(self):
         with tempfile.TemporaryDirectory() as temporary:

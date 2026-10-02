@@ -150,7 +150,9 @@ def validate_markdown_file(path: Path, repo: Path) -> list[str]:
             except (OSError, UnicodeError):
                 continue
             if fragment not in _anchors(target_text):
-                errors.append(f"{rel}: missing link fragment #{fragment} in {target_path.relative_to(repo).as_posix()}")
+                # `target_path` is resolved above; normalize `repo` too so diagnostics work
+                # when the checkout is reached through a symlink or Windows short path.
+                errors.append(f"{rel}: missing link fragment #{fragment} in {target_path.relative_to(repo.resolve()).as_posix()}")
     errors.extend(_reference_errors(text, rel))
     return errors
 
