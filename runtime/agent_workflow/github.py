@@ -68,7 +68,8 @@ class GitHub:
         items: list[dict[str, Any]] = []
         page = 1
         while True:
-            response = self.request("GET", f"{endpoint}?page={page}&per_page=100")
+            separator = "&" if "?" in endpoint else "?"
+            response = self.request("GET", f"{endpoint}{separator}page={page}&per_page=100")
             if key is not None:
                 if not isinstance(response, dict) or key not in response:
                     raise GitHubError(f"GitHub collection {endpoint} page {page} is missing {key}")
@@ -84,6 +85,32 @@ class GitHub:
 
     def issue(self, number: int) -> dict[str, Any]:
         return self.request("GET", f"{self.prefix}/issues/{number}")
+
+    def repository(self) -> dict[str, Any]:
+        result = self.request("GET", self.prefix)
+        if not isinstance(result, dict) or not isinstance(result.get("default_branch"), str) or not result["default_branch"]:
+            raise GitHubError("GitHub repository metadata is missing default_branch")
+        return result
+
+    def milestones(self) -> list[dict[str, Any]]:
+        return self._paginate(f"{self.prefix}/milestones?state=all")
+
+    def create_milestone(self, title: str) -> dict[str, Any]:
+        result = self.request("POST", f"{self.prefix}/milestones", {"title": title})
+        if (not isinstance(result, dict) or result.get("title") != title
+                or not isinstance(result.get("number"), int) or isinstance(result.get("number"), bool)
+                or result.get("number") < 1 or result.get("state") != "open"):
+            raise GitHubError("created GitHub milestone did not match the requested open milestone")
+        return result
+
+    def assign_issue_milestone(self, number: int, milestone: int) -> dict[str, Any]:
+        result = self.request("PATCH", f"{self.prefix}/issues/{number}", {"milestone": milestone})
+        if not isinstance(result, dict) or not isinstance(result.get("milestone"), dict):
+            raise GitHubError("GitHub Issue milestone assignment was not confirmed")
+        assigned_number = result["milestone"].get("number")
+        if not isinstance(assigned_number, int) or isinstance(assigned_number, bool) or assigned_number != milestone:
+            raise GitHubError("GitHub Issue milestone assignment did not match the requested milestone")
+        return result
 
     def issue_comments(self, number: int) -> list[dict[str, Any]]:
         return self._paginate(f"{self.prefix}/issues/{number}/comments")

@@ -17,11 +17,13 @@ from .contracts import (ContractError, publish_contract, restore_contract, save_
 from .delivery import DeliveryError, delivery_check, finalize_merged_issue
 from .documents import validate_docs
 from .github import GitHub, GitHubError, discover_repository
+from .git import GitLifecycleError, start_feature_branch
 from .profile import (APPLICATION_TYPES, ProfileError, build_hook_plan, load_profile,
                       normalize_host, validate_profile)
 from .process import ProcessError, run_command
 from .review import (ReviewError, effective_checklist, load_review, prepare_review,
                      publish_review, review_path, validate_public_review)
+from .versioning import VersionError, resolve_version
 
 
 class CLIError(RuntimeError):
@@ -80,8 +82,9 @@ def _init_project(args: argparse.Namespace) -> dict[str, Any]:
                "components": [{"id": "root", "roots": ["."], "stacks": stacks,
                                "application_types": app_types, "targets": targets,
                                "hooks": component_hooks}],
-               "branch": {"prefix": "feature", "max_slug_length": 48, "required_checks": []},
-               "milestones": {"enabled": False, "version_source": "auto"}, "hooks": global_hooks}
+               "branch": {"prefix": "feature", "max_slug_length": 48,
+                          "cleanup_on_switch": [], "required_checks": []},
+               "milestones": {"mode": "auto", "version_source": "auto"}, "hooks": global_hooks}
     validate_profile(profile, repo)
     destination.parent.mkdir(parents=True, exist_ok=True)
     data = json.dumps(profile, ensure_ascii=False, indent=2) + "\n"
@@ -99,6 +102,78 @@ def _issue_components(issue_number: int, repo: Path, gh: GitHub, profile: dict[s
     if issue.get("state") != "open":
         raise ContextError("closed Issue has no active workflow to route hooks")
     return [component["id"] for component in affected_components(issue.get("body") or "", profile)]
+
+
+def _workflow_issue(issue_number: int, gh: GitHub) -> dict[str, Any]:
+    issue = gh.issue(issue_number)
+    expected_url = f"https://api.github.com/repos/{gh.repo}"
+    if (not isinstance(issue, dict) or not isinstance(issue.get("number"), int)
+            or isinstance(issue.get("number"), bool) or issue.get("number") != issue_number
+            or issue.get("repository_url") != expected_url or issue.get("pull_request")):
+        raise ContextError("Issue identity does not match configured repository or the identifier is a pull request")
+    if issue.get("state") != "open":
+        raise ContextError("Issue must be open for milestone or feature branch lifecycle operations")
+    return issue
+
+
+def _ensure_milestone(args: argparse.Namespace) -> dict[str, Any]:
+    repo = _repo_arg(args.repo)
+    profile = load_profile(repo)
+    if profile.get("schema_version") != 2:
+        raise ProfileError("ensure-milestone requires a Schema 2 project profile")
+    gh = _gh(repo)
+    issue = _workflow_issue(args.issue, gh)
+    policy = profile["milestones"]
+    if policy["mode"] == "disabled":
+        return {"issue": args.issue, "status": "DISABLED"}
+    version = resolve_version(repo, policy["version_source"])
+    if version is None:
+        if policy["mode"] == "required":
+            raise VersionError("required milestone mode has no resolvable version")
+        return {"issue": args.issue, "status": "NOT_APPLICABLE", "reason": "version_unresolved"}
+
+    matches = [item for item in gh.milestones() if item.get("title") == version]
+    if len(matches) > 1:
+        raise GitHubError("multiple exact-title milestones already exist")
+    milestone = matches[0] if matches else None
+    if milestone is not None:
+        if (not isinstance(milestone.get("number"), int) or isinstance(milestone.get("number"), bool)
+                or milestone.get("number") < 1):
+            raise GitHubError("exact-title milestone is missing a valid number")
+        if milestone.get("state") != "open":
+            raise GitHubError("exact-title milestone is closed")
+    existing = issue.get("milestone")
+    if existing is not None:
+        if (not isinstance(existing, dict) or not isinstance(existing.get("number"), int)
+                or isinstance(existing.get("number"), bool) or existing.get("number") < 1):
+            raise GitHubError("Issue milestone metadata is invalid")
+        if milestone is None or existing.get("number") != milestone.get("number"):
+            raise GitHubError("Issue already belongs to a different milestone")
+        return {"issue": args.issue, "status": "ASSIGNED", "milestone": milestone["number"],
+                "created": False, "assigned": False}
+
+    created = milestone is None
+    if created:
+        milestone = gh.create_milestone(version)
+        matches = [item for item in gh.milestones() if item.get("title") == version]
+        if (len(matches) != 1 or not isinstance(matches[0].get("number"), int)
+                or isinstance(matches[0].get("number"), bool)
+                or matches[0].get("number") != milestone.get("number") or matches[0].get("state") != "open"):
+            raise GitHubError("new exact-title milestone could not be verified as unique and open")
+        milestone = matches[0]
+    gh.assign_issue_milestone(args.issue, milestone["number"])
+    return {"issue": args.issue, "status": "ASSIGNED", "milestone": milestone["number"],
+            "created": created, "assigned": True}
+
+
+def _start_feature_branch(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
+    repo = _repo_arg(args.repo)
+    profile = load_profile(repo)
+    if profile.get("schema_version") != 2:
+        raise ProfileError("start-feature-branch requires a Schema 2 project profile")
+    gh = _gh(repo)
+    _workflow_issue(args.issue, gh)
+    return start_feature_branch(repo, profile, args.issue, " ".join(args.description), gh)
 
 
 def _do_hook(args: argparse.Namespace) -> dict[str, Any]:
@@ -172,6 +247,15 @@ def build_parser() -> argparse.ArgumentParser:
     docs = commands.add_parser("validate-docs")
     docs.add_argument("--repo")
 
+    milestone = commands.add_parser("ensure-milestone")
+    milestone.add_argument("issue", type=_number)
+    milestone.add_argument("--repo")
+
+    feature = commands.add_parser("start-feature-branch")
+    feature.add_argument("issue", type=_number)
+    feature.add_argument("description", nargs="+")
+    feature.add_argument("--repo")
+
     hook = commands.add_parser("run-hook")
     hook.add_argument("hook", choices=("branch_switch", "verify_quick", "verify_final"))
     scopes = hook.add_mutually_exclusive_group()
@@ -241,6 +325,10 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, int]:
         result = {"valid": not errors, "files": len(list((repo / "docs").rglob("*.md"))) if (repo / "docs").exists() else 0,
                   "errors": errors}
         return result, 0 if not errors else 1
+    elif args.command == "ensure-milestone":
+        result = _ensure_milestone(args)
+    elif args.command == "start-feature-branch":
+        return _start_feature_branch(args)
     elif args.command == "run-hook":
         result = _do_hook(args)
     elif args.command == "save-implementation-contract":
@@ -291,6 +379,6 @@ def main(argv: list[str] | None = None) -> int:
             _json(result)
         return status
     except (ProfileError, ContextError, ContractError, ReviewError, DeliveryError,
-            GitHubError, ProcessError, CLIError, OSError) as exc:
+            GitHubError, GitLifecycleError, VersionError, ProcessError, CLIError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return exc.returncode if isinstance(exc, ProcessError) else 1

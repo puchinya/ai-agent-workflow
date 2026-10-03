@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -46,6 +47,105 @@ class HookPlan:
 def _need(condition: bool, message: str) -> None:
     if not condition:
         raise ProfileError(message)
+
+
+def _profile_path(value: Any, where: str, repo: Path, *, cleanup_leaf: bool = False) -> str:
+    _need(isinstance(value, str) and bool(value), f"{where} must be a non-empty repository-relative path")
+    _need("\x00" not in value, f"{where} must not contain a NUL byte")
+    normalized_text = value.replace("\\", "/")
+    windows = PureWindowsPath(value)
+    parts = normalized_text.split("/")
+    _need(not windows.is_absolute() and not windows.drive and not normalized_text.startswith("/")
+          and all(part not in {"", ".", ".."} for part in parts),
+          f"{where} must be repository-relative and cannot contain '.', '..', or an absolute path")
+    candidate = repo.joinpath(*parts)
+    checked = candidate.parent if cleanup_leaf else candidate
+    root = repo.resolve()
+    resolved = checked.resolve()
+    contained = (resolved == root or root in resolved.parents) if cleanup_leaf else (resolved != root and root in resolved.parents)
+    _need(contained,
+          f"{where} escapes the repository through a symlink")
+    return PurePosixPath(*parts).as_posix()
+
+
+def _milestones(value: Any, repo: Path) -> dict[str, Any]:
+    _need(isinstance(value, dict), "milestones must be an object")
+    allowed = {"enabled", "mode", "version_source"}
+    unknown = set(value) - allowed
+    _need(not unknown, f"milestones contains unsupported field(s): {', '.join(sorted(unknown))}")
+    _need(not ("enabled" in value and "mode" in value),
+          "milestones.enabled and milestones.mode cannot both be set")
+    if "enabled" in value:
+        enabled = value["enabled"]
+        _need(isinstance(enabled, bool), "milestones.enabled must be boolean")
+        mode = "required" if enabled else "disabled"
+    else:
+        mode = value.get("mode", "auto")
+    _need(isinstance(mode, str) and mode in {"auto", "required", "disabled"},
+          "milestones.mode must be auto, required, or disabled")
+    source = value.get("version_source", "auto")
+    if source == "auto":
+        normalized_source: Any = "auto"
+    else:
+        _need(isinstance(source, dict), 'milestones.version_source must be "auto" or a source object')
+        source_type = source.get("type")
+        if source_type in ("json", "toml", "python-attr"):
+            _need(set(source) == {"type", "path", "field"},
+                  f"milestones.version_source {source_type} requires exactly type, path, and field")
+            path = _profile_path(source.get("path"), "milestones.version_source.path", repo)
+            field = source.get("field")
+            _need(isinstance(field, str) and bool(field)
+                  and all(part and re.fullmatch(r"[A-Za-z0-9_-]+", part) for part in field.split(".")),
+                  "milestones.version_source.field must be a non-empty dotted field path")
+            if source_type == "python-attr":
+                _need("." not in field and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", field),
+                      "python-attr version_source.field must be one module-level Python identifier")
+            normalized_source = {"type": source_type, "path": path, "field": field}
+        elif source_type == "command":
+            _need(set(source) == {"type", "command"},
+                  "milestones.version_source command requires exactly type and command")
+            command = source.get("command")
+            _need(isinstance(command, str) and bool(command.strip()) and "\x00" not in command
+                  and "\n" not in command and "\r" not in command,
+                  "milestones.version_source.command must be a non-empty single-line string")
+            normalized_source = {"type": "command", "command": command}
+        else:
+            raise ProfileError("milestones.version_source.type must be json, toml, python-attr, or command")
+    return {"mode": mode, "version_source": normalized_source}
+
+
+def _branch(value: Any, repo: Path) -> dict[str, Any]:
+    _need(isinstance(value, dict), "branch must be an object")
+    allowed = {"prefix", "max_slug_length", "cleanup_on_switch", "required_checks"}
+    unknown = set(value) - allowed
+    _need(not unknown, f"branch contains unsupported field(s): {', '.join(sorted(unknown))}")
+    prefix = value.get("prefix", "feature")
+    _need(isinstance(prefix, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,62}", prefix)
+          and not prefix.endswith(".") and ".." not in prefix and not prefix.lower().endswith(".lock"),
+          "branch.prefix must be a safe single Git branch path component")
+    max_slug_length = value.get("max_slug_length", 48)
+    _need(isinstance(max_slug_length, int) and not isinstance(max_slug_length, bool)
+          and 1 <= max_slug_length <= 128,
+          "branch.max_slug_length must be an integer from 1 through 128")
+    cleanup = value.get("cleanup_on_switch", [])
+    _need(isinstance(cleanup, list), "branch.cleanup_on_switch must be an array")
+    clean_paths = [_profile_path(path, f"branch.cleanup_on_switch[{index}]", repo, cleanup_leaf=True)
+                   for index, path in enumerate(cleanup)]
+    _need(len(set(clean_paths)) == len(clean_paths), "branch.cleanup_on_switch must not contain duplicate paths")
+    required_checks = value.get("required_checks", [])
+    _need(isinstance(required_checks, list), "branch.required_checks must be an array")
+    for index, check in enumerate(required_checks):
+        if isinstance(check, str):
+            _need(bool(check.strip()), f"branch.required_checks[{index}] must be a non-empty name")
+        else:
+            _need(isinstance(check, dict) and set(check) <= {"name", "app_id"}
+                  and isinstance(check.get("name"), str) and bool(check["name"].strip()),
+                  f"branch.required_checks[{index}] must be a name or {{name, app_id}} object")
+            if "app_id" in check:
+                _need(isinstance(check["app_id"], int) and not isinstance(check["app_id"], bool) and check["app_id"] > 0,
+                      f"branch.required_checks[{index}].app_id must be a positive integer")
+    return {"prefix": prefix, "max_slug_length": max_slug_length,
+            "cleanup_on_switch": clean_paths, "required_checks": required_checks}
 
 
 def _hooks(value: Any, where: str, allowed: set[str] | None = None) -> dict[str, list[str]]:
@@ -96,21 +196,8 @@ def validate_profile(data: Any, repo: Path) -> dict[str, Any]:
 
     _need(isinstance(data.get("initialized"), bool), "initialized must be boolean")
     _need(isinstance(data.get("project_name"), str) and bool(data["project_name"].strip()), "project_name must be non-empty")
-    branch = data.get("branch", {})
-    _need(isinstance(branch, dict), "branch must be an object")
-    required_checks = branch.get("required_checks", [])
-    _need(isinstance(required_checks, list), "branch.required_checks must be an array")
-    for index, check in enumerate(required_checks):
-        if isinstance(check, str):
-            _need(bool(check.strip()), f"branch.required_checks[{index}] must be a non-empty name")
-        else:
-            _need(isinstance(check, dict) and set(check) <= {"name", "app_id"}
-                  and isinstance(check.get("name"), str) and bool(check["name"].strip()),
-                  f"branch.required_checks[{index}] must be a name or {{name, app_id}} object")
-            if "app_id" in check:
-                _need(isinstance(check["app_id"], int) and not isinstance(check["app_id"], bool) and check["app_id"] > 0,
-                      f"branch.required_checks[{index}].app_id must be a positive integer")
-    _need(isinstance(data.get("milestones", {}), dict), "milestones must be an object")
+    branch = _branch(data.get("branch", {}), repo)
+    milestones = _milestones(data.get("milestones", {}), repo)
     global_hooks = _hooks(data.get("hooks", {}), "hooks", GLOBAL_HOOKS)
     components = data.get("components")
     _need(isinstance(components, list) and components, "components must be a non-empty array")
@@ -157,7 +244,8 @@ def validate_profile(data: Any, repo: Path) -> dict[str, Any]:
             clean_targets.append({**target, "id": tid, "runnable_on": runnable, "hooks": target_hooks})
         clean_components.append({**comp, "id": cid, "roots": roots, "stacks": stacks,
                                  "application_types": app_types, "targets": clean_targets, "hooks": comp_hooks})
-    return {**data, "schema_version": 2, "hooks": global_hooks, "components": clean_components}
+    return {**data, "schema_version": 2, "branch": branch, "milestones": milestones,
+            "hooks": global_hooks, "components": clean_components}
 
 
 def load_profile(repo: Path, allow_uninitialized: bool = False) -> dict[str, Any]:

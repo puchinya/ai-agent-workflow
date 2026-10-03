@@ -3,7 +3,7 @@
 # Portable Workflow Specification
 
 - Status: Approved
-- Owning Issue: [Issue #1](https://github.com/puchinya/ai-agent-workflow/issues/1)
+- Owning Issue: [Issue #7](https://github.com/puchinya/ai-agent-workflow/issues/7)
 - Related design: [Workflow design](../design/workflow-design.md)
 - Runtime contract: [Runtime specification](runtime-spec.md)
 
@@ -29,6 +29,10 @@ An Issue is the authority for a work item. Repository-changing work begins from 
 
 The durable document sequence is `requirements -> specs -> design -> code/tests -> status/evidence`. A material change to requirements updates the owning specification before dependent design or code. One document owns each durable rule; other documents link to it instead of copying its policy.
 
+Feature work uses `python -m agent_workflow start-feature-branch <issue> <description...>` after its open Issue and project profile are validated. The runtime derives a deterministic `<prefix>/<issue>-<slug>` branch name, checks the worktree, and performs cleanup and global `branch_switch` hooks only after an actual branch switch. Repeating the command on the current target branch performs no cleanup or hooks.
+
+After an Issue exists, the requirements Skill runs `python -m agent_workflow ensure-milestone <issue>`. Milestones follow the consumer profile's `auto`, `required`, or `disabled` mode and repository version source. `auto` accepts an unresolved version as `NOT_APPLICABLE`; `required` fails closed when no version can be resolved. Exact-title reuse is idempotent, and closed or duplicate milestones are never silently reopened or replaced.
+
 ### Skills
 
 Canonical Skill source is `workflow/skills/`. It contains exactly these task areas:
@@ -44,6 +48,8 @@ Canonical Skill source is `workflow/skills/`. It contains exactly these task are
 9. `delivery` — enforce PR handoff and merged-delivery gates.
 
 Each Skill MUST have concise YAML frontmatter with `name` and `description`. Detailed shared policy belongs in standards or referenced resources. A Skill MUST state its trigger, expected inputs, ordered procedure, output, uncertainty behavior, and supporting resources where relevant. Skill copies in `dist/**` are generated.
+
+The requirements Skill creates/validates the Issue first and then runs `ensure-milestone`; it may continue after `NOT_APPLICABLE` only when the profile mode is `auto`. The implementation Skill starts the feature branch with `start-feature-branch` before changing source files.
 
 ### Review and delivery principles
 
