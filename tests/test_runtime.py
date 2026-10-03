@@ -8,6 +8,7 @@ import re
 import sys
 import tempfile
 import unittest
+from zipfile import ZipFile
 from pathlib import Path
 from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
@@ -32,6 +33,8 @@ from agent_workflow.review import (ReviewError, _extract_items, _with_pointer,
                                    validate_public_review)
 import build_dist
 import validate_dist
+import package_release
+from agent_workflow import __version__
 
 
 def profile_fixture():
@@ -769,6 +772,162 @@ macOS IDE smoke test not run
 
 
 class DistributionTests(unittest.TestCase):
+    def test_release_tag_validation_distinguishes_invalid_and_mismatched_versions(self):
+        for tag in ("0.1.0", "v01.1.0", "v0.01.0", "v0.1.00", "v0.1", "v0.1.0-rc.1",
+                    "v0.1.0+build", "v0.1.0\n", "v١.1.0"):
+            with self.subTest(tag=tag):
+                with self.assertRaisesRegex(package_release.PackageError, "invalid release tag"):
+                    package_release.validate_tag(tag)
+        self.assertEqual(package_release.validate_tag(f"v{__version__}"), __version__)
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "assets"
+            stream = io.StringIO()
+            with patch.object(build_dist, "expected_files", side_effect=AssertionError("must validate tag first")), \
+                 redirect_stderr(stream):
+                self.assertEqual(package_release.main(["--tag", "v9.8.7", "--output-dir", str(output)]), 1)
+            self.assertIn("does not equal agent_workflow.__version__", stream.getvalue())
+            self.assertFalse(output.exists())
+
+    def test_release_packaging_rejects_drift_without_repair_or_artifacts(self):
+        target = ROOT / "dist/openai/plugin.json"
+        original = target.read_bytes()
+        try:
+            target.write_bytes(original + b" ")  # Still valid JSON, but drifted.
+            with tempfile.TemporaryDirectory() as tmp, \
+                 patch.object(build_dist, "build", side_effect=AssertionError("must not regenerate")), \
+                 patch.object(validate_dist, "validate", side_effect=AssertionError("drift gate must run first")):
+                output = Path(tmp) / "assets"
+                with self.assertRaisesRegex(package_release.PackageError, "generated file drift: dist/openai/plugin.json"):
+                    package_release.package(f"v{__version__}", output)
+                self.assertFalse(output.exists())
+                self.assertEqual(target.read_bytes(), original + b" ")
+        finally:
+            target.write_bytes(original)
+
+    def test_release_packaging_requires_host_validation_independently_of_drift(self):
+        load = validate_dist._load
+        def invalid_host(path, errors):
+            manifest = load(path, errors)
+            if path == ROOT / "dist/antigravity/plugin.json":
+                manifest["version"] = __version__
+            return manifest
+        with tempfile.TemporaryDirectory() as tmp, patch.object(validate_dist, "_load", side_effect=invalid_host):
+            output = Path(tmp) / "assets"
+            with self.assertRaisesRegex(package_release.PackageError, "only schema-supported name and description"):
+                package_release.package(f"v{__version__}", output)
+            self.assertFalse(output.exists())
+
+    def test_release_zip_layout_metadata_bytes_and_checksums(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            first = package_release.package(f"v{__version__}", Path(tmp) / "one")
+            second = package_release.package(f"v{__version__}", Path(tmp) / "two")
+            self.assertEqual({p.name: p.read_bytes() for p in first}, {p.name: p.read_bytes() for p in second})
+            expected = build_dist.expected_files()
+            self.assertEqual({p.name for p in first}, {"SHA256SUMS"} | {
+                f"ai-agent-workflow-{host}-v{__version__}.zip" for host in build_dist.HOSTS})
+            for host, path in zip(build_dist.HOSTS, first[:3]):
+                with ZipFile(path) as archive:
+                    members = archive.namelist()
+                    prefix = f"dist/{host}/"
+                    host_files = {p[len(prefix):]: data for p, data in expected.items() if p.startswith(prefix)}
+                    self.assertEqual(members, sorted(host_files))
+                    self.assertIn(".claude-plugin/plugin.json" if host == "claude" else "plugin.json", members)
+                    self.assertFalse(any(p.startswith("dist/") or "\\" in p for p in members))
+                    for info in archive.infolist():
+                        self.assertEqual(archive.read(info), host_files[info.filename])
+                        self.assertEqual(info.date_time, (1980, 1, 1, 0, 0, 0))
+                        self.assertEqual(info.create_system, 3)
+                        self.assertEqual(info.external_attr >> 16, 0o100644)
+            sums = first[3].read_text(encoding="utf-8").splitlines()
+            expected_sums = [f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}"
+                             for p in sorted(first[:3], key=lambda p: p.name)]
+            self.assertEqual(sums, expected_sums)
+
+    def test_release_workflow_gates_matrix_permissions_and_publication(self):
+        workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        jobs = dict(re.findall(r"(?ms)^  (prepare|verify|publish):\n(.*?)(?=^  \w+:|\Z)", workflow))
+        self.assertEqual(set(jobs), {"prepare", "verify", "publish"})
+        self.assertIn('on:\n  push:\n    tags: ["v*"]', workflow)
+        self.assertIn("group: release-${{ github.ref }}", workflow)
+        self.assertIn("cancel-in-progress: false", workflow)
+        self.assertIn("fetch-depth: 0", jobs["prepare"])
+        self.assertIn('validate_tag(os.environ["RELEASE_TAG"])', jobs["prepare"])
+        self.assertIn("git fetch origin +refs/heads/main:refs/remotes/origin/main", jobs["prepare"])
+        self.assertIn("git merge-base --is-ancestor HEAD origin/main", jobs["prepare"])
+        self.assertLess(jobs["prepare"].index("validate_tag("), jobs["prepare"].index("git fetch"))
+        self.assertIn("needs: prepare", jobs["verify"])
+        self.assertIn("needs: verify", jobs["publish"])
+        matrix = r'- os: (\S+)\n\s+python-version: "([^"]+)"'
+        self.assertEqual(re.findall(matrix, jobs["verify"]), re.findall(matrix, ci))
+        self.assertEqual(len(re.findall(matrix, jobs["verify"])), 4)
+        commands = r"^        run: (.+)$"
+        self.assertEqual(re.findall(commands, jobs["verify"], re.M), re.findall(commands, ci, re.M))
+        self.assertEqual(workflow.count("contents: write"), 1)
+        self.assertIn("permissions:\n      contents: write", jobs["publish"])
+        self.assertNotIn("permissions:", jobs["prepare"] + jobs["verify"])
+        self.assertIn("permissions:\n  contents: read", workflow)
+        self.assertIn('python tools/package_release.py --tag "$RELEASE_TAG" --output-dir "${{ runner.temp }}/release-assets"', jobs["publish"])
+        self.assertIn("GH_TOKEN: ${{ github.token }}", jobs["publish"])
+        self.assertIn('gh release create "$RELEASE_TAG" --verify-tag', jobs["publish"])
+        self.assertIn('gh release upload "$RELEASE_TAG"', jobs["publish"])
+        self.assertIn("--clobber", jobs["publish"])
+        self.assertEqual(re.findall(r'"\$ASSET_DIR/([^"\n]+)"', jobs["publish"]), [
+            "ai-agent-workflow-openai-$RELEASE_TAG.zip", "ai-agent-workflow-claude-$RELEASE_TAG.zip",
+            "ai-agent-workflow-antigravity-$RELEASE_TAG.zip", "SHA256SUMS"])
+        self.assertNotRegex(workflow, r"git (?:push|tag)|gh api|secrets\.(?!GITHUB_TOKEN)")
+
+    def test_canonical_version_is_injected_only_into_versioned_hosts(self):
+        files = build_dist.expected_files()
+        for host, rel in (("openai", "plugin.json"), ("claude", ".claude-plugin/plugin.json")):
+            self.assertEqual(json.loads(files[f"dist/{host}/{rel}"])["version"], __version__)
+            self.assertNotIn("version", json.loads((ROOT / "adapters" / host / "plugin.json").read_bytes()))
+        self.assertNotIn("version", json.loads(files["dist/antigravity/plugin.json"]))
+        with patch.object(build_dist, "__version__", "2.3.4"):
+            changed = build_dist.expected_files()
+        for path in ("dist/openai/plugin.json", "dist/claude/.claude-plugin/plugin.json"):
+            self.assertEqual(json.loads(changed[path])["version"], "2.3.4")
+
+    def test_adapter_owned_versions_fail_before_build_mutation(self):
+        original_json = build_dist._json
+        for host in ("openai", "claude"):
+            def with_version(path):
+                data = original_json(path)
+                if path == ROOT / "adapters" / host / "plugin.json":
+                    data["version"] = __version__
+                return data
+            output = io.StringIO()
+            with self.subTest(host=host), patch.object(build_dist, "_json", side_effect=with_version), \
+                 patch.object(build_dist, "build", side_effect=AssertionError("must not mutate")), \
+                 redirect_stderr(output):
+                self.assertEqual(build_dist.main([]), 1)
+                self.assertIn(f"adapters/{host}/plugin.json: adapter-owned version", output.getvalue())
+
+    def test_pyproject_uses_dynamic_attribute_version(self):
+        # Python 3.10 has no tomllib; inspect the specific TOML sections.
+        text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        sections = dict(re.findall(r"(?ms)^\[([^\]]+)\]\n(.*?)(?=^\[|\Z)", text))
+        self.assertRegex(sections["project"], r'(?m)^dynamic = \["version"\]$')
+        self.assertNotRegex(sections["project"], r"(?m)^\s*version\s*=")
+        self.assertRegex(sections["tool.setuptools.dynamic"],
+                         r'(?m)^version = \{attr = "agent_workflow\.__version__"\}$')
+
+    def test_validator_rejects_missing_and_mismatched_generated_versions(self):
+        original_load = validate_dist._load
+        for host, rel in (("openai", "plugin.json"), ("claude", ".claude-plugin/plugin.json")):
+            for value in (None, "9.8.7"):
+                def wrong_version(path, errors):
+                    data = original_load(path, errors)
+                    if path == ROOT / "dist" / host / rel:
+                        if value is None:
+                            data.pop("version", None)
+                        else:
+                            data["version"] = value
+                    return data
+                with self.subTest(host=host, value=value), patch.object(validate_dist, "_load", side_effect=wrong_version):
+                    self.assertIn(f"dist/{host}/{rel}: version must equal agent_workflow.__version__",
+                                  validate_dist.validate())
+
     def test_check_rejects_existing_drift_without_regeneration(self):
         target = ROOT / "dist/openai/plugin.json"
         original = target.read_bytes()
