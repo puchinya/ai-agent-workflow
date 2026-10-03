@@ -14,10 +14,12 @@ Python 3.10+ is required; runtime code uses the standard library. Install the lo
 
 ```sh
 python -m compileall runtime tools tests
+python tools/build_dist.py --check
 python -m unittest discover -s tests -p "test_*.py"
 python tools/build_dist.py
 python tools/build_dist.py --check
 python tools/validate_dist.py
+git diff --exit-code -- dist .agents/plugins/marketplace.json .claude-plugin/marketplace.json
 git diff --check
 ```
 

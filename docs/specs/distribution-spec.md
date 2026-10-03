@@ -36,6 +36,8 @@ The generated repository-root `.claude-plugin/marketplace.json` uses Claude Code
 
 `python tools/build_dist.py` deterministically regenerates all package files. `python tools/build_dist.py --check` compares the complete expected path/content map and fails for missing, extra, or edited generated files. No hand edits under `dist/**` are allowed.
 
+CI MUST run `--check` before unit tests or generation can rewrite committed outputs. After tests and generation, `git diff --exit-code -- dist .agents/plugins/marketplace.json .claude-plugin/marketplace.json` MUST prove the generated paths remain identical to the checkout. Executable Skill examples MUST use `python -m agent_workflow <subcommand>`; distribution validation rejects bare runtime command examples.
+
 `python tools/validate_dist.py` validates each host package independently: manifest path and schema-specific fields, unique package/Skill names, required frontmatter, safe relative resource paths, required supporting runtime/standards, host separation, and marketplace metadata. It rejects forbidden reference-template synchronization files and any MCP/agent/rules/hooks placeholders.
 
 ## Observable behavior

@@ -17,6 +17,8 @@ The CLI MUST provide `init-project`, `agent-context`, `validate-docs`, `run-hook
 
 The commands `update-template` and `refresh-template-manifest` are forbidden. No module other than `github.py` may invoke `gh` directly. Every GitHub mutation uses JSON input files or structured fields, never shell interpolation of user payloads.
 
+GitHub comment, event, check-run, and commit-status collections MUST paginate with explicit `page=N&per_page=100` GET requests until a selected page contains fewer than 100 items. The transport preserves API order and fails with `GitHubError` on malformed page shapes. Direct named-comment verification remains a single-ID fetch.
+
 ## Normative requirements
 
 ### Project profile and context

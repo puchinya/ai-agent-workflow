@@ -64,14 +64,32 @@ class GitHub:
     def prefix(self) -> str:
         return f"repos/{self.repo}"
 
+    def _paginate(self, endpoint: str, key: str | None = None) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            response = self.request("GET", f"{endpoint}?page={page}&per_page=100")
+            if key is not None:
+                if not isinstance(response, dict) or key not in response:
+                    raise GitHubError(f"GitHub collection {endpoint} page {page} is missing {key}")
+                selected = response[key]
+            else:
+                selected = response
+            if not isinstance(selected, list) or any(not isinstance(item, dict) for item in selected):
+                raise GitHubError(f"GitHub collection {endpoint} page {page} must contain an array of objects")
+            items.extend(selected)
+            if len(selected) < 100:
+                return items
+            page += 1
+
     def issue(self, number: int) -> dict[str, Any]:
         return self.request("GET", f"{self.prefix}/issues/{number}")
 
     def issue_comments(self, number: int) -> list[dict[str, Any]]:
-        return self.request("GET", f"{self.prefix}/issues/{number}/comments?per_page=100")
+        return self._paginate(f"{self.prefix}/issues/{number}/comments")
 
     def issue_events(self, number: int) -> list[dict[str, Any]]:
-        return self.request("GET", f"{self.prefix}/issues/{number}/events?per_page=100")
+        return self._paginate(f"{self.prefix}/issues/{number}/events")
 
     def issue_comment(self, number: int, comment_id: int) -> dict[str, Any]:
         # Direct ID fetch avoids scanning or downloading unrelated comments.
@@ -99,12 +117,10 @@ class GitHub:
         return self.request("PATCH", f"{self.prefix}/pulls/{number}", {"body": body})
 
     def check_runs(self, ref: str) -> list[dict[str, Any]]:
-        result = self.request("GET", f"{self.prefix}/commits/{quote(ref, safe='')}/check-runs?per_page=100")
-        return result.get("check_runs", [])
+        return self._paginate(f"{self.prefix}/commits/{quote(ref, safe='')}/check-runs", "check_runs")
 
     def statuses(self, ref: str) -> list[dict[str, Any]]:
-        result = self.request("GET", f"{self.prefix}/commits/{quote(ref, safe='')}/statuses?per_page=100")
-        return result if isinstance(result, list) else []
+        return self._paginate(f"{self.prefix}/commits/{quote(ref, safe='')}/statuses")
 
     def add_issue_label(self, number: int, label: str) -> None:
         self.request("POST", f"{self.prefix}/issues/{number}/labels", {"labels": [label]})

@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import io
 import json
+import re
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
@@ -16,7 +20,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 from agent_workflow.contracts import (ContractError, parse_comment, publish_contract,
                                       restore_contract, save_contract, sha256,
                                       validate_payload, verify_contract)
-from agent_workflow.context import ContextError, affected_components
+from agent_workflow.context import ContextError, affected_components, build_context
 from agent_workflow.cli import _init_project
 from agent_workflow.delivery import DeliveryError, delivery_check, finalize_merged_issue
 from agent_workflow.documents import validate_markdown_file, validate_docs
@@ -367,6 +371,12 @@ class ContractTests(unittest.TestCase):
         with self.assertRaises(ContractError):
             verify_contract(self.repo, 1, self.gh)
 
+    def test_restore_and_verify_fetch_only_the_named_comment(self):
+        publish_contract(self.repo, 1, self.gh, self.source(b"approved bytes"))
+        with patch.object(self.gh, "issue_comments", side_effect=AssertionError("must not list comments")):
+            restore_contract(self.repo, 1, self.gh)
+            self.assertTrue(verify_contract(self.repo, 1, self.gh)["verified"])
+
     def test_concurrent_issue_body_change_does_not_update_pointer_or_local_state(self):
         class RacingGitHub(FakeGitHub):
             def __init__(self):
@@ -476,6 +486,145 @@ class GitHubTransportTests(unittest.TestCase):
                 gh.request("GET", "repos/owner/repo/issues/1")
         self.assertNotIn("secret-value", str(raised.exception))
         self.assertIn("exit status 1", str(raised.exception))
+
+
+class PaginationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.repo = Path(self.temp.name)
+        (self.repo / ".agent").mkdir()
+        self.profile = profile_fixture()
+        self.profile["components"] = self.profile["components"][:1]
+        self.profile["branch"]["required_checks"] = [{"name": "CI", "app_id": 77}]
+        self.write_profile()
+        self.fake = FakeGitHub()
+        self.gh = GitHub(self.fake.repo)
+        self.head = "d" * 40
+        self.fake.pull_data = {
+            "number": 2, "state": "open", "draft": False, "merged": False,
+            "base": {"repo": {"full_name": self.gh.repo}}, "head": {"sha": self.head},
+            "body": "Closes #1\n\n## Verification\ntests passed\n\n## Untested\nIDE not run\n",
+        }
+        self.paths = {
+            "issue_comments": f"{self.gh.prefix}/issues/1/comments",
+            "issue_events": f"{self.gh.prefix}/issues/1/events",
+            "check_runs": f"{self.gh.prefix}/commits/{self.head}/check-runs",
+            "statuses": f"{self.gh.prefix}/commits/{self.head}/statuses",
+        }
+        self.pages = {path: [[]] for path in self.paths.values()}
+        self.pages[self.paths["check_runs"]] = [{"check_runs": []}]
+        mocked = patch.object(self.gh, "request", side_effect=self.respond)
+        self.request = mocked.start()
+        self.addCleanup(mocked.stop)
+
+    def write_profile(self):
+        (self.repo / ".agent/project.json").write_text(json.dumps(self.profile), encoding="utf-8")
+
+    def respond(self, method, endpoint, payload=None):
+        parsed = urlsplit(endpoint)
+        if parsed.query:
+            self.assertEqual(method, "GET")
+            query = parse_qs(parsed.query)
+            self.assertEqual(query["per_page"], ["100"])
+            return copy.deepcopy(self.pages[parsed.path][int(query["page"][0]) - 1])
+        if endpoint == f"{self.gh.prefix}/issues/1":
+            if method == "GET":
+                return self.fake.issue(1)
+            if method == "PATCH":
+                return self.fake.update_issue(1, payload["body"])
+        if endpoint == f"{self.gh.prefix}/pulls/2" and method == "GET":
+            return self.fake.pull(2)
+        if endpoint.startswith(f"{self.gh.prefix}/issues/comments/") and method == "GET":
+            return self.fake.issue_comment(1, int(endpoint.rsplit("/", 1)[1]))
+        raise AssertionError(f"unexpected API operation: {method} {endpoint}")
+
+    def run_handoff(self):
+        published = {"stale": False, "head": self.head, "checklist_sha256": "c" * 64,
+                     "review": {"items": [{"id": "C001", "text": "works"}]}}
+        with patch("agent_workflow.delivery.validate_public_review", return_value=published), \
+             patch("agent_workflow.delivery.effective_checklist",
+                   return_value=([{"id": "C001", "text": "works"}], "c" * 64)):
+            return delivery_check(self.repo, 1, 2, self.gh)
+
+    def test_pending_same_sha_contract_on_page_two_is_reused_without_post(self):
+        raw = b"approved pending contract\r\n"
+        digest = sha256(raw)
+        comment = self.fake.create_issue_comment(
+            1, f"<!-- agent-contract:v1 issue=1 sha256={digest} bytes={len(raw)} -->\n\n" + raw.decode())
+        unrelated = [{"id": i, "issue_url": comment["issue_url"], "body": "unrelated"} for i in range(100)]
+        self.pages[self.paths["issue_comments"]] = [unrelated, [comment]]
+        source = self.repo / "contract.md"
+        source.write_bytes(raw)
+        first = publish_contract(self.repo, 1, self.gh, source)
+        retry = publish_contract(self.repo, 1, self.gh, source)
+        self.assertEqual(first["comment_id"], comment["id"])
+        self.assertTrue(retry["idempotent"])
+        self.assertEqual(len(self.fake.comments), 1)
+        self.assertFalse(any(call.args[0] == "POST" for call in self.request.call_args_list))
+        self.request.assert_any_call("GET", self.paths["issue_comments"] + "?page=2&per_page=100")
+
+    def test_page_two_issue_event_reaches_agent_context(self):
+        event = {"source": {"issue": {"number": 2, "pull_request": {}, "state": "open",
+                                     "html_url": "https://github.com/owner/repo/pull/2"}}}
+        self.pages[self.paths["issue_events"]] = [[{"event": "labeled"} for _ in range(100)], [event]]
+        with patch("agent_workflow.context._git", return_value=self.head):
+            context = build_context(self.repo, 1, self.gh)
+        self.assertEqual([pr["number"] for pr in context["pull_requests"]], [2])
+        self.request.assert_any_call("GET", self.paths["issue_events"] + "?page=2&per_page=100")
+
+    def test_page_two_required_check_reaches_handoff(self):
+        successful = {"name": "CI", "head_sha": self.head, "status": "completed",
+                      "conclusion": "success", "app": {"id": 77}}
+        self.pages[self.paths["check_runs"]] = [
+            {"check_runs": [{"name": f"unrelated-{i}"} for i in range(100)]},
+            {"check_runs": [successful]},
+        ]
+        result = self.run_handoff()
+        self.assertTrue(result["passed"], result["errors"])
+        self.request.assert_any_call("GET", self.paths["check_runs"] + "?page=2&per_page=100")
+
+    def test_page_two_commit_status_reaches_unrestricted_handoff(self):
+        self.profile["branch"]["required_checks"] = ["CI"]
+        self.write_profile()
+        status = {"context": "CI", "sha": self.head, "state": "success"}
+        self.pages[self.paths["statuses"]] = [[{"context": f"unrelated-{i}"} for i in range(100)], [status]]
+        result = self.run_handoff()
+        self.assertTrue(result["passed"], result["errors"])
+        self.request.assert_any_call("GET", self.paths["statuses"] + "?page=2&per_page=100")
+
+    def test_all_collections_keep_order_and_fetch_after_full_last_page(self):
+        for method, path in self.paths.items():
+            with self.subTest(method=method):
+                pages = [[{"id": i} for i in range(100)], [{"id": i} for i in range(100, 200)], []]
+                self.pages[path] = [{"check_runs": page} for page in pages] if method == "check_runs" else pages
+                argument = self.head if method in {"check_runs", "statuses"} else 1
+                result = getattr(self.gh, method)(argument)
+                self.assertEqual([item["id"] for item in result], list(range(200)))
+                self.request.assert_any_call("GET", path + "?page=3&per_page=100")
+
+    def test_malformed_first_or_later_page_fails_closed(self):
+        invalid = {
+            "issue_comments": [None, {}, ["not an object"]],
+            "issue_events": [None, {}, ["not an object"]],
+            "check_runs": [None, [], {}, {"check_runs": None}, {"check_runs": ["not an object"]}],
+            "statuses": [None, {}, ["not an object"]],
+        }
+        for method, responses in invalid.items():
+            full = [{"id": i} for i in range(100)]
+            first = {"check_runs": full} if method == "check_runs" else full
+            for response in responses:
+                for later in (False, True):
+                    with self.subTest(method=method, response=response, later=later):
+                        argument = self.head if method in {"check_runs", "statuses"} else 1
+                        with patch.object(self.gh, "request", side_effect=[first, response] if later else [response]):
+                            with self.assertRaises(GitHubError):
+                                getattr(self.gh, method)(argument)
+
+    def test_later_page_api_failure_does_not_return_partial_success(self):
+        with patch.object(self.gh, "request", side_effect=[[{} for _ in range(100)], GitHubError("API failed")]):
+            with self.assertRaises(GitHubError):
+                self.gh.issue_events(1)
 
 
 class ProcessTests(unittest.TestCase):
@@ -620,6 +769,52 @@ macOS IDE smoke test not run
 
 
 class DistributionTests(unittest.TestCase):
+    def test_check_rejects_existing_drift_without_regeneration(self):
+        target = ROOT / "dist/openai/plugin.json"
+        original = target.read_bytes()
+        changed = original + b" deliberate drift"
+        try:
+            target.write_bytes(changed)
+            output = io.StringIO()
+            with patch.object(build_dist, "build", side_effect=AssertionError("must not regenerate")), \
+                 redirect_stdout(output), redirect_stderr(output):
+                self.assertEqual(build_dist.main(["--check"]), 1)
+            self.assertIn("generated file drift", output.getvalue())
+            self.assertEqual(target.read_bytes(), changed)
+        finally:
+            target.write_bytes(original)
+
+    def test_skill_commands_require_the_module_entrypoint(self):
+        for command in validate_dist.RUNTIME_COMMANDS:
+            for example in (f"Run `{command} 1 2`.", f"```sh\n{command} 1 2\n```",
+                            f"Run `python -m agent_workflow agent-context 1 && {command} 1 2`."):
+                with self.subTest(command=command, example=example):
+                    self.assertTrue(validate_dist.validate_skill_commands(example, "SKILL.md"))
+            for example in (f"Run `python -m agent_workflow {command} 1 2`.",
+                            f"```sh\npython -m agent_workflow {command} 1 2\n```"):
+                self.assertEqual(validate_dist.validate_skill_commands(example, "SKILL.md"), [])
+
+    def test_distribution_validator_rejects_a_bare_skill_instruction(self):
+        target = ROOT / "dist/openai/skills/implementation/SKILL.md"
+        original = target.read_bytes()
+        try:
+            target.write_bytes(original.replace(b"python -m agent_workflow agent-context", b"agent-context"))
+            self.assertTrue(any("execute agent-context with python -m agent_workflow" in error
+                                for error in validate_dist.validate()))
+        finally:
+            target.write_bytes(original)
+
+    def test_ci_checks_distribution_before_mutation_and_after_build(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        runs = re.findall(r"^        run: (.+)$", workflow, re.M)
+        self.assertEqual(runs, [
+            "python -m compileall runtime tools tests", "python tools/build_dist.py --check",
+            'python -m unittest discover -s tests -p "test_*.py"', "python tools/build_dist.py",
+            "python tools/build_dist.py --check", "python tools/validate_dist.py",
+            "git diff --exit-code -- dist .agents/plugins/marketplace.json .claude-plugin/marketplace.json",
+            "git diff --check",
+        ])
+
     def test_build_is_deterministic_separated_and_check_detects_drift(self):
         first = build_dist.expected_files()
         second = build_dist.expected_files()

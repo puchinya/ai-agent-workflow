@@ -18,6 +18,29 @@ SKILLS = ("requirements", "design", "implementation-contract", "implementation",
 OPENAI_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
 ANTIGRAVITY_SCHEMA = "https://antigravity.google/schemas/v1/plugin.json"
 FORBIDDEN_PATH = re.compile(r"(?i)(?:update-template|refresh-template-manifest|template-manifest|update_template|refresh_template)")
+RUNTIME_COMMANDS = (
+    "init-project", "agent-context", "validate-docs", "run-hook",
+    "save-implementation-contract", "publish-implementation-contract",
+    "restore-implementation-contract", "verify-implementation-contract",
+    "prepare-self-review", "validate-self-review", "publish-self-review",
+    "validate-public-review", "delivery-check", "finalize-merged-issue",
+)
+BARE_RUNTIME_COMMAND = re.compile(
+    r"(?:^|[;&|]\s*)(?:\$\s+)?(" + "|".join(RUNTIME_COMMANDS) + r")(?=\s|$)"
+)
+
+
+def validate_skill_commands(text: str, rel: str) -> list[str]:
+    """Check executable examples in inline code and fenced command blocks."""
+    examples = re.findall(r"(?<!`)`([^`\n]+)`(?!`)", text)
+    for block in re.finditer(r"(?ms)^\s*(`{3,}|~{3,})[^\n]*\n(.*?)^\s*\1\s*$", text):
+        examples.extend(block.group(2).splitlines())
+    errors = []
+    for example in examples:
+        match = BARE_RUNTIME_COMMAND.search(example.strip())
+        if match:
+            errors.append(f"{rel}: execute {match.group(1)} with python -m agent_workflow")
+    return errors
 
 
 def _load(path: Path, errors: list[str]):
@@ -173,6 +196,7 @@ def validate() -> list[str]:
                 if fields.get("name") != name or not fields.get("description"):
                     errors.append(f"dist/{host}/skills/{name}/SKILL.md: invalid name/description metadata")
             errors.extend(validate_markdown_file(skill_path, root))
+            errors.extend(validate_skill_commands(text, skill_path.relative_to(ROOT).as_posix()))
         for required in ("runtime/agent_workflow/__init__.py", "runtime/agent_workflow/cli.py",
                          "standards/specification.md", "standards/design.md", "standards/documentation-sync.md",
                          "templates/spec-template.md", "templates/design-template.md", "templates/status-template.md",
