@@ -861,9 +861,13 @@ class DistributionTests(unittest.TestCase):
                 self.assertTrue(any("marketplace entry and manifest name must be ai-agent-workflow" in error
                                     for error in errors), errors)
 
-    def test_marketplace_validation_does_not_look_up_release_assets(self):
-        source = (ROOT / "tools/validate_dist.py").read_text(encoding="utf-8").casefold()
-        self.assertNotIn("release", source)
+    def test_marketplace_validation_is_offline_and_release_independent(self):
+        with patch.object(
+                package_release, "package",
+                side_effect=AssertionError("marketplace validation must not package or fall back to Releases")), \
+                patch("socket.socket",
+                      side_effect=AssertionError("distribution validation must not use the network")):
+            self.assertEqual(validate_dist.validate(), [])
 
     def test_serialized_json_survives_autocrlf_checkout_without_drift(self):
         files = build_dist.expected_files()
