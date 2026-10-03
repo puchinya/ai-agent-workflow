@@ -17,6 +17,9 @@ OpenAI Agent Plugins and Antigravity both use root `plugin.json` but validate di
 |---|---|
 | One hand-authored source | `workflow/skills`, `workflow/standards`, `workflow/templates`, `runtime/agent_workflow`, and `adapters` are the only authored inputs. |
 | Distinct host schemas | `adapters/openai`, `adapters/claude`, and `adapters/antigravity` own small manifests/marketplace data. |
+| GitHub-hosted OpenAI/Claude marketplaces | The repository hosts root marketplace manifests; GitHub marketplace registration resolves `./dist/openai` or `./dist/claude` within its checkout. |
+| Separate Release distribution | Existing version-fixed ZIPs and `SHA256SUMS` serve manual/offline installs; marketplace installs do not look up Releases or use Release assets. |
+| Conservative Antigravity support | Keep Antigravity local/manual because third-party GitHub marketplace support is unconfirmed. |
 | No manual generated edits | The builder computes an expected file map, then either writes it or compares it with disk. |
 | Independent validation | The validator uses one explicit validation function per host and produces package-specific errors. |
 | Single version authority | Setuptools reads the runtime attribute; the builder rejects adapter versions and injects it for OpenAI/Claude only. |
@@ -26,11 +29,11 @@ OpenAI Agent Plugins and Antigravity both use root `plugin.json` but validate di
 
 ## Architecture
 
-Each adapter owns only its host manifest and marketplace metadata, excluding version. The package builder combines those host-specific descriptors with one canonical copy of Skills, standards, templates, documentation, and runtime modules. The canonical runtime `__version__` also supplies setuptools dynamic metadata and generated OpenAI/Claude versions. Antigravity's restricted schema remains versionless.
+Each adapter owns only its host manifest and marketplace metadata, excluding version. The GitHub repository itself is the marketplace host for OpenAI/Codex and Claude Code: marketplace registration checks out the repository, then the host resolves a relative source under `dist/`. The package builder combines the host-specific descriptors with one canonical copy of Skills, standards, templates, documentation, and runtime modules. The canonical runtime `__version__` also supplies setuptools dynamic metadata and generated OpenAI/Claude versions. Antigravity's restricted schema remains versionless and its installation remains local/manual.
 
 ## Data flow and ownership
 
-Canonical files are read as bytes and mapped to package-relative paths. The complete path/content map is prepared before generated destinations are changed. Marketplace files are generated from adapter metadata and point at the corresponding isolated package.
+Canonical files are read as bytes and mapped to package-relative paths. The complete path/content map is prepared before generated destinations are changed. Root marketplace files are generated from adapter metadata and point at the corresponding isolated package inside this same repository checkout. The GitHub repository supplies transport; generated source paths remain relative and repository-contained.
 
 `.gitattributes` pins serialized OpenAI/Claude generated manifest JSON and repository marketplace JSON to LF so Windows Git checkout conversion cannot introduce drift before generation. Other copied resources retain their existing byte-copy semantics.
 
@@ -39,14 +42,14 @@ Canonical files are read as bytes and mapped to package-relative paths. The comp
 1. Read the fixed canonical inputs as UTF-8 bytes.
 2. Parse OpenAI/Claude adapter JSON objects, reject adapter-owned version keys, inject `agent_workflow.__version__`, and serialize sorted keys with stable indentation and a trailing LF. Preserve the Antigravity manifest without adding version metadata.
 3. Copy only required Skills, standards, templates, and runtime modules into the package.
-4. Create the OpenAI repo marketplace entry that points at `dist/openai`.
+4. Create the OpenAI repository marketplace entry with category `Productivity` and source `./dist/openai`; preserve its existing policy.
 5. Sort package paths and serialize JSON with stable indentation/newlines.
 6. In normal mode, write the expected path set and remove only stale files under the generated `dist/**` roots. In `--check` mode, make no writes and report all path/content mismatches.
 7. Validate each package separately after build; `validate_dist.py` can also validate existing output without rebuilding.
 
 ## Package boundaries
 
-The OpenAI package uses the portable root manifest and optionally references only resources supported by the current Agent Plugins format. The Claude package has its nested manifest and Claude-specific marketplace metadata; its manifest is never reused by the other hosts. The Antigravity package uses its own root manifest and includes no empty components. Shared Skills keep host-neutral Markdown; adapters contain only installation and host discovery instructions.
+The OpenAI package uses the portable root manifest and optionally references only resources supported by the current Agent Plugins format. The repository-root `.agents/plugins/marketplace.json` has one `ai-agent-workflow` entry for `./dist/openai`. The Claude package has its nested manifest and Claude-specific marketplace metadata; its root marketplace manifest has one matching `ai-agent-workflow` entry for `./dist/claude`. Each path stays inside the GitHub marketplace checkout and targets the corresponding manifest. Neither marketplace source refers to GitHub Release assets or API lookups. Antigravity uses its own root manifest, includes no empty components, and stays local/manual while GitHub marketplace support is unconfirmed. Shared Skills keep host-neutral Markdown; adapters contain host installation and discovery instructions.
 
 Generated packages include `skills/`, `standards/`, `templates/`, and `runtime/agent_workflow/` as required resources. No top-level `bin/` is emitted. No `update-template` or reference repository files are emitted.
 
@@ -62,11 +65,15 @@ The workflow packages into runner temporary storage, then probes the Release wit
 
 Build inputs that are missing or malformed fail before destination mutation. Normal build prepares the complete expected map before writing. `--check` never repairs drift. The validator reports all independent package errors in one run but exits nonzero if any package is invalid. External network access is not used by build or validation.
 
+Marketplace validation rejects absolute paths, traversal, paths that resolve outside the repository, unexpected host paths, missing directories/manifests, mismatched entry/manifest names, and incorrect OpenAI category or policy. Hosts refresh the registered marketplace from its GitHub checkout. A failed fetch or refresh is reported by the host and never redirects installation to a Release, a newer tag, or a network lookup.
+
 The packager checks tag syntax and version before reading distributions and checks drift before host validation; each failure has a distinct diagnostic and creates no artifacts. Failed main ancestry or any matrix job blocks publication. Shell failure propagation reports failed creation/upload operations; lookup errors also name the failed operation. Publication cannot modify source or tags. A failed upload can leave a partial Release asset set; a same-tag rerun replaces expected assets to converge on the four intended outputs.
 
 ## Alternatives considered
 
 - A shared OpenAI/Antigravity manifest cannot satisfy both schemas.
+- A separate registry, marketplace server, Release-asset source, or install-time API lookup would duplicate GitHub marketplace hosting and violate the repository-contained source contract.
+- Claiming a GitHub marketplace for Antigravity without confirmed third-party support would overstate the host capability; its local/manual path stays in place.
 - Hand-editing `dist/**` would make fixes non-reproducible.
 - Fetching schemas at runtime would make local builds network-dependent; current host requirements are recorded and validators remain deterministic.
 - Adding placeholder hooks, agents, rules, or MCP configuration would claim unsupported behavior.

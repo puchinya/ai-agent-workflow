@@ -6,6 +6,7 @@
   "plugins": [
     {
       "name": "ai-agent-workflow",
+      "category": "Productivity",
       "source": {
         "source": "local",
         "path": "./dist/openai"
