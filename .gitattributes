@@ -1,0 +1,3 @@
+# Generated marketplace JSON is serialized with LF on every platform.
+/.agents/plugins/marketplace.json text eol=lf
+/.claude-plugin/marketplace.json text eol=lf
