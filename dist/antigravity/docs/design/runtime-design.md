@@ -3,7 +3,7 @@
 # Runtime and CLI Design
 
 - Status: Approved
-- Owning Issue: [Issue #1](https://github.com/puchinya/ai-agent-workflow/issues/1)
+- Owning Issue: [Issue #7](https://github.com/puchinya/ai-agent-workflow/issues/7)
 - Related specification: [Runtime and CLI Specification](../specs/runtime-spec.md)
 
 ## Context and goals
@@ -19,22 +19,24 @@ The CLI must be easy to run from a consumer checkout, fakeable in tests, and saf
 | Exact payload bytes and atomic mirrors | Contract codecs operate on `bytes`; `documents.py` owns same-repository Markdown path checks; a shared atomic writer uses sibling temporary files and `os.replace`. |
 | Stable sequential hook composition | `profile.py` returns an ordered immutable command/skip plan before `process.py` executes it. |
 | Current state gates delivery | `delivery.py` composes fresh Issue, PR, review, and Required Check responses; it never trusts a local submitted claim alone. |
+| Milestones and branches follow consumer policy | `versioning.py` resolves configured sources and `git.py` owns only argv-based local Git lifecycle; remote metadata and milestone mutations remain in `github.py`. |
 
 ## Architecture
 
-`cli.py` parses commands and converts domain errors into stable nonzero exit codes. `profile.py` validates Schema 1/2 and selects components/targets. `context.py` formats routing output only. `documents.py` validates durable Markdown structure and local links. `contracts.py` owns exact bytes, pointer format, mirror state, and publication/restore flows. `review.py` owns checklist extraction, evidence validation, and exact-HEAD review records. `delivery.py` owns handoff and merged gates. `github.py` owns repository identity for GitHub operations and every `gh api` invocation. `process.py` owns non-GitHub subprocess execution and safe fallback between Python aliases.
+`cli.py` parses commands and converts domain errors into stable nonzero exit codes. `profile.py` validates Schema 1/2 and selects components/targets. `versioning.py` resolves and validates explicit or automatic version sources without dependencies. `git.py` owns branch lifecycle subprocesses through argv and coordinates clean-worktree checks, branch selection, safe cleanup, and the global switch-hook plan. `context.py` formats routing output only. `documents.py` validates durable Markdown structure and local links. `contracts.py` owns exact bytes, pointer format, mirror state, and publication/restore flows. `review.py` owns checklist extraction, evidence validation, and exact-HEAD review records. `delivery.py` owns handoff and merged gates. `github.py` owns repository identity, default-branch metadata, Issue milestone state, and every `gh api` invocation. `process.py` executes configured non-GitHub hook commands with captured output.
 
-The dependency direction is CLI -> domain modules -> injected GitHub/process boundaries. Pure validators do not make network calls. GitHub functions return parsed JSON or raise explicit operation errors; they do not print payloads. Runtime code never imports files from the reference repository.
+The dependency direction is CLI -> domain modules -> injected GitHub/process boundaries. Pure validators do not make network calls. `git.py` invokes Git only through argument arrays and never invokes the trusted shell-hook boundary for Git operations. GitHub functions return parsed JSON or raise explicit operation errors; they do not print payloads. Runtime code never imports files from the reference repository.
 
 ## Data flow and ownership
 
 1. Parse arguments and discover repository root.
 2. Load and validate all local profile/document state needed for the command.
 3. Resolve scope and build an immutable plan.
-4. For remote workflows, read authoritative metadata, validate all identity/pointer preconditions, and prepare a temporary structured payload.
-5. Perform one mutation only after preconditions pass; read it back and validate it.
-6. Commit local state with atomic replacement only after remote verification, or keep old verified bytes on failure.
-7. Clean temporary files in `finally` paths and print bounded diagnostics.
+4. For milestone or branch workflows, resolve profile versions and read authoritative repository/Issue state before mutation. Fetch target refs only after a clean-worktree and same-repository Issue check.
+5. For other remote workflows, read authoritative metadata, validate all identity/pointer preconditions, and prepare a temporary structured payload.
+6. Perform one mutation only after preconditions pass; read it back and validate it. Milestone reuse and assignment are exact-title/idempotent; branch cleanup and hooks follow only an actual switch.
+7. Commit local state with atomic replacement only after remote verification, or keep old verified bytes on failure.
+8. Clean temporary files in `finally` paths and print bounded diagnostics. Post-switch failures preserve and report the switched branch.
 
 ## Failure handling
 

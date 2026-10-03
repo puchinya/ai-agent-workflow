@@ -3,7 +3,7 @@
 # Portable Workflow Design
 
 - Status: Approved
-- Owning Issue: [Issue #1](https://github.com/puchinya/ai-agent-workflow/issues/1)
+- Owning Issue: [Issue #7](https://github.com/puchinya/ai-agent-workflow/issues/7)
 - Related specification: [Portable Workflow Specification](../specs/workflow-spec.md)
 
 ## Context and goals
@@ -21,6 +21,7 @@ Goals are explicit Issue authority, progressive context loading, reliable local 
 | Compact context routing | The runtime emits validated paths and identifiers rather than document contents. |
 | Review is evidence, not approval | Review commands bind claims to checklist hash and exact PR HEAD; an independent human reviewer still judges the evidence. |
 | Host-specific packages differ | The builder emits three isolated packages from shared sources and adapters. |
+| Milestone and feature-branch lifecycle is reusable | Consumer policy stays in Schema 2 `.agent/project.json`; the requirements and implementation Skills call standard runtime commands. |
 
 ## Architecture
 
@@ -35,11 +36,13 @@ consumer Issue + .agent/project.json
                  v
           agent_workflow CLI
           ├── profile/context/documents
+          ├── versioning/git lifecycle
           ├── contract/review/delivery
-          └── github.py -> authenticated `gh api`
+          ├── git.py -> argv-only Git subprocesses
+          └── github.py -> authenticated `gh api` for Issues, milestones, and repository metadata
 ```
 
-`workflow/`, `runtime/`, and `adapters/` are canonical hand-authored trees. `dist/**` is generated and MUST NOT be hand-edited. The CLI is a one-shot Python 3.10+ application using the standard library. GitHub transport is isolated in one module. Tests replace that transport with fakes and do not use network credentials.
+`workflow/`, `runtime/`, and `adapters/` are canonical hand-authored trees. `dist/**` is generated and MUST NOT be hand-edited. The CLI is a one-shot Python 3.10+ application using the standard library. GitHub transport is isolated in one module. Git lifecycle commands are isolated in `git.py`; they use subprocess argv, never shell interpolation. Tests replace those boundaries with fakes and do not use network credentials.
 
 ## Data flow and ownership
 

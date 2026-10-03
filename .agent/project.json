@@ -15,6 +15,7 @@
   "branch": {
     "prefix": "feature",
     "max_slug_length": 48,
+    "cleanup_on_switch": [],
     "required_checks": [
       {"name": "test (ubuntu-latest, 3.10)"},
       {"name": "test (ubuntu-latest, 3.14)"},
@@ -23,8 +24,12 @@
     ]
   },
   "milestones": {
-    "enabled": false,
-    "version_source": "auto"
+    "mode": "required",
+    "version_source": {
+      "type": "python-attr",
+      "path": "runtime/agent_workflow/__init__.py",
+      "field": "__version__"
+    }
   },
   "hooks": {
     "branch_switch": [],

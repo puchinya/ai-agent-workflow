@@ -3,7 +3,7 @@
 # Runtime and CLI Specification
 
 - Status: Approved
-- Owning Issue: [Issue #1](https://github.com/puchinya/ai-agent-workflow/issues/1)
+- Owning Issue: [Issue #7](https://github.com/puchinya/ai-agent-workflow/issues/7)
 - Related design: [Runtime design](../design/runtime-design.md)
 - Workflow invariants: [Portable Workflow Specification](workflow-spec.md)
 
@@ -13,11 +13,11 @@ Define observable behavior for the Python 3.10+ command `python -m agent_workflo
 
 ## Scope
 
-The CLI MUST provide `init-project`, `agent-context`, `validate-docs`, `run-hook`, `save-implementation-contract`, `publish-implementation-contract`, `restore-implementation-contract`, `verify-implementation-contract`, `prepare-self-review`, `validate-self-review`, `publish-self-review`, `validate-public-review`, `delivery-check`, and `finalize-merged-issue`.
+The CLI MUST provide `init-project`, `agent-context`, `validate-docs`, `run-hook`, `ensure-milestone`, `start-feature-branch`, `save-implementation-contract`, `publish-implementation-contract`, `restore-implementation-contract`, `verify-implementation-contract`, `prepare-self-review`, `validate-self-review`, `publish-self-review`, `validate-public-review`, `delivery-check`, and `finalize-merged-issue`.
 
 The commands `update-template` and `refresh-template-manifest` are forbidden. No module other than `github.py` may invoke `gh` directly. Every GitHub mutation uses JSON input files or structured fields, never shell interpolation of user payloads.
 
-GitHub comment, event, check-run, and commit-status collections MUST paginate with explicit `page=N&per_page=100` GET requests until a selected page contains fewer than 100 items. The transport preserves API order and fails with `GitHubError` on malformed page shapes. Direct named-comment verification remains a single-ID fetch.
+GitHub comment, event, check-run, commit-status, and milestone collections MUST paginate with explicit `page=N&per_page=100` GET requests until a selected page contains fewer than 100 items. The transport preserves API order and fails with `GitHubError` on malformed page shapes. Direct named-comment verification remains a single-ID fetch. Git lifecycle subprocesses are owned only by `agent_workflow.git`, use argv arrays, and never pass through the trusted shell-hook boundary.
 
 ## Normative requirements
 
@@ -27,7 +27,13 @@ GitHub comment, event, check-run, and commit-status collections MUST paginate wi
 
 Schema 2 separates components, stacks, application types, targets, and invocation-time runtime host. Application types are exactly `generic`, `desktop-gui`, `cli`, `mobile`, `server`, `embedded`, and `library`; `generic` does not select a profile document. Types are never inferred. Explicit unknown non-empty stack IDs remain opaque. Component roots are safe repository-relative paths; components and targets have unique IDs in their scope; hook values are arrays of non-empty trusted command strings. Target `runnable_on` contains only `any`, `windows`, `macos`, or `linux`. Optional target `requirements` has exactly three required arrays: `architectures`, `tools`, `capabilities`.
 
-`init-project` deterministically writes a validated root component with root `.`, detected or explicitly supplied stacks, generic unless explicitly selected, and no targets unless requested. New targets default to `runnable_on: ["any"]`. Branch and milestone policy are objects; new projects use branch prefix `feature`, slug limit 48, and milestones disabled with automatic version source. `cargo clean` is added only to the global `branch_switch` hook when Rust is detected and `--cargo-clean on` is explicit. Initializing a generic component emits a warning.
+`init-project` deterministically writes a validated root component with root `.`, detected or explicitly supplied stacks, generic unless explicitly selected, and no targets unless requested. New targets default to `runnable_on: ["any"]`. Branch and milestone policy are objects; new projects use branch prefix `feature`, slug limit 48, empty `cleanup_on_switch` and `required_checks` arrays, and milestones `{ "mode": "auto", "version_source": "auto" }`. `cargo clean` is added only to the global `branch_switch` hook when Rust is detected and `--cargo-clean on` is explicit. Initializing a generic component emits a warning.
+
+Schema 2 milestone mode is `auto`, `required`, or `disabled`. Legacy `enabled: false` maps to `disabled` and `enabled: true` maps to `required`; a profile containing both `enabled` and `mode` is invalid. Version sources are `auto`, `{type: json|toml|python-attr, path, field}`, or `{type: command, command}`. File paths are repository-relative and cannot escape the repository. Values from file or command sources must be non-empty single-line strings and are used unchanged as titles. `auto` extracts only the required TOML string scalars and reads all of `package.json:version`, `Cargo.toml:package.version`, `Cargo.toml:workspace.package.version`, and `pyproject.toml:project.version`: no values is unresolved, one distinct value is resolved, and conflicting values fail with `VERSION_AMBIGUOUS`. It adds no dependency and does not change the Python minimum.
+
+`ensure-milestone N` validates the profile and an open same-repository non-PR Issue before mutation. `disabled` skips; `auto` with no resolved version emits `NOT_APPLICABLE` without mutation; `required` with no version fails. It reuses one exact-title open milestone or creates one when absent. Duplicate or closed exact-title milestones fail. An Issue with no milestone is assigned; the same assignment is idempotent; a different assignment fails without replacement or reopening.
+
+Schema 2 branch policy accepts a safe single-component `prefix`, bounded positive `max_slug_length`, repository-relative `cleanup_on_switch` paths that cannot escape, and `required_checks`. `start-feature-branch N <description...>` validates the open same-repository non-PR Issue and profile, requires a clean worktree, reads the GitHub repository default branch, and fetches `origin` refs. The target name is `<prefix>/<N>-<slug>`; slug generation is NFKD, ASCII, lowercase, non-alphanumeric runs to hyphens, trim/collapse, then maximum-length truncation. Empty slugs fail. It switches to an existing local branch, tracks an existing remote branch, or creates the target from `origin/<default>`. Only an actual switch removes configured cleanup paths and runs global `branch_switch` hooks, in that order. Cleanup unlinks symlinks themselves, recursively removes real directories, and treats missing paths as no-ops. A cleanup or hook failure after switching is reported with the current branch and does not roll back. A same-branch call reports `switched: false` and runs neither cleanup nor hooks.
 
 `agent-context N` reports existing workflow/branch/HEAD/PR/contract fields plus profile schema, normalized runtime host, affected components, component metadata, applicable non-generic profile paths, and explicit document owners. One-component profiles default to that component when the Issue omits `## Affected components`; multi-component profiles require a non-empty canonical section. Unknown IDs fail. `all` has no special meaning. Document owners are emitted only from explicit same-repository links under `## Document impact` to existing paths in `docs/specs/`, `docs/design/`, or `docs/status/`; planned paths remain `planned_owner`. Ambiguous, malformed, or foreign URLs produce bounded diagnostics. Context is read-only, path-only, and never fetches linked pages or inlines document/comment/issue bodies. Closed Issue state takes precedence over phase labels and yields `phase=closed` with no workflow.
 
@@ -65,13 +71,15 @@ Merged delivery requires a merged PR, closed Issue, and no phase label. `finaliz
 
 Malformed profiles fail before hooks. Unknown scope never broadens. Subprocess failures retain the exit status and identify the command without secrets. GitHub identity/API ambiguity fails closed. Temporary payloads are removed on handled success/failure paths. Tokens and payload contents are never printed. Skipped targets and unexecuted platform tests are reported as unverified, not passed.
 
+Branch cleanup and hooks occur only after a successful switch. Failures in these post-switch steps leave the current branch in place and report the failed stage; retries on that current target branch are non-destructive.
+
 ## Observable behavior
 
 Commands produce bounded JSON or explicitly described skip lines. They identify affected Issue, component, target, contract SHA, review HEAD, and gate result without printing payload content or credentials. Read-only commands never mutate Issue, PR, profile, or source documents.
 
 ## Data and API formats
 
-Schema-2 profile fields are `schema_version`, `initialized`, `project_name`, `components`, `branch`, `milestones`, and project `hooks`. `branch.required_checks` is an array of names or `{name, app_id}` entries; an empty array prevents handoff. Each component declares `id`, `roots`, `stacks`, `application_types`, `targets`, and verification `hooks`; targets declare `id`, `runnable_on`, verification `hooks`, and optional `requirements`. Hook arrays contain command strings; project hooks may include `branch_switch`, while component and target hooks may not.
+Schema-2 profile fields are `schema_version`, `initialized`, `project_name`, `components`, `branch`, `milestones`, and project `hooks`. `branch` contains `prefix`, `max_slug_length`, optional `cleanup_on_switch` (default `[]`), and `required_checks`. `branch.required_checks` is an array of names or `{name, app_id}` entries; an empty array prevents handoff. `milestones` contains `mode` and `version_source`, with the legacy `enabled` compatibility mapping described above. Each component declares `id`, `roots`, `stacks`, `application_types`, `targets`, and verification `hooks`; targets declare `id`, `runnable_on`, verification `hooks`, and optional `requirements`. Hook arrays contain command strings; project hooks may include `branch_switch`, while component and target hooks may not.
 
 The canonical checklist block is delimited by the exact lines `<!-- AGENT_REVIEWER_CHECKLIST_V1 -->` and `<!-- /AGENT_REVIEWER_CHECKLIST_V1 -->`; valid checkbox items inside it take precedence over the narrow `Reviewer Checklist` heading fallback.
 
@@ -86,6 +94,10 @@ GitHub requests use authenticated `gh api` through one module. User payloads tra
 | Condition | Required behavior |
 |---|---|
 | Unsupported profile or malformed target requirements | Fail before output or any configured hook. |
+| Conflicting auto-detected versions or duplicate/closed exact-title milestones | Fail before Issue milestone assignment; report `VERSION_AMBIGUOUS` for version conflicts. |
+| Dirty worktree or invalid/non-open/foreign/PR Issue | Fail before any branch switch. |
+| Cleanup path escapes the repository | Reject the profile before Git mutation. |
+| Cleanup or hook fails after a real switch | Keep the new branch, report current branch and failed stage, and do not rerun switch work on same-branch retry. |
 | Missing/malformed Issue component list | Fail before hook execution or partial context output. |
 | Host/architecture/tool/capability mismatch | Skip only the target and report it unverified. |
 | Contract hash, comment, Issue, or mirror mismatch | Fail closed; preserve prior verified bytes. |

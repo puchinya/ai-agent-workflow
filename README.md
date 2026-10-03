@@ -6,7 +6,9 @@ Portable, Issue-first development workflow for OpenAI/Codex, Claude Code, and Go
 
 Use the generated package for your host. This GitHub repository hosts the OpenAI/Codex and Claude Code marketplaces; register the repository with the host and install `ai-agent-workflow` from its marketplace. Antigravity remains a local/manual plugin install. Product-specific CLI/IDE smoke tests require the corresponding product to be installed.
 
-For a consumer repository, install the runtime from the generated package (or install this checkout with `python -m pip install -e .` during development), then run `python -m agent_workflow init-project` and inspect `.agent/project.json`. Profile selection is explicit: the runtime never infers application type from a stack or repository contents. Start with the [requirements Skill](workflow/skills/requirements/SKILL.md) and [specification standard](workflow/standards/specification.md).
+For a consumer repository, install the runtime from the generated package (or install this checkout with `python -m pip install -e .` during development), then run `python -m agent_workflow init-project` and inspect `.agent/project.json`. Profile selection is explicit: the runtime never infers application type from a stack or repository contents. New profiles use milestone mode `auto`, so versionless repositories proceed without a milestone; choose `required` or `disabled` explicitly when appropriate. Start with the [requirements Skill](workflow/skills/requirements/SKILL.md) and [specification standard](workflow/standards/specification.md).
+
+After an open Issue exists, `python -m agent_workflow ensure-milestone <issue>` reuses or creates its exact-version milestone according to the profile. Before editing, `python -m agent_workflow start-feature-branch <issue> <description...>` validates the Issue and starts the configured feature branch from GitHub's default branch. Branch switches can remove configured `cleanup_on_switch` paths and then run global `branch_switch` hooks; retries on the current target branch skip that work.
 
 ## Development
 
@@ -23,7 +25,7 @@ git diff --exit-code -- dist .agents/plugins/marketplace.json .claude-plugin/mar
 git diff --check
 ```
 
-GitHub operations use authenticated `gh api` through `agent_workflow.github`; unit tests use fakes and never require live credentials. The generated trees under `dist/` are not edited by hand.
+GitHub operations use authenticated `gh api` through `agent_workflow.github`; Git lifecycle operations use argv-only subprocess calls in `agent_workflow.git`. Unit tests use fakes and local temporary repositories without live credentials. The generated trees under `dist/` are not edited by hand.
 
 ## GitHub marketplaces
 

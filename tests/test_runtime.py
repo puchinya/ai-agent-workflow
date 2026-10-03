@@ -23,9 +23,10 @@ from agent_workflow.contracts import (ContractError, parse_comment, publish_cont
                                       restore_contract, save_contract, sha256,
                                       validate_payload, verify_contract)
 from agent_workflow.context import ContextError, affected_components, build_context
-from agent_workflow.cli import _init_project
+from agent_workflow.cli import _ensure_milestone, _init_project, _start_feature_branch, build_parser
 from agent_workflow.delivery import DeliveryError, delivery_check, finalize_merged_issue
 from agent_workflow.documents import validate_markdown_file, validate_docs
+from agent_workflow.git import GitLifecycleError, _remove_cleanup_path, feature_slug, start_feature_branch
 from agent_workflow.github import GitHub, GitHubError
 from agent_workflow.profile import ProfileError, build_hook_plan, validate_profile
 from agent_workflow.process import ProcessError, run_command
@@ -36,6 +37,7 @@ import build_dist
 import validate_dist
 import package_release
 from agent_workflow import __version__
+from agent_workflow.versioning import VersionError, _split_command, resolve_version
 
 
 def profile_fixture():
@@ -51,7 +53,7 @@ def profile_fixture():
             {"id": "two", "roots": ["sub"], "stacks": [], "application_types": ["library"],
              "hooks": {"verify_quick": ["echo two"]}, "targets": []},
         ],
-        "branch": {"required_checks": ["CI"]}, "milestones": {"enabled": False},
+        "branch": {"required_checks": ["CI"]}, "milestones": {"mode": "auto", "version_source": "auto"},
         "hooks": {"verify_quick": ["echo global"]},
     }
 
@@ -61,7 +63,8 @@ class FakeGitHub:
         self.repo = "owner/repo"
         self.issue_data = {"number": 1, "repository_url": "https://api.github.com/repos/owner/repo",
                            "html_url": "https://github.com/owner/repo/issues/1", "state": "open",
-                           "pull_request": None, "body": body, "labels": [{"name": "phase:review"}]}
+                           "pull_request": None, "body": body, "labels": [{"name": "phase:review"}],
+                           "milestone": None}
         self.comments = []
         self.next_id = 100
         self.pull_data = None
@@ -69,9 +72,35 @@ class FakeGitHub:
         self.removed = []
         self.runs = []
         self.commit_statuses = []
+        self.milestone_data = []
+        self.next_milestone = 10
+        self.repository_data = {"default_branch": "main"}
+        self.lifecycle_calls = []
 
     def issue(self, number):
+        self.lifecycle_calls.append(("issue", number))
         return copy.deepcopy(self.issue_data)
+
+    def repository(self):
+        self.lifecycle_calls.append(("repository",))
+        return copy.deepcopy(self.repository_data)
+
+    def milestones(self):
+        self.lifecycle_calls.append(("milestones",))
+        return copy.deepcopy(self.milestone_data)
+
+    def create_milestone(self, title):
+        self.lifecycle_calls.append(("create_milestone", title))
+        self.next_milestone += 1
+        milestone = {"number": self.next_milestone, "title": title, "state": "open"}
+        self.milestone_data.append(copy.deepcopy(milestone))
+        return copy.deepcopy(milestone)
+
+    def assign_issue_milestone(self, number, milestone):
+        self.lifecycle_calls.append(("assign_milestone", number, milestone))
+        found = next(item for item in self.milestone_data if item["number"] == milestone)
+        self.issue_data["milestone"] = copy.deepcopy(found)
+        return self.issue(number)
 
     def issue_comments(self, number):
         return copy.deepcopy(self.comments)
@@ -215,6 +244,52 @@ class ProfileTests(unittest.TestCase):
         with self.assertRaises(ProfileError):
             validate_profile(value, self.repo)
 
+    def test_schema2_lifecycle_defaults_and_legacy_milestone_mapping(self):
+        value = profile_fixture()
+        value["milestones"] = {"mode": "auto", "version_source": "auto"}
+        result = validate_profile(value, self.repo)
+        self.assertEqual(result["branch"], {"prefix": "feature", "max_slug_length": 48,
+                                             "cleanup_on_switch": [], "required_checks": ["CI"]})
+        self.assertEqual(result["milestones"]["mode"], "auto")
+        for enabled, expected in ((False, "disabled"), (True, "required")):
+            legacy = profile_fixture()
+            legacy["milestones"] = {"enabled": enabled, "version_source": "auto"}
+            self.assertEqual(validate_profile(legacy, self.repo)["milestones"]["mode"], expected)
+
+    def test_profile_rejects_conflicting_milestone_fields_and_unsafe_branches(self):
+        cases = []
+        value = profile_fixture()
+        value["milestones"] = {"enabled": False, "mode": "auto"}
+        cases.append(value)
+        for prefix in ("../feature", "feature/sub", "-unsafe", "trailing.", "branch.lock"):
+            value = profile_fixture()
+            value["branch"]["prefix"] = prefix
+            cases.append(value)
+        for limit in (0, -1, 129, True, "48"):
+            value = profile_fixture()
+            value["branch"]["max_slug_length"] = limit
+            cases.append(value)
+        for path in ("/tmp/out", ".", "..", "out/../other", "C:\\outside", "bad\x00path"):
+            value = profile_fixture()
+            value["branch"]["cleanup_on_switch"] = [path]
+            cases.append(value)
+        for value in cases:
+            with self.subTest(value=value), self.assertRaises(ProfileError):
+                validate_profile(value, self.repo)
+
+    def test_cleanup_path_may_be_a_symlink_leaf_but_not_an_escaping_parent(self):
+        outside = self.repo.parent / (self.repo.name + "-outside")
+        outside.mkdir()
+        (self.repo / "link").symlink_to(outside, target_is_directory=True)
+        value = profile_fixture()
+        value["branch"]["cleanup_on_switch"] = ["link"]
+        self.assertEqual(validate_profile(value, self.repo)["branch"]["cleanup_on_switch"], ["link"])
+        value["branch"]["cleanup_on_switch"] = ["link/child"]
+        with self.assertRaises(ProfileError):
+            validate_profile(value, self.repo)
+        import shutil
+        shutil.rmtree(outside)
+
     def test_single_and_multi_component_issue_routing_are_explicit(self):
         single = profile_fixture()
         single["components"] = single["components"][:1]
@@ -239,6 +314,8 @@ class ProfileTests(unittest.TestCase):
             self.assertEqual(profile["components"][0]["stacks"], ["rust"])
             self.assertEqual(profile["components"][0]["hooks"]["verify_final"], [])
             self.assertEqual(profile["hooks"]["branch_switch"], [])
+            self.assertEqual(profile["milestones"], {"mode": "auto", "version_source": "auto"})
+            self.assertEqual(profile["branch"]["cleanup_on_switch"], [])
             self.assertIsNotNone(result["warning"])
         finally:
             import shutil
@@ -258,6 +335,348 @@ class ProfileTests(unittest.TestCase):
         finally:
             import shutil
             shutil.rmtree(temp)
+
+
+class VersioningTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.repo = Path(self.temp.name)
+
+    def write(self, name, content):
+        path = self.repo / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    def test_auto_versionless_is_unresolved(self):
+        self.assertIsNone(resolve_version(self.repo, "auto"))
+
+    def test_auto_detects_package_cargo_and_pyproject_versions(self):
+        cases = [
+            ("package.json", '{"version":" 1.2.3 "}\n'),
+            ("Cargo.toml", '[package]\nname = "demo"\nversion = "2.3.4"\n'),
+            ("Cargo.toml", '[workspace.package]\nversion = "3.4.5"\n'),
+            ("pyproject.toml", '[project]\nname = "demo"\nversion = "4.5.6"\n'),
+        ]
+        for name, content in cases:
+            with self.subTest(name=name, content=content):
+                for path in self.repo.iterdir():
+                    if path.is_dir():
+                        import shutil
+                        shutil.rmtree(path)
+                    else:
+                        path.unlink()
+                self.write(name, content)
+                expected = json.loads(content)["version"] if name == "package.json" else content.split('version = "')[1].split('"')[0]
+                self.assertEqual(resolve_version(self.repo, "auto"), expected)
+
+    def test_equal_sources_are_accepted_and_conflicts_fail_closed(self):
+        self.write("package.json", '{"version":"1.2.3"}\n')
+        self.write("Cargo.toml", '[package]\nversion = "1.2.3"\n')
+        self.assertEqual(resolve_version(self.repo, "auto"), "1.2.3")
+        self.write("pyproject.toml", '[project]\nversion = "9.9.9"\n')
+        with self.assertRaisesRegex(VersionError, "VERSION_AMBIGUOUS"):
+            resolve_version(self.repo, "auto")
+
+    def test_explicit_json_toml_python_attribute_and_command_sources(self):
+        self.write("versions.json", '{"release":{"version":" 1.2.3 "}}\n')
+        self.assertEqual(resolve_version(self.repo, {"type": "json", "path": "versions.json",
+                                                     "field": "release.version"}), " 1.2.3 ")
+        self.write("release.toml", '[workspace.package]\nversion = "2.3.4" # inline comment\n')
+        self.assertEqual(resolve_version(self.repo, {"type": "toml", "path": "release.toml",
+                                                     "field": "workspace.package.version"}), "2.3.4")
+        self.write("version.py", '__version__ = "3.4.5"\n')
+        self.assertEqual(resolve_version(self.repo, {"type": "python-attr", "path": "version.py",
+                                                     "field": "__version__"}), "3.4.5")
+        command = f'{sys.executable} -c "print(\'4.5.6\')"'
+        self.assertEqual(resolve_version(self.repo, {"type": "command", "command": command}), "4.5.6")
+
+    def test_windows_command_splitting_preserves_backslashes_and_quotes(self):
+        command = r'"C:\Program Files\Python\python.exe" -c "print(456)"'
+        self.assertEqual(
+            _split_command(command, windows=True),
+            [r"C:\Program Files\Python\python.exe", "-c", "print(456)"],
+        )
+
+    def test_explicit_missing_source_is_unresolved_and_invalid_versions_fail(self):
+        source = {"type": "json", "path": "missing.json", "field": "version"}
+        self.assertIsNone(resolve_version(self.repo, source))
+        self.write("package.json", '{"version":"1.0\\n2.0"}\n')
+        with self.assertRaisesRegex(VersionError, "single-line"):
+            resolve_version(self.repo, "auto")
+
+
+class MilestoneLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.repo = Path(self.temp.name)
+        self.fake = FakeGitHub()
+        self.profile = profile_fixture()
+        self.profile["components"] = self.profile["components"][:1]
+        self.profile["milestones"] = {"mode": "auto", "version_source": "auto"}
+
+    def run_ensure(self):
+        args = type("Args", (), {"repo": str(self.repo), "issue": 1})()
+        with patch("agent_workflow.cli._repo_arg", return_value=self.repo), \
+             patch("agent_workflow.cli.load_profile", return_value=self.profile), \
+             patch("agent_workflow.cli._gh", return_value=self.fake):
+            return _ensure_milestone(args)
+
+    def test_auto_without_version_is_not_applicable_without_mutation(self):
+        result = self.run_ensure()
+        self.assertEqual(result["status"], "NOT_APPLICABLE")
+        self.assertEqual(self.fake.milestone_data, [])
+        self.assertEqual([call[0] for call in self.fake.lifecycle_calls], ["issue"])
+
+    def test_required_without_version_fails_and_disabled_skips(self):
+        self.profile["milestones"]["mode"] = "required"
+        with self.assertRaisesRegex(VersionError, "required milestone mode"):
+            self.run_ensure()
+        self.profile["milestones"]["mode"] = "disabled"
+        self.fake.lifecycle_calls.clear()
+        self.assertEqual(self.run_ensure()["status"], "DISABLED")
+        self.assertEqual([call[0] for call in self.fake.lifecycle_calls], ["issue"])
+
+    def test_create_reuse_and_same_issue_assignment_are_idempotent(self):
+        (self.repo / "package.json").write_text('{"version":"0.2.0"}\n', encoding="utf-8")
+        result = self.run_ensure()
+        self.assertEqual((result["created"], result["assigned"]), (True, True))
+        self.assertEqual(self.fake.milestone_data[0]["title"], "0.2.0")
+        self.assertEqual(self.fake.issue_data["milestone"]["number"], result["milestone"])
+
+        self.fake.issue_data["milestone"] = {"number": result["milestone"], "title": "0.2.0", "state": "open"}
+        self.fake.lifecycle_calls.clear()
+        repeated = self.run_ensure()
+        self.assertEqual((repeated["created"], repeated["assigned"]), (False, False))
+        self.assertNotIn("assign_milestone", [call[0] for call in self.fake.lifecycle_calls])
+
+    def test_version_title_is_used_without_normalization(self):
+        (self.repo / "package.json").write_text('{"version":" 0.2.0 "}\n', encoding="utf-8")
+        result = self.run_ensure()
+        self.assertTrue(result["created"])
+        self.assertEqual(self.fake.milestone_data[0]["title"], " 0.2.0 ")
+
+    def test_existing_exact_title_is_reused_and_different_assignment_fails(self):
+        (self.repo / "package.json").write_text('{"version":"0.2.0"}\n', encoding="utf-8")
+        self.fake.milestone_data = [{"number": 12, "title": "0.2.0", "state": "open"}]
+        result = self.run_ensure()
+        self.assertFalse(result["created"])
+        self.assertEqual(self.fake.issue_data["milestone"]["number"], 12)
+
+        self.fake.issue_data["milestone"] = {"number": 99, "title": "0.1.0", "state": "open"}
+        with self.assertRaisesRegex(GitHubError, "different milestone"):
+            self.run_ensure()
+
+    def test_closed_duplicate_and_ambiguous_versions_fail_before_assignment(self):
+        (self.repo / "package.json").write_text('{"version":"0.2.0"}\n', encoding="utf-8")
+        self.fake.milestone_data = [{"number": 12, "title": "0.2.0", "state": "closed"}]
+        with self.assertRaisesRegex(GitHubError, "closed"):
+            self.run_ensure()
+        self.fake.milestone_data = [{"number": 12, "title": "0.2.0", "state": "open"},
+                                    {"number": 13, "title": "0.2.0", "state": "open"}]
+        with self.assertRaisesRegex(GitHubError, "multiple exact-title"):
+            self.run_ensure()
+        self.assertIsNone(self.fake.issue_data["milestone"])
+
+        (self.repo / "pyproject.toml").write_text('[project]\nversion = "8.0"\n', encoding="utf-8")
+        with self.assertRaisesRegex(VersionError, "VERSION_AMBIGUOUS"):
+            self.run_ensure()
+
+    def test_foreign_closed_or_pull_request_issue_fails_before_milestone_calls(self):
+        (self.repo / "package.json").write_text('{"version":"0.2.0"}\n', encoding="utf-8")
+        self.fake.issue_data["state"] = "closed"
+        with self.assertRaises(ContextError):
+            self.run_ensure()
+        self.fake.issue_data["state"] = "open"
+        self.fake.issue_data["pull_request"] = {"url": "https://api.github.com/repos/owner/repo/pulls/1"}
+        with self.assertRaises(ContextError):
+            self.run_ensure()
+        self.assertEqual(self.fake.milestone_data, [])
+
+
+class GitLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.repo, self.remote = self.make_repository()
+        self.github = FakeGitHub()
+
+    def git(self, repo, *args):
+        return subprocess.run(["git", *args], cwd=repo, check=True, text=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout.strip()
+
+    def make_repository(self):
+        remote = self.root / "remote.git"
+        repo = self.root / "repo"
+        remote.mkdir()
+        repo.mkdir()
+        subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True, stdout=subprocess.DEVNULL)
+        subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True, stdout=subprocess.DEVNULL)
+        self.git(repo, "config", "user.name", "Test")
+        self.git(repo, "config", "user.email", "test@example.invalid")
+        (repo / "README.md").write_text("base\n", encoding="utf-8")
+        self.git(repo, "add", "README.md")
+        self.git(repo, "commit", "-m", "base")
+        self.git(repo, "remote", "add", "origin", str(remote))
+        self.git(repo, "push", "-u", "origin", "main")
+        return repo, remote
+
+    def profile(self, cleanup=(), hooks=()):
+        value = profile_fixture()
+        value["components"] = value["components"][:1]
+        value["branch"].update({"prefix": "feature", "max_slug_length": 48,
+                                "cleanup_on_switch": list(cleanup)})
+        value["hooks"]["branch_switch"] = list(hooks)
+        return validate_profile(value, self.repo)
+
+    def test_slug_unicode_punctuation_empty_and_length_boundaries(self):
+        self.assertEqual(feature_slug("Café / Ship 🚀 it", 48), "cafe-ship-it")
+        self.assertEqual(feature_slug("long description", 5), "long")
+        with self.assertRaises(GitLifecycleError):
+            feature_slug("你好!!!", 48)
+
+    def test_cli_parses_both_lifecycle_commands(self):
+        milestone = build_parser().parse_args(["ensure-milestone", "7", "--repo", str(self.repo)])
+        self.assertEqual((milestone.command, milestone.issue), ("ensure-milestone", 7))
+        branch = build_parser().parse_args(["start-feature-branch", "7", "ship", "lifecycle",
+                                            "--repo", str(self.repo)])
+        self.assertEqual((branch.command, branch.issue, branch.description),
+                         ("start-feature-branch", 7, ["ship", "lifecycle"]))
+
+    def test_new_local_and_remote_branch_paths(self):
+        created, status = start_feature_branch(self.repo, self.profile(), 7, "new branch", self.github)
+        self.assertEqual(status, 0)
+        self.assertEqual(created["branch"], "feature/7-new-branch")
+        self.assertTrue(created["switched"])
+
+        self.git(self.repo, "switch", "main")
+        local_target = "feature/7-local-branch"
+        self.git(self.repo, "branch", local_target)
+        local, status = start_feature_branch(self.repo, self.profile(), 7, "local branch", self.github)
+        self.assertEqual(status, 0)
+        self.assertEqual(local["branch"], local_target)
+
+        self.git(self.repo, "switch", "main")
+        remote_target = "feature/7-remote-branch"
+        self.git(self.repo, "branch", remote_target)
+        self.git(self.repo, "switch", remote_target)
+        (self.repo / "remote-only.txt").write_text("remote\n", encoding="utf-8")
+        self.git(self.repo, "add", "remote-only.txt")
+        self.git(self.repo, "commit", "-m", "remote target")
+        self.git(self.repo, "push", "origin", remote_target)
+        self.git(self.repo, "switch", "main")
+        self.git(self.repo, "branch", "-D", remote_target)
+        tracked, status = start_feature_branch(self.repo, self.profile(), 7, "remote branch", self.github)
+        self.assertEqual(status, 0)
+        self.assertEqual(tracked["branch"], remote_target)
+        self.assertEqual(self.git(self.repo, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"),
+                         f"origin/{remote_target}")
+
+    def test_same_branch_skips_cleanup_and_hooks(self):
+        (self.repo / ".git/info/exclude").write_text("out/\n", encoding="utf-8")
+        (self.repo / "out").mkdir()
+        (self.repo / "out/cache").write_text("old\n", encoding="utf-8")
+        profile = self.profile(cleanup=("out",), hooks=("echo switched",))
+        with patch("agent_workflow.git.run_command") as hook:
+            first, status = start_feature_branch(self.repo, profile, 7, "retry me", self.github)
+            self.assertEqual(status, 0)
+            self.assertTrue(first["switched"])
+            self.assertFalse((self.repo / "out").exists())
+            (self.repo / "out").mkdir()
+            (self.repo / "out/cache").write_text("retry marker\n", encoding="utf-8")
+            second, status = start_feature_branch(self.repo, profile, 7, "retry me", self.github)
+        self.assertEqual(status, 0)
+        self.assertFalse(second["switched"])
+        self.assertTrue((self.repo / "out/cache").is_file())
+        self.assertEqual(hook.call_count, 1)
+
+    def test_dirty_worktree_fails_before_repository_metadata_or_switch(self):
+        (self.repo / "dirty.txt").write_text("dirty\n", encoding="utf-8")
+        with self.assertRaisesRegex(GitLifecycleError, "worktree must be clean"):
+            start_feature_branch(self.repo, self.profile(), 7, "dirty", self.github)
+        self.assertFalse(any(call[0] == "repository" for call in self.github.lifecycle_calls))
+        self.assertEqual(self.git(self.repo, "branch", "--show-current"), "main")
+
+    def test_switch_cleanup_hook_order_and_post_switch_failure_retry(self):
+        events = []
+        profile = self.profile(cleanup=("out",), hooks=("hook one", "hook two"))
+        real_invoke = __import__("agent_workflow.git", fromlist=["_invoke"])._invoke
+
+        def invoke(repo, args, **kwargs):
+            result = real_invoke(repo, args, **kwargs)
+            if args[0] == "switch":
+                events.append("switch")
+            return result
+
+        real_cleanup = _remove_cleanup_path
+
+        def cleanup(repo, path):
+            events.append("cleanup")
+            return real_cleanup(repo, path)
+
+        with patch("agent_workflow.git._invoke", side_effect=invoke), \
+             patch("agent_workflow.git._remove_cleanup_path", side_effect=cleanup), \
+             patch("agent_workflow.git.run_command", side_effect=lambda command, cwd: events.append(command)):
+            result, status = start_feature_branch(self.repo, profile, 7, "ordered", self.github)
+        self.assertEqual(status, 0)
+        self.assertEqual(events, ["switch", "cleanup", "hook one", "hook two"])
+
+        fail_profile = self.profile(hooks=("fails",))
+        target = "feature/7-no-rollback"
+        with patch("agent_workflow.git.run_command", side_effect=ProcessError("hook command 'fails' exited with status 9", 9)) as hook:
+            failed, status = start_feature_branch(self.repo, fail_profile, 7, "no rollback", self.github)
+            self.assertEqual(status, 1)
+            self.assertEqual(failed["failure"]["stage"], "branch_switch")
+            self.assertEqual(failed["branch"], target)
+            retry, retry_status = start_feature_branch(self.repo, fail_profile, 7, "no rollback", self.github)
+        self.assertEqual(retry_status, 0)
+        self.assertFalse(retry["switched"])
+        self.assertEqual(hook.call_count, 1)
+
+    def test_post_switch_cleanup_failure_keeps_branch_and_retry_skips_cleanup(self):
+        profile = self.profile(cleanup=("out",), hooks=("must not run",))
+        with patch("agent_workflow.git._remove_cleanup_path", side_effect=OSError("cleanup denied")) as cleanup, \
+             patch("agent_workflow.git.run_command") as hook:
+            failed, status = start_feature_branch(self.repo, profile, 7, "cleanup failure", self.github)
+            self.assertEqual(status, 1)
+            self.assertEqual(failed["failure"]["stage"], "cleanup")
+            self.assertEqual(failed["branch"], "feature/7-cleanup-failure")
+            retry, retry_status = start_feature_branch(self.repo, profile, 7, "cleanup failure", self.github)
+        self.assertEqual(retry_status, 0)
+        self.assertFalse(retry["switched"])
+        self.assertEqual(cleanup.call_count, 1)
+        hook.assert_not_called()
+
+    def test_cleanup_unlinks_symlink_without_touching_external_target(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "keep.txt").write_text("safe\n", encoding="utf-8")
+        (self.repo / "linked").symlink_to(outside, target_is_directory=True)
+        _remove_cleanup_path(self.repo, "linked")
+        self.assertFalse((self.repo / "linked").exists())
+        self.assertEqual((outside / "keep.txt").read_text(encoding="utf-8"), "safe\n")
+
+    def test_shell_metacharacters_in_description_are_inert(self):
+        result, status = start_feature_branch(self.repo, self.profile(), 7,
+                                             "$(touch pwn); echo harmless", self.github)
+        self.assertEqual(status, 0)
+        self.assertEqual(result["branch"], "feature/7-touch-pwn-echo-harmless")
+        self.assertFalse((self.repo / "pwn").exists())
+
+    def test_invalid_issue_fails_before_branch_lifecycle(self):
+        args = type("Args", (), {"repo": str(self.repo), "issue": 1, "description": ["not allowed"]})()
+        self.github.issue_data["state"] = "closed"
+        with patch("agent_workflow.cli._repo_arg", return_value=self.repo), \
+             patch("agent_workflow.cli.load_profile", return_value=self.profile()), \
+             patch("agent_workflow.cli._gh", return_value=self.github), \
+             patch("agent_workflow.cli.start_feature_branch") as start:
+            with self.assertRaises(ContextError):
+                _start_feature_branch(args)
+        start.assert_not_called()
+        self.assertEqual(self.git(self.repo, "branch", "--show-current"), "main")
 
 
 class DocumentTests(unittest.TestCase):
@@ -490,6 +909,29 @@ class GitHubTransportTests(unittest.TestCase):
                 gh.request("GET", "repos/owner/repo/issues/1")
         self.assertNotIn("secret-value", str(raised.exception))
         self.assertIn("exit status 1", str(raised.exception))
+
+    def test_repository_metadata_and_milestone_mutations_use_github_boundary(self):
+        gh = GitHub("owner/repo")
+        with patch.object(gh, "request", side_effect=[{"default_branch": "main"},
+                                                       {"number": 8, "title": "0.2.0", "state": "open"},
+                                                       {"milestone": {"number": 8}}]) as request:
+            self.assertEqual(gh.repository()["default_branch"], "main")
+            self.assertEqual(gh.create_milestone("0.2.0")["number"], 8)
+            self.assertEqual(gh.assign_issue_milestone(7, 8)["milestone"]["number"], 8)
+        self.assertEqual(request.call_args_list[1].args[:2], ("POST", "repos/owner/repo/milestones"))
+        self.assertEqual(request.call_args_list[1].args[2], {"title": "0.2.0"})
+        self.assertEqual(request.call_args_list[2].args[:2], ("PATCH", "repos/owner/repo/issues/7"))
+        self.assertEqual(request.call_args_list[2].args[2], {"milestone": 8})
+
+    def test_milestones_paginate_with_state_all(self):
+        gh = GitHub("owner/repo")
+        first = [{"number": index, "title": f"m{index}", "state": "open"} for index in range(100)]
+        with patch.object(gh, "request", side_effect=[first, [{"number": 100, "title": "m100", "state": "closed"}]]) as request:
+            values = gh.milestones()
+        self.assertEqual(len(values), 101)
+        queries = [parse_qs(urlsplit(call.args[1]).query) for call in request.call_args_list]
+        self.assertEqual([query["state"] for query in queries], [["all"], ["all"]])
+        self.assertEqual([query["page"] for query in queries], [["1"], ["2"]])
 
 
 class PaginationTests(unittest.TestCase):
