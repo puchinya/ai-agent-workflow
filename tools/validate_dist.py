@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
+from agent_workflow import __version__  # noqa: E402
 from agent_workflow.documents import validate_markdown_file  # noqa: E402
 
 HOSTS = ("openai", "claude", "antigravity")
@@ -62,6 +63,8 @@ def _validate_openai(errors: list[str]) -> None:
             errors.append("dist/openai/plugin.json: name violates portable schema")
         if not isinstance(manifest.get("version"), str) or not isinstance(manifest.get("description"), str):
             errors.append("dist/openai/plugin.json: version and description must be strings")
+        if manifest.get("version") != __version__:
+            errors.append("dist/openai/plugin.json: version must equal agent_workflow.__version__")
         allowed = {"$schema", "name", "version", "description", "author", "homepage", "repository", "license", "keywords", "extensions"}
         if set(manifest) - allowed:
             errors.append("dist/openai/plugin.json: unsupported portable manifest field")
@@ -117,6 +120,8 @@ def _validate_claude(errors: list[str]) -> None:
     manifest = _load(root / ".claude-plugin/plugin.json", errors)
     if isinstance(manifest, dict):
         name = manifest.get("name", "")
+        if manifest.get("version") != __version__:
+            errors.append("dist/claude/.claude-plugin/plugin.json: version must equal agent_workflow.__version__")
         if not isinstance(name, str) or len(name) > 64 or not re.fullmatch(r"[a-z0-9-]+", name):
             errors.append("dist/claude/.claude-plugin/plugin.json: name must be lowercase letters/digits/hyphens, max 64")
         display_name = manifest.get("displayName", "")

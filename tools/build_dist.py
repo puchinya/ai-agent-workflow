@@ -12,6 +12,9 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "runtime"))
+from agent_workflow import __version__  # noqa: E402
+
 HOSTS = ("openai", "claude", "antigravity")
 EXPECTED_SKILLS = ("requirements", "design", "implementation-contract", "implementation",
                    "evidence", "checkpoint", "self-review", "pr-review", "delivery")
@@ -45,12 +48,20 @@ def expected_files() -> dict[str, bytes]:
     for host in HOSTS:
         prefix = f"dist/{host}"
         adapter = ROOT / "adapters" / host
+        if host in ("openai", "claude"):
+            manifest = _json(adapter / "plugin.json")
+            if not isinstance(manifest, dict):
+                raise BuildError(f"adapters/{host}/plugin.json: manifest must be a JSON object")
+            if "version" in manifest:
+                raise BuildError(f"adapters/{host}/plugin.json: adapter-owned version is forbidden; use agent_workflow.__version__")
+            manifest["version"] = __version__
+            manifest_bytes = (json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8")
         if host == "openai":
-            result[f"{prefix}/plugin.json"] = _read(adapter / "plugin.json")
+            result[f"{prefix}/plugin.json"] = manifest_bytes
             marketplace = _json(adapter / "marketplace.json")
             result[".agents/plugins/marketplace.json"] = (json.dumps(marketplace, ensure_ascii=False, indent=2) + "\n").encode()
         elif host == "claude":
-            result[f"{prefix}/.claude-plugin/plugin.json"] = _read(adapter / "plugin.json")
+            result[f"{prefix}/.claude-plugin/plugin.json"] = manifest_bytes
             marketplace = _json(adapter / "marketplace.json")
             result[".claude-plugin/marketplace.json"] = (json.dumps(marketplace, ensure_ascii=False, indent=2) + "\n").encode()
         else:

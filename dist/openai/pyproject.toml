@@ -4,12 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-workflow"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Portable Issue-first workflow tools for AI coding agents"
 requires-python = ">=3.10"
 
 [tool.setuptools]
 package-dir = {"" = "runtime"}
+
+[tool.setuptools.dynamic]
+version = {attr = "agent_workflow.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["runtime"]

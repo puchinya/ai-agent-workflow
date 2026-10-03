@@ -1,3 +1,5 @@
-# Generated marketplace JSON is serialized with LF on every platform.
+# Generated manifest/marketplace JSON is serialized with LF on every platform.
 /.agents/plugins/marketplace.json text eol=lf
 /.claude-plugin/marketplace.json text eol=lf
+/dist/openai/plugin.json text eol=lf
+/dist/claude/.claude-plugin/plugin.json text eol=lf

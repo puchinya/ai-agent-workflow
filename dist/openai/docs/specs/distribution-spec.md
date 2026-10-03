@@ -4,6 +4,7 @@
 
 - Status: Approved
 - Owning Issue: [Issue #1](https://github.com/puchinya/ai-agent-workflow/issues/1)
+- Release automation: [Issue #3 contract](https://github.com/puchinya/ai-agent-workflow/issues/3#issuecomment-5963850384)
 - Related design: [Distribution design](../design/distribution-design.md)
 
 ## Purpose
@@ -34,11 +35,28 @@ The generated repository-root `.claude-plugin/marketplace.json` uses Claude Code
 
 ### Generation and validation
 
+`runtime/agent_workflow/__init__.py::__version__` MUST be the sole hand-authored package version. `pyproject.toml` MUST obtain its dynamic version through `agent_workflow.__version__`. OpenAI/Claude adapters MUST NOT contain a `version` key: generation rejects it before writing and injects the canonical version into their deterministically serialized manifests. Validation MUST require both generated versions to equal the canonical version. Antigravity MUST remain versionless.
+
 `python tools/build_dist.py` deterministically regenerates all package files. `python tools/build_dist.py --check` compares the complete expected path/content map and fails for missing, extra, or edited generated files. No hand edits under `dist/**` are allowed.
 
 CI MUST run `--check` before unit tests or generation can rewrite committed outputs. After tests and generation, `git diff --exit-code -- dist .agents/plugins/marketplace.json .claude-plugin/marketplace.json` MUST prove the generated paths remain identical to the checkout. Executable Skill examples MUST use `python -m agent_workflow <subcommand>`; distribution validation rejects bare runtime command examples.
 
 `python tools/validate_dist.py` validates each host package independently: manifest path and schema-specific fields, unique package/Skill names, required frontmatter, safe relative resource paths, required supporting runtime/standards, host separation, and marketplace metadata. It rejects forbidden reference-template synchronization files and any MCP/agent/rules/hooks placeholders.
+
+### GitHub Release assets
+
+`.github/workflows/release.yml` MUST trigger on pushed `v*` tags. Before publication it MUST accept only stable SemVer `vMAJOR.MINOR.PATCH` (ASCII digits, no leading zeroes except zero itself, no prerelease/build suffix), require equality with the canonical version, and require the tagged commit to be an ancestor of fetched `origin/main`. `prepare` gates `verify`; all four current CI combinations (Ubuntu/Python 3.10, Ubuntu/3.14, Windows/3.14, macOS/3.14) gate `publish`. Verification MUST preserve the current CI command order including the pre-mutation drift check and post-generation cleanliness check. Tag-keyed concurrency MUST NOT cancel an in-progress publication.
+
+`python tools/package_release.py --tag vX.Y.Z --output-dir PATH` MUST check tag/version, distribution drift, and independent host validation before producing assets. It MUST NOT repair distributions or call GitHub APIs. It MUST emit exactly these four files:
+
+- `ai-agent-workflow-openai-vX.Y.Z.zip`
+- `ai-agent-workflow-claude-vX.Y.Z.zip`
+- `ai-agent-workflow-antigravity-vX.Y.Z.zip`
+- `SHA256SUMS`
+
+Each ZIP MUST contain the corresponding `dist/<host>/` contents at archive root without a `dist/` prefix. Root manifests are `plugin.json` for OpenAI/Antigravity and `.claude-plugin/plugin.json` for Claude. Sorted member paths, `/` separators, fixed timestamps and permissions MUST make identical inputs yield identical ZIP bytes. `SHA256SUMS` MUST contain lowercase SHA-256 hashes, two spaces, and ZIP filenames in filename order, one LF-terminated entry per ZIP.
+
+Only `publish` MUST receive `contents: write`. Publication MUST use `GITHUB_TOKEN` through `gh release`, package into runner temporary storage, create a Release only if absent using the existing tag, and replace the four expected assets on same-tag reruns. Invalid tags, version mismatch, non-main commits, drift, validation failures, or failed matrix jobs MUST prevent publication. Failed `gh` operations MUST report failure without changing source or tags. This workflow MUST NOT bump versions, auto-commit, push source/tags, publish to PyPI, or submit to OpenAI/Anthropic/Google publication services. OpenAI public Plugins Directory submission and Claude Enterprise Plugins API publication remain outside scope.
 
 ## Observable behavior
 
@@ -57,7 +75,13 @@ Generated files include no credentials, service endpoints, or copied consumer st
 | Skill metadata or referenced resource is invalid/missing | Identify the package and path and fail. |
 | Unsupported optional host component is empty or placeholder-only | Reject it from the package. |
 | External plugin specification cannot be accessed | Report the exact unverified host/spec and do not claim package conformance. |
+| Invalid release tag or version mismatch | Reject before creating packaging artifacts or publishing. |
+| Tagged commit not contained in main or verification fails | Stop before the publication job. |
+| Packaging detects drift or invalid host output | Fail without repairing generated trees or creating assets. |
+| GitHub Release operation fails | Report the failed `gh` operation; source/tag stay unchanged. A rerun replaces expected assets. |
 
 ## Verification strategy
 
 Tests compare two fresh builds byte-for-byte, prove `--check` detects hand-edited generated files, independently accept/reject host manifest fixtures, verify every Skill's links, and prove OpenAI and Antigravity root manifests are not shared. Host application/IDE smoke tests are reported only when the actual product is installed and run; otherwise they remain untested.
+
+Release regressions verify version ownership/injection, adapter-version rejection, missing/mismatched generated versions, dynamic setuptools configuration, tag failure modes without output, drift versus schema failure, archive layout/metadata/content, byte-identical independent packaging runs, recomputed checksums, and workflow gates/matrix/permissions. Actual tag-triggered publication is verified only after an explicitly authorized release tag is pushed after merge.

@@ -1,0 +1,112 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Validate tag and canonical version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          PYTHONPATH=tools python - <<'PY'
+          import os
+          from package_release import validate_tag
+          validate_tag(os.environ["RELEASE_TAG"])
+          PY
+      - name: Require tagged commit on main
+        run: |
+          git fetch origin +refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor HEAD origin/main
+
+  verify:
+    needs: prepare
+    name: verify (${{ matrix.os }}, ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python-version: "3.10"
+          - os: ubuntu-latest
+            python-version: "3.14"
+          - os: windows-latest
+            python-version: "3.14"
+          - os: macos-latest
+            python-version: "3.14"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Compile runtime, tools, and tests
+        run: python -m compileall runtime tools tests
+      - name: Check committed distributions before mutation
+        run: python tools/build_dist.py --check
+      - name: Unit tests
+        run: python -m unittest discover -s tests -p "test_*.py"
+      - name: Generate distributions
+        run: python tools/build_dist.py
+      - name: Check generated distributions
+        run: python tools/build_dist.py --check
+      - name: Validate distributions
+        run: python tools/validate_dist.py
+      - name: Confirm generated paths remain unchanged
+        run: git diff --exit-code -- dist .agents/plugins/marketplace.json .claude-plugin/marketplace.json
+      - name: Check whitespace
+        run: git diff --check
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Package validated distributions
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python tools/package_release.py --tag "$RELEASE_TAG" --output-dir "${{ runner.temp }}/release-assets"
+      - name: Create or update GitHub Release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          ASSET_DIR: ${{ runner.temp }}/release-assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --json tagName > "$RUNNER_TEMP/release-view.json" 2> "$RUNNER_TEMP/release-view.err"; then
+            echo "Replacing expected assets for existing Release $RELEASE_TAG"
+          elif grep -Fxq 'release not found' "$RUNNER_TEMP/release-view.err"; then
+            gh release create "$RELEASE_TAG" --verify-tag --title "$RELEASE_TAG" --generate-notes
+          else
+            echo "gh release view failed for $RELEASE_TAG" >&2
+            cat "$RUNNER_TEMP/release-view.err" >&2
+            exit 1
+          fi
+          gh release upload "$RELEASE_TAG" \
+            "$ASSET_DIR/ai-agent-workflow-openai-$RELEASE_TAG.zip" \
+            "$ASSET_DIR/ai-agent-workflow-claude-$RELEASE_TAG.zip" \
+            "$ASSET_DIR/ai-agent-workflow-antigravity-$RELEASE_TAG.zip" \
+            "$ASSET_DIR/SHA256SUMS" --clobber
