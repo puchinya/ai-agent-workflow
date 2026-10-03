@@ -32,6 +32,8 @@ Each adapter owns only its host manifest and marketplace metadata, excluding ver
 
 Canonical files are read as bytes and mapped to package-relative paths. The complete path/content map is prepared before generated destinations are changed. Marketplace files are generated from adapter metadata and point at the corresponding isolated package.
 
+`.gitattributes` pins serialized OpenAI/Claude generated manifest JSON and repository marketplace JSON to LF so Windows Git checkout conversion cannot introduce drift before generation. Other copied resources retain their existing byte-copy semantics.
+
 ### Build flow
 
 1. Read the fixed canonical inputs as UTF-8 bytes.

@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -772,6 +773,28 @@ macOS IDE smoke test not run
 
 
 class DistributionTests(unittest.TestCase):
+    def test_serialized_json_survives_autocrlf_checkout_without_drift(self):
+        files = build_dist.expected_files()
+        paths = ("dist/openai/plugin.json", "dist/claude/.claude-plugin/plugin.json",
+                 ".agents/plugins/marketplace.json", ".claude-plugin/marketplace.json")
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / ".gitattributes").write_bytes((ROOT / ".gitattributes").read_bytes())
+            for rel in paths:
+                target = repo / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(files[rel])
+            for command in (["git", "init", "--quiet"],
+                            ["git", "-c", "core.autocrlf=true", "add", "--all"]):
+                subprocess.run(command, cwd=repo, check=True, capture_output=True)
+            for rel in paths:
+                (repo / rel).unlink()
+            subprocess.run(["git", "-c", "core.autocrlf=true", "checkout-index", "--all"],
+                           cwd=repo, check=True, capture_output=True)
+            for rel in paths:
+                with self.subTest(path=rel):
+                    self.assertEqual((repo / rel).read_bytes(), files[rel])
+
     def test_release_tag_validation_distinguishes_invalid_and_mismatched_versions(self):
         for tag in ("0.1.0", "v01.1.0", "v0.01.0", "v0.1.00", "v0.1", "v0.1.0-rc.1",
                     "v0.1.0+build", "v0.1.0\n", "v١.1.0"):
