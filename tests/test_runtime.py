@@ -37,7 +37,7 @@ import build_dist
 import validate_dist
 import package_release
 from agent_workflow import __version__
-from agent_workflow.versioning import VersionError, resolve_version
+from agent_workflow.versioning import VersionError, _split_command, resolve_version
 
 
 def profile_fixture():
@@ -391,6 +391,13 @@ class VersioningTests(unittest.TestCase):
                                                      "field": "__version__"}), "3.4.5")
         command = f'{sys.executable} -c "print(\'4.5.6\')"'
         self.assertEqual(resolve_version(self.repo, {"type": "command", "command": command}), "4.5.6")
+
+    def test_windows_command_splitting_preserves_backslashes_and_quotes(self):
+        command = r'"C:\Program Files\Python\python.exe" -c "print(456)"'
+        self.assertEqual(
+            _split_command(command, windows=True),
+            [r"C:\Program Files\Python\python.exe", "-c", "print(456)"],
+        )
 
     def test_explicit_missing_source_is_unresolved_and_invalid_versions_fail(self):
         source = {"type": "json", "path": "missing.json", "field": "version"}

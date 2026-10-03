@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -16,6 +17,21 @@ class VersionError(RuntimeError):
 
 
 _MISSING = object()
+
+
+def _split_command(command: str, *, windows: bool | None = None) -> list[str]:
+    """Split a configured command while preserving Windows path separators."""
+    if windows is None:
+        windows = os.name == "nt"
+    if not windows:
+        return shlex.split(command)
+    lexer = shlex.shlex(command, posix=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    # Backslash is part of Windows paths. Quotes still group arguments, but
+    # treating every backslash as a shell escape corrupts executable paths.
+    lexer.escape = ""
+    return list(lexer)
 
 
 def _safe_source_path(repo: Path, relative: str) -> Path:
@@ -144,7 +160,7 @@ def _explicit(repo: Path, source: dict[str, str]) -> str | None:
     kind = source["type"]
     if kind == "command":
         try:
-            argv = shlex.split(source["command"])
+            argv = _split_command(source["command"])
         except ValueError as exc:
             raise VersionError("version source command has invalid quoting") from exc
         if not argv:
