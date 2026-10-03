@@ -773,6 +773,98 @@ macOS IDE smoke test not run
 
 
 class DistributionTests(unittest.TestCase):
+    def test_openai_marketplace_uses_repository_contained_host_package(self):
+        files = build_dist.expected_files()
+        market = json.loads(files[".agents/plugins/marketplace.json"])
+        manifest = json.loads(files["dist/openai/plugin.json"])
+        self.assertEqual(len(market["plugins"]), 1)
+        entry = market["plugins"][0]
+        self.assertEqual(market["name"], "ai-agent-workflow")
+        self.assertEqual(entry["name"], manifest["name"])
+        self.assertEqual(entry["name"], "ai-agent-workflow")
+        self.assertEqual(entry["source"], {"source": "local", "path": "./dist/openai"})
+        self.assertEqual(entry["category"], "Productivity")
+        self.assertEqual(entry["policy"], {"installation": "AVAILABLE", "authentication": "ON_INSTALL"})
+        target = (ROOT / entry["source"]["path"][2:]).resolve()
+        self.assertIn(ROOT.resolve(), target.parents)
+        self.assertTrue(target.is_dir())
+        self.assertTrue((target / "plugin.json").is_file())
+        self.assertEqual(validate_dist.validate(), [])
+
+    def test_openai_marketplace_rejects_invalid_or_missing_sources(self):
+        market_path = validate_dist.ROOT / ".agents/plugins/marketplace.json"
+        base = json.loads(build_dist.expected_files()[".agents/plugins/marketplace.json"])
+        original_load = validate_dist._load
+        invalid_paths = ("../outside", "/tmp/openai", "C:\\outside", "./dist/claude",
+                         "./dist/openai-missing")
+        for source_path in invalid_paths:
+            def load(path, errors):
+                if path == market_path:
+                    market = copy.deepcopy(base)
+                    market["plugins"][0]["source"]["path"] = source_path
+                    return market
+                return original_load(path, errors)
+            with self.subTest(source_path=source_path), patch.object(validate_dist, "_load", side_effect=load):
+                errors = validate_dist.validate()
+                self.assertTrue(any(".agents/plugins/marketplace.json: marketplace-source error:" in error
+                                    for error in errors), errors)
+
+    def test_claude_marketplace_has_one_matching_repository_package(self):
+        files = build_dist.expected_files()
+        market = json.loads(files[".claude-plugin/marketplace.json"])
+        manifest = json.loads(files["dist/claude/.claude-plugin/plugin.json"])
+        self.assertEqual(market["name"], "ai-agent-workflow")
+        self.assertEqual(len(market["plugins"]), 1)
+        entry = market["plugins"][0]
+        self.assertEqual(entry["name"], manifest["name"])
+        self.assertEqual(entry["name"], "ai-agent-workflow")
+        self.assertEqual(entry["source"], "./dist/claude")
+        target = (ROOT / entry["source"][2:]).resolve()
+        self.assertIn(ROOT.resolve(), target.parents)
+        self.assertTrue(target.is_dir())
+        self.assertTrue((target / ".claude-plugin/plugin.json").is_file())
+        self.assertEqual(validate_dist.validate(), [])
+
+    def test_marketplace_entry_and_manifest_name_mismatches_are_rejected(self):
+        cases = (
+            ("openai", validate_dist.ROOT / ".agents/plugins/marketplace.json",
+             ".agents/plugins/marketplace.json"),
+            ("claude", validate_dist.ROOT / ".claude-plugin/marketplace.json",
+             ".claude-plugin/marketplace.json"),
+        )
+        for host, market_path, market_rel in cases:
+            base = json.loads(build_dist.expected_files()[market_rel])
+            original_load = validate_dist._load
+            def load(path, errors):
+                if path == market_path:
+                    market = copy.deepcopy(base)
+                    market["plugins"][0]["name"] = "different-plugin"
+                    return market
+                return original_load(path, errors)
+            with self.subTest(host=host, kind="entry"), patch.object(validate_dist, "_load", side_effect=load):
+                errors = validate_dist.validate()
+                self.assertTrue(any("plugin entry name does not match" in error for error in errors), errors)
+
+            manifest_rel = ("dist/openai/plugin.json" if host == "openai"
+                            else "dist/claude/.claude-plugin/plugin.json")
+            manifest_path = validate_dist.ROOT / manifest_rel
+            original_load = validate_dist._load
+            def load_manifest(path, errors):
+                result = original_load(path, errors)
+                if path == manifest_path and isinstance(result, dict):
+                    result = copy.deepcopy(result)
+                    result["name"] = "different-plugin"
+                return result
+            with self.subTest(host=host, kind="manifest"), patch.object(
+                    validate_dist, "_load", side_effect=load_manifest):
+                errors = validate_dist.validate()
+                self.assertTrue(any("marketplace entry and manifest name must be ai-agent-workflow" in error
+                                    for error in errors), errors)
+
+    def test_marketplace_validation_does_not_look_up_release_assets(self):
+        source = (ROOT / "tools/validate_dist.py").read_text(encoding="utf-8").casefold()
+        self.assertNotIn("release", source)
+
     def test_serialized_json_survives_autocrlf_checkout_without_drift(self):
         files = build_dist.expected_files()
         paths = ("dist/openai/plugin.json", "dist/claude/.claude-plugin/plugin.json",

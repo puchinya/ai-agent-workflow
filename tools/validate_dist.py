@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import re
 import sys
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
@@ -52,6 +52,19 @@ def _load(path: Path, errors: list[str]):
         return None
 
 
+def _repository_source_target(path: object) -> tuple[Path | None, str | None]:
+    """Resolve a marketplace path only when it stays inside this checkout."""
+    if not isinstance(path, str) or not path.startswith("./") or "\\" in path:
+        return None, "source must be a repository-relative ./ path"
+    relative = PurePosixPath(path)
+    if relative.is_absolute() or PureWindowsPath(path).is_absolute() or ".." in relative.parts:
+        return None, "source path must not be absolute or escape the repository"
+    target = (ROOT / Path(*relative.parts)).resolve()
+    if target == ROOT.resolve() or ROOT.resolve() not in target.parents:
+        return None, "source path resolves outside the repository"
+    return target, None
+
+
 def _validate_openai(errors: list[str]) -> None:
     root = ROOT / "dist/openai"
     manifest = _load(root / "plugin.json", errors)
@@ -87,26 +100,32 @@ def _validate_openai(errors: list[str]) -> None:
             errors.append("dist/openai/plugin.json: each extension namespace value must be an object")
     market = _load(ROOT / ".agents/plugins/marketplace.json", errors)
     if isinstance(market, dict):
-        if not isinstance(market.get("name"), str) or not market.get("name"):
-            errors.append(".agents/plugins/marketplace.json: marketplace name is required")
+        if market.get("name") != "ai-agent-workflow":
+            errors.append(".agents/plugins/marketplace.json: marketplace name must be ai-agent-workflow")
         plugins = market.get("plugins")
-        if not isinstance(plugins, list) or len(plugins) != 1:
-            errors.append(".agents/plugins/marketplace.json: expected one local plugin entry")
+        if not isinstance(plugins, list) or len(plugins) != 1 or not isinstance(plugins[0], dict):
+            errors.append(".agents/plugins/marketplace.json: expected one plugin entry")
         else:
-            entry = plugins[0] if isinstance(plugins[0], dict) else {}
+            entry = plugins[0]
             source = entry.get("source", {})
             path = source.get("path", "") if isinstance(source, dict) else ""
-            safe_path = PurePosixPath(path[2:]) if isinstance(path, str) and path.startswith("./") else PurePosixPath("..")
-            target = (ROOT / Path(*safe_path.parts)).resolve()
-            if (not isinstance(source, dict) or source.get("source") != "local" or not isinstance(path, str) or not path.startswith("./")
-                    or safe_path.is_absolute() or ".." in safe_path.parts or ROOT.resolve() not in target.parents):
-                errors.append(".agents/plugins/marketplace.json: source must point to an existing ./ local package")
-            elif not target.is_dir():
-                errors.append(".agents/plugins/marketplace.json: local package path does not exist")
+            target, path_error = _repository_source_target(path)
+            if not isinstance(source, dict) or source.get("source") != "local" or path_error:
+                errors.append(".agents/plugins/marketplace.json: marketplace-source error: "
+                              + (path_error or "source type must be local"))
+            elif target is not None and not target.is_dir():
+                errors.append(".agents/plugins/marketplace.json: marketplace-source error: package directory does not exist")
             elif path != "./dist/openai":
-                errors.append(".agents/plugins/marketplace.json: local source must point to ./dist/openai")
-            if entry.get("name") != "ai-agent-workflow":
-                errors.append(".agents/plugins/marketplace.json: plugin entry name does not match the package")
+                errors.append(".agents/plugins/marketplace.json: marketplace-source error: source path must be ./dist/openai")
+            elif target is not None and not (target / "plugin.json").is_file():
+                errors.append(".agents/plugins/marketplace.json: marketplace-source error: dist/openai/plugin.json does not exist")
+            manifest_name = manifest.get("name") if isinstance(manifest, dict) else None
+            if manifest_name != "ai-agent-workflow":
+                errors.append("dist/openai/plugin.json: marketplace entry and manifest name must be ai-agent-workflow")
+            if entry.get("name") != manifest_name:
+                errors.append(".agents/plugins/marketplace.json: plugin entry name does not match the OpenAI manifest name")
+            if entry.get("category") != "Productivity":
+                errors.append(".agents/plugins/marketplace.json: plugin category must be Productivity")
             policy = entry.get("policy", {})
             if not isinstance(policy, dict) or policy.get("installation") != "AVAILABLE" or policy.get("authentication") != "ON_INSTALL":
                 errors.append(".agents/plugins/marketplace.json: installation/authentication policy is invalid")
@@ -143,13 +162,29 @@ def _validate_claude(errors: list[str]) -> None:
         errors.append("dist/claude/bin is unsupported")
     market = _load(ROOT / ".claude-plugin/marketplace.json", errors)
     if isinstance(market, dict):
-        if not market.get("name") or not isinstance(market.get("owner"), dict) or not market["owner"].get("name") or not isinstance(market.get("plugins"), list):
+        if market.get("name") != "ai-agent-workflow" or not isinstance(market.get("owner"), dict) or not market["owner"].get("name") or not isinstance(market.get("plugins"), list):
             errors.append(".claude-plugin/marketplace.json: name, owner.name, and plugins are required")
         else:
             manifest_name = manifest.get("name") if isinstance(manifest, dict) else None
-            entries = [item for item in market["plugins"] if isinstance(item, dict) and item.get("name") == manifest_name]
-            if len(entries) != 1 or entries[0].get("source") != "./dist/claude" or not (ROOT / "dist/claude").is_dir():
-                errors.append(".claude-plugin/marketplace.json: plugin source must resolve to dist/claude")
+            entries = market["plugins"]
+            if len(entries) != 1 or not isinstance(entries[0], dict):
+                errors.append(".claude-plugin/marketplace.json: expected one plugin entry")
+            else:
+                entry = entries[0]
+                target, path_error = _repository_source_target(entry.get("source"))
+                if path_error:
+                    errors.append(".claude-plugin/marketplace.json: marketplace-source error: " + path_error)
+                elif target is not None and not target.is_dir():
+                    errors.append(".claude-plugin/marketplace.json: marketplace-source error: package directory does not exist")
+                elif entry.get("source") != "./dist/claude":
+                    errors.append(".claude-plugin/marketplace.json: marketplace-source error: source path must be ./dist/claude")
+                elif target is not None and not (target / ".claude-plugin/plugin.json").is_file():
+                    errors.append(".claude-plugin/marketplace.json: marketplace-source error: "
+                                  "dist/claude/.claude-plugin/plugin.json does not exist")
+                if entry.get("name") != manifest_name:
+                    errors.append(".claude-plugin/marketplace.json: plugin entry name does not match the Claude manifest name")
+                if manifest_name != "ai-agent-workflow":
+                    errors.append("dist/claude/.claude-plugin/plugin.json: marketplace entry and manifest name must be ai-agent-workflow")
 
 
 def _validate_antigravity(errors: list[str]) -> None:

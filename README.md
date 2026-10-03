@@ -4,7 +4,7 @@ Portable, Issue-first development workflow for OpenAI/Codex, Claude Code, and Go
 
 ## Quick start
 
-Use the generated package for your host. The repository includes OpenAI and Claude Code Git marketplaces for local discovery. Antigravity can load `dist/antigravity` as a plugin. Product-specific CLI/IDE smoke tests require the corresponding product to be installed.
+Use the generated package for your host. This GitHub repository hosts the OpenAI/Codex and Claude Code marketplaces; register the repository with the host and install `ai-agent-workflow` from its marketplace. Antigravity remains a local/manual plugin install. Product-specific CLI/IDE smoke tests require the corresponding product to be installed.
 
 For a consumer repository, install the runtime from the generated package (or install this checkout with `python -m pip install -e .` during development), then run `python -m agent_workflow init-project` and inspect `.agent/project.json`. Profile selection is explicit: the runtime never infers application type from a stack or repository contents. Start with the [requirements Skill](workflow/skills/requirements/SKILL.md) and [specification standard](workflow/standards/specification.md).
 
@@ -25,11 +25,17 @@ git diff --check
 
 GitHub operations use authenticated `gh api` through `agent_workflow.github`; unit tests use fakes and never require live credentials. The generated trees under `dist/` are not edited by hand.
 
+## GitHub marketplaces
+
+Register `https://github.com/puchinya/ai-agent-workflow` as a plugin marketplace in Codex or Claude Code, then install `ai-agent-workflow`. The OpenAI marketplace resolves `./dist/openai`; the Claude marketplace resolves `./dist/claude` from the repository checkout. After new commits are available, use the host's marketplace refresh action to update the checkout and discover the new package contents. Installation reads the repository marketplace snapshot and does not use GitHub Release assets.
+
+For a pinned or offline manual install, use a versioned GitHub Release ZIP and verify it with `SHA256SUMS`. Antigravity remains a local/manual install from `dist/antigravity` or its Release ZIP; third-party GitHub marketplace support has not been confirmed.
+
 ## Releases
 
 Bump only `runtime/agent_workflow/__init__.py::__version__` in a normal Issue/PR, regenerate with `python tools/build_dist.py`, and run the development verification above before merging. Setuptools and generated OpenAI/Claude manifests use that canonical version; Antigravity stays versionless. After merge, push the matching stable SemVer tag `vX.Y.Z` on a commit contained in `main`. Actions checks tag/version/main ancestry, runs the four-platform CI matrix, and publishes a GitHub Release using `GITHUB_TOKEN`.
 
-The Release assets are `ai-agent-workflow-openai-vX.Y.Z.zip`, `ai-agent-workflow-claude-vX.Y.Z.zip`, `ai-agent-workflow-antigravity-vX.Y.Z.zip`, and `SHA256SUMS`. Each archive contains its host package at root, including Claude's `.claude-plugin/plugin.json`. Same-tag reruns replace the expected assets. Local packaging checks drift and host validation without regenerating:
+The Release assets are `ai-agent-workflow-openai-vX.Y.Z.zip`, `ai-agent-workflow-claude-vX.Y.Z.zip`, `ai-agent-workflow-antigravity-vX.Y.Z.zip`, and `SHA256SUMS`. Each archive contains its host package at root, including Claude's `.claude-plugin/plugin.json`. These are version-fixed manual/offline downloads; marketplace installation uses the repository checkout. Same-tag reruns replace the expected assets. Local packaging checks drift and host validation without regenerating:
 
 ```sh
 python tools/package_release.py --tag vX.Y.Z --output-dir /path/to/temporary/release-assets
