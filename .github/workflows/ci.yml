@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python-version: "3.10"
+          - os: ubuntu-latest
+            python-version: "3.14"
+          - os: windows-latest
+            python-version: "3.14"
+          - os: macos-latest
+            python-version: "3.14"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Compile runtime, tools, and tests
+        run: python -m compileall runtime tools tests
+      - name: Check committed distributions before mutation
+        run: python tools/build_dist.py --check
+      - name: Unit tests
+        run: python -m unittest discover -s tests -p "test_*.py"
+      - name: Generate distributions
+        run: python tools/build_dist.py
+      - name: Check generated distributions
+        run: python tools/build_dist.py --check
+      - name: Validate distributions
+        run: python tools/validate_dist.py
+      - name: Confirm generated paths remain unchanged
+        run: git diff --exit-code -- dist .agents/plugins/marketplace.json .claude-plugin/marketplace.json
+      - name: Check whitespace
+        run: git diff --check
+
+  pull-request-metadata:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    steps:
+      - name: Read current pull request metadata
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            if (!pr) throw new Error('pull_request payload is missing');
+            core.info(`PR #${pr.number}: ${pr.state}; draft=${pr.draft}; head=${pr.head.sha}`);

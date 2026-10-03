@@ -1,0 +1,14 @@
+{
+  "name": "ai-agent-workflow",
+  "description": "Claude Code plugins for Issue-first development workflows.",
+  "owner": {
+    "name": "puchinya"
+  },
+  "plugins": [
+    {
+      "name": "ai-agent-workflow",
+      "source": "./dist/claude",
+      "description": "Issue-first development workflow Skills and local verification tools."
+    }
+  ]
+}

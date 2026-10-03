@@ -1,0 +1,13 @@
+{
+  "name": "ai-agent-workflow",
+  "displayName": "AI Agent Workflow",
+  "version": "0.1.0",
+  "description": "Issue-first development workflow Skills and local verification tools for AI coding agents.",
+  "author": {
+    "name": "puchinya"
+  },
+  "homepage": "https://github.com/puchinya/ai-agent-workflow",
+  "repository": "https://github.com/puchinya/ai-agent-workflow",
+  "license": "MIT",
+  "keywords": ["workflow", "issue-first", "skills", "review"]
+}

@@ -1,0 +1,19 @@
+{
+  "name": "ai-agent-workflow",
+  "interface": {
+    "displayName": "AI Agent Workflow"
+  },
+  "plugins": [
+    {
+      "name": "ai-agent-workflow",
+      "source": {
+        "source": "local",
+        "path": "./dist/openai"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      }
+    }
+  ]
+}
