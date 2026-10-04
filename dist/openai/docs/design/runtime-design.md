@@ -19,11 +19,15 @@ The CLI must be easy to run from a consumer checkout, fakeable in tests, and saf
 | Exact payload bytes and atomic mirrors | Contract codecs operate on `bytes`; `documents.py` owns same-repository Markdown path checks; a shared atomic writer uses sibling temporary files and `os.replace`. |
 | Stable sequential hook composition | `profile.py` returns an ordered immutable command/skip plan before `process.py` executes it. |
 | Current state gates delivery | `delivery.py` composes fresh Issue, PR, review, and Required Check responses; it never trusts a local submitted claim alone. |
+| Document decisions are structured and scoped | `documents.py` parses canonical decisions plus legacy links; `context.py` reports decisions and owners; `git.py` resolves changed-doc ranges. |
+| Review failures block handoff | `delivery.py` checks current review items and returns bounded failed-item details without treating `untested` as a global failure. |
+| Stacked branch creation is fail-closed | `git.py` fetches the selected same-repository remote branch, verifies an optional expected SHA before switching, and never rebases existing targets. |
+| Hook diagnostics are safe and temporary | `process.py` keeps output silent by default and emits only a redacted bounded tail from temporary capture files on diagnostic failure. |
 | Milestones and branches follow consumer policy | `versioning.py` resolves configured sources and `git.py` owns only argv-based local Git lifecycle; remote metadata and milestone mutations remain in `github.py`. |
 
 ## Architecture
 
-`cli.py` parses commands and converts domain errors into stable nonzero exit codes. `profile.py` validates Schema 1/2 and selects components/targets. `versioning.py` resolves and validates explicit or automatic version sources without dependencies. `git.py` owns branch lifecycle subprocesses through argv and coordinates clean-worktree checks, branch selection, safe cleanup, and the global switch-hook plan. `context.py` formats routing output only. `documents.py` validates durable Markdown structure and local links. `contracts.py` owns exact bytes, pointer format, mirror state, and publication/restore flows. `review.py` owns checklist extraction, evidence validation, and exact-HEAD review records. `delivery.py` owns handoff and merged gates. `github.py` owns repository identity, default-branch metadata, Issue milestone state, and every `gh api` invocation. `process.py` executes configured non-GitHub hook commands with captured output.
+`cli.py` parses commands and converts domain errors into stable nonzero exit codes. `profile.py` validates Schema 1/2 and selects components/targets. `versioning.py` resolves and validates explicit or automatic version sources without dependencies. `git.py` owns branch lifecycle and changed-doc ref/diff subprocesses through argv; it coordinates clean-worktree checks, selected-base resolution, expected-SHA comparison, branch selection, safe cleanup, and the global switch-hook plan. `context.py` formats routing output, including structured document decisions. `documents.py` parses Issue document impact and validates durable Markdown structure and local links. `contracts.py` owns exact bytes, pointer format, mirror state, and publication/restore flows. `review.py` owns checklist extraction, evidence validation, and exact-HEAD review records. `delivery.py` owns handoff and merged gates. `github.py` owns repository identity, default-branch metadata, Issue milestone state, and every `gh api` invocation. `process.py` executes configured non-GitHub hook commands sequentially; diagnostic output is captured temporarily and redacted before emission.
 
 The dependency direction is CLI -> domain modules -> injected GitHub/process boundaries. Pure validators do not make network calls. `git.py` invokes Git only through argument arrays and never invokes the trusted shell-hook boundary for Git operations. GitHub functions return parsed JSON or raise explicit operation errors; they do not print payloads. Runtime code never imports files from the reference repository.
 
@@ -31,22 +35,22 @@ The dependency direction is CLI -> domain modules -> injected GitHub/process bou
 
 1. Parse arguments and discover repository root.
 2. Load and validate all local profile/document state needed for the command.
-3. Resolve scope and build an immutable plan.
-4. For milestone or branch workflows, resolve profile versions and read authoritative repository/Issue state before mutation. Fetch target refs only after a clean-worktree and same-repository Issue check.
+3. Resolve scope and build an immutable plan. For context, parse structured Document impact or preserve routing from legacy links.
+4. For milestone or branch workflows, resolve profile versions and read authoritative repository/Issue state before mutation. Fetch base refs only after a clean-worktree and same-repository Issue check; compare an expected base SHA before any branch switch, cleanup, or hook.
 5. For other remote workflows, read authoritative metadata, validate all identity/pointer preconditions, and prepare a temporary structured payload.
 6. Perform one mutation only after preconditions pass; read it back and validate it. Milestone reuse and assignment are exact-title/idempotent; branch cleanup and hooks follow only an actual switch.
 7. Commit local state with atomic replacement only after remote verification, or keep old verified bytes on failure.
-8. Clean temporary files in `finally` paths and print bounded diagnostics. Post-switch failures preserve and report the switched branch.
+8. Clean temporary files in `finally` paths and print bounded diagnostics. Hook diagnostics stay silent on success and emit only a redacted combined tail of at most 16 KiB on failure. Post-switch failures preserve and report the switched branch.
 
 ## Failure handling
 
-`gh api` receives argument arrays. Large body values travel through JSON temporary files, not command arguments. The environment owns authentication. Subprocess output is captured and failures identify a safe endpoint/command without token or payload. Issue identifiers, repository owner/name, remote URLs, returned comment/PR associations, hashes, and lengths are all checked before success. Atomic writes preserve previous verified data on ordinary failures.
+`gh api` receives argument arrays. Large body values travel through JSON temporary files, not command arguments. The environment owns authentication. Git commands use argv arrays. Default hook output is suppressed; diagnostic capture is removed on all handled paths and credential-redacted before a bounded failure tail is emitted. Issue identifiers, repository owner/name, remote refs, expected SHAs, returned comment/PR associations, hashes, and lengths are checked before success. Atomic writes preserve previous verified data on ordinary failures.
 
 ## Alternatives considered
 
 - One monolithic `agent_tool.py` would couple profile, GitHub, and review logic. Focused modules make fake transports and focused tests possible.
 - A general HTTP client would need a new credential boundary. The existing authenticated `gh api` transport is explicit and testable.
-- GitHub mutations carry user data as structured JSON over stdin and never interpolate payloads into a shell command. Explicit local hook strings run in the user's shell because the profile is trusted configuration; child output is suppressed to avoid disclosure.
+- GitHub mutations carry user data as structured JSON over stdin and never interpolate payloads into a shell command. Explicit local hook strings run in the user's shell because the profile is trusted configuration; child output is suppressed by default, with an opt-in redacted diagnostic tail for failures.
 - Parallel hook execution would destroy declared order and complicate failure evidence. Hooks remain sequential.
 
 ## Verification strategy

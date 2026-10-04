@@ -15,9 +15,9 @@ from .context import ContextError, affected_components, build_context, format_co
 from .contracts import (ContractError, publish_contract, restore_contract, save_contract,
                         verify_contract)
 from .delivery import DeliveryError, delivery_check, finalize_merged_issue
-from .documents import validate_docs
+from .documents import resolve_document_impact, validate_docs
 from .github import GitHub, GitHubError, discover_repository
-from .git import GitLifecycleError, start_feature_branch
+from .git import GitLifecycleError, changed_document_paths, start_feature_branch
 from .profile import (APPLICATION_TYPES, ProfileError, build_hook_plan, load_profile,
                       normalize_host, validate_profile)
 from .process import ProcessError, run_command
@@ -173,7 +173,35 @@ def _start_feature_branch(args: argparse.Namespace) -> tuple[dict[str, Any], int
         raise ProfileError("start-feature-branch requires a Schema 2 project profile")
     gh = _gh(repo)
     _workflow_issue(args.issue, gh)
-    return start_feature_branch(repo, profile, args.issue, " ".join(args.description), gh)
+    return start_feature_branch(repo, profile, args.issue, " ".join(args.description), gh,
+                                getattr(args, "base_ref", None), getattr(args, "expected_base_sha", None))
+
+
+def _validate_docs(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
+    repo = _repo_arg(args.repo)
+    if args.issue is not None:
+        gh = _gh(repo)
+        issue = gh.issue(args.issue)
+        expected_repo = f"https://api.github.com/repos/{gh.repo}"
+        if (issue.get("number") != args.issue or issue.get("repository_url") != expected_repo
+                or issue.get("pull_request") is not None):
+            raise ContextError("Issue identity does not match configured repository or the identifier is a pull request")
+        owners, planned, impact, diagnostics = resolve_document_impact(issue.get("body") or "", repo, gh.repo)
+        errors = list(diagnostics)
+        errors.extend(f"linked planned document owner is missing: {path}" for path in planned)
+        errors.extend(validate_docs(repo, [repo / path for path in owners]))
+        result = {"valid": not errors, "scope": "issue", "issue": args.issue,
+                  "files": len(owners), "document_impact": impact, "errors": errors}
+        return result, 0 if not errors else 1
+    if args.changed is not None:
+        paths = changed_document_paths(repo, args.changed)
+        errors = validate_docs(repo, paths)
+        result = {"valid": not errors, "scope": "changed", "base": args.changed,
+                  "files": len(paths), "errors": errors}
+        return result, 0 if not errors else 1
+    errors = validate_docs(repo)
+    count = len(list((repo / "docs").rglob("*.md"))) if (repo / "docs").exists() else 0
+    return {"valid": not errors, "files": count, "errors": errors}, 0 if not errors else 1
 
 
 def _do_hook(args: argparse.Namespace) -> dict[str, Any]:
@@ -202,7 +230,7 @@ def _do_hook(args: argparse.Namespace) -> dict[str, Any]:
         result["skipped_targets"].append(entry)
         print(f"SKIPPED_TARGET_VERIFICATION component={skipped.component} target={skipped.target} reason={skipped.reason}")
     for step in plan.steps:
-        completed = run_command(step.command, repo)
+        completed = run_command(step.command, repo, diagnostic=getattr(args, "diagnostic", False))
         result["executed"].append({"component": step.component, "target": step.target,
                                    "returncode": completed.returncode})
     return result
@@ -245,6 +273,9 @@ def build_parser() -> argparse.ArgumentParser:
     ctx.add_argument("--repo")
 
     docs = commands.add_parser("validate-docs")
+    doc_scope = docs.add_mutually_exclusive_group()
+    doc_scope.add_argument("--issue", type=_number)
+    doc_scope.add_argument("--changed", metavar="BASE")
     docs.add_argument("--repo")
 
     milestone = commands.add_parser("ensure-milestone")
@@ -254,6 +285,8 @@ def build_parser() -> argparse.ArgumentParser:
     feature = commands.add_parser("start-feature-branch")
     feature.add_argument("issue", type=_number)
     feature.add_argument("description", nargs="+")
+    feature.add_argument("--base-ref", metavar="BRANCH")
+    feature.add_argument("--expected-base-sha", metavar="SHA40")
     feature.add_argument("--repo")
 
     hook = commands.add_parser("run-hook")
@@ -264,6 +297,7 @@ def build_parser() -> argparse.ArgumentParser:
     hook.add_argument("--runtime-host", choices=("windows", "macos", "linux"))
     hook.add_argument("--architecture")
     hook.add_argument("--capability", action="append", default=[])
+    hook.add_argument("--diagnostic", action="store_true")
     hook.add_argument("--repo")
 
     save = commands.add_parser("save-implementation-contract")
@@ -320,11 +354,7 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, int]:
         repo = _repo_arg(args.repo)
         result = build_context(repo, args.issue, _gh(repo), args.runtime_host, args.architecture)
     elif args.command == "validate-docs":
-        repo = _repo_arg(args.repo)
-        errors = validate_docs(repo)
-        result = {"valid": not errors, "files": len(list((repo / "docs").rglob("*.md"))) if (repo / "docs").exists() else 0,
-                  "errors": errors}
-        return result, 0 if not errors else 1
+        return _validate_docs(args)
     elif args.command == "ensure-milestone":
         result = _ensure_milestone(args)
     elif args.command == "start-feature-branch":

@@ -8,9 +8,22 @@ Keep durable requirements, design decisions, code, tests, and evidence aligned w
 
 The authority sequence is `requirements -> specs -> design -> code/tests -> status/evidence`. Update the owning artifact first when its meaning changes. Link to owners instead of copying rules. This repository does not synchronize another repository, migrate existing consumer documents, or rewrite prose automatically.
 
+New durable Issue work includes a structured `## Document impact` section:
+
+```markdown
+## Document impact
+- Specification: <links> | unchanged — <reason>
+- Design: <links> | unchanged — <reason>
+- Status: <links> | evidence-only — <reason> | unchanged — <reason>
+```
+
+Each row selects exactly one alternative. Specification links belong under `docs/specs/`, Design links under `docs/design/`, and Status links under `docs/status/`; each row may contain multiple Markdown links. An `unchanged` decision needs a reason. `evidence-only` means verification evidence is recorded on the Issue/PR and no status document needs to change. Do not create a document merely to avoid an unchanged or evidence-only decision. Legacy link-only `Document impact` sections remain supported.
+
+Requirements and design establish the decisions. During implementation, compare the final diff with all three rows and update the decisions if needed. Self-review verifies that the final docs and diff still match the Issue decisions.
+
 ## Validation
 
-Use local Markdown links and `validate-docs`; inspect Issue links and affected-document declarations manually. The validator is offline and does not claim an external URL is current.
+`python -m agent_workflow validate-docs` without a selector keeps the full scan. Use mutually exclusive `--issue N` to validate only that Issue's declared existing owners or `--changed BASE` to validate only changed `docs/**/*.md` files from `BASE...HEAD`. Issue-scoped validation fails on a linked missing owner or malformed/wrong-tree decision; unchanged and evidence-only rows require no file. Changed-scope validation ignores deletions and fails on an unknown base without broadening. Git ref/diff resolution stays in `git.py`; neither scoped command runs shell hooks. The validator is offline and does not claim an external URL is current.
 
 ## Related resources
 
