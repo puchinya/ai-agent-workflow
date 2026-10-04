@@ -29,6 +29,8 @@ An Issue is the authority for a work item. Repository-changing work begins from 
 
 The durable document sequence is `requirements -> specs -> design -> code/tests -> status/evidence`. A material change to requirements updates the owning specification before dependent design or code. One document owns each durable rule; other documents link to it instead of copying its policy.
 
+Every new durable work item records explicit specification, design, and status decisions in the Issue's `## Document impact` section. Link decisions point into the matching `docs/specs/`, `docs/design/`, or `docs/status/` tree; unchanged decisions and evidence-only status decisions include a reason. Requirements and design establish these decisions, implementation re-evaluates them against the final diff, and self-review checks final alignment. An unchanged or evidence-only decision does not require creating a document.
+
 Feature work uses `python -m agent_workflow start-feature-branch <issue> <description...>` after its open Issue and project profile are validated. The runtime derives a deterministic `<prefix>/<issue>-<slug>` branch name, checks the worktree, and performs cleanup and global `branch_switch` hooks only after an actual branch switch. Repeating the command on the current target branch performs no cleanup or hooks.
 
 After an Issue exists, the requirements Skill runs `python -m agent_workflow ensure-milestone <issue>`. Milestones follow the consumer profile's `auto`, `required`, or `disabled` mode and repository version source. `auto` accepts an unresolved version as `NOT_APPLICABLE`; `required` fails closed when no version can be resolved. Exact-title reuse is idempotent, and closed or duplicate milestones are never silently reopened or replaced.
@@ -62,9 +64,11 @@ Self-review is evidence, never approval. Review findings use these categories:
 
 Category C is not implementer failure. An implementation is complete only through the PR delivery gate; passing tests alone is insufficient. A new PR commit invalidates review against an older HEAD. Missing or unavailable verification remains unverified and MUST NOT be reported as passing.
 
+A current self-review item with `result: fail` blocks handoff even when Required Checks are green. `untested` remains valid evidence and is not a global blocker; mandatory verification and configured Required Checks remain independent gates.
+
 ## Observable behavior
 
-The portable workflow routes agents from an owning Issue to its active phase, affected components, applicable application profiles, linked specification/design/status owners, relevant symbols and tests, and current diff. It does not require reading every standard or generated project summary by default. Skills describe when to load additional standards; they do not duplicate full policy text.
+The portable workflow routes agents from an owning Issue to its active phase, affected components, applicable application profiles, explicit document impact decisions and linked specification/design/status owners, relevant symbols and tests, and current diff. It does not require reading every standard or generated project summary by default. Skills describe when to load additional standards; they do not duplicate full policy text.
 
 The consumer's explicit project profile is the machine authority for components, stacks, application types, targets, hooks, and branch/milestone policy. Application type, stack, target, and runtime host are independent concepts. Application type is never inferred from repository contents, stack, target, or host.
 

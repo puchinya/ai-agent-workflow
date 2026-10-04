@@ -33,17 +33,32 @@ Schema 2 milestone mode is `auto`, `required`, or `disabled`. Legacy `enabled: f
 
 `ensure-milestone N` validates the profile and an open same-repository non-PR Issue before mutation. `disabled` skips; `auto` with no resolved version emits `NOT_APPLICABLE` without mutation; `required` with no version fails. It reuses one exact-title open milestone or creates one when absent. Duplicate or closed exact-title milestones fail. An Issue with no milestone is assigned; the same assignment is idempotent; a different assignment fails without replacement or reopening.
 
-Schema 2 branch policy accepts a safe single-component `prefix`, bounded positive `max_slug_length`, repository-relative `cleanup_on_switch` paths that cannot escape, and `required_checks`. `start-feature-branch N <description...>` validates the open same-repository non-PR Issue and profile, requires a clean worktree, reads the GitHub repository default branch, and fetches `origin` refs. The target name is `<prefix>/<N>-<slug>`; slug generation is NFKD, ASCII, lowercase, non-alphanumeric runs to hyphens, trim/collapse, then maximum-length truncation. Empty slugs fail. It switches to an existing local branch, tracks an existing remote branch, or creates the target from `origin/<default>`. Only an actual switch removes configured cleanup paths and runs global `branch_switch` hooks, in that order. Cleanup unlinks symlinks themselves, recursively removes real directories, and treats missing paths as no-ops. A cleanup or hook failure after switching is reported with the current branch and does not roll back. A same-branch call reports `switched: false` and runs neither cleanup nor hooks.
+Schema 2 branch policy accepts a safe single-component `prefix`, bounded positive `max_slug_length`, repository-relative `cleanup_on_switch` paths that cannot escape, and `required_checks`. `start-feature-branch N <description...>` validates the open same-repository non-PR Issue and profile, requires a clean worktree, reads the GitHub repository default branch, and fetches the selected `origin` base and target refs. The target name is `<prefix>/<N>-<slug>`; slug generation is NFKD, ASCII, lowercase, non-alphanumeric runs to hyphens, trim/collapse, then maximum-length truncation. Empty slugs fail. It switches to an existing local branch, tracks an existing remote branch, or creates the target from the selected `origin` base. Only an actual switch removes configured cleanup paths and runs global `branch_switch` hooks, in that order. Cleanup unlinks symlinks themselves, recursively removes real directories, and treats missing paths as no-ops. A cleanup or hook failure after switching is reported with the current branch and does not roll back. A same-branch call reports `switched: false` and runs neither cleanup nor hooks.
 
-`agent-context N` reports existing workflow/branch/HEAD/PR/contract fields plus profile schema, normalized runtime host, affected components, component metadata, applicable non-generic profile paths, and explicit document owners. One-component profiles default to that component when the Issue omits `## Affected components`; multi-component profiles require a non-empty canonical section. Unknown IDs fail. `all` has no special meaning. Document owners are emitted only from explicit same-repository links under `## Document impact` to existing paths in `docs/specs/`, `docs/design/`, or `docs/status/`; planned paths remain `planned_owner`. Ambiguous, malformed, or foreign URLs produce bounded diagnostics. Context is read-only, path-only, and never fetches linked pages or inlines document/comment/issue bodies. Closed Issue state takes precedence over phase labels and yields `phase=closed` with no workflow.
+`agent-context N` reports existing workflow/branch/HEAD/PR/contract fields plus profile schema, normalized runtime host, affected components, component metadata, applicable non-generic profile paths, existing `document_owners`, and structured `document_impact` decisions. One-component profiles default to that component when the Issue omits `## Affected components`; multi-component profiles require a non-empty canonical section. Unknown IDs fail. `all` has no special meaning. Document owners are emitted only from explicit same-repository links under `## Document impact` to paths in `docs/specs/`, `docs/design/`, or `docs/status/`; existing paths are `document_owners` and missing paths remain `planned_owners`. A structured decision has exactly one Specification row, one Design row, and one Status row. Specification and Design each choose one or more matching-tree links or `unchanged — <reason>`; Status chooses matching-tree links, `evidence-only — <reason>`, or `unchanged — <reason>`. Multiple links are allowed. Legacy link-only sections remain routable. Ambiguous, malformed, wrong-tree, or foreign URLs produce bounded diagnostics. Context is read-only, path-only, and never fetches linked pages or inlines document/comment/issue bodies. Closed Issue state takes precedence over phase labels and yields `phase=closed` with no workflow.
 
 Schema 1 retains flat project-wide command strings. Schema 2 project hooks own `branch_switch`, `verify_quick`, and `verify_final`; component and target hooks own only the two verification names. `run-hook branch_switch` runs global hooks only and accepts no component or Issue selector.
 
-`run-hook verify_quick` and `verify_final` run sequentially in the exact order project hooks, all selected component hooks in profile order, then compatible target hooks in profile order, preserving command order. Without a selector, both verification hooks select all components. Quick accepts mutually exclusive repeatable `--component` or `--issue`; Issue routing failures occur before hooks. Target gates run OS, normalized architecture, PATH tools (`shutil.which`), then explicit `--capability` values; only the first mismatch is reported. A mismatch skips the target command and emits `SKIPPED_TARGET_VERIFICATION component=<id> target=<id> reason=host_mismatch|architecture_mismatch|missing_tool|missing_capability`; skipped targets stay unverified. Python command aliases may fall back between `python` and `python3` only when the requested executable is unavailable; other command text is unchanged. Hook output is suppressed so commands cannot accidentally disclose tokens or payloads.
+`run-hook verify_quick` and `verify_final` run sequentially in the exact order project hooks, all selected component hooks in profile order, then compatible target hooks in profile order, preserving command order. Without a selector, both verification hooks select all components. Quick accepts mutually exclusive repeatable `--component` or `--issue`; Issue routing failures occur before hooks. Target gates run OS, normalized architecture, PATH tools (`shutil.which`), then explicit `--capability` values; only the first mismatch is reported. A mismatch skips the target command and emits `SKIPPED_TARGET_VERIFICATION component=<id> target=<id> reason=host_mismatch|architecture_mismatch|missing_tool|missing_capability`; skipped targets stay unverified. Python command aliases may fall back between `python` and `python3` only when the requested executable is unavailable; other command text is unchanged. Hook output is suppressed by default. `run-hook ... --diagnostic` captures stdout and stderr in temporary files; success emits no child output, while failure emits only a credential-redacted tail of at most 16 KiB combined and removes the temporary files.
 
 ### Document validation
 
-Specifications and designs use Schema-2 document markers and their respective required section sets. `validate-docs` validates markers, required headings, and local relative Markdown links (including reference links and fragments). It ignores links inside fenced code, does not fetch external links, and performs no migration or template operations.
+Specifications and designs use Schema-2 document markers and their respective required section sets. `validate-docs` with no selector preserves the existing full-docs scan. Mutually exclusive `--issue N` and `--changed BASE` selectors narrow validation. `--issue N` validates only declared existing owners from that Issue's structured or legacy `Document impact`; a linked missing/planned owner is an error, while `unchanged` and `evidence-only` decisions need no file. Malformed decisions and wrong-tree links fail closed. `--changed BASE` validates only changed `docs/**/*.md` paths from `BASE...HEAD`, ignoring deletions. An unknown BASE fails without broadening scope. Git ref and diff resolution stays in `git.py`; no selector or scoped validator runs shell hooks. Markdown validation checks markers, required headings, and local relative links (including reference links and fragments). It ignores links inside fenced code, does not fetch external links, and performs no migration or template operations.
+
+The structured Issue format has one row per decision, in this order:
+
+```markdown
+## Document impact
+- Specification: <links> | unchanged — <reason>
+- Design: <links> | unchanged — <reason>
+- Status: <links> | evidence-only — <reason> | unchanged — <reason>
+```
+
+Each row selects exactly one alternative. Every link must target the corresponding docs tree.
+
+### Feature branch bases
+
+`start-feature-branch N <description...> [--base-ref BRANCH] [--expected-base-sha SHA40]` uses the GitHub default branch when `--base-ref` is omitted. An explicit base must name an existing same-repository remote branch; a SHA cannot be supplied as the base branch. The runtime fetches and resolves `origin/<base-ref>`, then checks `--expected-base-sha` before any branch switch, cleanup, or hook. A new target branch starts directly at that fetched base. Existing current, local, and remote targets remain idempotent and are never rebased. Results include `base_ref`, `base_sha`, `stacked`, and `creation_source` (`current`, `local`, `remote`, or `new`). A base SHA mismatch leaves the current branch and worktree unchanged.
 
 ### Implementation Contract bytes and storage
 
@@ -57,13 +72,24 @@ Payloads are non-empty, valid UTF-8, NUL-free, free of obvious credential materi
 
 `verify-implementation-contract N` validates the local record, current pointer, and named source comment without listing unrelated comments.
 
+Pointer errors show this canonical block and prohibit appended prose:
+
+```text
+## Implementation Contract
+Comment ID: <comment-id>
+SHA-256: <sha256>
+State: approved
+
+Do not append prose to this block.
+```
+
 ### Self-review and delivery
 
 The effective checklist is approved Contract checklist items in source order as `C001...`, then Issue Reviewer Checklist items in source order as `I001...`. A valid `AGENT_REVIEWER_CHECKLIST_V1` canonical block wins; otherwise only a narrow `Reviewer Checklist` heading matches, optionally with a numeric prefix and one ASCII or Japanese parenthetical qualifier.
 
 `prepare-self-review` binds a review draft to the current Issue, effective checklist SHA, and exact PR HEAD. `validate-self-review` requires each item to have a supported result and concrete evidence; evidence formatting is not proof. `publish-self-review` validates against current HEAD, stores one top-level PR comment, verifies comment association/SHA/checklist/HEAD, then writes only the PR body pointer. `validate-public-review` fetches only the named comment and marks it stale whenever PR HEAD differs.
 
-Handoff requires the requested Issue and PR to belong to the same repository; open non-draft PR; `Closes #N`; Issue label `phase:review`; PR head equal to the published review HEAD; valid named review and effective checklist; filled Verification and Untested fields; schema-valid project profile allowing `initialized:false`; and every configured Required Check green on the current HEAD. No configured checks is a failure. App-scoped checks require the exact app; source-unrestricted or legacy checks may match a successful check-run or commit status. Check-run conclusions `success`, `skipped`, and `neutral` pass; commit statuses require `success`.
+Handoff requires the requested Issue and PR to belong to the same repository; open non-draft PR; `Closes #N`; Issue label `phase:review`; PR head equal to the published review HEAD; valid named review and effective checklist; no current review item with `result: fail`; filled Verification and Untested fields; schema-valid project profile allowing `initialized:false`; and every configured Required Check green on the current HEAD. A current fail is valid review evidence but blocks handoff and is returned in `review_failures` with at most ten item IDs and text truncated to 240 characters per item. `untested` alone is not a global blocker. Mandatory verification and Required Checks remain separate gates. No configured checks is a failure. App-scoped checks require the exact app; source-unrestricted or legacy checks may match a successful check-run or commit status. Check-run conclusions `success`, `skipped`, and `neutral` pass; commit statuses require `success`. Delivery reports `base_ref`, `default_base_ref`, and `stacked` for the PR.
 
 Merged delivery requires a merged PR, closed Issue, and no phase label. `finalize-merged-issue` verifies merged/closed state and removes only `phase:review`; any other `phase:*` label fails without mutation. Repeating after that label is gone succeeds without mutation. A PR affecting a generic component needs a concrete `Generic profile rationale:`.
 
@@ -96,13 +122,16 @@ GitHub requests use authenticated `gh api` through one module. User payloads tra
 | Unsupported profile or malformed target requirements | Fail before output or any configured hook. |
 | Conflicting auto-detected versions or duplicate/closed exact-title milestones | Fail before Issue milestone assignment; report `VERSION_AMBIGUOUS` for version conflicts. |
 | Dirty worktree or invalid/non-open/foreign/PR Issue | Fail before any branch switch. |
+| Invalid/unknown base branch or mismatched expected base SHA | Fail before branch switch, cleanup, or hooks; preserve the current branch and worktree. |
 | Cleanup path escapes the repository | Reject the profile before Git mutation. |
 | Cleanup or hook fails after a real switch | Keep the new branch, report current branch and failed stage, and do not rerun switch work on same-branch retry. |
 | Missing/malformed Issue component list | Fail before hook execution or partial context output. |
+| Malformed Document impact or linked missing owner in `validate-docs --issue` | Fail closed without falling back to a broad docs scan. |
+| Unknown `validate-docs --changed` BASE | Fail closed without validating all docs. |
 | Host/architecture/tool/capability mismatch | Skip only the target and report it unverified. |
 | Contract hash, comment, Issue, or mirror mismatch | Fail closed; preserve prior verified bytes. |
 | Concurrent Issue body change | Stop, preserve unrelated sections, report unsupported concurrency. |
-| Stale review HEAD or absent/pending/failed required check | Fail handoff. |
+| Current review item with `result: fail`, stale review HEAD, or absent/pending/failed Required Check | Fail handoff; return bounded failed-item IDs/text when applicable. |
 | Premature merge finalization or unexpected phase label | Fail without label mutation. |
 | Network/API/auth failure | Report exact command/stage and fail closed. |
 

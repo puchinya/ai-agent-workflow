@@ -20,6 +20,8 @@ Goals are explicit Issue authority, progressive context loading, reliable local 
 | Nine host-portable Skills | Hand-authored Skills live only under `workflow/skills/`; the distribution builder copies them. |
 | Compact context routing | The runtime emits validated paths and identifiers rather than document contents. |
 | Review is evidence, not approval | Review commands bind claims to checklist hash and exact PR HEAD; an independent human reviewer still judges the evidence. |
+| Durable document decisions stay explicit through implementation | The Issue carries Specification, Design, and Status decisions; implementation checks them against the final diff, and self-review verifies alignment. |
+| A current self-review fail blocks handoff | The delivery gate rejects current `fail` items and reports bounded IDs/text while treating `untested` as evidence rather than a global block. |
 | Host-specific packages differ | The builder emits three isolated packages from shared sources and adapters. |
 | Milestone and feature-branch lifecycle is reusable | Consumer policy stays in Schema 2 `.agent/project.json`; the requirements and implementation Skills call standard runtime commands. |
 
@@ -46,7 +48,7 @@ consumer Issue + .agent/project.json
 
 ## Data flow and ownership
 
-1. A Skill starts from an Issue and reads only the routing data and documents relevant to that task.
+1. A Skill starts from an Issue and reads only the routing data and documents relevant to that task. The Issue declares structured document decisions; older link-only sections remain routable.
 2. A consumer's `.agent/project.json` is parsed and fully validated before profile-dependent output or hook execution.
 3. Context resolution emits a compact, deterministic manifest. It never writes consumer-controlled files.
 4. Contract and review payloads are validated locally before GitHub mutations. API responses are read back and checked before local state is promoted.
@@ -55,7 +57,7 @@ consumer Issue + .agent/project.json
 
 ## Failure handling
 
-Malformed profiles fail before hooks. Unknown selected components fail instead of broadening scope. Host or target requirement mismatches skip commands and remain unverified. GitHub ambiguity fails closed. Atomic local replacements preserve the old verified bytes on failure. Build/check mismatches identify drift without silently accepting edited generated output.
+Malformed profiles and Document impact declarations fail closed before hooks or scoped validation. Unknown selected components and invalid doc selectors never broaden scope. Host or target requirement mismatches skip commands and remain unverified. Current review failures block handoff; `untested` remains non-blocking by itself. GitHub ambiguity fails closed. Atomic local replacements preserve the old verified bytes on failure. Build/check mismatches identify drift without silently accepting edited generated output.
 
 ## Alternatives considered
 

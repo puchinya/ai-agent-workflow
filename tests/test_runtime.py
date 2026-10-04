@@ -23,10 +23,12 @@ from agent_workflow.contracts import (ContractError, parse_comment, publish_cont
                                       restore_contract, save_contract, sha256,
                                       validate_payload, verify_contract)
 from agent_workflow.context import ContextError, affected_components, build_context
-from agent_workflow.cli import _ensure_milestone, _init_project, _start_feature_branch, build_parser
+from agent_workflow.cli import (_ensure_milestone, _init_project, _start_feature_branch,
+                                _validate_docs, build_parser, main as cli_main)
 from agent_workflow.delivery import DeliveryError, delivery_check, finalize_merged_issue
-from agent_workflow.documents import validate_markdown_file, validate_docs
-from agent_workflow.git import GitLifecycleError, _remove_cleanup_path, feature_slug, start_feature_branch
+from agent_workflow.documents import resolve_document_impact, validate_markdown_file, validate_docs
+from agent_workflow.git import (GitLifecycleError, _remove_cleanup_path, changed_document_paths,
+                                feature_slug, start_feature_branch)
 from agent_workflow.github import GitHub, GitHubError
 from agent_workflow.profile import ProfileError, build_hook_plan, validate_profile
 from agent_workflow.process import ProcessError, run_command
@@ -56,6 +58,13 @@ def profile_fixture():
         "branch": {"required_checks": ["CI"]}, "milestones": {"mode": "auto", "version_source": "auto"},
         "hooks": {"verify_quick": ["echo global"]},
     }
+
+
+def python_shell_command(script, *arguments):
+    command = [sys.executable, "-c", script, *arguments]
+    if sys.platform == "win32":
+        return subprocess.list2cmdline(command)
+    return " ".join(__import__("shlex").quote(part) for part in command)
 
 
 class FakeGitHub:
@@ -545,19 +554,29 @@ class GitLifecycleTests(unittest.TestCase):
                                             "--repo", str(self.repo)])
         self.assertEqual((branch.command, branch.issue, branch.description),
                          ("start-feature-branch", 7, ["ship", "lifecycle"]))
+        stacked = build_parser().parse_args(["start-feature-branch", "7", "stacked", "feature",
+                                             "--base-ref", "release/v2", "--expected-base-sha", "a" * 40])
+        self.assertEqual((stacked.base_ref, stacked.expected_base_sha), ("release/v2", "a" * 40))
 
     def test_new_local_and_remote_branch_paths(self):
         created, status = start_feature_branch(self.repo, self.profile(), 7, "new branch", self.github)
         self.assertEqual(status, 0)
         self.assertEqual(created["branch"], "feature/7-new-branch")
         self.assertTrue(created["switched"])
+        self.assertEqual(created["creation_source"], "new")
+        self.assertEqual(created["base_ref"], "main")
+        self.assertEqual(created["base_sha"], self.git(self.repo, "rev-parse", "origin/main"))
+        self.assertFalse(created["stacked"])
 
         self.git(self.repo, "switch", "main")
         local_target = "feature/7-local-branch"
         self.git(self.repo, "branch", local_target)
+        local_sha = self.git(self.repo, "rev-parse", local_target)
         local, status = start_feature_branch(self.repo, self.profile(), 7, "local branch", self.github)
         self.assertEqual(status, 0)
         self.assertEqual(local["branch"], local_target)
+        self.assertEqual(local["creation_source"], "local")
+        self.assertEqual(self.git(self.repo, "rev-parse", "HEAD"), local_sha)
 
         self.git(self.repo, "switch", "main")
         remote_target = "feature/7-remote-branch"
@@ -567,13 +586,74 @@ class GitLifecycleTests(unittest.TestCase):
         self.git(self.repo, "add", "remote-only.txt")
         self.git(self.repo, "commit", "-m", "remote target")
         self.git(self.repo, "push", "origin", remote_target)
+        remote_sha = self.git(self.repo, "rev-parse", remote_target)
         self.git(self.repo, "switch", "main")
         self.git(self.repo, "branch", "-D", remote_target)
         tracked, status = start_feature_branch(self.repo, self.profile(), 7, "remote branch", self.github)
         self.assertEqual(status, 0)
         self.assertEqual(tracked["branch"], remote_target)
+        self.assertEqual(tracked["creation_source"], "remote")
+        self.assertEqual(self.git(self.repo, "rev-parse", "HEAD"), remote_sha)
         self.assertEqual(self.git(self.repo, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"),
                          f"origin/{remote_target}")
+
+    def test_stacked_new_branch_starts_at_fetched_base(self):
+        self.git(self.repo, "branch", "release/v2")
+        self.git(self.repo, "switch", "release/v2")
+        (self.repo / "release.txt").write_text("stacked base\n", encoding="utf-8")
+        self.git(self.repo, "add", "release.txt")
+        self.git(self.repo, "commit", "-m", "release base")
+        self.git(self.repo, "push", "-u", "origin", "release/v2")
+        base_sha = self.git(self.repo, "rev-parse", "HEAD")
+        self.git(self.repo, "switch", "main")
+
+        result, status = start_feature_branch(self.repo, self.profile(), 7, "stacked feature",
+                                              self.github, "release/v2", base_sha)
+
+        self.assertEqual(status, 0)
+        self.assertEqual(result["base_ref"], "release/v2")
+        self.assertEqual(result["base_sha"], base_sha)
+        self.assertTrue(result["stacked"])
+        self.assertEqual(result["creation_source"], "new")
+        self.assertEqual(self.git(self.repo, "rev-parse", "HEAD"), base_sha)
+
+    def test_base_ref_rejects_arbitrary_sha_as_a_branch(self):
+        sha = self.git(self.repo, "rev-parse", "HEAD")
+        with self.assertRaisesRegex(GitLifecycleError, "same-repository remote branch"):
+            start_feature_branch(self.repo, self.profile(), 7, "sha as base", self.github, sha)
+        self.assertEqual(self.git(self.repo, "branch", "--show-current"), "main")
+
+    def test_expected_base_mismatch_has_zero_switch_cleanup_and_hooks(self):
+        self.git(self.repo, "branch", "release/v2")
+        self.git(self.repo, "push", "origin", "release/v2")
+        (self.repo / ".git/info/exclude").write_text("out/\n", encoding="utf-8")
+        (self.repo / "out").mkdir()
+        (self.repo / "out/keep.txt").write_text("keep\n", encoding="utf-8")
+        profile = self.profile(cleanup=("out",), hooks=("echo should-not-run",))
+        before_branch = self.git(self.repo, "branch", "--show-current")
+        before_head = self.git(self.repo, "rev-parse", "HEAD")
+        before_status = self.git(self.repo, "status", "--porcelain", "--untracked-files=all")
+        real_invoke = __import__("agent_workflow.git", fromlist=["_invoke"])._invoke
+        switches = []
+
+        def track_switch(repo, args, **kwargs):
+            if args[0] == "switch":
+                switches.append(list(args))
+            return real_invoke(repo, args, **kwargs)
+
+        with patch("agent_workflow.git._invoke", side_effect=track_switch), \
+             patch("agent_workflow.git._remove_cleanup_path") as cleanup, \
+             patch("agent_workflow.git.run_command") as hook:
+            with self.assertRaisesRegex(GitLifecycleError, "expected base SHA does not match"):
+                start_feature_branch(self.repo, profile, 7, "stacked mismatch", self.github,
+                                     "release/v2", "0" * 40)
+        self.assertEqual(switches, [])
+        cleanup.assert_not_called()
+        hook.assert_not_called()
+        self.assertEqual(self.git(self.repo, "branch", "--show-current"), before_branch)
+        self.assertEqual(self.git(self.repo, "rev-parse", "HEAD"), before_head)
+        self.assertEqual(self.git(self.repo, "status", "--porcelain", "--untracked-files=all"), before_status)
+        self.assertTrue((self.repo / "out/keep.txt").is_file())
 
     def test_same_branch_skips_cleanup_and_hooks(self):
         (self.repo / ".git/info/exclude").write_text("out/\n", encoding="utf-8")
@@ -590,6 +670,7 @@ class GitLifecycleTests(unittest.TestCase):
             second, status = start_feature_branch(self.repo, profile, 7, "retry me", self.github)
         self.assertEqual(status, 0)
         self.assertFalse(second["switched"])
+        self.assertEqual(second["creation_source"], "current")
         self.assertTrue((self.repo / "out/cache").is_file())
         self.assertEqual(hook.call_count, 1)
 
@@ -725,6 +806,178 @@ class DocumentTests(unittest.TestCase):
             errors = validate_markdown_file(repo / "index.md", repo)
             self.assertTrue(any("unresolved Markdown reference" in error for error in errors))
 
+    def test_structured_document_impact_routes_decisions_and_legacy_links(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            (repo / "docs/specs").mkdir(parents=True)
+            (repo / "docs/specs/workflow.md").write_text("# Workflow\n", encoding="utf-8")
+            (repo / "docs/specs/runtime.md").write_text("# Runtime\n", encoding="utf-8")
+            body = """## Document impact
+- Specification: [workflow](docs/specs/workflow.md), [runtime](https://github.com/owner/repo/blob/main/docs/specs/runtime.md)
+- Design: unchanged — The architecture remains unchanged.
+- Status: evidence-only — Verification evidence belongs on the Issue and PR.
+"""
+            owners, planned, impact, errors = resolve_document_impact(body, repo, "owner/repo")
+            self.assertEqual(owners, ["docs/specs/workflow.md", "docs/specs/runtime.md"])
+            self.assertEqual(planned, [])
+            self.assertEqual(errors, [])
+            self.assertEqual(impact["format"], "structured")
+            self.assertEqual(impact["specification"]["decision"], "linked")
+            self.assertEqual(impact["design"]["decision"], "unchanged")
+            self.assertEqual(impact["status"]["decision"], "evidence-only")
+
+            legacy = "## Document impact\n- [workflow](docs/specs/workflow.md)\n"
+            legacy_owners, legacy_planned, legacy_impact, legacy_errors = resolve_document_impact(legacy, repo)
+            self.assertEqual(legacy_owners, ["docs/specs/workflow.md"])
+            self.assertEqual(legacy_planned, [])
+            self.assertEqual(legacy_impact["format"], "legacy")
+            self.assertEqual(legacy_errors, [])
+
+    def test_document_impact_rejects_wrong_tree_malformed_and_missing_decisions(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            (repo / "docs/design").mkdir(parents=True)
+            (repo / "docs/design/design.md").write_text("# Design\n", encoding="utf-8")
+            wrong_tree = """## Document impact
+- Specification: [design](docs/design/design.md)
+- Design: unchanged — Design is not changing.
+- Status: unchanged — Evidence remains in the Issue.
+"""
+            owners, planned, impact, errors = resolve_document_impact(wrong_tree, repo)
+            self.assertEqual(owners, [])
+            self.assertEqual(planned, [])
+            self.assertEqual(impact["specification"]["decision"], "invalid")
+            self.assertTrue(any("must target docs/specs" in error for error in errors))
+
+            malformed = """## Document impact
+- Specification: unchanged —
+- Design: unchanged — Design is not changing.
+- Status: evidence-only — <reason>
+"""
+            _, _, _, malformed_errors = resolve_document_impact(malformed, repo)
+            self.assertTrue(any("requires a concrete reason" in error for error in malformed_errors))
+
+    def test_issue_scoped_docs_validate_only_declared_owners_and_missing_owner_fails(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            (repo / ".git").mkdir()
+            (repo / ".agent").mkdir()
+            profile = profile_fixture()
+            (repo / ".agent/project.json").write_text(json.dumps(profile), encoding="utf-8")
+            (repo / "docs/specs").mkdir(parents=True)
+            required = """<!-- agent-doc-type: specification -->
+<!-- agent-doc-schema: 2 -->
+# Owner
+## Purpose
+## Scope
+## Normative requirements
+## Observable behavior
+## Error and boundary behavior
+## Security and privacy
+## Verification strategy
+"""
+            (repo / "docs/specs/owned.md").write_text(required, encoding="utf-8")
+            (repo / "docs/specs/unrelated.md").write_text("unrelated legacy defect\n", encoding="utf-8")
+            gh = FakeGitHub("""## Document impact
+- Specification: [owned](docs/specs/owned.md)
+- Design: unchanged — No design changes are needed.
+- Status: evidence-only — Evidence will be recorded on the Issue.
+""")
+            args = type("Args", (), {"repo": str(repo), "issue": 1, "changed": None})()
+            with patch("agent_workflow.cli._repo_arg", return_value=repo), \
+                 patch("agent_workflow.cli._gh", return_value=gh):
+                result, status = _validate_docs(args)
+            self.assertEqual(status, 0)
+            self.assertTrue(result["valid"])
+            self.assertEqual(result["files"], 1)
+            gh.issue_data["body"] = "## Affected components\n- one\n\n" + gh.issue_data["body"]
+            with patch("agent_workflow.context._pull_requests", return_value=[]), \
+                 patch("agent_workflow.context._git", return_value="a" * 40):
+                context = build_context(repo, 1, gh)
+            self.assertEqual(context["document_owners"], ["docs/specs/owned.md"])
+            self.assertEqual(context["document_impact"]["format"], "structured")
+            self.assertEqual(context["document_impact"]["specification"]["decision"], "linked")
+
+            gh.issue_data["body"] = """## Document impact
+- Specification: [planned](docs/specs/planned.md)
+- Design: unchanged — No design changes are needed.
+- Status: unchanged — No status document is needed.
+"""
+            with patch("agent_workflow.cli._repo_arg", return_value=repo), \
+                 patch("agent_workflow.cli._gh", return_value=gh), \
+                 patch("agent_workflow.cli.run_command") as hook:
+                result, status = _validate_docs(args)
+            self.assertEqual(status, 1)
+            self.assertFalse(result["valid"])
+            self.assertTrue(any("planned document owner is missing" in error for error in result["errors"]))
+            hook.assert_not_called()
+
+
+class ChangedDocumentValidationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.repo = Path(self.temp.name)
+        subprocess.run(["git", "init", "-q", "-b", "main", str(self.repo)], check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=self.repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=self.repo, check=True)
+
+    def git(self, *args):
+        return subprocess.run(["git", *args], cwd=self.repo, check=True, text=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout.strip()
+
+    def commit(self, message):
+        self.git("add", "--all")
+        self.git("commit", "-m", message)
+
+    def test_changed_scope_checks_only_changed_docs_and_ignores_deletions(self):
+        specs = self.repo / "docs/specs"
+        specs.mkdir(parents=True)
+        good = """<!-- agent-doc-type: specification -->
+<!-- agent-doc-schema: 2 -->
+# Good
+## Purpose
+## Scope
+## Normative requirements
+## Observable behavior
+## Error and boundary behavior
+## Security and privacy
+## Verification strategy
+"""
+        (specs / "changed.md").write_text(good, encoding="utf-8")
+        (specs / "unchanged.md").write_text("unrelated legacy defect\n", encoding="utf-8")
+        (specs / "deleted.md").write_text("deleted legacy defect\n", encoding="utf-8")
+        self.commit("baseline docs")
+        base = self.git("rev-parse", "HEAD")
+        (specs / "changed.md").write_text("# Broken changed document\n", encoding="utf-8")
+        (specs / "deleted.md").unlink()
+        self.commit("change one document and delete another")
+
+        paths = changed_document_paths(self.repo, base)
+        self.assertEqual(paths, [specs / "changed.md"])
+        errors = validate_docs(self.repo, paths)
+        self.assertTrue(errors)
+        self.assertTrue(all("changed.md" in error for error in errors), errors)
+        args = type("Args", (), {"repo": str(self.repo), "issue": None, "changed": base})()
+        with patch("agent_workflow.cli._repo_arg", return_value=self.repo):
+            result, status = _validate_docs(args)
+        self.assertEqual(status, 1)
+        self.assertEqual(result["scope"], "changed")
+        self.assertEqual(result["files"], 1)
+        self.assertTrue(all("changed.md" in error for error in result["errors"]))
+
+    def test_unknown_changed_base_fails_without_hooks_or_broadening(self):
+        args = type("Args", (), {"repo": str(self.repo), "issue": None, "changed": "not-a-ref"})()
+        with patch("agent_workflow.cli._repo_arg", return_value=self.repo), \
+             patch("agent_workflow.cli.run_command") as hook:
+            with self.assertRaisesRegex(GitLifecycleError, "unknown --changed base ref"):
+                _validate_docs(args)
+        hook.assert_not_called()
+
+    def test_validate_doc_selectors_are_mutually_exclusive(self):
+        with self.assertRaises(SystemExit):
+            build_parser().parse_args(["validate-docs", "--issue", "1", "--changed", "main"])
+
 
 class ContractTests(unittest.TestCase):
     def setUp(self):
@@ -739,6 +992,21 @@ class ContractTests(unittest.TestCase):
         path = self.repo / "source.md"
         path.write_bytes(content)
         return path
+
+    def test_pointer_error_shows_canonical_block_and_forbids_appended_prose(self):
+        from agent_workflow.contracts import parse_pointer
+        with self.assertRaises(ContractError) as raised:
+            parse_pointer("## Implementation Contract\nComment ID: bad\nSHA-256: nope\nState: approved\nextra prose")
+        message = str(raised.exception)
+        self.assertIn("## Implementation Contract\nComment ID: <comment-id>\nSHA-256: <sha256>\nState: approved", message)
+        self.assertIn("do not append prose", message)
+
+    def test_pointer_remains_strict_about_extra_fields_and_prose(self):
+        from agent_workflow.contracts import parse_pointer
+        good = "## Implementation Contract\nComment ID: 123\nSHA-256: " + "a" * 64 + "\nState: approved\n"
+        self.assertEqual(parse_pointer(good), (123, "a" * 64))
+        with self.assertRaises(ContractError):
+            parse_pointer(good + "Additional prose\n")
 
     def test_exact_utf8_bytes_and_line_endings_are_preserved(self):
         raw = "# Contract\r\n\r\nCafe\u0301\n".encode("utf-8")
@@ -949,7 +1217,7 @@ class PaginationTests(unittest.TestCase):
         self.head = "d" * 40
         self.fake.pull_data = {
             "number": 2, "state": "open", "draft": False, "merged": False,
-            "base": {"repo": {"full_name": self.gh.repo}}, "head": {"sha": self.head},
+            "base": {"ref": "main", "repo": {"full_name": self.gh.repo}}, "head": {"sha": self.head},
             "body": "Closes #1\n\n## Verification\ntests passed\n\n## Untested\nIDE not run\n",
         }
         self.paths = {
@@ -969,6 +1237,8 @@ class PaginationTests(unittest.TestCase):
 
     def respond(self, method, endpoint, payload=None):
         parsed = urlsplit(endpoint)
+        if endpoint == self.gh.prefix and method == "GET":
+            return {"default_branch": "main"}
         if parsed.query:
             self.assertEqual(method, "GET")
             query = parse_qs(parsed.query)
@@ -1101,6 +1371,67 @@ class ProcessTests(unittest.TestCase):
         self.assertIn("python", str(raised.exception))
         self.assertNotIn("do-not-print", str(raised.exception))
 
+    def test_diagnostic_failure_is_redacted_bounded_and_uses_deleted_temp_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            secret = "hook-secret-value"
+            script = ("import sys; print('x'*20000); print(sys.argv[-1]); "
+                      "print('Authorization: Bearer abcdefghijklmnopqrstuvwxyz'); "
+                      "print('stderr detail', file=sys.stderr); sys.exit(37)")
+            command = python_shell_command(script, f"--token={secret}")
+            with patch("agent_workflow.process.tempfile.tempdir", temporary):
+                with self.assertRaises(ProcessError) as raised:
+                    run_command(command, Path(temporary), diagnostic=True)
+            error = raised.exception
+            self.assertEqual(error.returncode, 37)
+            self.assertIn(Path(sys.executable).name, str(error))
+            self.assertIn("[REDACTED]", error.diagnostic)
+            self.assertNotIn(secret, error.diagnostic)
+            self.assertNotIn("abcdefghijklmnopqrstuvwxyz", error.diagnostic)
+            self.assertLessEqual(len(error.diagnostic.encode("utf-8")), 16 * 1024)
+            self.assertEqual(list(Path(temporary).iterdir()), [])
+
+    def test_default_hook_failure_stays_silent_and_diagnostic_cli_flag_parses(self):
+        script = "import sys; print('out'); print('err', file=sys.stderr); sys.exit(9)"
+        command = python_shell_command(script)
+        output, errors = io.StringIO(), io.StringIO()
+        with redirect_stdout(output), redirect_stderr(errors):
+            with self.assertRaises(ProcessError) as raised:
+                run_command(command, Path("."))
+        self.assertEqual(raised.exception.returncode, 9)
+        self.assertEqual(raised.exception.diagnostic, "")
+        self.assertEqual(output.getvalue(), "")
+        self.assertEqual(errors.getvalue(), "")
+        args = build_parser().parse_args(["run-hook", "verify_final", "--diagnostic"])
+        self.assertTrue(args.diagnostic)
+        with tempfile.TemporaryDirectory() as temporary, \
+             patch("agent_workflow.process.tempfile.tempdir", temporary), \
+             redirect_stdout(output), redirect_stderr(errors):
+            run_command(command.replace("sys.exit(9)", "sys.exit(0)"), Path(temporary), diagnostic=True)
+            self.assertEqual(list(Path(temporary).iterdir()), [])
+        self.assertEqual(output.getvalue(), "")
+        self.assertEqual(errors.getvalue(), "")
+
+    def test_run_hook_diagnostic_cli_emits_only_redacted_failure_tail(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            (repo / ".git").mkdir()
+            (repo / ".agent").mkdir()
+            secret = "cli-hook-secret"
+            script = "import sys; print(sys.argv[-1]); sys.exit(23)"
+            command = python_shell_command(script, f"--token={secret}")
+            profile = profile_fixture()
+            profile["hooks"] = {"verify_final": [command]}
+            (repo / ".agent/project.json").write_text(json.dumps(profile), encoding="utf-8")
+            output = io.StringIO()
+            with patch("agent_workflow.process.tempfile.tempdir", temporary), redirect_stderr(output):
+                status = cli_main(["run-hook", "verify_final", "--diagnostic", "--repo", str(repo)])
+            self.assertEqual(status, 23)
+            self.assertIn("hook command", output.getvalue())
+            self.assertIn("[REDACTED]", output.getvalue())
+            self.assertNotIn(secret, output.getvalue())
+            self.assertLessEqual(len(output.getvalue().encode("utf-8")), 16 * 1024 + 256)
+            self.assertEqual({p.name for p in repo.iterdir()}, {".git", ".agent"})
+
 
 class DeliveryTests(unittest.TestCase):
     def setUp(self):
@@ -1124,7 +1455,7 @@ python -m unittest: passed
 macOS IDE smoke test not run
 """
         self.gh.pull_data = {"number": 2, "state": "open", "draft": False, "merged": False,
-                            "base": {"repo": {"full_name": self.gh.repo}},
+                            "base": {"ref": "main", "repo": {"full_name": self.gh.repo}},
                             "head": {"sha": self.head, "repo": {"full_name": self.gh.repo}},
                             "body": self.pr_body}
         self.gh.runs = [{"name": "CI", "head_sha": self.head, "status": "completed",
@@ -1134,6 +1465,9 @@ macOS IDE smoke test not run
         self.temp.cleanup()
 
     def run_gate(self, **changes):
+        checklist_items = changes.pop("checklist_items", [{"id": "C001", "text": "works"}])
+        published = changes.pop("published_review", {"stale": False, "head": self.head, "checklist_sha256": "c" * 64,
+                     "review": {"items": [{"id": "C001", "text": "works"}]}})
         if "issue_labels" in changes:
             self.gh.issue_data["labels"] = changes.pop("issue_labels")
         if "issue_state" in changes:
@@ -1148,16 +1482,38 @@ macOS IDE smoke test not run
                 self.gh.pull_data["body"] = value
             else:
                 self.gh.pull_data[key] = value
-        published = changes.pop("published_review", {"stale": False, "head": self.head, "checklist_sha256": "c" * 64,
-                     "review": {"items": [{"id": "C001", "text": "works"}]}}
-                     )
         with patch("agent_workflow.delivery.validate_public_review", return_value=published), \
-             patch("agent_workflow.delivery.effective_checklist", return_value=([{"id": "C001", "text": "works"}], "c" * 64)):
+             patch("agent_workflow.delivery.effective_checklist", return_value=(checklist_items, "c" * 64)):
             return delivery_check(self.repo, 1, 2, self.gh)
 
     def test_handoff_passes_only_with_current_review_and_green_app_check(self):
         result = self.run_gate()
         self.assertTrue(result["passed"], result["errors"])
+
+    def test_current_review_fail_blocks_green_handoff_with_bounded_item_details(self):
+        item = {"id": "C001", "text": "the runtime must reject failed review"}
+        review = {"stale": False, "head": self.head, "checklist_sha256": "c" * 64,
+                  "review": {"items": [dict(item, result="fail")]}}
+        result = self.run_gate(published_review=review, checklist_items=[item])
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["review_failures"], [{"id": "C001", "text": "the runtime must reject failed review"}])
+        self.assertTrue(any("C001" in error and "reject failed review" in error for error in result["errors"]))
+
+    def test_pass_and_untested_review_items_remain_nonblocking(self):
+        items = [{"id": "C001", "text": "passed item"}, {"id": "C002", "text": "untested item"}]
+        review = {"stale": False, "head": self.head, "checklist_sha256": "c" * 64,
+                  "review": {"items": [dict(items[0], result="pass"), dict(items[1], result="untested")]}}
+        result = self.run_gate(published_review=review, checklist_items=items)
+        self.assertTrue(result["passed"], result["errors"])
+        self.assertEqual(result["review_failures"], [])
+        self.assertEqual(result["review_failure_count"], 0)
+
+    def test_delivery_reports_stacked_state_without_blocking_it(self):
+        result = self.run_gate(base={"ref": "feature/8-base", "repo": {"full_name": self.gh.repo}})
+        self.assertTrue(result["passed"], result["errors"])
+        self.assertEqual(result["base_ref"], "feature/8-base")
+        self.assertEqual(result["default_base_ref"], "main")
+        self.assertTrue(result["stacked"])
 
     def test_each_required_handoff_precondition_is_checked(self):
         cases = [

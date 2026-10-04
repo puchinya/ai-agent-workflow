@@ -21,6 +21,7 @@ class ContractError(ValueError):
 HEADER = re.compile(r"^<!-- agent-contract:v1 issue=(\d+) sha256=([0-9a-f]{64}) bytes=(\d+) -->\n\n")
 PTR_ID = re.compile(r"^Comment ID: (\d+)$", re.M)
 PTR_SHA = re.compile(r"^SHA-256: ([0-9a-f]{64})$", re.M)
+CANONICAL_POINTER = "## Implementation Contract\nComment ID: <comment-id>\nSHA-256: <sha256>\nState: approved"
 OBVIOUS_SECRET = re.compile(
     r"(?i)(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{16,}|bearer\s+[A-Za-z0-9._~+/-]{16,}|(?:password|secret|client[_-]?secret|authorization|api[_-]?key|access[_-]?token)\s*[:=]\s*\S+)"
 )
@@ -115,27 +116,31 @@ def save_contract(repo: Path, issue: int, source: Path | None = None) -> dict[st
     return {**result, "path": str(payload_path(repo, issue))}
 
 
+def _pointer_error(reason: str) -> ContractError:
+    return ContractError(f"{reason}\nUse exactly this block and do not append prose:\n\n{CANONICAL_POINTER}")
+
+
 def parse_pointer(issue_body: str) -> tuple[int, str]:
     headings = re.findall(r"^##\s+Implementation Contract\s*#*\s*$", issue_body or "", re.M | re.I)
     if len(headings) != 1:
-        raise ContractError("Issue body must contain exactly one ## Implementation Contract section")
+        raise _pointer_error("Issue body must contain exactly one ## Implementation Contract section")
     body = section_body(issue_body or "", "Implementation Contract")
     if body is None:
-        raise ContractError("Issue body has no Implementation Contract pointer section")
+        raise _pointer_error("Issue body has no Implementation Contract pointer section")
     lines = [line.strip() for line in body.splitlines() if line.strip()]
     allowed = {"Comment ID", "SHA-256", "State"}
     values: dict[str, str] = {}
     for line in lines:
         if ": " not in line:
-            raise ContractError("Implementation Contract pointer section has unexpected content")
+            raise _pointer_error("Implementation Contract pointer section has unexpected content")
         key, value = line.split(": ", 1)
         if key not in allowed or key in values:
-            raise ContractError("Implementation Contract pointer section has unexpected or duplicate fields")
+            raise _pointer_error("Implementation Contract pointer section has unexpected or duplicate fields")
         values[key] = value
     if set(values) != allowed or values["State"] != "approved":
-        raise ContractError("Implementation Contract pointer must contain Comment ID, SHA-256, and State: approved")
+        raise _pointer_error("Implementation Contract pointer must contain Comment ID, SHA-256, and State: approved")
     if not values["Comment ID"].isdigit() or not re.fullmatch(r"[0-9a-f]{64}", values["SHA-256"]):
-        raise ContractError("Implementation Contract pointer ID or SHA-256 is malformed")
+        raise _pointer_error("Implementation Contract pointer ID or SHA-256 is malformed")
     return int(values["Comment ID"]), values["SHA-256"]
 
 

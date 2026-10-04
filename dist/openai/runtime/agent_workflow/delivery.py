@@ -59,6 +59,18 @@ def _required_checks(profile: dict[str, Any]) -> list[Any]:
     return checks
 
 
+def _base_details(pull: dict[str, Any], gh: GitHub) -> dict[str, Any]:
+    base_ref = pull.get("base", {}).get("ref")
+    if not isinstance(base_ref, str) or not base_ref:
+        raise DeliveryError("PR base branch ref is missing")
+    metadata = gh.repository()
+    default_ref = metadata.get("default_branch") if isinstance(metadata, dict) else None
+    if not isinstance(default_ref, str) or not default_ref:
+        raise DeliveryError("GitHub repository default branch is missing")
+    return {"base_ref": base_ref, "default_base_ref": default_ref,
+            "stacked": base_ref != default_ref}
+
+
 def _check_passed(required: Any, check_runs: list[dict[str, Any]], statuses: list[dict[str, Any]], head: str) -> bool:
     if isinstance(required, str):
         name, app_id = required, None
@@ -83,6 +95,7 @@ def delivery_check(repo: Path, issue: int, pr: int, gh: GitHub) -> dict[str, Any
     issue_obj = gh.issue(issue)
     pull = gh.pull(pr)
     _identity(issue_obj, pull, issue, pr, gh)
+    base_details = _base_details(pull, gh)
     labels = _labels(issue_obj)
     head = pull.get("head", {}).get("sha")
     if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{7,40}", head):
@@ -95,7 +108,7 @@ def delivery_check(repo: Path, issue: int, pr: int, gh: GitHub) -> dict[str, Any
         if any(label.startswith("phase:") for label in labels):
             errors.append("merged delivery still has a phase label; run finalize-merged-issue after resolving unexpected labels")
         return {"gate": "merged", "passed": not errors, "errors": errors, "issue": issue,
-                "pr": pr, "head": head}
+                "pr": pr, "head": head, **base_details}
 
     if issue_obj.get("state") != "open":
         errors.append("handoff requires an open Issue")
@@ -111,15 +124,31 @@ def delivery_check(repo: Path, issue: int, pr: int, gh: GitHub) -> dict[str, Any
         errors.append("PR Verification field is empty")
     if _section(pull.get("body") or "", "Untested") is None:
         errors.append("PR Untested field is empty")
+    review_failures: list[dict[str, str]] = []
+    review_failure_count = 0
     try:
         published = validate_public_review(issue, pr, gh)
+        review_current = True
         if published["stale"] or published["head"] != head:
             errors.append("published self-review is stale for the current PR HEAD")
+            review_current = False
         current_items, current_list_sha = effective_checklist(issue, issue_obj.get("body") or "", gh)
         if current_list_sha != published["checklist_sha256"]:
             errors.append("published self-review checklist is stale")
+            review_current = False
         if [(i["id"], i["text"]) for i in published["review"].get("items", [])] != [(i["id"], i["text"]) for i in current_items]:
             errors.append("published self-review items do not match the current effective checklist")
+            review_current = False
+        if review_current:
+            failed = [item for item in published["review"].get("items", []) if item.get("result") == "fail"]
+            review_failure_count = len(failed)
+            review_failures = [{"id": str(item.get("id", "item"))[:64],
+                                "text": str(item.get("text", ""))[:240]} for item in failed[:10]]
+            if failed:
+                summary = "; ".join(f"{item['id']}: {item['text']}" for item in review_failures)
+                if len(failed) > len(review_failures):
+                    summary += f"; and {len(failed) - len(review_failures)} more"
+                errors.append(f"published self-review has {len(failed)} current failed item(s): {summary}")
     except (ReviewError, ValueError) as exc:
         errors.append(f"published self-review is invalid: {exc}")
     checks = _required_checks(profile)
@@ -137,7 +166,9 @@ def delivery_check(repo: Path, issue: int, pr: int, gh: GitHub) -> dict[str, Any
     if generic and not re.search(r"(?im)^\s*Generic profile rationale:\s*\S.+$", pull.get("body") or ""):
         errors.append("PR affecting a generic component requires a concrete Generic profile rationale:")
     return {"gate": "handoff", "passed": not errors, "errors": errors,
-            "issue": issue, "pr": pr, "head": head, "required_checks": checks}
+            "issue": issue, "pr": pr, "head": head, "required_checks": checks,
+            "review_failures": review_failures, "review_failure_count": review_failure_count,
+            **base_details}
 
 
 def finalize_merged_issue(issue: int, pr: int, gh: GitHub) -> dict[str, Any]:

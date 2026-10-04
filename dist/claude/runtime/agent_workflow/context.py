@@ -101,7 +101,9 @@ def build_context(repo: Path, issue_number: int, gh: GitHub, runtime_host: str |
         phase = phase_labels[0].split(":", 1)[1] if phase_labels else None
     closed = issue.get("state") == "closed"
     chosen = [] if closed else affected_components(issue.get("body") or "", profile)
-    owners, planned, link_diagnostics = ([], [], []) if closed else resolve_document_impact(issue.get("body") or "", repo, gh.repo)
+    owners, planned, document_impact, link_diagnostics = (
+        ([], [], None, []) if closed else resolve_document_impact(issue.get("body") or "", repo, gh.repo)
+    )
     app_types = sorted({app for component in chosen for app in component.get("application_types", []) if app != "generic"})
     context = {
         "issue": {"number": issue_number, "url": issue.get("html_url"), "state": issue.get("state"),
@@ -122,6 +124,7 @@ def build_context(repo: Path, issue_number: int, gh: GitHub, runtime_host: str |
         "application_profile_paths": [f"workflow/standards/application-profiles/{app}.md" for app in app_types],
         "document_owners": owners,
         "planned_owners": planned,
+        "document_impact": document_impact,
         "diagnostics": link_diagnostics[:12],
     }
     return context

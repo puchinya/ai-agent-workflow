@@ -9,10 +9,11 @@ Use after requirements are approved and before implementation. Read the owning I
 
 ## Procedure
 1. Identify durable rules and assign one specification owner to each.
-2. Write or update Schema 2 specs, then design documents with traceability.
-3. Record boundaries, errors, data ownership, security, alternatives, and verification.
-4. Link Issue, specification, and design owners; validate local links and required sections.
-5. Publish the Reviewer Checklist before implementation.
+2. Set the Issue's Specification, Design, and Status decisions before writing; each row uses matching-tree links or its allowed unchanged/evidence-only reason.
+3. Write or update Schema 2 specs, then design documents with traceability.
+4. Record boundaries, errors, data ownership, security, alternatives, and verification.
+5. Link Issue, specification, and design owners; validate local links, required sections, and the declared Document impact.
+6. Publish the Reviewer Checklist before implementation.
 
 ## Output and uncertainty
 Produce linked specs/design and unresolved-decision list. Do not invent a decision when the contract is incomplete; route it back to requirements. Use the repository templates under `workflow/templates/`.
