@@ -23,7 +23,7 @@ from .profile import (APPLICATION_TYPES, ProfileError, build_hook_plan, load_pro
 from .process import ProcessError, run_command
 from .review import (ReviewError, effective_checklist, load_review, prepare_review,
                      publish_review, review_path, validate_public_review)
-from .versioning import VersionError, resolve_version
+from .versioning import VersionError, resolve_milestone_version
 
 
 class CLIError(RuntimeError):
@@ -126,13 +126,41 @@ def _ensure_milestone(args: argparse.Namespace) -> dict[str, Any]:
     policy = profile["milestones"]
     if policy["mode"] == "disabled":
         return {"issue": args.issue, "status": "DISABLED"}
-    version = resolve_version(repo, policy["version_source"])
+    version, version_origin = resolve_milestone_version(
+        repo, policy["version_source"], getattr(args, "target_version", None)
+    )
     if version is None:
         if policy["mode"] == "required":
             raise VersionError("required milestone mode has no resolvable version")
-        return {"issue": args.issue, "status": "NOT_APPLICABLE", "reason": "version_unresolved"}
+        return {"issue": args.issue, "status": "NOT_APPLICABLE", "reason": "version_unresolved",
+                "version": None, "version_origin": version_origin}
 
-    matches = [item for item in gh.milestones() if item.get("title") == version]
+    existing = issue.get("milestone")
+    if existing is not None:
+        if (not isinstance(existing, dict) or not isinstance(existing.get("number"), int)
+                or isinstance(existing.get("number"), bool) or existing.get("number") < 1):
+            raise GitHubError("Issue milestone metadata is invalid")
+        current_title = existing.get("title") if isinstance(existing.get("title"), str) else None
+        if current_title is not None and current_title != version:
+            raise GitHubError(
+                f"Issue already belongs to a different milestone '{current_title}' "
+                f"(#{existing['number']}); requested milestone '{version}'"
+            )
+
+    milestones = gh.milestones()
+    current_title = None
+    if existing is not None:
+        current_title = existing.get("title") if isinstance(existing.get("title"), str) else None
+        if current_title is None:
+            current = next((item for item in milestones if item.get("number") == existing["number"]), None)
+            current_title = current.get("title") if isinstance(current, dict) and isinstance(current.get("title"), str) else None
+        if current_title is not None and current_title != version:
+            raise GitHubError(
+                f"Issue already belongs to a different milestone '{current_title}' "
+                f"(#{existing['number']}); requested milestone '{version}'"
+            )
+
+    matches = [item for item in milestones if item.get("title") == version]
     if len(matches) > 1:
         raise GitHubError("multiple exact-title milestones already exist")
     milestone = matches[0] if matches else None
@@ -142,15 +170,16 @@ def _ensure_milestone(args: argparse.Namespace) -> dict[str, Any]:
             raise GitHubError("exact-title milestone is missing a valid number")
         if milestone.get("state") != "open":
             raise GitHubError("exact-title milestone is closed")
-    existing = issue.get("milestone")
+
     if existing is not None:
-        if (not isinstance(existing, dict) or not isinstance(existing.get("number"), int)
-                or isinstance(existing.get("number"), bool) or existing.get("number") < 1):
-            raise GitHubError("Issue milestone metadata is invalid")
         if milestone is None or existing.get("number") != milestone.get("number"):
-            raise GitHubError("Issue already belongs to a different milestone")
+            current = f"'{current_title}' (#{existing['number']})" if current_title is not None else f"#{existing['number']}"
+            raise GitHubError(
+                f"Issue already belongs to a different milestone {current}; requested milestone '{version}'"
+            )
         return {"issue": args.issue, "status": "ASSIGNED", "milestone": milestone["number"],
-                "created": False, "assigned": False}
+                "created": False, "assigned": False, "version": version,
+                "version_origin": version_origin}
 
     created = milestone is None
     if created:
@@ -163,7 +192,8 @@ def _ensure_milestone(args: argparse.Namespace) -> dict[str, Any]:
         milestone = matches[0]
     gh.assign_issue_milestone(args.issue, milestone["number"])
     return {"issue": args.issue, "status": "ASSIGNED", "milestone": milestone["number"],
-            "created": created, "assigned": True}
+            "created": created, "assigned": True, "version": version,
+            "version_origin": version_origin}
 
 
 def _start_feature_branch(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
@@ -280,6 +310,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     milestone = commands.add_parser("ensure-milestone")
     milestone.add_argument("issue", type=_number)
+    milestone.add_argument("--target-version", metavar="VERSION")
     milestone.add_argument("--repo")
 
     feature = commands.add_parser("start-feature-branch")

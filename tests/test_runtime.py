@@ -39,7 +39,8 @@ import build_dist
 import validate_dist
 import package_release
 from agent_workflow import __version__
-from agent_workflow.versioning import VersionError, _split_command, resolve_version
+from agent_workflow.versioning import (VersionError, _split_command, resolve_milestone_version,
+                                       resolve_version)
 
 
 def profile_fixture():
@@ -415,6 +416,22 @@ class VersioningTests(unittest.TestCase):
         with self.assertRaisesRegex(VersionError, "single-line"):
             resolve_version(self.repo, "auto")
 
+    def test_milestone_target_resolution_preserves_exact_string_and_bypasses_fallback(self):
+        source = {"type": "command", "command": "not-a-real-version-command"}
+        with patch("agent_workflow.versioning.resolve_version", side_effect=AssertionError("fallback called")) as fallback:
+            self.assertEqual(resolve_milestone_version(self.repo, source, "  next release  "),
+                             ("  next release  ", "target"))
+        fallback.assert_not_called()
+
+    def test_milestone_target_uses_existing_version_validation(self):
+        for value in (123, "", "  \t", "0.4.0\nnext", "0.4.0\rnext"):
+            with self.subTest(value=repr(value)), self.assertRaisesRegex(VersionError, "non-empty single-line"):
+                resolve_milestone_version(self.repo, "auto", value)
+
+    def test_milestone_version_fallback_reports_profile_origin(self):
+        self.write("package.json", '{"version":"0.3.0"}\n')
+        self.assertEqual(resolve_milestone_version(self.repo, "auto", None), ("0.3.0", "profile"))
+
 
 class MilestoneLifecycleTests(unittest.TestCase):
     def setUp(self):
@@ -426,8 +443,9 @@ class MilestoneLifecycleTests(unittest.TestCase):
         self.profile["components"] = self.profile["components"][:1]
         self.profile["milestones"] = {"mode": "auto", "version_source": "auto"}
 
-    def run_ensure(self):
-        args = type("Args", (), {"repo": str(self.repo), "issue": 1})()
+    def run_ensure(self, target_version=None):
+        args = type("Args", (), {"repo": str(self.repo), "issue": 1,
+                                  "target_version": target_version})()
         with patch("agent_workflow.cli._repo_arg", return_value=self.repo), \
              patch("agent_workflow.cli.load_profile", return_value=self.profile), \
              patch("agent_workflow.cli._gh", return_value=self.fake):
@@ -436,6 +454,7 @@ class MilestoneLifecycleTests(unittest.TestCase):
     def test_auto_without_version_is_not_applicable_without_mutation(self):
         result = self.run_ensure()
         self.assertEqual(result["status"], "NOT_APPLICABLE")
+        self.assertEqual((result["version"], result["version_origin"]), (None, "profile"))
         self.assertEqual(self.fake.milestone_data, [])
         self.assertEqual([call[0] for call in self.fake.lifecycle_calls], ["issue"])
 
@@ -445,13 +464,14 @@ class MilestoneLifecycleTests(unittest.TestCase):
             self.run_ensure()
         self.profile["milestones"]["mode"] = "disabled"
         self.fake.lifecycle_calls.clear()
-        self.assertEqual(self.run_ensure()["status"], "DISABLED")
+        self.assertEqual(self.run_ensure("0.4.0")["status"], "DISABLED")
         self.assertEqual([call[0] for call in self.fake.lifecycle_calls], ["issue"])
 
     def test_create_reuse_and_same_issue_assignment_are_idempotent(self):
         (self.repo / "package.json").write_text('{"version":"0.2.0"}\n', encoding="utf-8")
         result = self.run_ensure()
         self.assertEqual((result["created"], result["assigned"]), (True, True))
+        self.assertEqual((result["version"], result["version_origin"]), ("0.2.0", "profile"))
         self.assertEqual(self.fake.milestone_data[0]["title"], "0.2.0")
         self.assertEqual(self.fake.issue_data["milestone"]["number"], result["milestone"])
 
@@ -475,7 +495,7 @@ class MilestoneLifecycleTests(unittest.TestCase):
         self.assertEqual(self.fake.issue_data["milestone"]["number"], 12)
 
         self.fake.issue_data["milestone"] = {"number": 99, "title": "0.1.0", "state": "open"}
-        with self.assertRaisesRegex(GitHubError, "different milestone"):
+        with self.assertRaisesRegex(GitHubError, "different milestone.*0.1.0.*0.2.0"):
             self.run_ensure()
 
     def test_closed_duplicate_and_ambiguous_versions_fail_before_assignment(self):
@@ -492,6 +512,76 @@ class MilestoneLifecycleTests(unittest.TestCase):
         (self.repo / "pyproject.toml").write_text('[project]\nversion = "8.0"\n', encoding="utf-8")
         with self.assertRaisesRegex(VersionError, "VERSION_AMBIGUOUS"):
             self.run_ensure()
+
+    def test_explicit_target_overrides_current_unresolved_and_ambiguous_sources(self):
+        (self.repo / "package.json").write_text('{"version":"0.3.0"}\n', encoding="utf-8")
+        self.profile["milestones"]["version_source"] = {
+            "type": "json", "path": "missing.json", "field": "version"
+        }
+        result = self.run_ensure("0.4.0")
+        self.assertEqual((result["created"], result["assigned"]), (True, True))
+        self.assertEqual((result["version"], result["version_origin"]), ("0.4.0", "target"))
+        self.assertEqual(self.fake.milestone_data[0]["title"], "0.4.0")
+        retry = self.run_ensure("0.4.0")
+        self.assertEqual((retry["created"], retry["assigned"]), (False, False))
+
+        self.fake = FakeGitHub()
+        self.profile["milestones"]["version_source"] = "auto"
+        (self.repo / "pyproject.toml").write_text('[project]\nversion = "9.9.9"\n', encoding="utf-8")
+        result = self.run_ensure("0.4.0")
+        self.assertEqual((result["version"], result["version_origin"]), ("0.4.0", "target"))
+        self.assertEqual(self.fake.milestone_data[0]["title"], "0.4.0")
+
+    def test_invalid_explicit_target_fails_before_milestone_list_or_mutation(self):
+        for target in ("", "0.4.0\nnext"):
+            with self.subTest(target=repr(target)):
+                self.fake.lifecycle_calls.clear()
+                with self.assertRaisesRegex(VersionError, "non-empty single-line"):
+                    self.run_ensure(target)
+                self.assertEqual([call[0] for call in self.fake.lifecycle_calls], ["issue"])
+                self.assertEqual(self.fake.milestone_data, [])
+                self.assertIsNone(self.fake.issue_data["milestone"])
+
+    def test_target_exact_title_reuse_and_retry_are_idempotent(self):
+        self.fake.milestone_data = [{"number": 14, "title": "0.4.0", "state": "open"}]
+        first = self.run_ensure("0.4.0")
+        self.assertEqual((first["created"], first["assigned"], first["milestone"]), (False, True, 14))
+        self.assertEqual((first["version"], first["version_origin"]), ("0.4.0", "target"))
+
+        self.fake.lifecycle_calls.clear()
+        second = self.run_ensure("0.4.0")
+        self.assertEqual((second["created"], second["assigned"]), (False, False))
+        self.assertEqual((second["version"], second["version_origin"]), ("0.4.0", "target"))
+        self.assertNotIn("assign_milestone", [call[0] for call in self.fake.lifecycle_calls])
+
+    def test_mismatched_existing_issue_milestone_fails_without_mutation(self):
+        self.fake.issue_data["milestone"] = {"number": 22, "title": "0.3.0", "state": "open"}
+        with self.assertRaisesRegex(GitHubError, "different milestone.*0.3.0.*0.4.0"):
+            self.run_ensure("0.4.0")
+        self.assertEqual([call[0] for call in self.fake.lifecycle_calls], ["issue"])
+        self.assertEqual(self.fake.milestone_data, [])
+        self.assertEqual(self.fake.issue_data["milestone"]["number"], 22)
+
+    def test_mismatched_existing_milestone_title_is_resolved_from_list(self):
+        self.fake.issue_data["milestone"] = {"number": 22}
+        self.fake.milestone_data = [
+            {"number": 22, "title": "0.3.0", "state": "open"},
+            {"number": 23, "title": "0.4.0", "state": "open"},
+        ]
+        with self.assertRaisesRegex(GitHubError, "different milestone.*0.3.0.*0.4.0"):
+            self.run_ensure("0.4.0")
+        self.assertNotIn("assign_milestone", [call[0] for call in self.fake.lifecycle_calls])
+        self.assertEqual(self.fake.issue_data["milestone"]["number"], 22)
+
+    def test_closed_or_duplicate_explicit_target_milestones_fail(self):
+        self.fake.milestone_data = [{"number": 12, "title": "0.4.0", "state": "closed"}]
+        with self.assertRaisesRegex(GitHubError, "closed"):
+            self.run_ensure("0.4.0")
+        self.fake.milestone_data = [{"number": 12, "title": "0.4.0", "state": "open"},
+                                    {"number": 13, "title": "0.4.0", "state": "open"}]
+        with self.assertRaisesRegex(GitHubError, "multiple exact-title"):
+            self.run_ensure("0.4.0")
+        self.assertIsNone(self.fake.issue_data["milestone"])
 
     def test_foreign_closed_or_pull_request_issue_fails_before_milestone_calls(self):
         (self.repo / "package.json").write_text('{"version":"0.2.0"}\n', encoding="utf-8")
@@ -548,8 +638,10 @@ class GitLifecycleTests(unittest.TestCase):
             feature_slug("你好!!!", 48)
 
     def test_cli_parses_both_lifecycle_commands(self):
-        milestone = build_parser().parse_args(["ensure-milestone", "7", "--repo", str(self.repo)])
-        self.assertEqual((milestone.command, milestone.issue), ("ensure-milestone", 7))
+        milestone = build_parser().parse_args(["ensure-milestone", "7", "--target-version", "0.4.0",
+                                                "--repo", str(self.repo)])
+        self.assertEqual((milestone.command, milestone.issue, milestone.target_version),
+                         ("ensure-milestone", 7, "0.4.0"))
         branch = build_parser().parse_args(["start-feature-branch", "7", "ship", "lifecycle",
                                             "--repo", str(self.repo)])
         self.assertEqual((branch.command, branch.issue, branch.description),

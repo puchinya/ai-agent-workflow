@@ -23,7 +23,7 @@ Goals are explicit Issue authority, progressive context loading, reliable local 
 | Durable document decisions stay explicit through implementation | The Issue carries Specification, Design, and Status decisions; implementation checks them against the final diff, and self-review verifies alignment. |
 | A current self-review fail blocks handoff | The delivery gate rejects current `fail` items and reports bounded IDs/text while treating `untested` as evidence rather than a global block. |
 | Host-specific packages differ | The builder emits three isolated packages from shared sources and adapters. |
-| Milestone and feature-branch lifecycle is reusable | Consumer policy stays in Schema 2 `.agent/project.json`; the requirements and implementation Skills call standard runtime commands. |
+| Milestone and feature-branch lifecycle is reusable | Milestone mode and fallback source stay in Schema 2 `.agent/project.json`; an approved target release is Issue-scoped input, and the requirements and implementation Skills call standard runtime commands. |
 
 ## Architecture
 

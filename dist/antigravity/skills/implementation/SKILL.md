@@ -14,7 +14,7 @@ Use only after Issue, contract, Reviewer Checklist, and required design are appr
 4. Implement the smallest complete behavior, then add focused tests with fake GitHub boundaries.
 5. Re-evaluate all three Document impact decisions against the final diff; update the Issue rows if the spec, design, or status choice changed. Validate declared owners with `python -m agent_workflow validate-docs --issue <issue>`.
 6. Run configured hooks in declared order and record skipped targets as unverified.
-7. Save checkpoints/evidence and request triage for category-C discoveries.
+7. Preserve any approved Issue-scoped target release exactly through the handoff; do not derive or substitute a version. Include the target selection and contracted milestone command/result in delivery evidence when milestone assignment is part of the contract. Save checkpoints/evidence and request triage for category-C discoveries.
 
 ## Output and uncertainty
 Report changed paths, evidence, unverified checks, and next step. Stop on contract conflict; never broaden unknown scope or infer application type. See the [application profile index](../../standards/application-profiles/README.md).
