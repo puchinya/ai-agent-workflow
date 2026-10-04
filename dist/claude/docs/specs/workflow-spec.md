@@ -33,7 +33,7 @@ Every new durable work item records explicit specification, design, and status d
 
 Feature work uses `python -m agent_workflow start-feature-branch <issue> <description...>` after its open Issue and project profile are validated. The runtime derives a deterministic `<prefix>/<issue>-<slug>` branch name, checks the worktree, and performs cleanup and global `branch_switch` hooks only after an actual branch switch. Repeating the command on the current target branch performs no cleanup or hooks.
 
-After an Issue exists, the requirements Skill runs `python -m agent_workflow ensure-milestone <issue>`. Milestones follow the consumer profile's `auto`, `required`, or `disabled` mode and repository version source. `auto` accepts an unresolved version as `NOT_APPLICABLE`; `required` fails closed when no version can be resolved. Exact-title reuse is idempotent, and closed or duplicate milestones are never silently reopened or replaced.
+After an Issue exists, the requirements Skill runs `python -m agent_workflow ensure-milestone <issue>` unless an approved Issue contract explicitly names a target release, in which case it passes that unchanged value with `--target-version <version>`. Skills MUST NOT invent or infer a target version. Milestones follow the consumer profile's `auto`, `required`, or `disabled` mode. `disabled` always skips and cannot be overridden by a target. Otherwise an explicit target takes precedence over the repository version source; absent a target, the existing profile source applies. `auto` accepts an unresolved fallback as `NOT_APPLICABLE`; `required` fails closed when no fallback version can be resolved. Exact-title reuse is idempotent, and closed or duplicate milestones are never silently reopened or replaced. An Issue's existing Milestone is immutable through this command: a different current assignment fails without mutation.
 
 ### Skills
 
@@ -51,7 +51,7 @@ Canonical Skill source is `workflow/skills/`. It contains exactly these task are
 
 Each Skill MUST have concise YAML frontmatter with `name` and `description`. Detailed shared policy belongs in standards or referenced resources. A Skill MUST state its trigger, expected inputs, ordered procedure, output, uncertainty behavior, and supporting resources where relevant. Skill copies in `dist/**` are generated.
 
-The requirements Skill creates/validates the Issue first and then runs `ensure-milestone`; it may continue after `NOT_APPLICABLE` only when the profile mode is `auto`. The implementation Skill starts the feature branch with `start-feature-branch` before changing source files.
+The requirements Skill creates/validates the Issue first and then runs `ensure-milestone`, passing `--target-version` only when the approved Issue requirements explicitly supply it; it may continue after `NOT_APPLICABLE` only when the profile mode is `auto`. The implementation Skill starts the feature branch with `start-feature-branch` before changing source files and preserves any approved target version unchanged through the implementation handoff.
 
 ### Review and delivery principles
 

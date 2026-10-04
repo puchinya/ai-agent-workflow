@@ -9,7 +9,7 @@ Use when work is proposed without an approved Issue contract, or a material requ
 
 ## Procedure
 1. Confirm one owning Issue and inspect its current phase and contract pointer.
-2. After the Issue exists, run `python -m agent_workflow ensure-milestone <issue>` and inspect its JSON result. Continue after `NOT_APPLICABLE` only when `.agent/project.json` sets `milestones.mode` to `auto`; `required` and `disabled` have their own explicit outcomes.
+2. After the Issue exists, read the approved requirements/contract for an explicit target release. Run `python -m agent_workflow ensure-milestone <issue> --target-version <version>` only when that target is explicitly approved; preserve it exactly and never infer or calculate one. Otherwise run `python -m agent_workflow ensure-milestone <issue>` and use the profile version source. Inspect the JSON result. `disabled` always skips even when a target is supplied; continue after `NOT_APPLICABLE` only when `.agent/project.json` sets `milestones.mode` to `auto`.
 3. Resolve scope, observable outcomes, constraints, non-goals, acceptance evidence, and unresolved decisions with the user.
 4. For new durable work, record the canonical `## Document impact` rows for Specification, Design, and Status. Use matching docs-tree links or a reason for `unchanged`/`evidence-only`; do not force a document change.
 5. Draft concise contract text and a Reviewer Checklist; keep secrets out.

@@ -224,3 +224,11 @@ def resolve_version(repo: Path, version_source: str | dict[str, str]) -> str | N
     if not isinstance(version_source, dict):
         raise VersionError("invalid version source")
     return _explicit(repo, version_source)
+
+
+def resolve_milestone_version(repo: Path, version_source: str | dict[str, str],
+                              target_version: str | None) -> tuple[str | None, str]:
+    """Resolve an Issue-approved milestone target or the configured profile fallback."""
+    if target_version is not None:
+        return _version(target_version, "--target-version"), "target"
+    return resolve_version(repo, version_source), "profile"
