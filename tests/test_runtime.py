@@ -60,6 +60,13 @@ def profile_fixture():
     }
 
 
+def python_shell_command(script, *arguments):
+    command = [sys.executable, "-c", script, *arguments]
+    if sys.platform == "win32":
+        return subprocess.list2cmdline(command)
+    return " ".join(__import__("shlex").quote(part) for part in command)
+
+
 class FakeGitHub:
     def __init__(self, body=""):
         self.repo = "owner/repo"
@@ -1367,11 +1374,10 @@ class ProcessTests(unittest.TestCase):
     def test_diagnostic_failure_is_redacted_bounded_and_uses_deleted_temp_files(self):
         with tempfile.TemporaryDirectory() as temporary:
             secret = "hook-secret-value"
-            script = ("import os,sys; print('x'*20000); print(os.environ['DIAGNOSTIC_TOKEN']); "
+            script = ("import sys; print('x'*20000); print(sys.argv[-1]); "
                       "print('Authorization: Bearer abcdefghijklmnopqrstuvwxyz'); "
                       "print('stderr detail', file=sys.stderr); sys.exit(37)")
-            command = (f"DIAGNOSTIC_TOKEN={secret} {__import__('shlex').quote(sys.executable)} "
-                       f"-c {__import__('shlex').quote(script)}")
+            command = python_shell_command(script, f"--token={secret}")
             with patch("agent_workflow.process.tempfile.tempdir", temporary):
                 with self.assertRaises(ProcessError) as raised:
                     run_command(command, Path(temporary), diagnostic=True)
@@ -1386,7 +1392,7 @@ class ProcessTests(unittest.TestCase):
 
     def test_default_hook_failure_stays_silent_and_diagnostic_cli_flag_parses(self):
         script = "import sys; print('out'); print('err', file=sys.stderr); sys.exit(9)"
-        command = f"{__import__('shlex').quote(sys.executable)} -c {__import__('shlex').quote(script)}"
+        command = python_shell_command(script)
         output, errors = io.StringIO(), io.StringIO()
         with redirect_stdout(output), redirect_stderr(errors):
             with self.assertRaises(ProcessError) as raised:
@@ -1411,9 +1417,8 @@ class ProcessTests(unittest.TestCase):
             (repo / ".git").mkdir()
             (repo / ".agent").mkdir()
             secret = "cli-hook-secret"
-            script = "import os,sys; print(os.environ['DIAG_TOKEN']); sys.exit(23)"
-            command = (f"DIAG_TOKEN={secret} {__import__('shlex').quote(sys.executable)} "
-                       f"-c {__import__('shlex').quote(script)}")
+            script = "import sys; print(sys.argv[-1]); sys.exit(23)"
+            command = python_shell_command(script, f"--token={secret}")
             profile = profile_fixture()
             profile["hooks"] = {"verify_final": [command]}
             (repo / ".agent/project.json").write_text(json.dumps(profile), encoding="utf-8")
