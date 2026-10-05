@@ -45,7 +45,7 @@ Canonical Skill source is `workflow/skills/`. It contains exactly these task are
 4. `implementation` — work from the approved Issue and scoped context.
 5. `evidence` — record reproducible verification and unverified targets.
 6. `checkpoint` — save and resume Issue-scoped progress.
-7. `self-review` — evaluate every effective checklist item against evidence.
+7. `self-review` — review every approved contract section and every effective checklist item against evidence.
 8. `pr-review` — review a change independently against its contract and current HEAD.
 9. `delivery` — enforce PR handoff and merged-delivery gates.
 
@@ -64,7 +64,13 @@ Self-review is evidence, never approval. Review findings use these categories:
 
 Category C is not implementer failure. An implementation is complete only through the PR delivery gate; passing tests alone is insufficient. A new PR commit invalidates review against an older HEAD. Missing or unavailable verification remains unverified and MUST NOT be reported as passing.
 
-A current self-review item with `result: fail` blocks handoff even when Required Checks are green. `untested` remains valid evidence and is not a global blocker; mandatory verification and configured Required Checks remain independent gates.
+A self-review has two separate layers: Contract Conformance Review covers the complete approved Implementation Contract, and Reviewer Checklist Review covers every effective Contract/Issue checklist item. The Reviewer Checklist is a concise summary review surface, not a substitute for reading and checking the full approved contract. Both layers bind to the same exact PR HEAD, approved contract comment ID, and approved contract SHA.
+
+Strict Reviewer Checklist H2 authoring validation applies at the write boundary when a new or superseding contract is published. It does not invalidate already-approved historical contract bytes. Historical checklist extraction keeps the canonical-block precedence and narrow-heading fallback; a legacy/non-canonical Reviewer Checklist H2 is also included in contract-conformance coverage, while a strict-canonical H2 may be excluded. Self-review publication reads back the exact named comment after creation and verifies its PR association and body before any pointer update; this check is separate from the subsequent HEAD and contract race revalidation.
+
+A current contract section or checklist item with `result: fail` blocks handoff even when Required Checks are green. Contract-section `untested` is valid evidence of an unresolved blocker and blocks handoff. Checklist-level `untested` remains valid, non-blocking evidence by itself; its evidence must identify the unavailable verification or residual uncertainty. A source/diff-reviewable contract section must not be marked `untested` to avoid checking it. Mandatory verification and configured Required Checks remain independent gates.
+
+Schema-v1 public self-reviews may be read for diagnostics, but they do not establish full-contract conformance and cannot satisfy handoff. Delivery gives explicit guidance to regenerate and publish a schema-v2 review with the current workflow; historical comments are not rewritten automatically.
 
 ## Observable behavior
 
