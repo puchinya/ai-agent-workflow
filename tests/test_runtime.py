@@ -20,11 +20,13 @@ sys.path.insert(0, str(ROOT / "runtime"))
 sys.path.insert(0, str(ROOT / "tools"))
 
 from agent_workflow.contracts import (ContractError, parse_comment, publish_contract,
-                                      restore_contract, save_contract, sha256,
-                                      validate_payload, verify_contract)
+                                      classify_reviewer_checklist_h2, restore_contract, save_contract, sha256,
+                                      validate_payload, validate_reviewer_checklist_authoring,
+                                      verify_contract)
 from agent_workflow.context import ContextError, affected_components, build_context
 from agent_workflow.cli import (_ensure_milestone, _init_project, _start_feature_branch,
-                                _validate_docs, build_parser, main as cli_main)
+                                _validate_docs, _validate_self_review, build_parser,
+                                main as cli_main)
 from agent_workflow.delivery import DeliveryError, delivery_check, finalize_merged_issue
 from agent_workflow.documents import resolve_document_impact, validate_markdown_file, validate_docs
 from agent_workflow.git import (GitLifecycleError, _remove_cleanup_path, changed_document_paths,
@@ -33,7 +35,8 @@ from agent_workflow.github import GitHub, GitHubError
 from agent_workflow.profile import ProfileError, build_hook_plan, validate_profile
 from agent_workflow.process import ProcessError, run_command
 from agent_workflow.review import (ReviewError, _extract_items, _with_pointer,
-                                   load_review, publish_review, review_path,
+                                   contract_review_units, load_review, prepare_review,
+                                   load_review_surface, publish_review, review_path,
                                    validate_public_review)
 import build_dist
 import validate_dist
@@ -156,6 +159,44 @@ class FakeGitHub:
     def remove_issue_label(self, number, label):
         self.removed.append(label)
         self.issue_data["labels"] = [x for x in self.issue_data["labels"] if x["name"] != label]
+
+
+def install_review_contract(repo: Path, gh: FakeGitHub, payload: bytes | None = None):
+    if payload is None:
+        newline = bytes((13, 10))
+        fence = bytes((96, 96, 96))
+        lines = [
+            b"Contract preamble.", b"", b"## Architecture Decisions",
+            b"Review the complete contract.", fence + b"md", b"## Fake Heading", fence, b"",
+            b"## 9. Reviewer Checklist", b"<!-- AGENT_REVIEWER_CHECKLIST_V1 -->",
+            b"- [ ] Contract checklist point", b"<!-- /AGENT_REVIEWER_CHECKLIST_V1 -->", b"",
+            b"## Document impact", b"Specification and Design links are required.", b"",
+        ]
+        payload = newline.join(lines)
+    newline_text = chr(13) + chr(10)
+    gh.issue_data["body"] = newline_text.join([
+        "## Reviewer Checklist",
+        "<!-- AGENT_REVIEWER_CHECKLIST_V1 -->",
+        "- [ ] Issue checklist point",
+        "<!-- /AGENT_REVIEWER_CHECKLIST_V1 -->",
+        "",
+    ])
+    source = repo / "approved-contract.md"
+    source.write_bytes(payload)
+    published = publish_contract(repo, 1, gh, source)
+    surface = load_review_surface(1, gh.issue_data["body"], gh)
+    return payload, published, surface
+
+
+def complete_review_draft(draft: dict, *, result: str = "pass") -> dict:
+    updated = copy.deepcopy(draft)
+    for section in updated["contract_sections"]:
+        section["result"] = result
+        section["evidence"] = f"Reviewed {section['id']} against the final source and diff."
+    for item in updated["items"]:
+        item["result"] = result
+        item["evidence"] = f"Checked {item['id']} against source and verification output."
+    return updated
 
 
 class ProfileTests(unittest.TestCase):
@@ -1111,6 +1152,24 @@ class ContractTests(unittest.TestCase):
             with self.subTest(raw=raw[:12]), self.assertRaises(ContractError):
                 validate_payload(raw, 1)
 
+    def test_reviewer_checklist_h2_authoring_rule_is_enforced_before_github_mutation(self):
+        intro = b"The implementer must self-review every item in this checklist.\n\n"
+        block = (b"<!-- AGENT_REVIEWER_CHECKLIST_V1 -->\n- [ ] canonical item\n"
+                 b"<!-- /AGENT_REVIEWER_CHECKLIST_V1 -->\n")
+        canonical = b"## Reviewer Checklist\n" + intro + block
+        validate_reviewer_checklist_authoring(canonical)
+        good = self.source(canonical)
+        publish_contract(self.repo, 1, self.gh, good)
+
+        bad = self.source(
+            b"## Reviewer Checklist\n" + block + b"Unique runtime requirement outside checklist.\n"
+        )
+        gh = FakeGitHub()
+        with self.assertRaisesRegex(ContractError, "must not contain prose"):
+            publish_contract(self.repo / "bad", 1, gh, bad)
+        self.assertEqual(gh.comments, [])
+        self.assertEqual([call for call in gh.lifecycle_calls if call[0] == "issue"], [])
+
     def test_publish_readback_verify_and_same_sha_idempotence(self):
         raw = "# Contract\r\n\nnaïve\n".encode()
         source = self.source(raw)
@@ -1185,6 +1244,47 @@ class ContractTests(unittest.TestCase):
 
 
 class ReviewTests(unittest.TestCase):
+    def _install_historical_contract(self, gh: FakeGitHub, contract: bytes) -> int:
+        contract_id = 99
+        digest = hashlib.sha256(contract).hexdigest()
+        body = (
+            f"<!-- agent-contract:v1 issue=1 sha256={digest} bytes={len(contract)} -->\n\n"
+            + contract.decode("utf-8")
+        )
+        gh.comments.append({
+            "id": contract_id,
+            "issue_url": f"https://api.github.com/repos/{gh.repo}/issues/1",
+            "body": body,
+        })
+        gh.issue_data["body"] = (
+            "## Reviewer Checklist\n"
+            "The implementer must self-review every item in this checklist.\n\n"
+            "<!-- AGENT_REVIEWER_CHECKLIST_V1 -->\n"
+            "- [ ] Issue checklist point\n"
+            "<!-- /AGENT_REVIEWER_CHECKLIST_V1 -->\n\n"
+            "## Implementation Contract\n\n"
+            f"Comment ID: {contract_id}\nSHA-256: {digest}\nState: approved\n"
+        )
+        return contract_id
+
+    def _ready_to_publish(self, repo: Path, gh: FakeGitHub):
+        _, _, surface = install_review_contract(repo, gh)
+        head = "f" * 40
+        original_body = _with_pointer(
+            "Closes #1\n\n## Verification\nchecks passed\n\n## Untested\nproduct smoke test unavailable\n",
+            77, "a" * 64, "e" * 40, "d" * 64, 88, "c" * 64,
+        )
+        gh.pull_data = {
+            "number": 2, "state": "open", "draft": False,
+            "base": {"repo": {"full_name": gh.repo}}, "head": {"sha": head},
+            "body": original_body,
+        }
+        prepare_review(repo, 1, 2, gh)
+        path = review_path(repo, 1, 2)
+        draft = complete_review_draft(json.loads(path.read_text(encoding="utf-8")))
+        path.write_text(json.dumps(draft), encoding="utf-8")
+        return head, original_body, surface
+
     def test_canonical_block_wins_and_fallback_heading_is_narrow(self):
         text = """## 9. Reviewer Checklist（contract）
 - [ ] fallback item
@@ -1200,54 +1300,772 @@ class ReviewTests(unittest.TestCase):
     def test_review_draft_requires_results_and_evidence(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "review.json"
-            draft = {"schema_version": 1, "issue": 1, "pr": 2, "head": "a" * 40,
+            draft = {"schema_version": 2, "issue": 1, "pr": 2, "head": "a" * 40,
+                     "contract_comment_id": 123, "contract_sha256": "c" * 64,
                      "checklist_sha256": "b" * 64,
+                     "contract_sections": [{"id": "S001", "title": "Architecture",
+                                            "section_sha256": "d" * 64,
+                                            "result": "pending", "evidence": ""}],
                      "items": [{"id": "C001", "text": "check", "result": "pending", "evidence": ""}]}
             path.write_text(json.dumps(draft), encoding="utf-8")
-            with self.assertRaises(ReviewError):
+            with self.assertRaisesRegex(ReviewError, "S001.*concrete evidence"):
                 load_review(path)
 
-    def test_public_review_marks_new_commit_as_stale(self):
-        gh = FakeGitHub()
-        issue, pr = 1, 4
-        old_head, current_head = "a" * 40, "b" * 40
-        checklist = "c" * 64
-        review = {"schema_version": 1, "issue": issue, "pr": pr, "head": old_head,
-                  "checklist_sha256": checklist,
-                  "items": [{"id": "C001", "text": "thing", "result": "pass", "evidence": "tests/test.py passed"}]}
-        payload = json.dumps(review, ensure_ascii=False, sort_keys=True, indent=2)
-        digest = hashlib.sha256(payload.encode()).hexdigest()
-        body = f"<!-- agent-self-review:v1 issue={issue} pr={pr} head={old_head} checklist={checklist} -->\n\n{payload}"
-        gh.pull_data = {"number": pr, "head": {"sha": current_head},
-                        "body": _with_pointer("Closes #1", 105, digest, old_head, checklist)}
-        gh.pull_comments[105] = {"id": 105, "issue_url": f"https://api.github.com/repos/{gh.repo}/issues/{pr}", "body": body}
-        result = validate_public_review(issue, pr, gh)
-        self.assertTrue(result["stale"])
-        self.assertEqual(result["head"], old_head)
+    def test_contract_review_units_hash_exact_bytes_and_ignore_fenced_headings(self):
+        newline = bytes((13, 10))
+        fence = bytes((96, 96, 96))
+        lines = [
+            b"Contract preamble.", b"", b"## First", b"one", fence + b"md",
+            b"## Fake Section", fence, b"", b"## Reviewer Checklist",
+            b"- [ ] check", b"## Extra", b"two", b"",
+        ]
+        payload = newline.join(lines)
+        units = contract_review_units(payload)
+        first = newline.join(lines[2:8]) + newline
+        extra = newline.join(lines[10:])
+        self.assertEqual([unit["id"] for unit in units], ["P000", "S001", "S002", "S003"])
+        self.assertEqual(
+            [unit["title"] for unit in units],
+            ["Contract Preamble", "First", "Reviewer Checklist", "Extra"],
+        )
+        self.assertEqual(units[0]["section_sha256"], hashlib.sha256(newline.join(lines[:2]) + newline).hexdigest())
+        self.assertEqual(units[1]["section_sha256"], hashlib.sha256(first).hexdigest())
+        legacy_checklist = newline.join(lines[8:10]) + newline
+        self.assertEqual(units[2]["section_sha256"], hashlib.sha256(legacy_checklist).hexdigest())
+        self.assertEqual(units[3]["section_sha256"], hashlib.sha256(extra).hexdigest())
 
-    def test_publish_review_binds_exact_head_and_preserves_pr_body(self):
+    def test_strict_canonical_first_heading_does_not_leak_into_preamble(self):
+        newline = bytes((13, 10))
+        contract = newline.join([
+            b"## Reviewer Checklist",
+            b"<!-- AGENT_REVIEWER_CHECKLIST_V1 -->",
+            b"- [ ] canonical item",
+            b"<!-- /AGENT_REVIEWER_CHECKLIST_V1 -->",
+            b"",
+            b"## Further Work",
+            b"content",
+            b"",
+        ])
+
+        self.assertEqual(classify_reviewer_checklist_h2(contract).state, "strict-canonical")
+        units = contract_review_units(contract)
+        self.assertEqual([unit["id"] for unit in units], ["S001"])
+        self.assertEqual([unit["title"] for unit in units], ["Further Work"])
+        further_work = contract.index(b"## Further Work" + newline)
+        self.assertEqual(
+            units[0]["section_sha256"], hashlib.sha256(contract[further_work:]).hexdigest()
+        )
+        self.assertEqual(_extract_items(contract.decode("utf-8")), ["canonical item"])
+
+    def test_strict_checklist_preamble_ends_at_first_h2_preserving_crlf(self):
+        newline = bytes((13, 10))
+        preamble = b"Intro.\r\n\r\n"
+        contract = preamble + newline.join([
+            b"## Reviewer Checklist",
+            b"<!-- AGENT_REVIEWER_CHECKLIST_V1 -->",
+            b"- [ ] canonical item",
+            b"<!-- /AGENT_REVIEWER_CHECKLIST_V1 -->",
+            b"",
+            b"## Further Work",
+            b"content",
+            b"",
+        ])
+
+        units = contract_review_units(contract)
+        self.assertEqual([unit["id"] for unit in units], ["P000", "S001"])
+        self.assertEqual([unit["title"] for unit in units], ["Contract Preamble", "Further Work"])
+        self.assertEqual(units[0]["section_sha256"], hashlib.sha256(preamble).hexdigest())
+        further_work = contract.index(b"## Further Work" + newline)
+        self.assertEqual(
+            units[1]["section_sha256"], hashlib.sha256(contract[further_work:]).hexdigest()
+        )
+
+    def test_strict_checklist_only_has_no_contract_units(self):
+        contract = (
+            b"## Reviewer Checklist\r\n"
+            b"<!-- AGENT_REVIEWER_CHECKLIST_V1 -->\r\n"
+            b"- [ ] canonical item\r\n"
+            b"<!-- /AGENT_REVIEWER_CHECKLIST_V1 -->\r\n"
+        )
+
+        self.assertEqual(contract_review_units(contract), [])
+        self.assertEqual(_extract_items(contract.decode("utf-8")), ["canonical item"])
+
+    def test_strict_checklist_only_contract_prepares_and_validates_v2_review(self):
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary)
             gh = FakeGitHub()
-            head, checklist = "f" * 40, "e" * 64
-            gh.pull_data = {"number": 2, "state": "open", "draft": False,
-                            "base": {"repo": {"full_name": gh.repo}}, "head": {"sha": head},
-                            "body": "Closes #1\n\n## Verification\ntests passed\n\n## Untested\nIDE smoke test not run\n"}
-            draft = {"schema_version": 1, "issue": 1, "pr": 2, "head": head,
-                     "checklist_sha256": checklist,
-                     "items": [{"id": "C001", "text": "check", "result": "pass", "evidence": "test output"}]}
+            contract = (
+                b"## Reviewer Checklist\r\n"
+                b"<!-- AGENT_REVIEWER_CHECKLIST_V1 -->\r\n"
+                b"- [ ] canonical item\r\n"
+                b"<!-- /AGENT_REVIEWER_CHECKLIST_V1 -->\r\n"
+            )
+            install_review_contract(repo, gh, contract)
+            gh.pull_data = {
+                "number": 2,
+                "base": {"repo": {"full_name": gh.repo}},
+                "head": {"sha": "f" * 40},
+                "body": "Closes #1",
+            }
+
+            prepared = prepare_review(repo, 1, 2, gh)
             path = review_path(repo, 1, 2)
-            path.parent.mkdir(parents=True)
+            draft = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(prepared["contract_section_count"], 0)
+            self.assertEqual(draft["contract_sections"], [])
+            self.assertEqual([item["text"] for item in draft["items"]], [
+                "canonical item", "Issue checklist point",
+            ])
+            path.write_text(
+                json.dumps(complete_review_draft(draft)), encoding="utf-8"
+            )
+            args = type("Args", (), {"repo": None, "input": None, "issue": 1, "pr": 2})()
+            with patch("agent_workflow.cli._repo_arg", return_value=repo), \
+                 patch("agent_workflow.cli._gh", return_value=gh):
+                validated = _validate_self_review(args)
+
+            self.assertTrue(validated["valid"])
+            self.assertEqual(validated["contract_section_count"], 0)
+            self.assertEqual(validated["items"], 2)
+
+    def test_legacy_checklist_first_is_s001_without_artificial_preamble(self):
+        contract = (
+            b"## Reviewer Checklist\r\n"
+            b"- [ ] legacy item\r\n"
+            b"\r\n"
+            b"## Further Work\r\n"
+            b"content\r\n"
+        )
+        gh = FakeGitHub()
+        self._install_historical_contract(gh, contract)
+
+        surface = load_review_surface(1, gh.issue_data["body"], gh)
+        self.assertEqual([unit["id"] for unit in surface["contract_sections"]], ["S001", "S002"])
+        self.assertEqual([unit["title"] for unit in surface["contract_sections"]], [
+            "Reviewer Checklist", "Further Work",
+        ])
+        self.assertEqual([item["text"] for item in surface["items"]], [
+            "legacy item", "Issue checklist point",
+        ])
+        self.assertEqual(
+            surface["contract_sections"][0]["section_sha256"],
+            hashlib.sha256(contract[:contract.index(b"## Further Work")]).hexdigest(),
+        )
+
+    def test_contract_without_h2_remains_exact_preamble_unit(self):
+        contract = b"Exact no-heading payload.\r\n\r\nSecond line.\n"
+
+        units = contract_review_units(contract)
+
+        self.assertEqual([unit["id"] for unit in units], ["P000"])
+        self.assertEqual(units[0]["title"], "Contract Preamble")
+        self.assertEqual(units[0]["section_sha256"], hashlib.sha256(contract).hexdigest())
+
+    def test_legacy_fallback_contract_is_readable_and_v2_reviewable(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            gh = FakeGitHub()
+            contract = (
+                b"## Baseline\nold contract bytes\n\n"
+                b"## Reviewer Checklist\n- [ ] legacy item\nHistorical architecture note.\n\n"
+                b"## Additional Requirements\nlegacy-safe behavior\n"
+            )
+            contract_id = self._install_historical_contract(gh, contract)
+            original_contract_comment = gh.comments[0]["body"]
+            classification = classify_reviewer_checklist_h2(contract)
+            self.assertEqual(classification.state, "legacy/non-canonical")
+            surface = load_review_surface(1, gh.issue_data["body"], gh)
+            self.assertEqual(surface["contract_comment_id"], contract_id)
+            self.assertEqual(surface["items"][0]["text"], "legacy item")
+            checklist_section = next(
+                section for section in surface["contract_sections"]
+                if section["title"] == "Reviewer Checklist"
+            )
+            start = contract.index(b"## Reviewer Checklist\n")
+            end = contract.index(b"## Additional Requirements\n")
+            self.assertEqual(
+                checklist_section["section_sha256"], hashlib.sha256(contract[start:end]).hexdigest()
+            )
+
+            head = "f" * 40
+            gh.pull_data = {
+                "number": 2, "state": "open", "draft": False,
+                "base": {"repo": {"full_name": gh.repo}}, "head": {"sha": head},
+                "body": "Closes #1\n\n## Verification\npassed\n\n## Untested\nnot run\n",
+            }
+            prepared = prepare_review(repo, 1, 2, gh)
+            self.assertEqual(prepared["contract_comment_id"], contract_id)
+            path = review_path(repo, 1, 2)
+            prepared_draft = json.loads(path.read_text(encoding="utf-8"))
+            self.assertIn("Reviewer Checklist", [s["title"] for s in prepared_draft["contract_sections"]])
+            path.write_text(
+                json.dumps(complete_review_draft(json.loads(path.read_text(encoding="utf-8")))),
+                encoding="utf-8",
+            )
+            published = publish_review(repo, 1, 2, gh)
+            self.assertEqual(published["schema_version"], 2)
+            self.assertEqual(published["contract_comment_id"], contract_id)
+            self.assertEqual(len(gh.comments), 1)
+            self.assertEqual(gh.comments[0]["body"], original_contract_comment)
+
+    def test_legacy_canonical_block_with_extra_prose_is_covered_as_contract_unit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            gh = FakeGitHub()
+            contract = (
+                b"## Reviewer Checklist\n"
+                b"<!-- AGENT_REVIEWER_CHECKLIST_V1 -->\n- [ ] canonical item\n"
+                b"<!-- /AGENT_REVIEWER_CHECKLIST_V1 -->\n"
+                b"Historical prose remains contract content.\n\n## Further Work\ncontent\n"
+            )
+            contract_id = self._install_historical_contract(gh, contract)
+            with self.assertRaisesRegex(ContractError, "must not contain prose"):
+                validate_reviewer_checklist_authoring(contract)
+            surface = load_review_surface(1, gh.issue_data["body"], gh)
+            self.assertEqual(surface["contract_comment_id"], contract_id)
+            self.assertEqual(surface["items"][0]["text"], "canonical item")
+            checklist_section = next(
+                section for section in surface["contract_sections"]
+                if section["title"] == "Reviewer Checklist"
+            )
+            start = contract.index(b"## Reviewer Checklist\n")
+            end = contract.index(b"## Further Work\n")
+            self.assertEqual(
+                checklist_section["section_sha256"], hashlib.sha256(contract[start:end]).hexdigest()
+            )
+
+    def test_strict_canonical_checklist_h2_is_excluded_from_contract_units(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            contract, _, surface = install_review_contract(Path(temporary), FakeGitHub())
+            self.assertEqual(classify_reviewer_checklist_h2(b"## No checklist\nbody\n").state, "absent")
+            self.assertEqual(classify_reviewer_checklist_h2(contract).state, "strict-canonical")
+            self.assertNotIn("Reviewer Checklist", [s["title"] for s in surface["contract_sections"]])
+
+    def test_prepare_review_binds_contract_units_checklist_and_exact_head(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            gh = FakeGitHub()
+            payload, published_contract, surface = install_review_contract(repo, gh)
+            head = "f" * 40
+            gh.pull_data = {"number": 2, "base": {"repo": {"full_name": gh.repo}},
+                            "head": {"sha": head}, "body": "Closes #1"}
+            result = prepare_review(repo, 1, 2, gh)
+            draft = json.loads(review_path(repo, 1, 2).read_text(encoding="utf-8"))
+            self.assertEqual(draft["schema_version"], 2)
+            self.assertEqual(draft["head"], head)
+            self.assertEqual(draft["contract_comment_id"], published_contract["comment_id"])
+            self.assertEqual(draft["contract_sha256"], hashlib.sha256(payload).hexdigest())
+            self.assertEqual(draft["contract_sha256"], published_contract["sha256"])
+            self.assertEqual(draft["checklist_sha256"], surface["checklist_sha256"])
+            self.assertEqual([s["title"] for s in draft["contract_sections"]],
+                             ["Contract Preamble", "Architecture Decisions", "Document impact"])
+            self.assertNotIn("Reviewer Checklist", [s["title"] for s in draft["contract_sections"]])
+            self.assertEqual([item["id"] for item in draft["items"]], ["C001", "I001"])
+            self.assertEqual(result["contract_section_count"], 3)
+            self.assertTrue(prepare_review(repo, 1, 2, gh)["reused"])
+
+    def test_validate_self_review_rejects_superseded_contract_with_same_checklist(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            gh = FakeGitHub()
+            payload_a, _, _ = install_review_contract(repo, gh)
+            head = "f" * 40
+            gh.pull_data = {
+                "number": 2, "base": {"repo": {"full_name": gh.repo}},
+                "head": {"sha": head}, "body": "Closes #1",
+            }
+            prepare_review(repo, 1, 2, gh)
+            path = review_path(repo, 1, 2)
+            path.write_text(json.dumps(complete_review_draft(json.loads(path.read_text()))), encoding="utf-8")
+            args = type("Args", (), {"repo": None, "input": None, "issue": 1, "pr": 2})()
+            with patch("agent_workflow.cli._repo_arg", return_value=repo), \
+                 patch("agent_workflow.cli._gh", return_value=gh):
+                result = _validate_self_review(args)
+                self.assertEqual(result["contract_sha256"], hashlib.sha256(payload_a).hexdigest())
+                self.assertEqual(result["schema_version"], 2)
+
+                payload_b = payload_a.replace(b"Review the complete contract.", b"Review revised contract body.")
+                source = repo / "contract-b.md"
+                source.write_bytes(payload_b)
+                publish_contract(repo, 1, gh, source, supersede=True)
+                with self.assertRaisesRegex(ReviewError, "current approved Implementation Contract comment ID"):
+                    _validate_self_review(args)
+
+    def test_publish_v2_binds_contract_metadata_and_pointer_readback(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            gh = FakeGitHub()
+            _, _, surface = install_review_contract(repo, gh)
+            head = "f" * 40
+            gh.pull_data = {
+                "number": 2, "state": "open", "draft": False,
+                "base": {"repo": {"full_name": gh.repo}}, "head": {"sha": head},
+                "body": "Closes #1\n\n## Verification\nchecks passed\n\n## Untested\nproduct smoke test unavailable\n",
+            }
+            prepare_review(repo, 1, 2, gh)
+            path = review_path(repo, 1, 2)
+            draft = complete_review_draft(json.loads(path.read_text(encoding="utf-8")))
             path.write_text(json.dumps(draft), encoding="utf-8")
-            with patch("agent_workflow.review.effective_checklist", return_value=([{"id": "C001", "text": "check"}], checklist)):
-                result = publish_review(repo, 1, 2, gh)
-            self.assertEqual(result["head"], head)
-            self.assertIn("Closes #1", gh.pull_data["body"])
-            self.assertIn("## Verification", gh.pull_data["body"])
-            self.assertIn("## Untested", gh.pull_data["body"])
-            self.assertIn("## Agent Self-Review", gh.pull_data["body"])
-            valid = validate_public_review(1, 2, gh)
-            self.assertFalse(valid["stale"])
+            result = publish_review(repo, 1, 2, gh)
+            self.assertEqual(result["schema_version"], 2)
+            self.assertEqual(result["contract_comment_id"], surface["contract_comment_id"])
+            self.assertEqual(result["contract_sha256"], surface["contract_sha256"])
+            self.assertIn(f"Contract Comment ID: {surface['contract_comment_id']}", gh.pull_data["body"])
+            self.assertIn(f"Contract SHA-256: {surface['contract_sha256']}", gh.pull_data["body"])
+            comment = gh.pull_comments[result["comment_id"]]
+            self.assertIn(
+                f"<!-- agent-self-review:v2 issue=1 pr=2 head={head} "
+                f"contract_comment={surface['contract_comment_id']} contract={surface['contract_sha256']} "
+                f"checklist={surface['checklist_sha256']} -->",
+                comment["body"],
+            )
+            self.assertNotIn("Review the complete contract.", comment["body"])
+            readback = validate_public_review(1, 2, gh)
+            self.assertFalse(readback["stale"])
+            self.assertTrue(readback["contract_conformance"])
+            self.assertEqual(readback["contract_comment_id"], surface["contract_comment_id"])
+            self.assertEqual(readback["current_contract_comment_id"], surface["contract_comment_id"])
+            self.assertEqual(readback["contract_sha256"], surface["contract_sha256"])
+            self.assertEqual(readback["checklist_sha256"], surface["checklist_sha256"])
+            self.assertEqual(readback["head"], head)
+
+    def test_named_comment_get_readback_precedes_pointer_update(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            gh = FakeGitHub()
+            self._ready_to_publish(repo, gh)
+            events = []
+            create = gh.create_pull_comment
+            named_get = gh.pull_comment
+            update = gh.update_pull
+
+            def create_comment(number, body):
+                events.append("POST")
+                return create(number, body)
+
+            def read_comment(comment_id):
+                events.append("named GET")
+                return named_get(comment_id)
+
+            def update_pointer(number, body):
+                events.append("pointer PATCH")
+                return update(number, body)
+
+            gh.create_pull_comment = create_comment
+            gh.pull_comment = read_comment
+            gh.update_pull = update_pointer
+            publish_review(repo, 1, 2, gh)
+            self.assertEqual(events, ["POST", "named GET", "pointer PATCH"])
+
+    def test_named_comment_body_mismatch_leaves_orphan_and_old_pointer(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            gh = FakeGitHub()
+            _, original_body, _ = self._ready_to_publish(repo, gh)
+            read_comment = gh.pull_comment
+            updates = []
+            gh.pull_comment = lambda comment_id: dict(read_comment(comment_id), body="truncated")
+            update = gh.update_pull
+
+            def track_update(number, body):
+                updates.append(body)
+                return update(number, body)
+
+            gh.update_pull = track_update
+            with self.assertRaisesRegex(ReviewError, "readback body differs"):
+                publish_review(repo, 1, 2, gh)
+            self.assertEqual(gh.pull_data["body"], original_body)
+            self.assertEqual(updates, [])
+            self.assertEqual(len(gh.pull_comments), 1)
+
+    def test_named_comment_association_mismatch_leaves_orphan_and_old_pointer(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            gh = FakeGitHub()
+            _, original_body, _ = self._ready_to_publish(repo, gh)
+            read_comment = gh.pull_comment
+            updates = []
+            gh.pull_comment = lambda comment_id: dict(
+                read_comment(comment_id), issue_url=f"https://api.github.com/repos/{gh.repo}/issues/999"
+            )
+            update = gh.update_pull
+
+            def track_update(number, body):
+                updates.append(body)
+                return update(number, body)
+
+            gh.update_pull = track_update
+            with self.assertRaisesRegex(ReviewError, "belongs to a different PR"):
+                publish_review(repo, 1, 2, gh)
+            self.assertEqual(gh.pull_data["body"], original_body)
+            self.assertEqual(updates, [])
+            self.assertEqual(len(gh.pull_comments), 1)
+
+    def test_named_comment_read_failure_leaves_orphan_and_old_pointer(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            gh = FakeGitHub()
+            _, original_body, _ = self._ready_to_publish(repo, gh)
+            updates = []
+            update = gh.update_pull
+
+            def track_update(number, body):
+                updates.append(body)
+                return update(number, body)
+
+            gh.pull_comment = lambda _comment_id: (_ for _ in ()).throw(GitHubError("read failed"))
+            gh.update_pull = track_update
+            with self.assertRaisesRegex(ReviewError, "could not be read back by ID"):
+                publish_review(repo, 1, 2, gh)
+            self.assertEqual(gh.pull_data["body"], original_body)
+            self.assertEqual(updates, [])
+            self.assertEqual(len(gh.pull_comments), 1)
+
+    def test_same_checklist_contract_supersession_invalidates_v2_review(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            gh = FakeGitHub()
+            payload_a, _, surface_a = install_review_contract(repo, gh)
+            head = "f" * 40
+            gh.pull_data = {
+                "number": 2, "state": "open", "draft": False,
+                "base": {"repo": {"full_name": gh.repo}}, "head": {"sha": head},
+                "body": "Closes #1\n\n## Verification\nchecks passed\n\n## Untested\nexternal smoke test unavailable\n",
+            }
+            prepare_review(repo, 1, 2, gh)
+            path = review_path(repo, 1, 2)
+            path.write_text(json.dumps(complete_review_draft(json.loads(path.read_text()))), encoding="utf-8")
+            published = publish_review(repo, 1, 2, gh)
+            payload_b = payload_a.replace(b"Review the complete contract.", b"Review revised contract body.")
+            source = repo / "superseded-contract.md"
+            source.write_bytes(payload_b)
+            superseded = publish_contract(repo, 1, gh, source, supersede=True)
+            self.assertNotEqual(superseded["sha256"], surface_a["contract_sha256"])
+            current = validate_public_review(1, 2, gh)
+            self.assertTrue(current["stale"])
+            self.assertTrue(current["contract_stale"])
+            self.assertFalse(current["checklist_stale"])
+            self.assertEqual(current["sha256"], published["sha256"])
+            (repo / ".agent").mkdir()
+            profile = {
+                "schema_version": 2, "initialized": False, "project_name": "review-test",
+                "components": [{
+                    "id": "root", "roots": ["."], "stacks": [], "application_types": ["cli"],
+                    "targets": [], "hooks": {},
+                }],
+                "branch": {"required_checks": ["CI"]},
+                "milestones": {"mode": "disabled", "version_source": "auto"},
+                "hooks": {},
+            }
+            (repo / ".agent/project.json").write_text(json.dumps(profile), encoding="utf-8")
+            gh.pull_data["base"] = {"ref": "main", "repo": {"full_name": gh.repo}}
+            gh.runs = [{
+                "name": "CI", "head_sha": head, "status": "completed", "conclusion": "success",
+            }]
+            handoff = delivery_check(repo, 1, 2, gh)
+            self.assertFalse(handoff["passed"])
+            self.assertTrue(any("approved Implementation Contract" in error for error in handoff["errors"]))
+            prior_comment_count = len(gh.pull_comments)
+            with self.assertRaisesRegex(ReviewError, "comment ID changed"):
+                publish_review(repo, 1, 2, gh)
+            self.assertEqual(len(gh.pull_comments), prior_comment_count)
+            gh.pull_data["head"]["sha"] = "a" * 40
+            new_head = validate_public_review(1, 2, gh)
+            self.assertTrue(new_head["head_stale"])
+
+    def test_changed_contract_comment_id_with_same_sha_stales_review_and_draft(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            gh = FakeGitHub()
+            _, approved, surface = install_review_contract(repo, gh)
+            head = "f" * 40
+            gh.pull_data = {
+                "number": 2, "state": "open", "draft": False,
+                "base": {"repo": {"full_name": gh.repo}}, "head": {"sha": head},
+                "body": "Closes #1\n\n## Verification\nchecks passed\n\n## Untested\nnot applicable\n",
+            }
+            prepare_review(repo, 1, 2, gh)
+            path = review_path(repo, 1, 2)
+            path.write_text(json.dumps(complete_review_draft(json.loads(path.read_text()))), encoding="utf-8")
+            publish_review(repo, 1, 2, gh)
+
+            old_id = approved["comment_id"]
+            old_comment = gh.issue_comment(1, old_id)
+            replacement = gh.create_issue_comment(1, old_comment["body"])
+            gh.issue_data["body"] = gh.issue_data["body"].replace(
+                f"Comment ID: {old_id}\nSHA-256: {surface['contract_sha256']}",
+                f"Comment ID: {replacement['id']}\nSHA-256: {surface['contract_sha256']}",
+            )
+
+            public = validate_public_review(1, 2, gh)
+            self.assertTrue(public["stale"])
+            self.assertTrue(public["contract_stale"])
+            self.assertEqual(public["contract_comment_id"], old_id)
+            self.assertEqual(public["current_contract_comment_id"], replacement["id"])
+            self.assertEqual(public["current_contract_sha256"], public["contract_sha256"])
+            with self.assertRaisesRegex(ReviewError, "comment ID"):
+                publish_review(repo, 1, 2, gh)
+
+            prepared = prepare_review(repo, 1, 2, gh)
+            refreshed = json.loads(path.read_text(encoding="utf-8"))
+            self.assertFalse(prepared.get("reused", False))
+            self.assertEqual(refreshed["contract_comment_id"], replacement["id"])
+            self.assertTrue(all(section["result"] == "pending" for section in refreshed["contract_sections"]))
+            backups = list(path.parent.glob(path.stem + ".*.stale.json"))
+            self.assertEqual(len(backups), 1)
+
+    def test_section_coverage_status_duplicates_and_order_fail_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            gh = FakeGitHub()
+            _, _, _ = install_review_contract(repo, gh)
+            gh.pull_data = {"number": 2, "base": {"repo": {"full_name": gh.repo}},
+                            "head": {"sha": "f" * 40}, "body": "Closes #1"}
+            prepare_review(repo, 1, 2, gh)
+            original = json.loads(review_path(repo, 1, 2).read_text(encoding="utf-8"))
+
+            def save_and_load(value):
+                path = repo / "candidate.json"
+                path.write_text(json.dumps(value), encoding="utf-8")
+                return load_review(path)
+
+            pending = complete_review_draft(original)
+            pending["contract_sections"][0]["result"] = "pending"
+            with self.assertRaisesRegex(ReviewError, "result must be pass/fail/untested"):
+                save_and_load(pending)
+
+            empty = complete_review_draft(original)
+            empty["contract_sections"][0]["evidence"] = " "
+            with self.assertRaisesRegex(ReviewError, "concrete evidence"):
+                save_and_load(empty)
+
+            malformed_result = complete_review_draft(original)
+            malformed_result["contract_sections"][0]["result"] = []
+            with self.assertRaisesRegex(ReviewError, "result must be pass/fail/untested"):
+                save_and_load(malformed_result)
+
+            malformed_identity = complete_review_draft(original)
+            malformed_identity["issue"] = True
+            with self.assertRaisesRegex(ReviewError, "invalid ISSUE identity"):
+                save_and_load(malformed_identity)
+
+            missing = complete_review_draft(original)
+            missing["contract_sections"].pop(1)
+            with self.assertRaisesRegex(ReviewError, "missing or reordered"):
+                save_and_load(missing)
+
+            duplicate = complete_review_draft(original)
+            duplicate["contract_sections"][1]["id"] = duplicate["contract_sections"][0]["id"]
+            with self.assertRaisesRegex(ReviewError, "duplicate contract section"):
+                save_and_load(duplicate)
+
+            reordered = complete_review_draft(original)
+            reordered["contract_sections"][1], reordered["contract_sections"][2] = (
+                reordered["contract_sections"][2], reordered["contract_sections"][1]
+            )
+            with self.assertRaisesRegex(ReviewError, "missing or reordered"):
+                save_and_load(reordered)
+
+            wrong_hash = complete_review_draft(original)
+            wrong_hash["contract_sections"][1]["section_sha256"] = "0" * 64
+            save_and_load(wrong_hash)
+            path = review_path(repo, 1, 2)
+            path.write_text(json.dumps(wrong_hash), encoding="utf-8")
+            args = type("Args", (), {"repo": None, "input": None, "issue": 1, "pr": 2})()
+            with patch("agent_workflow.cli._repo_arg", return_value=repo), \
+                 patch("agent_workflow.cli._gh", return_value=gh), \
+                 self.assertRaisesRegex(ReviewError, "contract sections are stale"):
+                _validate_self_review(args)
+
+            wrong_title = complete_review_draft(original)
+            wrong_title["contract_sections"][1]["title"] = "Invented title"
+            path.write_text(json.dumps(wrong_title), encoding="utf-8")
+            with patch("agent_workflow.cli._repo_arg", return_value=repo), \
+                 patch("agent_workflow.cli._gh", return_value=gh), \
+                 self.assertRaisesRegex(ReviewError, "contract sections are stale"):
+                _validate_self_review(args)
+
+    def test_legacy_v1_is_readable_and_reports_missing_contract_conformance(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            gh = FakeGitHub()
+            install_review_contract(repo, gh)
+            surface = load_review_surface(1, gh.issue_data["body"], gh)
+            head = "a" * 40
+            review = {
+                "schema_version": 1, "issue": 1, "pr": 2, "head": head,
+                "checklist_sha256": surface["checklist_sha256"],
+                "items": [
+                    {**item, "result": "pass", "evidence": "validated prior checklist"}
+                    for item in surface["items"]
+                ],
+            }
+            payload = json.dumps(review, ensure_ascii=False, sort_keys=True, indent=2)
+            sha = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+            checklist = surface["checklist_sha256"]
+            body = (
+                f"<!-- agent-self-review:v1 issue=1 pr=2 head={head} checklist={checklist} -->\n\n"
+                + payload
+            )
+            gh.pull_data = {
+                "number": 2, "base": {"repo": {"full_name": gh.repo}}, "head": {"sha": head},
+                "body": (
+                    "Closes #1\n\n## Agent Self-Review\n\nComment ID: 105\n"
+                    f"SHA-256: {sha}\nHEAD: {head}\nChecklist SHA-256: {checklist}\n"
+                ),
+            }
+            gh.pull_comments[105] = {
+                "id": 105, "issue_url": f"https://api.github.com/repos/{gh.repo}/issues/2",
+                "body": body,
+            }
+            result = validate_public_review(1, 2, gh)
+            self.assertFalse(result["stale"])
+            self.assertEqual(result["schema_version"], 1)
+            self.assertFalse(result["contract_conformance"])
+            self.assertIsNone(result["contract_sha256"])
+
+    def test_publication_detects_contract_supersession_before_pointer_update(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            gh = FakeGitHub()
+            payload_a, _, _ = install_review_contract(repo, gh)
+            old_issue_body = gh.issue_data["body"]
+            gh.pull_data = {
+                "number": 2, "state": "open", "draft": False,
+                "base": {"repo": {"full_name": gh.repo}}, "head": {"sha": "f" * 40},
+                "body": "Closes #1",
+            }
+            prepare_review(repo, 1, 2, gh)
+            path = review_path(repo, 1, 2)
+            path.write_text(json.dumps(complete_review_draft(json.loads(path.read_text()))), encoding="utf-8")
+            payload_b = payload_a.replace(b"Review the complete contract.", b"Review superseded contract.")
+            source = repo / "superseded-contract.md"
+            source.write_bytes(payload_b)
+            publish_contract(repo, 1, gh, source, supersede=True)
+            new_issue_body = gh.issue_data["body"]
+            real_issue = gh.issue
+            reads = 0
+
+            def racing_issue(number):
+                nonlocal reads
+                reads += 1
+                value = real_issue(number)
+                value["body"] = old_issue_body if reads == 1 else new_issue_body
+                return value
+
+            gh.issue = racing_issue
+            with self.assertRaisesRegex(ReviewError, "changed while publishing"):
+                publish_review(repo, 1, 2, gh)
+            self.assertNotIn("## Agent Self-Review", gh.pull_data["body"])
+            self.assertEqual(len(gh.pull_comments), 1)
+            orphan = next(iter(gh.pull_comments.values()))
+            self.assertIn("agent-self-review:v2", orphan["body"])
+
+    def test_publication_head_change_after_comment_post_leaves_orphan_and_old_pointer(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            gh = FakeGitHub()
+            install_review_contract(repo, gh)
+            old_head = "f" * 40
+            gh.pull_data = {
+                "number": 2, "state": "open", "draft": False,
+                "base": {"repo": {"full_name": gh.repo}}, "head": {"sha": old_head},
+                "body": "Closes #1\n\n## Agent Self-Review\n\nComment ID: 77\nSHA-256: " + "a" * 64 + "\n",
+            }
+            original_body = gh.pull_data["body"]
+            prepare_review(repo, 1, 2, gh)
+            path = review_path(repo, 1, 2)
+            path.write_text(json.dumps(complete_review_draft(json.loads(path.read_text()))), encoding="utf-8")
+            real_create = gh.create_pull_comment
+
+            def create_then_advance_head(number, body):
+                comment = real_create(number, body)
+                gh.pull_data["head"]["sha"] = "a" * 40
+                return comment
+
+            gh.create_pull_comment = create_then_advance_head
+            with self.assertRaisesRegex(ReviewError, "HEAD changed while publishing"):
+                publish_review(repo, 1, 2, gh)
+            self.assertEqual(gh.pull_data["body"], original_body)
+            self.assertEqual(len(gh.pull_comments), 1)
+            self.assertIn("agent-self-review:v2", next(iter(gh.pull_comments.values()))["body"])
+
+    def test_publication_contract_comment_id_change_after_post_leaves_orphan(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            gh = FakeGitHub()
+            _, approved, surface = install_review_contract(repo, gh)
+            head = "f" * 40
+            gh.pull_data = {
+                "number": 2, "state": "open", "draft": False,
+                "base": {"repo": {"full_name": gh.repo}}, "head": {"sha": head},
+                "body": "Closes #1\n\n## Agent Self-Review\n\nComment ID: 77\nSHA-256: " + "a" * 64 + "\n",
+            }
+            original_body = gh.pull_data["body"]
+            prepare_review(repo, 1, 2, gh)
+            path = review_path(repo, 1, 2)
+            path.write_text(json.dumps(complete_review_draft(json.loads(path.read_text()))), encoding="utf-8")
+            real_create = gh.create_pull_comment
+
+            def create_then_replace_contract_comment(number, body):
+                review_comment = real_create(number, body)
+                approved_comment = gh.issue_comment(1, approved["comment_id"])
+                replacement = gh.create_issue_comment(1, approved_comment["body"])
+                gh.issue_data["body"] = gh.issue_data["body"].replace(
+                    f"Comment ID: {approved['comment_id']}\nSHA-256: {surface['contract_sha256']}",
+                    f"Comment ID: {replacement['id']}\nSHA-256: {surface['contract_sha256']}",
+                )
+                return review_comment
+
+            gh.create_pull_comment = create_then_replace_contract_comment
+            with self.assertRaisesRegex(ReviewError, "comment/SHA.*changed while publishing"):
+                publish_review(repo, 1, 2, gh)
+            self.assertEqual(gh.pull_data["body"], original_body)
+            self.assertEqual(len(gh.pull_comments), 1)
+            self.assertIn("agent-self-review:v2", next(iter(gh.pull_comments.values()))["body"])
+
+    def test_contract_evidence_secret_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            gh = FakeGitHub()
+            install_review_contract(repo, gh)
+            gh.pull_data = {"number": 2, "base": {"repo": {"full_name": gh.repo}},
+                            "head": {"sha": "f" * 40}, "body": "Closes #1"}
+            prepare_review(repo, 1, 2, gh)
+            path = review_path(repo, 1, 2)
+            draft = complete_review_draft(json.loads(path.read_text()))
+            draft["contract_sections"][0]["evidence"] = "credential ghp_abcdefghijklmnopqrstuvwxyz"
+            path.write_text(json.dumps(draft), encoding="utf-8")
+            with self.assertRaisesRegex(ReviewError, "credential material"):
+                load_review(path)
+
+
+    def test_public_review_size_limit_still_applies_without_contract_body_duplication(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            gh = FakeGitHub()
+            long_item = b"x" * 65100
+            lines = [
+                b"Contract preamble.", b"", b"## Reviewer Checklist",
+                b"<!-- AGENT_REVIEWER_CHECKLIST_V1 -->", b"- [ ] " + long_item,
+                b"<!-- /AGENT_REVIEWER_CHECKLIST_V1 -->", b"",
+            ]
+            payload = b"\n".join(lines)
+            install_review_contract(repo, gh, payload)
+            head = "f" * 40
+            gh.pull_data = {
+                "number": 2, "state": "open", "draft": False,
+                "base": {"repo": {"full_name": gh.repo}}, "head": {"sha": head},
+                "body": "Closes #1",
+            }
+            prepare_review(repo, 1, 2, gh)
+            path = review_path(repo, 1, 2)
+            draft = complete_review_draft(json.loads(path.read_text()))
+            path.write_text(json.dumps(draft), encoding="utf-8")
+            with self.assertRaisesRegex(ReviewError, "comment exceeds 65536"):
+                publish_review(repo, 1, 2, gh)
+            self.assertEqual(gh.pull_comments, {})
 
 
 class GitHubTransportTests(unittest.TestCase):
@@ -1348,11 +2166,16 @@ class PaginationTests(unittest.TestCase):
         raise AssertionError(f"unexpected API operation: {method} {endpoint}")
 
     def run_handoff(self):
-        published = {"stale": False, "head": self.head, "checklist_sha256": "c" * 64,
-                     "review": {"items": [{"id": "C001", "text": "works"}]}}
-        with patch("agent_workflow.delivery.validate_public_review", return_value=published), \
-             patch("agent_workflow.delivery.effective_checklist",
-                   return_value=([{"id": "C001", "text": "works"}], "c" * 64)):
+        published = {
+            "stale": False, "schema_version": 2, "head": self.head,
+            "checklist_sha256": "c" * 64, "current_contract_sha256": "e" * 64,
+            "head_stale": False, "contract_stale": False, "checklist_stale": False,
+            "review": {
+                "items": [{"id": "C001", "text": "works", "result": "pass"}],
+                "contract_sections": [{"id": "S001", "title": "Scope", "result": "pass"}],
+            },
+        }
+        with patch("agent_workflow.delivery.validate_public_review", return_value=published):
             return delivery_check(self.repo, 1, 2, self.gh)
 
     def test_pending_same_sha_contract_on_page_two_is_reused_without_post(self):
@@ -1557,9 +2380,18 @@ macOS IDE smoke test not run
         self.temp.cleanup()
 
     def run_gate(self, **changes):
-        checklist_items = changes.pop("checklist_items", [{"id": "C001", "text": "works"}])
-        published = changes.pop("published_review", {"stale": False, "head": self.head, "checklist_sha256": "c" * 64,
-                     "review": {"items": [{"id": "C001", "text": "works"}]}})
+        published = changes.pop("published_review", {
+            "stale": False, "schema_version": 2, "head": self.head,
+            "checklist_sha256": "c" * 64, "current_contract_comment_id": 123,
+            "current_contract_sha256": "e" * 64,
+            "head_stale": False, "contract_stale": False, "checklist_stale": False,
+            "review": {
+                "items": [{"id": "C001", "text": "works", "result": "pass"}],
+                "contract_sections": [
+                    {"id": "S001", "title": "Architecture", "result": "pass"},
+                ],
+            },
+        })
         if "issue_labels" in changes:
             self.gh.issue_data["labels"] = changes.pop("issue_labels")
         if "issue_state" in changes:
@@ -1574,31 +2406,144 @@ macOS IDE smoke test not run
                 self.gh.pull_data["body"] = value
             else:
                 self.gh.pull_data[key] = value
-        with patch("agent_workflow.delivery.validate_public_review", return_value=published), \
-             patch("agent_workflow.delivery.effective_checklist", return_value=(checklist_items, "c" * 64)):
+        with patch("agent_workflow.delivery.validate_public_review", return_value=published):
             return delivery_check(self.repo, 1, 2, self.gh)
 
     def test_handoff_passes_only_with_current_review_and_green_app_check(self):
         result = self.run_gate()
         self.assertTrue(result["passed"], result["errors"])
+        self.assertEqual(result["contract_comment_id"], 123)
 
     def test_current_review_fail_blocks_green_handoff_with_bounded_item_details(self):
         item = {"id": "C001", "text": "the runtime must reject failed review"}
-        review = {"stale": False, "head": self.head, "checklist_sha256": "c" * 64,
-                  "review": {"items": [dict(item, result="fail")]}}
-        result = self.run_gate(published_review=review, checklist_items=[item])
+        review = {
+            "stale": False, "schema_version": 2, "head": self.head,
+            "checklist_sha256": "c" * 64, "current_contract_sha256": "e" * 64,
+            "head_stale": False, "contract_stale": False, "checklist_stale": False,
+            "review": {
+                "items": [dict(item, result="fail")],
+                "contract_sections": [{"id": "S001", "title": "Architecture", "result": "pass"}],
+            },
+        }
+        result = self.run_gate(published_review=review)
         self.assertFalse(result["passed"])
         self.assertEqual(result["review_failures"], [{"id": "C001", "text": "the runtime must reject failed review"}])
         self.assertTrue(any("C001" in error and "reject failed review" in error for error in result["errors"]))
 
     def test_pass_and_untested_review_items_remain_nonblocking(self):
         items = [{"id": "C001", "text": "passed item"}, {"id": "C002", "text": "untested item"}]
-        review = {"stale": False, "head": self.head, "checklist_sha256": "c" * 64,
-                  "review": {"items": [dict(items[0], result="pass"), dict(items[1], result="untested")]}}
-        result = self.run_gate(published_review=review, checklist_items=items)
+        review = {
+            "stale": False, "schema_version": 2, "head": self.head,
+            "checklist_sha256": "c" * 64, "current_contract_sha256": "e" * 64,
+            "head_stale": False, "contract_stale": False, "checklist_stale": False,
+            "review": {
+                "items": [dict(items[0], result="pass"), dict(items[1], result="untested")],
+                "contract_sections": [{"id": "S001", "title": "Architecture", "result": "pass"}],
+            },
+        }
+        result = self.run_gate(published_review=review)
         self.assertTrue(result["passed"], result["errors"])
         self.assertEqual(result["review_failures"], [])
         self.assertEqual(result["review_failure_count"], 0)
+
+    def test_contract_section_fail_blocks_delivery_and_reports_bounded_identity(self):
+        review = {
+            "stale": False, "schema_version": 2, "head": self.head,
+            "checklist_sha256": "c" * 64, "current_contract_sha256": "e" * 64,
+            "head_stale": False, "contract_stale": False, "checklist_stale": False,
+            "review": {
+                "items": [{"id": "C001", "text": "checklist item", "result": "pass"}],
+                "contract_sections": [
+                    {"id": "S001", "title": "Architecture decisions", "result": "fail"},
+                ],
+            },
+        }
+        result = self.run_gate(published_review=review)
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["contract_sha256"], "e" * 64)
+        self.assertEqual(result["review_schema_version"], 2)
+        self.assertEqual(result["contract_review_failure_count"], 1)
+        self.assertEqual(result["contract_review_failures"], [
+            {"id": "S001", "title": "Architecture decisions"},
+        ])
+        self.assertTrue(any("failed contract section" in error for error in result["errors"]))
+
+    def test_contract_untested_blocks_delivery_and_reports_bounded_identity(self):
+        review = {
+            "stale": False, "schema_version": 2, "head": self.head,
+            "checklist_sha256": "c" * 64, "current_contract_sha256": "e" * 64,
+            "head_stale": False, "contract_stale": False, "checklist_stale": False,
+            "review": {
+                "items": [{"id": "C001", "text": "checklist item", "result": "pass"}],
+                "contract_sections": [
+                    {"id": "S001", "title": "External verification", "result": "untested"},
+                ],
+            },
+        }
+        result = self.run_gate(published_review=review)
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["contract_review_untested_count"], 1)
+        self.assertEqual(result["contract_review_untested"], [
+            {"id": "S001", "title": "External verification"},
+        ])
+        self.assertEqual(result["contract_review_failure_count"], 0)
+        self.assertTrue(any("conformance is incomplete" in error for error in result["errors"]))
+
+    def test_legacy_v1_review_is_rejected_with_regeneration_guidance(self):
+        review = {
+            "stale": False, "schema_version": 1, "head": self.head,
+            "checklist_sha256": "c" * 64, "current_contract_sha256": "e" * 64,
+            "head_stale": False, "contract_stale": False, "checklist_stale": False,
+            "review": {"items": [{"id": "C001", "text": "checklist item", "result": "pass"}]},
+        }
+        result = self.run_gate(published_review=review)
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["review_schema_version"], 1)
+        self.assertTrue(any(
+            "schema v1 has no full Implementation Contract conformance" in error
+            and "regenerate the self-review" in error
+            for error in result["errors"]
+        ))
+
+    def test_contract_failure_details_are_bounded_to_ten_entries(self):
+        sections = [
+            {"id": f"S{n:03d}", "title": "T" * 200, "result": "fail"}
+            for n in range(1, 13)
+        ]
+        review = {
+            "stale": False, "schema_version": 2, "head": self.head,
+            "checklist_sha256": "c" * 64, "current_contract_sha256": "e" * 64,
+            "head_stale": False, "contract_stale": False, "checklist_stale": False,
+            "review": {
+                "items": [{"id": "C001", "text": "checklist item", "result": "pass"}],
+                "contract_sections": sections,
+            },
+        }
+        result = self.run_gate(published_review=review)
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["contract_review_failure_count"], 12)
+        self.assertEqual(len(result["contract_review_failures"]), 10)
+        self.assertTrue(all(len(item["title"]) <= 120 for item in result["contract_review_failures"]))
+
+    def test_contract_untested_details_are_bounded_to_ten_entries(self):
+        sections = [
+            {"id": f"S{n:03d}", "title": "U" * 200, "result": "untested"}
+            for n in range(1, 13)
+        ]
+        review = {
+            "stale": False, "schema_version": 2, "head": self.head,
+            "checklist_sha256": "c" * 64, "current_contract_sha256": "e" * 64,
+            "head_stale": False, "contract_stale": False, "checklist_stale": False,
+            "review": {
+                "items": [{"id": "C001", "text": "checklist item", "result": "pass"}],
+                "contract_sections": sections,
+            },
+        }
+        result = self.run_gate(published_review=review)
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["contract_review_untested_count"], 12)
+        self.assertEqual(len(result["contract_review_untested"]), 10)
+        self.assertTrue(all(len(item["title"]) <= 120 for item in result["contract_review_untested"]))
 
     def test_delivery_reports_stacked_state_without_blocking_it(self):
         result = self.run_gate(base={"ref": "feature/8-base", "repo": {"full_name": self.gh.repo}})
@@ -1613,9 +2558,13 @@ macOS IDE smoke test not run
             ({"issue_state": "closed"}, "open Issue"),
             ({"body": "## Verification\npassed\n\n## Untested\nnone"}, "Closes #1"),
             ({"issue_labels": []}, "phase:review"),
-            ({"head": {"sha": "e" * 40, "repo": {"full_name": "owner/repo"}}}, "stale"),
-            ({"published_review": {"stale": False, "head": "d" * 40, "checklist_sha256": "c" * 64,
-                                    "review": {"items": []}}}, "items do not match"),
+            ({"head": {"sha": "e" * 40, "repo": {"full_name": "owner/repo"}},
+              "published_review": {"stale": True, "schema_version": 2, "head": "d" * 40,
+                                   "head_stale": True, "contract_stale": False,
+                                   "checklist_stale": False, "review": {"items": []}}}, "stale"),
+            ({"published_review": {"stale": True, "schema_version": 2, "head": "d" * 40,
+                                    "head_stale": False, "contract_stale": False,
+                                    "checklist_stale": True, "review": {"items": []}}}, "checklist is stale"),
             ({"body": "Closes #1\n\n## Verification\n\n## Untested\nnone"}, "Verification"),
             ({"body": "Closes #1\n\n## Verification\npassed\n\n## Untested\n"}, "Untested"),
             ({"profile_checks": []}, "no Required Checks"),

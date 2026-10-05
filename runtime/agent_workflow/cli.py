@@ -21,7 +21,7 @@ from .git import GitLifecycleError, changed_document_paths, start_feature_branch
 from .profile import (APPLICATION_TYPES, ProfileError, build_hook_plan, load_profile,
                       normalize_host, validate_profile)
 from .process import ProcessError, run_command
-from .review import (ReviewError, effective_checklist, load_review, prepare_review,
+from .review import (ReviewError, load_review, load_review_surface, prepare_review,
                      publish_review, review_path, validate_public_review)
 from .versioning import VersionError, resolve_milestone_version
 
@@ -275,12 +275,46 @@ def _validate_self_review(args: argparse.Namespace) -> dict[str, Any]:
     gh = _gh(repo)
     pull = gh.pull(args.pr)
     issue = gh.issue(args.issue)
-    items, digest = effective_checklist(args.issue, issue.get("body") or "", gh)
-    if pull.get("head", {}).get("sha") != draft.get("head") or digest != draft.get("checklist_sha256"):
-        raise ReviewError("self-review draft is stale for current PR HEAD or checklist")
-    if [(i["id"], i["text"]) for i in draft["items"]] != [(i["id"], i["text"]) for i in items]:
+    if (not isinstance(issue, dict) or type(issue.get("number")) is not int
+            or issue.get("number") != args.issue
+            or issue.get("repository_url") != f"https://api.github.com/repos/{gh.repo}"
+            or issue.get("pull_request")):
+        raise ReviewError("Issue identity does not match configured repository")
+    base = pull.get("base") if isinstance(pull, dict) else None
+    base_repo = base.get("repo") if isinstance(base, dict) else None
+    full_name = base_repo.get("full_name") if isinstance(base_repo, dict) else None
+    if (not isinstance(pull, dict) or type(pull.get("number")) is not int or pull.get("number") != args.pr
+            or not isinstance(full_name, str) or full_name.casefold() != gh.repo.casefold()):
+        raise ReviewError("PR repository identity mismatch")
+    surface = load_review_surface(args.issue, issue.get("body") or "", gh)
+    head_data = pull.get("head")
+    current_head = head_data.get("sha") if isinstance(head_data, dict) else None
+    if current_head != draft.get("head"):
+        raise ReviewError("self-review draft is stale for current PR HEAD")
+    if draft.get("contract_comment_id") != surface["contract_comment_id"]:
+        raise ReviewError("self-review draft is stale for the current approved Implementation Contract comment ID")
+    if draft.get("contract_sha256") != surface["contract_sha256"]:
+        raise ReviewError("self-review draft is stale for the current approved Implementation Contract SHA")
+    if [(s["id"], s["title"], s["section_sha256"]) for s in draft["contract_sections"]] != [
+        (s["id"], s["title"], s["section_sha256"]) for s in surface["contract_sections"]
+    ]:
+        raise ReviewError("self-review contract sections are stale for the current approved contract")
+    if draft.get("checklist_sha256") != surface["checklist_sha256"]:
+        raise ReviewError("self-review draft is stale for the current effective Reviewer Checklist")
+    if [(i["id"], i["text"]) for i in draft["items"]] != [
+        (i["id"], i["text"]) for i in surface["items"]
+    ]:
         raise ReviewError("self-review items do not match effective checklist")
-    return {"valid": True, "items": len(draft["items"]), "head": draft["head"], "checklist_sha256": digest}
+    return {
+        "valid": True,
+        "schema_version": 2,
+        "items": len(draft["items"]),
+        "contract_section_count": len(draft["contract_sections"]),
+        "head": draft["head"],
+        "contract_comment_id": surface["contract_comment_id"],
+        "contract_sha256": surface["contract_sha256"],
+        "checklist_sha256": surface["checklist_sha256"],
+    }
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -415,7 +449,12 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, int]:
     elif args.command == "validate-public-review":
         repo = _repo_arg(args.repo)
         result = validate_public_review(args.issue, args.pr, _gh(repo))
-        result = {key: result[key] for key in ("comment_id", "sha256", "head", "checklist_sha256", "stale", "current_head")}
+        result = {key: result[key] for key in (
+            "comment_id", "sha256", "head", "contract_comment_id", "current_contract_comment_id",
+            "contract_sha256", "current_contract_sha256",
+            "contract_section_count", "current_contract_section_count", "checklist_sha256",
+            "schema_version", "contract_conformance", "stale", "stale_reasons", "current_head",
+        )}
         return result, 1 if result["stale"] else 0
     elif args.command == "delivery-check":
         repo = _repo_arg(args.repo)

@@ -20,8 +20,9 @@ Goals are explicit Issue authority, progressive context loading, reliable local 
 | Nine host-portable Skills | Hand-authored Skills live only under `workflow/skills/`; the distribution builder copies them. |
 | Compact context routing | The runtime emits validated paths and identifiers rather than document contents. |
 | Review is evidence, not approval | Review commands bind claims to checklist hash and exact PR HEAD; an independent human reviewer still judges the evidence. |
+| Self-review covers the complete approved contract | A schema-v2 contract-conformance layer records evidence for deterministic H2 units; strict-canonical Reviewer Checklist H2 may be excluded, while legacy/non-canonical checklist H2 remains covered as a unit. The Reviewer Checklist remains a separate concise summary. |
 | Durable document decisions stay explicit through implementation | The Issue carries Specification, Design, and Status decisions; implementation checks them against the final diff, and self-review verifies alignment. |
-| A current self-review fail blocks handoff | The delivery gate rejects current `fail` items and reports bounded IDs/text while treating `untested` as evidence rather than a global block. |
+| Current review failures block handoff | The delivery gate blocks checklist `fail` and contract-section `fail` or `untested`, while checklist `untested` stays non-blocking by itself. |
 | Host-specific packages differ | The builder emits three isolated packages from shared sources and adapters. |
 | Milestone and feature-branch lifecycle is reusable | Milestone mode and fallback source stay in Schema 2 `.agent/project.json`; an approved target release is Issue-scoped input, and the requirements and implementation Skills call standard runtime commands. |
 
@@ -51,13 +52,13 @@ consumer Issue + .agent/project.json
 1. A Skill starts from an Issue and reads only the routing data and documents relevant to that task. The Issue declares structured document decisions; older link-only sections remain routable.
 2. A consumer's `.agent/project.json` is parsed and fully validated before profile-dependent output or hook execution.
 3. Context resolution emits a compact, deterministic manifest. It never writes consumer-controlled files.
-4. Contract and review payloads are validated locally before GitHub mutations. API responses are read back and checked before local state is promoted.
+4. Contract and review payloads are validated locally before GitHub mutations. Strict Reviewer Checklist H2 authoring validation is a write-boundary rule for new or superseding contracts; historical approved bytes remain readable. Self-review binds the named approved contract ID and verified SHA, derives exact-byte section identities, and keeps contract conformance separate from checklist review. A legacy/non-canonical Reviewer Checklist H2 remains in contract coverage. After review-comment creation, publication fetches that exact named comment and verifies ID, PR association, and body before separately rechecking Issue/contract state and then PR HEAD. A failed readback or changed state leaves immutable orphan evidence.
 5. Handoff reads current Issue, PR, review, and Required Check state; merged delivery remains a separate operation.
 6. `build_dist.py` constructs each host package in memory from canonical source and adapter metadata, then writes a deterministic path set.
 
 ## Failure handling
 
-Malformed profiles and Document impact declarations fail closed before hooks or scoped validation. Unknown selected components and invalid doc selectors never broaden scope. Host or target requirement mismatches skip commands and remain unverified. Current review failures block handoff; `untested` remains non-blocking by itself. GitHub ambiguity fails closed. Atomic local replacements preserve the old verified bytes on failure. Build/check mismatches identify drift without silently accepting edited generated output.
+Malformed profiles and Document impact declarations fail closed before hooks or scoped validation. Unknown selected components and invalid doc selectors never broaden scope. Host or target requirement mismatches skip commands and remain unverified. Contract-section `fail` and `untested` block handoff; checklist `fail` blocks while checklist `untested` remains non-blocking by itself. Legacy schema-v1 reviews remain diagnostic-only and cannot pass the handoff gate. GitHub ambiguity fails closed. Atomic local replacements preserve the old verified bytes on failure. Build/check mismatches identify drift without silently accepting edited generated output.
 
 ## Alternatives considered
 

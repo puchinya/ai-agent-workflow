@@ -7,6 +7,7 @@ import json
 import os
 import re
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,115 @@ CANONICAL_POINTER = "## Implementation Contract\nComment ID: <comment-id>\nSHA-2
 OBVIOUS_SECRET = re.compile(
     r"(?i)(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{16,}|bearer\s+[A-Za-z0-9._~+/-]{16,}|(?:password|secret|client[_-]?secret|authorization|api[_-]?key|access[_-]?token)\s*[:=]\s*\S+)"
 )
+CHECKLIST_BEGIN = "<!-- AGENT_REVIEWER_CHECKLIST_V1 -->"
+CHECKLIST_END = "<!-- /AGENT_REVIEWER_CHECKLIST_V1 -->"
+CHECKLIST_HEADING = re.compile(
+    r"^(?:\d+[.)]?\s*)?Reviewer Checklist(?:\s*[（(][^()（）]*[)）])?$", re.I
+)
+CHECKLIST_ITEM = re.compile(r"^\s*[-*+]\s+\[[ xX]\]\s+\S.*$")
+ALLOWED_CHECKLIST_INTRO = "The implementer must self-review every item in this checklist."
+
+
+@dataclass(frozen=True)
+class ContractH2:
+    start: int
+    end: int
+    title: str
+
+
+@dataclass(frozen=True)
+class ReviewerChecklistH2:
+    state: str
+    headings: tuple[ContractH2, ...]
+    checklist_indexes: tuple[int, ...]
+    authoring_error: str | None = None
+
+
+def _fence_transition(line: str, active: tuple[str, int] | None) -> tuple[str, int] | None:
+    if active is not None:
+        marker, length = active
+        if re.match(rf"^ {{0,3}}{re.escape(marker)}{{{length},}}[ \t]*$", line):
+            return None
+        return active
+    match = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+    if match and (match.group(1)[0] == "~" or "`" not in match.group(2)):
+        return match.group(1)[0], len(match.group(1))
+    return None
+
+
+def _contract_h2_headings(data: bytes) -> tuple[ContractH2, ...]:
+    try:
+        text = data.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise ContractError("Implementation Contract must be valid UTF-8") from exc
+
+    headings: list[ContractH2] = []
+    offset = 0
+    fence: tuple[str, int] | None = None
+    for raw_line in data.splitlines(keepends=True):
+        content = raw_line.decode("utf-8").rstrip("\r\n")
+        if fence is not None:
+            fence = _fence_transition(content, fence)
+        else:
+            next_fence = _fence_transition(content, None)
+            if next_fence is not None:
+                fence = next_fence
+            else:
+                heading = re.match(r"^ {0,3}##[ \t]+(.+?)\s*#*\s*$", content)
+                if heading:
+                    title = re.sub(r"[ \t]+#+[ \t]*$", "", heading.group(1)).strip()
+                    headings.append(ContractH2(offset, offset + len(raw_line), title))
+        offset += len(raw_line)
+    return tuple(headings)
+
+
+def classify_reviewer_checklist_h2(data: bytes) -> ReviewerChecklistH2:
+    """Return shared structural H2 spans and the strict/legacy authoring state."""
+    if not isinstance(data, bytes):
+        raise ContractError("Implementation Contract must be exact bytes")
+    headings = _contract_h2_headings(data)
+    checklist_indexes = tuple(
+        index for index, heading in enumerate(headings)
+        if CHECKLIST_HEADING.fullmatch(heading.title)
+    )
+    if not checklist_indexes:
+        return ReviewerChecklistH2("absent", headings, ())
+    if len(checklist_indexes) != 1:
+        return ReviewerChecklistH2(
+            "legacy/non-canonical", headings, checklist_indexes,
+            "Implementation Contract must contain exactly one Reviewer Checklist H2",
+        )
+
+    index = checklist_indexes[0]
+    heading = headings[index]
+    end = headings[index + 1].start if index + 1 < len(headings) else len(data)
+    lines = data[heading.end:end].decode("utf-8").splitlines()
+    begin_rows = [row for row, line in enumerate(lines) if line.strip() == CHECKLIST_BEGIN]
+    end_rows = [row for row, line in enumerate(lines) if line.strip() == CHECKLIST_END]
+    error = None
+    if len(begin_rows) != 1 or len(end_rows) != 1 or begin_rows[0] >= end_rows[0]:
+        error = "Reviewer Checklist H2 must contain one canonical checklist block"
+    else:
+        begin, finish = begin_rows[0], end_rows[0]
+        intro = [line.strip() for line in lines[:begin] if line.strip()]
+        checklist_rows = [line for line in lines[begin + 1:finish] if line.strip()]
+        if intro not in ([], [ALLOWED_CHECKLIST_INTRO]):
+            error = "Reviewer Checklist H2 permits only the approved non-normative self-review introduction"
+        elif not checklist_rows or any(not CHECKLIST_ITEM.fullmatch(line) for line in checklist_rows):
+            error = "Reviewer Checklist canonical block must contain only Markdown checkbox items"
+        elif any(line.strip() for line in lines[finish + 1:]):
+            error = "Reviewer Checklist H2 must not contain prose after its canonical checklist block"
+    if error:
+        return ReviewerChecklistH2("legacy/non-canonical", headings, checklist_indexes, error)
+    return ReviewerChecklistH2("strict-canonical", headings, checklist_indexes)
+
+
+def validate_reviewer_checklist_authoring(data: bytes) -> None:
+    """Reject non-canonical Checklist H2 content before publishing a contract."""
+    classification = classify_reviewer_checklist_h2(data)
+    if classification.state == "absent" or classification.state == "strict-canonical":
+        return
+    raise ContractError(classification.authoring_error or "Reviewer Checklist H2 is not strict-canonical")
 
 
 def contract_dir(repo: Path, issue: int) -> Path:
@@ -217,6 +327,7 @@ def publish_contract(repo: Path, issue: int, gh: GitHub, source: Path | None = N
     except OSError as exc:
         raise ContractError(f"could not read contract source {source_path}: {exc}") from exc
     digest, count, text = validate_payload(data, issue)  # reject locally before any network mutation
+    validate_reviewer_checklist_authoring(data)
     local_has_state = payload_path(repo, issue).exists() or record_path(repo, issue).exists()
     local_record = None
     if local_has_state:
