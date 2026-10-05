@@ -89,14 +89,43 @@ Do not append prose to this block.
 
 ### Self-review and delivery
 
-The effective checklist is approved Contract checklist items in source order as `C001...`, then Issue Reviewer Checklist items in source order as `I001...`. A valid `AGENT_REVIEWER_CHECKLIST_V1` canonical block wins; otherwise only a narrow `Reviewer Checklist` heading matches, optionally with a numeric prefix and one ASCII or Japanese parenthetical qualifier.
+The effective Reviewer Checklist is the approved Contract's checklist items in source order as `C001...`, followed by Issue Reviewer Checklist items as `I001...`. A valid `AGENT_REVIEWER_CHECKLIST_V1` canonical block wins; otherwise only the narrow `Reviewer Checklist` heading fallback matches. The Reviewer Checklist is a summary review surface, not a substitute for full-contract review.
 
-`prepare-self-review` binds a review draft to the current Issue, effective checklist SHA, and exact PR HEAD. `validate-self-review` requires each item to have a supported result and concrete evidence; evidence formatting is not proof. `publish-self-review` validates against current HEAD, stores one top-level PR comment, verifies comment association/SHA/checklist/HEAD, then writes only the PR body pointer. `validate-public-review` fetches only the named comment and marks it stale whenever PR HEAD differs.
+The strict `## Reviewer Checklist` H2 authoring rule is enforced only when publishing a new or superseding Implementation Contract, before any GitHub mutation. It is not a migration prerequisite for reading an already-approved contract: historical exact bytes remain readable without normalization or supersession. The structural classifier is shared by authoring validation and review-unit derivation and distinguishes an absent, strict-canonical, or legacy/non-canonical Reviewer Checklist H2. It ignores headings inside fenced code and does not classify prose semantically.
 
-Handoff requires the requested Issue and PR to belong to the same repository; open non-draft PR; `Closes #N`; Issue label `phase:review`; PR head equal to the published review HEAD; valid named review and effective checklist; no current review item with `result: fail`; filled Verification and Untested fields; schema-valid project profile allowing `initialized:false`; and every configured Required Check green on the current HEAD. A current fail is valid review evidence but blocks handoff and is returned in `review_failures` with at most ten item IDs and text truncated to 240 characters per item. `untested` alone is not a global blocker. Mandatory verification and Required Checks remain separate gates. No configured checks is a failure. App-scoped checks require the exact app; source-unrestricted or legacy checks may match a successful check-run or commit status. Check-run conclusions `success`, `skipped`, and `neutral` pass; commit statuses require `success`. Delivery reports `base_ref`, `default_base_ref`, and `stacked` for the PR.
+Checklist extraction retains the existing canonical-block precedence and narrow-heading fallback for historical contracts. A strict-canonical Reviewer Checklist H2 is excluded from `contract_sections`, because new publication validation guarantees that it contains no unique normative prose. A legacy/non-canonical Reviewer Checklist H2 remains readable and its complete exact-byte section is included as a contract review unit, even when its checklist items also appear in the checklist review layer. Thus historical prose cannot disappear from conformance coverage.
+
+Contract review units are derived from the exact approved payload returned by the named contract parser, not from the Issue summary. Ignore H2 headings inside fenced code and preserve source order. Add preamble unit `P000` titled `Contract Preamble` only when non-whitespace bytes precede the first H2. Every non-checklist H2 gets `S001...`, including task-specific H2 sections. A Reviewer Checklist H2 is excluded only when the shared structural classifier identifies it as strict-canonical; otherwise the whole H2 is included as a contract review unit. Do not hard-code standard section names or infer sentence-level obligations. `section_sha256` covers the exact original UTF-8 bytes of the unit, including its heading and line endings. Review records and comments include IDs, titles, hashes, results, and evidence, never contract section bodies.
+
+New drafts and published reviews use schema version 2 and contain:
+
+~~~json
+{
+  "schema_version": 2,
+  "issue": 123,
+  "pr": 456,
+  "head": "<current-pr-head>",
+  "contract_comment_id": 789,
+  "contract_sha256": "<approved-contract-sha256>",
+  "checklist_sha256": "<effective-checklist-sha256>",
+  "contract_sections": [],
+  "items": []
+}
+~~~
+
+`contract_comment_id` identifies the named approved contract comment actually reviewed. `contract_sha256` reuses the exact SHA already verified through the canonical Issue pointer/comment. Each contract section has `id`, `title`, `section_sha256`, `result`, and non-empty concrete `evidence`; results are `pass`, `fail`, or `untested`. Contract `untested` evidence names the concrete unavailable verification or residual uncertainty; both `fail` and `untested` are valid publishable evidence that blocks delivery. Missing, pending, malformed, duplicate, reordered, title-mismatched, or hash-mismatched units fail validation. Runtime enforces structure and identity, not semantic truth. For every section marked `pass`, the Skill requires section-specific evidence naming the important obligations checked, citing reproducible paths/symbols/diff facts/command results/API state, and explaining why the final implementation conforms. Generic evidence alone is insufficient for multi-obligation sections; runtime does not score evidence with NLP/LLM heuristics.
+
+`prepare-self-review`, `validate-self-review`, `publish-self-review`, `validate-public-review`, and `delivery-check` treat current state as authoritative. Reviews bind exact PR HEAD, approved contract comment ID, contract SHA, unit IDs/order/titles/hashes, and checklist SHA/items. Any change makes a prepared/published v2 review stale, including a changed comment ID with the same SHA. Re-preparation reuses a draft only if Issue/PR identity and every bound identity are unchanged; otherwise it preserves a stale backup and creates a fresh pending v2 draft. Validation is side-effect free.
+
+Publish v2 comments with metadata `<!-- agent-self-review:v2 issue=N pr=N head=HEAD contract_comment=ID contract=CONTRACT_SHA checklist=CHECKLIST_SHA -->`. The PR `## Agent Self-Review` pointer has `Comment ID`, payload `SHA-256`, `HEAD`, `Contract Comment ID`, `Contract SHA-256`, and `Checklist SHA-256`. Publication reads Issue and canonical contract pointer, fetches/verifies the named contract comment, reads PR HEAD, derives units/checklist, validates the local draft, then creates an immutable comment. Immediately after creation it fetches the exact created comment through the single-ID `pull_comment(comment_id)` boundary and verifies the returned ID, PR `issue_url`, and exact submitted body. This named-comment GET readback is separate from the later race check. Only after it succeeds does publication re-read the Issue pointer and named contract, then PR HEAD, recompute contract/unit/checklist identities, update the pointer only when every identity matches, and read back the pointer. If named-comment readback fails or any identity changed, publication fails, leaves the comment as immutable orphan evidence, and does not edit/delete it or point to it. Historical comments are never rewritten.
+
+`validate-public-review` may parse structurally valid schema-v1 records for diagnostics; its result exposes schema version 1 and indicates full-contract conformance is absent. It does not upgrade v1. Delivery under 0.5.0 rejects v1 with explicit remediation equivalent to: `published self-review schema v1 has no full Implementation Contract conformance; regenerate and publish a schema v2 self-review with the current workflow`.
+
+Handoff requires same-repository Issue/PR identity; open non-draft PR; `Closes #N`; Issue label `phase:review`; current exact-HEAD schema-v2 review; every contract section `pass`; no checklist item `fail`; filled Verification and Untested fields; schema-valid project profile allowing `initialized:false`; and every configured Required Check green on the current HEAD. Contract section `fail` and `untested` both block handoff; checklist `untested` remains valid and non-blocking by itself. Mandatory verification and Required Checks remain independent gates. A new PR commit invalidates both review layers, even when contract/checklist hashes are unchanged.
+
+Preserve checklist failure fields `review_failures` and `review_failure_count`; return at most ten checklist IDs with text truncated to 240 characters. Add `review_schema_version`, `contract_comment_id`, `contract_sha256`, `contract_review_failures`, `contract_review_failure_count`, `contract_review_untested`, and `contract_review_untested_count`. The failure and untested detail arrays are each capped at ten entries with bounded ID/title text only; counts report all affected sections and no contract body is emitted. Contract `untested` details identify incomplete conformance. No configured checks is a failure. App-scoped checks require the exact app; source-unrestricted or legacy checks may match a successful check-run or commit status. Check-run conclusions `success`, `skipped`, and `neutral` pass; commit statuses require `success`. Delivery reports `base_ref`, `default_base_ref`, and `stacked` for the PR.
 
 Merged delivery requires a merged PR, closed Issue, and no phase label. `finalize-merged-issue` verifies merged/closed state and removes only `phase:review`; any other `phase:*` label fails without mutation. Repeating after that label is gone succeeds without mutation. A PR affecting a generic component needs a concrete `Generic profile rationale:`.
-
 ### Failure, logging, and cleanup
 
 Malformed profiles fail before hooks. Unknown scope never broadens. Subprocess failures retain the exit status and identify the command without secrets. GitHub identity/API ambiguity fails closed. Temporary payloads are removed on handled success/failure paths. Tokens and payload contents are never printed. Skipped targets and unexecuted platform tests are reported as unverified, not passed.
@@ -113,7 +142,7 @@ Schema-2 profile fields are `schema_version`, `initialized`, `project_name`, `co
 
 The canonical checklist block is delimited by the exact lines `<!-- AGENT_REVIEWER_CHECKLIST_V1 -->` and `<!-- /AGENT_REVIEWER_CHECKLIST_V1 -->`; valid checkbox items inside it take precedence over the narrow `Reviewer Checklist` heading fallback.
 
-Issue-scoped local state lives below `.agent-state/issues/N/`. Contract state contains the exact payload and SHA metadata. Self-review state records Issue, PR, HEAD, checklist SHA, and item evidence. Temporary JSON/payload files are outside committed source and are removed after use.
+Issue-scoped local state lives below `.agent-state/issues/N/`. Contract state contains the exact payload and SHA metadata. Self-review state records schema version, Issue, PR, HEAD, approved contract comment ID/SHA, ordered contract section identities/evidence, checklist SHA, and checklist item evidence. Temporary JSON/payload files are outside committed source and are removed after use.
 
 ## Security and privacy
 
@@ -135,9 +164,9 @@ GitHub requests use authenticated `gh api` through one module. User payloads tra
 | Malformed Document impact or linked missing owner in `validate-docs --issue` | Fail closed without falling back to a broad docs scan. |
 | Unknown `validate-docs --changed` BASE | Fail closed without validating all docs. |
 | Host/architecture/tool/capability mismatch | Skip only the target and report it unverified. |
-| Contract hash, comment, Issue, or mirror mismatch | Fail closed; preserve prior verified bytes. |
+| Contract hash, named comment identity, Issue, or mirror mismatch | Fail closed; preserve prior verified bytes. |
 | Concurrent Issue body change | Stop, preserve unrelated sections, report unsupported concurrency. |
-| Current review item with `result: fail`, stale review HEAD, or absent/pending/failed Required Check | Fail handoff; return bounded failed-item IDs/text when applicable. |
+| Current checklist `fail`, contract-section `fail`/`untested`, stale review identity/HEAD, or absent/pending/failed Required Check | Fail handoff; return bounded checklist or contract section details when applicable. |
 | Premature merge finalization or unexpected phase label | Fail without label mutation. |
 | Network/API/auth failure | Report exact command/stage and fail closed. |
 
