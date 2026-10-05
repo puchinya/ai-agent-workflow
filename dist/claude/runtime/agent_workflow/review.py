@@ -86,11 +86,8 @@ def contract_review_units(contract: bytes) -> list[dict[str, str]]:
     )
 
     units: list[dict[str, str]] = []
-    first_reviewable = next(
-        (heading.start for index, heading in enumerate(headings) if index not in excluded_checklist),
-        len(contract),
-    )
-    preamble = contract[:first_reviewable]
+    first_heading = headings[0].start if headings else len(contract)
+    preamble = contract[:first_heading]
     if preamble.strip():
         units.append({
             "id": "P000",

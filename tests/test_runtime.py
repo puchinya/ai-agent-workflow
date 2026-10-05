@@ -1334,6 +1334,134 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(units[2]["section_sha256"], hashlib.sha256(legacy_checklist).hexdigest())
         self.assertEqual(units[3]["section_sha256"], hashlib.sha256(extra).hexdigest())
 
+    def test_strict_canonical_first_heading_does_not_leak_into_preamble(self):
+        newline = bytes((13, 10))
+        contract = newline.join([
+            b"## Reviewer Checklist",
+            b"<!-- AGENT_REVIEWER_CHECKLIST_V1 -->",
+            b"- [ ] canonical item",
+            b"<!-- /AGENT_REVIEWER_CHECKLIST_V1 -->",
+            b"",
+            b"## Further Work",
+            b"content",
+            b"",
+        ])
+
+        self.assertEqual(classify_reviewer_checklist_h2(contract).state, "strict-canonical")
+        units = contract_review_units(contract)
+        self.assertEqual([unit["id"] for unit in units], ["S001"])
+        self.assertEqual([unit["title"] for unit in units], ["Further Work"])
+        further_work = contract.index(b"## Further Work" + newline)
+        self.assertEqual(
+            units[0]["section_sha256"], hashlib.sha256(contract[further_work:]).hexdigest()
+        )
+        self.assertEqual(_extract_items(contract.decode("utf-8")), ["canonical item"])
+
+    def test_strict_checklist_preamble_ends_at_first_h2_preserving_crlf(self):
+        newline = bytes((13, 10))
+        preamble = b"Intro.\r\n\r\n"
+        contract = preamble + newline.join([
+            b"## Reviewer Checklist",
+            b"<!-- AGENT_REVIEWER_CHECKLIST_V1 -->",
+            b"- [ ] canonical item",
+            b"<!-- /AGENT_REVIEWER_CHECKLIST_V1 -->",
+            b"",
+            b"## Further Work",
+            b"content",
+            b"",
+        ])
+
+        units = contract_review_units(contract)
+        self.assertEqual([unit["id"] for unit in units], ["P000", "S001"])
+        self.assertEqual([unit["title"] for unit in units], ["Contract Preamble", "Further Work"])
+        self.assertEqual(units[0]["section_sha256"], hashlib.sha256(preamble).hexdigest())
+        further_work = contract.index(b"## Further Work" + newline)
+        self.assertEqual(
+            units[1]["section_sha256"], hashlib.sha256(contract[further_work:]).hexdigest()
+        )
+
+    def test_strict_checklist_only_has_no_contract_units(self):
+        contract = (
+            b"## Reviewer Checklist\r\n"
+            b"<!-- AGENT_REVIEWER_CHECKLIST_V1 -->\r\n"
+            b"- [ ] canonical item\r\n"
+            b"<!-- /AGENT_REVIEWER_CHECKLIST_V1 -->\r\n"
+        )
+
+        self.assertEqual(contract_review_units(contract), [])
+        self.assertEqual(_extract_items(contract.decode("utf-8")), ["canonical item"])
+
+    def test_strict_checklist_only_contract_prepares_and_validates_v2_review(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            gh = FakeGitHub()
+            contract = (
+                b"## Reviewer Checklist\r\n"
+                b"<!-- AGENT_REVIEWER_CHECKLIST_V1 -->\r\n"
+                b"- [ ] canonical item\r\n"
+                b"<!-- /AGENT_REVIEWER_CHECKLIST_V1 -->\r\n"
+            )
+            install_review_contract(repo, gh, contract)
+            gh.pull_data = {
+                "number": 2,
+                "base": {"repo": {"full_name": gh.repo}},
+                "head": {"sha": "f" * 40},
+                "body": "Closes #1",
+            }
+
+            prepared = prepare_review(repo, 1, 2, gh)
+            path = review_path(repo, 1, 2)
+            draft = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(prepared["contract_section_count"], 0)
+            self.assertEqual(draft["contract_sections"], [])
+            self.assertEqual([item["text"] for item in draft["items"]], [
+                "canonical item", "Issue checklist point",
+            ])
+            path.write_text(
+                json.dumps(complete_review_draft(draft)), encoding="utf-8"
+            )
+            args = type("Args", (), {"repo": None, "input": None, "issue": 1, "pr": 2})()
+            with patch("agent_workflow.cli._repo_arg", return_value=repo), \
+                 patch("agent_workflow.cli._gh", return_value=gh):
+                validated = _validate_self_review(args)
+
+            self.assertTrue(validated["valid"])
+            self.assertEqual(validated["contract_section_count"], 0)
+            self.assertEqual(validated["items"], 2)
+
+    def test_legacy_checklist_first_is_s001_without_artificial_preamble(self):
+        contract = (
+            b"## Reviewer Checklist\r\n"
+            b"- [ ] legacy item\r\n"
+            b"\r\n"
+            b"## Further Work\r\n"
+            b"content\r\n"
+        )
+        gh = FakeGitHub()
+        self._install_historical_contract(gh, contract)
+
+        surface = load_review_surface(1, gh.issue_data["body"], gh)
+        self.assertEqual([unit["id"] for unit in surface["contract_sections"]], ["S001", "S002"])
+        self.assertEqual([unit["title"] for unit in surface["contract_sections"]], [
+            "Reviewer Checklist", "Further Work",
+        ])
+        self.assertEqual([item["text"] for item in surface["items"]], [
+            "legacy item", "Issue checklist point",
+        ])
+        self.assertEqual(
+            surface["contract_sections"][0]["section_sha256"],
+            hashlib.sha256(contract[:contract.index(b"## Further Work")]).hexdigest(),
+        )
+
+    def test_contract_without_h2_remains_exact_preamble_unit(self):
+        contract = b"Exact no-heading payload.\r\n\r\nSecond line.\n"
+
+        units = contract_review_units(contract)
+
+        self.assertEqual([unit["id"] for unit in units], ["P000"])
+        self.assertEqual(units[0]["title"], "Contract Preamble")
+        self.assertEqual(units[0]["section_sha256"], hashlib.sha256(contract).hexdigest())
+
     def test_legacy_fallback_contract_is_readable_and_v2_reviewable(self):
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary)
