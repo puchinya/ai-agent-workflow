@@ -9,7 +9,7 @@ from typing import Any
 from .context import affected_components
 from .github import GitHub
 from .profile import ProfileError, load_profile
-from .review import ReviewError, effective_checklist, validate_public_review
+from .review import ReviewError, validate_public_review
 
 
 class DeliveryError(ValueError):
@@ -108,7 +108,11 @@ def delivery_check(repo: Path, issue: int, pr: int, gh: GitHub) -> dict[str, Any
         if any(label.startswith("phase:") for label in labels):
             errors.append("merged delivery still has a phase label; run finalize-merged-issue after resolving unexpected labels")
         return {"gate": "merged", "passed": not errors, "errors": errors, "issue": issue,
-                "pr": pr, "head": head, **base_details}
+                "pr": pr, "head": head, "review_failures": [], "review_failure_count": 0,
+                "contract_review_failures": [], "contract_review_failure_count": 0,
+                "contract_review_untested": [], "contract_review_untested_count": 0,
+                "contract_comment_id": None, "contract_sha256": None,
+                "review_schema_version": None, **base_details}
 
     if issue_obj.get("state") != "open":
         errors.append("handoff requires an open Issue")
@@ -126,19 +130,40 @@ def delivery_check(repo: Path, issue: int, pr: int, gh: GitHub) -> dict[str, Any
         errors.append("PR Untested field is empty")
     review_failures: list[dict[str, str]] = []
     review_failure_count = 0
+    contract_review_failures: list[dict[str, str]] = []
+    contract_review_failure_count = 0
+    contract_review_untested: list[dict[str, str]] = []
+    contract_review_untested_count = 0
+    contract_comment_id = None
+    contract_sha256 = None
+    review_schema_version = None
     try:
-        published = validate_public_review(issue, pr, gh)
-        review_current = True
-        if published["stale"] or published["head"] != head:
+        published = validate_public_review(issue, pr, gh, issue_obj=issue_obj, pull=pull)
+        review_schema_version = published.get("schema_version")
+        contract_comment_id = published.get("current_contract_comment_id")
+        contract_sha256 = published.get("current_contract_sha256")
+        review_current = not published.get("stale", True) and published.get("head") == head
+        if review_schema_version == 1:
+            errors.append(
+                "published self-review schema v1 has no full Implementation Contract conformance; "
+                "regenerate the self-review with the current prepare-self-review / publish-self-review workflow"
+            )
+            review_current = False
+        if published.get("head_stale"):
             errors.append("published self-review is stale for the current PR HEAD")
-            review_current = False
-        current_items, current_list_sha = effective_checklist(issue, issue_obj.get("body") or "", gh)
-        if current_list_sha != published["checklist_sha256"]:
+        elif published.get("head") != head:
+            errors.append("published self-review is stale for the current PR HEAD")
+        if published.get("contract_stale"):
+            errors.append(
+                "published self-review is stale: approved Implementation Contract comment/SHA or contract review units changed; "
+                "restore/read the current contract and regenerate the self-review"
+            )
+        if published.get("checklist_stale"):
             errors.append("published self-review checklist is stale")
-            review_current = False
-        if [(i["id"], i["text"]) for i in published["review"].get("items", [])] != [(i["id"], i["text"]) for i in current_items]:
-            errors.append("published self-review items do not match the current effective checklist")
-            review_current = False
+        if published.get("stale") and not any(
+            (published.get("head_stale"), published.get("contract_stale"), published.get("checklist_stale"))
+        ):
+            errors.append("published self-review is stale for current Issue/PR state")
         if review_current:
             failed = [item for item in published["review"].get("items", []) if item.get("result") == "fail"]
             review_failure_count = len(failed)
@@ -149,6 +174,44 @@ def delivery_check(repo: Path, issue: int, pr: int, gh: GitHub) -> dict[str, Any
                 if len(failed) > len(review_failures):
                     summary += f"; and {len(failed) - len(review_failures)} more"
                 errors.append(f"published self-review has {len(failed)} current failed item(s): {summary}")
+            contract_sections = published["review"].get("contract_sections", [])
+            contract_failed = [section for section in contract_sections if section.get("result") == "fail"]
+            contract_review_failure_count = len(contract_failed)
+            contract_review_failures = [
+                {"id": str(section.get("id", "section"))[:64],
+                 "title": str(section.get("title", ""))[:120]}
+                for section in contract_failed[:10]
+            ]
+            contract_review_untested_count = sum(
+                section.get("result") == "untested" for section in contract_sections
+            )
+            contract_untested = [
+                section for section in contract_sections if section.get("result") == "untested"
+            ]
+            contract_review_untested = [
+                {"id": str(section.get("id", "section"))[:64],
+                 "title": str(section.get("title", ""))[:120]}
+                for section in contract_untested[:10]
+            ]
+            if contract_failed:
+                summary = "; ".join(
+                    f"{section['id']}: {section['title']}" for section in contract_review_failures
+                )
+                if len(contract_failed) > len(contract_review_failures):
+                    summary += f"; and {len(contract_failed) - len(contract_review_failures)} more"
+                errors.append(
+                    f"published self-review has {len(contract_failed)} current failed contract section(s): {summary}"
+                )
+            if contract_untested:
+                summary = "; ".join(
+                    f"{section['id']}: {section['title']}" for section in contract_review_untested
+                )
+                if len(contract_untested) > len(contract_review_untested):
+                    summary += f"; and {len(contract_untested) - len(contract_review_untested)} more"
+                errors.append(
+                    f"published self-review has {len(contract_untested)} current untested contract section(s); "
+                    f"contract conformance is incomplete and handoff is blocked: {summary}"
+                )
     except (ReviewError, ValueError) as exc:
         errors.append(f"published self-review is invalid: {exc}")
     checks = _required_checks(profile)
@@ -168,6 +231,13 @@ def delivery_check(repo: Path, issue: int, pr: int, gh: GitHub) -> dict[str, Any
     return {"gate": "handoff", "passed": not errors, "errors": errors,
             "issue": issue, "pr": pr, "head": head, "required_checks": checks,
             "review_failures": review_failures, "review_failure_count": review_failure_count,
+            "contract_review_failures": contract_review_failures,
+            "contract_review_failure_count": contract_review_failure_count,
+            "contract_review_untested": contract_review_untested,
+            "contract_review_untested_count": contract_review_untested_count,
+            "contract_comment_id": contract_comment_id,
+            "contract_sha256": contract_sha256,
+            "review_schema_version": review_schema_version,
             **base_details}
 
 
