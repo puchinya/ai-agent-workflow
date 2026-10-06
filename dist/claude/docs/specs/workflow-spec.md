@@ -35,6 +35,14 @@ Feature work uses `python -m agent_workflow start-feature-branch <issue> <descri
 
 After an Issue exists, the requirements Skill runs `python -m agent_workflow ensure-milestone <issue>` unless an approved Issue contract explicitly names a target release, in which case it passes that unchanged value with `--target-version <version>`. Skills MUST NOT invent or infer a target version. Milestones follow the consumer profile's `auto`, `required`, or `disabled` mode. `disabled` always skips and cannot be overridden by a target. Otherwise an explicit target takes precedence over the repository version source; absent a target, the existing profile source applies. `auto` accepts an unresolved fallback as `NOT_APPLICABLE`; `required` fails closed when no fallback version can be resolved. Exact-title reuse is idempotent, and closed or duplicate milestones are never silently reopened or replaced. An Issue's existing Milestone is immutable through this command: a different current assignment fails without mutation.
 
+### Authorization continuity and implementation handoff
+
+Once a user authorizes execution of an approved Issue-scoped Implementation Contract, that authorization continues through the routine Issue-scoped mutations required to reach a review-ready PR: commit, non-force push, PR create/reuse and required title/body update, transition to `phase:review`, exact-HEAD Agent Self-Review publication, CI/Required Check reads, and the final delivery gate. Skills MUST NOT request a separate conversational confirmation solely for those operations. Host-enforced security prompts may still apply.
+
+That authorization does not cover material scope or architecture changes, contract supersession, an ambiguous or conflicting owning Issue/base, force-push or branch deletion, merge, tag/release creation, publication outside the review PR workflow, credential or permission escalation, mutation of an unrelated Issue/PR, or an explicit user request to stop before PR creation. A conflict requiring one of these decisions blocks only the dependent work.
+
+For an authorized contract, the implementation Skill owns the full sequence: final local verification -> commit -> `ensure-review-pr` (safe non-force push and PR create/reuse) -> set `phase:review` -> prepare, validate, and publish exact-HEAD self-review -> delivery-check. It MUST NOT report implementation complete before an open, non-draft review PR exists. Pending Required Checks are reported as `BLOCKED_DELIVERY_CHECKS_PENDING`; the review PR must already exist. Human or independent PR review remains separate, and automatic merge is forbidden.
+
 ### Skills
 
 Canonical Skill source is `workflow/skills/`. It contains exactly these task areas:
@@ -86,6 +94,9 @@ The consumer's explicit project profile is the machine authority for components,
 | Material requirement conflict | Report the exact conflict and continue only with independent valid work. |
 | Newly discovered category-C requirement | Record it for explicit triage; do not silently treat it as implementer failure or rewrite the approved scope. |
 | Unavailable platform, tool, credential, or CI result | Record it as unverified and identify the concrete blocker. |
+| Authorized implementation has no review PR | Continue through the deterministic PR-establishment command without a second conversational approval. |
+| PR establishment or phase transition fails | Report the precise blocker; a PR created before a phase failure is identified for an idempotent retry. |
+| Required Checks remain pending after PR creation | Report `BLOCKED_DELIVERY_CHECKS_PENDING`; do not report implementation complete. |
 | Submitted self-review without matching evidence | Treat it as a claim to check, never as proof. |
 
 ## Security and privacy

@@ -22,7 +22,7 @@ FORBIDDEN_PATH = re.compile(r"(?i)(?:update-template|refresh-template-manifest|t
 RUNTIME_COMMANDS = (
     "init-project", "agent-context", "validate-docs", "run-hook",
     "save-implementation-contract", "publish-implementation-contract",
-    "restore-implementation-contract", "verify-implementation-contract",
+    "restore-implementation-contract", "verify-implementation-contract", "ensure-review-pr",
     "prepare-self-review", "validate-self-review", "publish-self-review",
     "validate-public-review", "delivery-check", "finalize-merged-issue",
 )

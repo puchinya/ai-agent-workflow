@@ -25,6 +25,8 @@ Goals are explicit Issue authority, progressive context loading, reliable local 
 | Current review failures block handoff | The delivery gate blocks checklist `fail` and contract-section `fail` or `untested`, while checklist `untested` stays non-blocking by itself. |
 | Host-specific packages differ | The builder emits three isolated packages from shared sources and adapters. |
 | Milestone and feature-branch lifecycle is reusable | Milestone mode and fallback source stay in Schema 2 `.agent/project.json`; an approved target release is Issue-scoped input, and the requirements and implementation Skills call standard runtime commands. |
+| Execution authorization continues to the review PR | An approved Issue contract covers routine Issue-scoped commit/push/PR/review-phase/self-review/check operations; Skills do not add a PR-specific prompt. |
+| Implementation owns end-to-end handoff | The implementation flow continues through a review-ready PR, exact-HEAD self-review, and delivery gate before reporting completion. |
 
 ## Architecture
 
@@ -53,12 +55,16 @@ consumer Issue + .agent/project.json
 2. A consumer's `.agent/project.json` is parsed and fully validated before profile-dependent output or hook execution.
 3. Context resolution emits a compact, deterministic manifest. It never writes consumer-controlled files.
 4. Contract and review payloads are validated locally before GitHub mutations. Strict Reviewer Checklist H2 authoring validation is a write-boundary rule for new or superseding contracts; historical approved bytes remain readable. Self-review binds the named approved contract ID and verified SHA, derives exact-byte section identities, and keeps contract conformance separate from checklist review. A legacy/non-canonical Reviewer Checklist H2 remains in contract coverage. After review-comment creation, publication fetches that exact named comment and verifies ID, PR association, and body before separately rechecking Issue/contract state and then PR HEAD. A failed readback or changed state leaves immutable orphan evidence.
-5. Handoff reads current Issue, PR, review, and Required Check state; merged delivery remains a separate operation.
+5. For an authorized implementation, final verification proceeds to commit, `ensure-review-pr` (safe push and deterministic PR establishment), `phase:review`, exact-HEAD self-review, and delivery-check without a redundant conversational confirmation. Pending Required Checks block completion after PR creation. Handoff then reads fresh Issue, PR, review, and Required Check state; merged delivery remains a separate operation.
 6. `build_dist.py` constructs each host package in memory from canonical source and adapter metadata, then writes a deterministic path set.
 
 ## Failure handling
 
 Malformed profiles and Document impact declarations fail closed before hooks or scoped validation. Unknown selected components and invalid doc selectors never broaden scope. Host or target requirement mismatches skip commands and remain unverified. Contract-section `fail` and `untested` block handoff; checklist `fail` blocks while checklist `untested` remains non-blocking by itself. Legacy schema-v1 reviews remain diagnostic-only and cannot pass the handoff gate. GitHub ambiguity fails closed. Atomic local replacements preserve the old verified bytes on failure. Build/check mismatches identify drift without silently accepting edited generated output.
+
+## Authorization boundary and PR handoff
+
+The approved Issue contract is the authority for routine work through a review-ready PR. The implementation Skill retains ownership after local verification and invokes the delivery Skill for PR establishment and gates. A separate decision is reserved for material scope/architecture changes, contract supersession, ambiguous ownership/base, destructive Git operations, merge/release, permission escalation, unrelated GitHub mutation, or an explicit request to stop. A missing PR is an implementation blocker, not a reason to return a “next step.” Pending CI leaves the PR in place and reports blocked delivery.
 
 ## Alternatives considered
 

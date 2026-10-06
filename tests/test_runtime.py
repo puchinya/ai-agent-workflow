@@ -27,10 +27,11 @@ from agent_workflow.context import ContextError, affected_components, build_cont
 from agent_workflow.cli import (_ensure_milestone, _init_project, _start_feature_branch,
                                 _validate_docs, _validate_self_review, build_parser,
                                 main as cli_main)
-from agent_workflow.delivery import DeliveryError, delivery_check, finalize_merged_issue
+from agent_workflow.delivery import (DeliveryError, delivery_check, ensure_review_pr,
+                                     finalize_merged_issue)
 from agent_workflow.documents import resolve_document_impact, validate_markdown_file, validate_docs
 from agent_workflow.git import (GitLifecycleError, _remove_cleanup_path, changed_document_paths,
-                                feature_slug, start_feature_branch)
+                                feature_slug, push_review_branch, start_feature_branch)
 from agent_workflow.github import GitHub, GitHubError
 from agent_workflow.profile import ProfileError, build_hook_plan, validate_profile
 from agent_workflow.process import ProcessError, run_command
@@ -74,13 +75,21 @@ def python_shell_command(script, *arguments):
 class FakeGitHub:
     def __init__(self, body=""):
         self.repo = "owner/repo"
-        self.issue_data = {"number": 1, "repository_url": "https://api.github.com/repos/owner/repo",
+        self.issue_data = {"number": 1, "title": "Issue title",
+                           "repository_url": "https://api.github.com/repos/owner/repo",
                            "html_url": "https://github.com/owner/repo/issues/1", "state": "open",
                            "pull_request": None, "body": body, "labels": [{"name": "phase:review"}],
                            "milestone": None}
         self.comments = []
         self.next_id = 100
         self.pull_data = None
+        self.pull_candidates = []
+        self.created_prs = []
+        self.updated_prs = []
+        self.next_pr = 1
+        self.push_data = {"head_sha": "d" * 40, "head_branch": "feature/1-review"}
+        self.label_replacements = []
+        self.fail_label_replacement = False
         self.pull_comments = {}
         self.removed = []
         self.runs = []
@@ -137,6 +146,36 @@ class FakeGitHub:
     def pull(self, number):
         return copy.deepcopy(self.pull_data)
 
+    def open_pull_requests(self, head_branch, base_branch):
+        self.lifecycle_calls.append(("open_pull_requests", head_branch, base_branch))
+        return copy.deepcopy([
+            pull for pull in self.pull_candidates
+            if pull.get("head", {}).get("ref") == head_branch
+            and pull.get("base", {}).get("ref") == base_branch
+        ])
+
+    def create_pull_request(self, title, head, base, body):
+        self.next_pr += 1
+        pull = {"number": self.next_pr, "html_url": f"https://github.com/{self.repo}/pull/{self.next_pr}",
+                "title": title, "state": "open", "draft": False, "merged": False,
+                "base": {"ref": base, "repo": {"full_name": self.repo}},
+                "head": {"ref": head, "sha": self.push_data["head_sha"],
+                         "repo": {"full_name": self.repo}}, "body": body}
+        self.created_prs.append(copy.deepcopy(pull))
+        self.pull_data = copy.deepcopy(pull)
+        self.pull_candidates.append(copy.deepcopy(pull))
+        return copy.deepcopy(pull)
+
+    def update_pull_request(self, number, title, body):
+        self.updated_prs.append((number, title, body))
+        self.pull_data["title"] = title
+        self.pull_data["body"] = body
+        for pull in self.pull_candidates:
+            if pull.get("number") == number:
+                pull["title"] = title
+                pull["body"] = body
+        return self.pull(number)
+
     def pull_comment(self, comment_id):
         return copy.deepcopy(self.pull_comments[comment_id])
 
@@ -159,6 +198,13 @@ class FakeGitHub:
     def remove_issue_label(self, number, label):
         self.removed.append(label)
         self.issue_data["labels"] = [x for x in self.issue_data["labels"] if x["name"] != label]
+
+    def replace_issue_labels(self, number, labels):
+        self.label_replacements.append((number, list(labels)))
+        if self.fail_label_replacement:
+            raise GitHubError("label replacement failed")
+        self.issue_data["labels"] = [{"name": label} for label in labels]
+        return copy.deepcopy(self.issue_data["labels"])
 
 
 def install_review_contract(repo: Path, gh: FakeGitHub, payload: bytes | None = None):
@@ -690,6 +736,10 @@ class GitLifecycleTests(unittest.TestCase):
         stacked = build_parser().parse_args(["start-feature-branch", "7", "stacked", "feature",
                                              "--base-ref", "release/v2", "--expected-base-sha", "a" * 40])
         self.assertEqual((stacked.base_ref, stacked.expected_base_sha), ("release/v2", "a" * 40))
+        ensure = build_parser().parse_args(["ensure-review-pr", "7", "--body-file", "pr.md",
+                                            "--base-ref", "release/v2", "--title", "Review title"])
+        self.assertEqual((ensure.command, ensure.issue, ensure.body_file, ensure.base_ref, ensure.title),
+                         ("ensure-review-pr", 7, Path("pr.md"), "release/v2", "Review title"))
 
     def test_new_local_and_remote_branch_paths(self):
         created, status = start_feature_branch(self.repo, self.profile(), 7, "new branch", self.github)
@@ -729,6 +779,152 @@ class GitLifecycleTests(unittest.TestCase):
         self.assertEqual(self.git(self.repo, "rev-parse", "HEAD"), remote_sha)
         self.assertEqual(self.git(self.repo, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"),
                          f"origin/{remote_target}")
+
+    def test_review_push_is_non_force_verified_and_idempotent(self):
+        start_feature_branch(self.repo, self.profile(), 7, "review branch", self.github)
+        (self.repo / "review.txt").write_text("review change\n", encoding="utf-8")
+        self.git(self.repo, "add", "review.txt")
+        self.git(self.repo, "commit", "-m", "review change")
+        real_invoke = __import__("agent_workflow.git", fromlist=["_invoke"])._invoke
+        push_calls = []
+
+        def track_push(repo, args, **kwargs):
+            if args[0] == "push":
+                push_calls.append(list(args))
+            return real_invoke(repo, args, **kwargs)
+
+        with patch("agent_workflow.git._origin_repository", return_value="owner/repo"), \
+             patch("agent_workflow.git._invoke", side_effect=track_push):
+            first = push_review_branch(self.repo, self.profile(), 7, "owner/repo", "main", "main")
+            second = push_review_branch(self.repo, self.profile(), 7, "owner/repo", "main", "main")
+        expected_head = self.git(self.repo, "rev-parse", "HEAD")
+        self.assertEqual(len(push_calls), 1)
+        self.assertNotIn("--force", push_calls[0])
+        self.assertNotIn("--force-with-lease", push_calls[0])
+        self.assertIn("--no-follow-tags", push_calls[0])
+        self.assertTrue(first["pushed"])
+        self.assertFalse(second["pushed"])
+        self.assertTrue(first["remote_head_verified"])
+        self.assertEqual(first["head_sha"], expected_head)
+        self.assertEqual(first["remote_head"], expected_head)
+        self.assertEqual(self._remote_sha("feature/7-review-branch"), expected_head)
+
+    def test_review_push_origin_identity_requires_one_parseable_fetch_or_push_url(self):
+        git_module = __import__("agent_workflow.git", fromlist=["_origin_repository"])
+        for push, url in ((False, "https://github.com/owner/repo.git"),
+                          (True, "git@github.com:owner/repo.git")):
+            completed = subprocess.CompletedProcess(["git"], 0, url + "\n", "")
+            with self.subTest(push=push), patch("agent_workflow.git._invoke", return_value=completed) as invoke:
+                self.assertEqual(git_module._origin_repository(self.repo, push=push), "owner/repo")
+                args = ["remote", "get-url"] + (["--push"] if push else []) + ["--all", "origin"]
+                invoke.assert_called_once_with(self.repo, args, allow_failure=True)
+
+        multiple = subprocess.CompletedProcess(["git"], 0,
+                                               "https://github.com/owner/repo.git\n"
+                                               "https://github.com/owner/other.git\n", "")
+        with patch("agent_workflow.git._invoke", return_value=multiple):
+            with self.assertRaisesRegex(GitLifecycleError, "exactly one fetch and push URL"):
+                git_module._origin_repository(self.repo)
+
+    def test_review_push_rejects_dirty_default_and_no_ahead_before_push(self):
+        profile = self.profile()
+        real_invoke = __import__("agent_workflow.git", fromlist=["_invoke"])._invoke
+        push_calls = []
+
+        def track_push(repo, args, **kwargs):
+            if args[0] == "push":
+                push_calls.append(list(args))
+            return real_invoke(repo, args, **kwargs)
+
+        start_feature_branch(self.repo, profile, 7, "dirty branch", self.github)
+        (self.repo / "dirty.txt").write_text("dirty\n", encoding="utf-8")
+        with patch("agent_workflow.git._origin_repository", return_value="owner/repo"), \
+             patch("agent_workflow.git._invoke", side_effect=track_push):
+            with self.assertRaisesRegex(GitLifecycleError, "worktree must be clean"):
+                push_review_branch(self.repo, profile, 7, "owner/repo", "main", "main")
+        (self.repo / "dirty.txt").unlink()
+
+        self.git(self.repo, "switch", "main")
+        with patch("agent_workflow.git._origin_repository", return_value="owner/repo"), \
+             patch("agent_workflow.git._invoke", side_effect=track_push):
+            with self.assertRaisesRegex(GitLifecycleError, "default branch"):
+                push_review_branch(self.repo, profile, 7, "owner/repo", "main", "main")
+
+        start_feature_branch(self.repo, profile, 7, "no ahead", self.github)
+        with patch("agent_workflow.git._origin_repository", return_value="owner/repo"), \
+             patch("agent_workflow.git._invoke", side_effect=track_push):
+            with self.assertRaisesRegex(GitLifecycleError, "no commit ahead"):
+                push_review_branch(self.repo, profile, 7, "owner/repo", "main", "main")
+        self.assertEqual(push_calls, [])
+
+    def test_review_push_rejects_alternate_push_repository_and_mirror_mode(self):
+        profile = self.profile()
+        start_feature_branch(self.repo, profile, 7, "unsafe push target", self.github)
+        (self.repo / "review.txt").write_text("review\n", encoding="utf-8")
+        self.git(self.repo, "add", "review.txt")
+        self.git(self.repo, "commit", "-m", "review")
+        with patch("agent_workflow.git._origin_repository", side_effect=lambda _repo, push=False:
+                   "other/repo" if push else "owner/repo"):
+            with self.assertRaisesRegex(GitLifecycleError, "origin repository does not match"):
+                push_review_branch(self.repo, profile, 7, "owner/repo", "main", "main")
+
+        real_invoke = __import__("agent_workflow.git", fromlist=["_invoke"])._invoke
+        push_calls = []
+
+        def mirror_config(repo, args, **kwargs):
+            if args[0] == "push":
+                push_calls.append(list(args))
+            if args == ["config", "--bool", "--get", "remote.origin.mirror"]:
+                return subprocess.CompletedProcess(["git", *args], 0, "true\n", "")
+            return real_invoke(repo, args, **kwargs)
+
+        with patch("agent_workflow.git._origin_repository", return_value="owner/repo"), \
+             patch("agent_workflow.git._invoke", side_effect=mirror_config):
+            with self.assertRaisesRegex(GitLifecycleError, "mirror-push configuration"):
+                push_review_branch(self.repo, profile, 7, "owner/repo", "main", "main")
+        self.assertEqual(push_calls, [])
+        self.assertIsNone(self._remote_sha("feature/7-unsafe-push-target"))
+
+    def test_review_push_failure_and_remote_head_mismatch_fail_closed(self):
+        profile = self.profile()
+        start_feature_branch(self.repo, profile, 7, "push failure", self.github)
+        (self.repo / "review.txt").write_text("review\n", encoding="utf-8")
+        self.git(self.repo, "add", "review.txt")
+        self.git(self.repo, "commit", "-m", "review")
+        real_invoke = __import__("agent_workflow.git", fromlist=["_invoke"])._invoke
+
+        def fail_push(repo, args, **kwargs):
+            if args[0] == "push":
+                return subprocess.CompletedProcess(["git", *args], 1, "", "private remote diagnostic")
+            return real_invoke(repo, args, **kwargs)
+
+        with patch("agent_workflow.git._origin_repository", return_value="owner/repo"), \
+             patch("agent_workflow.git._invoke", side_effect=fail_push):
+            with self.assertRaisesRegex(GitLifecycleError, "Git push failed") as raised:
+                push_review_branch(self.repo, profile, 7, "owner/repo", "main", "main")
+        self.assertNotIn("private remote diagnostic", str(raised.exception))
+        self.assertIsNone(self._remote_sha("feature/7-push-failure"))
+
+        real_remote = __import__("agent_workflow.git", fromlist=["_remote_branch_sha"])._remote_branch_sha
+        target_reads = 0
+
+        def mismatch_after_push(repo, branch):
+            nonlocal target_reads
+            if branch == "feature/7-push-failure":
+                target_reads += 1
+                return None if target_reads == 1 else "0" * 40
+            return real_remote(repo, branch)
+
+        with patch("agent_workflow.git._origin_repository", return_value="owner/repo"), \
+             patch("agent_workflow.git._remote_branch_sha", side_effect=mismatch_after_push):
+            with self.assertRaisesRegex(GitLifecycleError, "remote branch HEAD does not match"):
+                push_review_branch(self.repo, profile, 7, "owner/repo", "main", "main")
+
+    def _remote_sha(self, branch):
+        result = subprocess.run(["git", "--git-dir", str(self.remote), "rev-parse", "--verify",
+                                 f"refs/heads/{branch}"], check=False, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return result.stdout.strip() if result.returncode == 0 else None
 
     def test_stacked_new_branch_starts_at_fetched_base(self):
         self.git(self.repo, "branch", "release/v2")
@@ -2111,6 +2307,43 @@ class GitHubTransportTests(unittest.TestCase):
         self.assertEqual([query["state"] for query in queries], [["all"], ["all"]])
         self.assertEqual([query["page"] for query in queries], [["1"], ["2"]])
 
+    def test_open_pull_query_filters_exact_refs_and_retains_fork_candidates(self):
+        gh = GitHub("owner/repo")
+        pulls = [
+            {"number": 1, "head": {"ref": "feature/1-work", "repo": {"full_name": "owner/repo"}},
+             "base": {"ref": "main"}},
+            {"number": 2, "head": {"ref": "feature/1-work", "repo": {"full_name": "fork/repo"}},
+             "base": {"ref": "main"}},
+            {"number": 3, "head": {"ref": "feature/2-other", "repo": {"full_name": "owner/repo"}},
+             "base": {"ref": "main"}},
+            {"number": 4, "head": {"ref": "feature/1-work", "repo": {"full_name": "owner/repo"}},
+             "base": {"ref": "release/v2"}},
+        ]
+        with patch.object(gh, "_paginate", return_value=pulls) as paginate:
+            result = gh.open_pull_requests("feature/1-work", "main")
+        self.assertEqual([pull["number"] for pull in result], [1, 2])
+        endpoint = paginate.call_args.args[0]
+        self.assertIn("state=open", endpoint)
+        self.assertIn("base=main", endpoint)
+
+    def test_pull_create_update_and_issue_label_replacement_use_structured_payloads(self):
+        gh = GitHub("owner/repo")
+        created = {"number": 8, "state": "open", "draft": False}
+        updated = {"number": 8, "title": "Review", "body": "payload"}
+        labels = [{"name": "area:runtime"}, {"name": "phase:review"}]
+        with patch.object(gh, "request", side_effect=[created, updated, labels]) as request:
+            self.assertEqual(gh.create_pull_request("Review", "feature/1-work", "main", "payload"), created)
+            self.assertEqual(gh.update_pull_request(8, "Review", "payload"), updated)
+            self.assertEqual(gh.replace_issue_labels(1, ["area:runtime", "phase:review"]), labels)
+        self.assertEqual(request.call_args_list[0].args[:2], ("POST", "repos/owner/repo/pulls"))
+        self.assertEqual(request.call_args_list[0].args[2], {
+            "title": "Review", "head": "feature/1-work", "base": "main", "body": "payload", "draft": False,
+        })
+        self.assertEqual(request.call_args_list[1].args[:2], ("PATCH", "repos/owner/repo/pulls/8"))
+        self.assertEqual(request.call_args_list[1].args[2], {"title": "Review", "body": "payload"})
+        self.assertEqual(request.call_args_list[2].args[:2], ("PUT", "repos/owner/repo/issues/1/labels"))
+        self.assertEqual(request.call_args_list[2].args[2], {"labels": ["area:runtime", "phase:review"]})
+
 
 class PaginationTests(unittest.TestCase):
     def setUp(self):
@@ -2353,10 +2586,11 @@ class DeliveryTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.repo = Path(self.temp.name)
         (self.repo / ".agent").mkdir()
-        data = {"schema_version": 2, "initialized": False, "project_name": "x",
+        data = {"schema_version": 2, "initialized": True, "project_name": "x",
                 "components": [{"id": "root", "roots": ["."], "stacks": [],
                                 "application_types": ["cli"], "targets": [], "hooks": {}}],
-                "branch": {"required_checks": [{"name": "CI", "app_id": 77}]},
+                "branch": {"prefix": "feature", "max_slug_length": 48,
+                           "required_checks": [{"name": "CI", "app_id": 77}]},
                 "milestones": {"enabled": False}, "hooks": {}}
         (self.repo / ".agent/project.json").write_text(json.dumps(data), encoding="utf-8")
         self.gh = FakeGitHub("## Affected components\n- root\n")
@@ -2408,6 +2642,181 @@ macOS IDE smoke test not run
                 self.gh.pull_data[key] = value
         with patch("agent_workflow.delivery.validate_public_review", return_value=published):
             return delivery_check(self.repo, 1, 2, self.gh)
+
+    def run_ensure(self, body=None, title=None, base_ref=None, head_sha=None):
+        head_sha = head_sha or self.head
+        pushed = {"head_sha": head_sha, "head_branch": "feature/1-review", "base_branch": base_ref or "main",
+                  "base_sha": "a" * 40, "ahead_by": 1, "pushed": True,
+                  "remote_head": head_sha, "remote_head_verified": True}
+        self.gh.push_data = copy.deepcopy(pushed)
+        with patch("agent_workflow.delivery.push_review_branch", return_value=pushed) as push:
+            result = ensure_review_pr(self.repo, 1, body or self.pr_body, self.gh, title, base_ref)
+        return result, push
+
+    def _candidate_pr(self, **changes):
+        pull = {"number": 8, "html_url": f"https://github.com/{self.gh.repo}/pull/8",
+                "title": "Existing title", "state": "open", "draft": False, "merged": False,
+                "base": {"ref": "main", "repo": {"full_name": self.gh.repo}},
+                "head": {"ref": "feature/1-review", "sha": self.head,
+                         "repo": {"full_name": self.gh.repo}}, "body": "## Verification\nold\n\n## Untested\nold"}
+        pull.update(changes)
+        self.gh.pull_data = copy.deepcopy(pull)
+        self.gh.pull_candidates = [copy.deepcopy(pull)]
+        return pull
+
+    def test_ensure_review_pr_creates_pushes_and_transitions_phase(self):
+        self.gh.issue_data["labels"] = [{"name": "area:runtime"}, {"name": "phase:ready"},
+                                         {"name": "phase:implementation"}]
+        result, push = self.run_ensure()
+        self.assertTrue(result["success"], result)
+        self.assertTrue(result["created"])
+        self.assertFalse(result["reused"])
+        self.assertEqual(result["head_sha"], self.head)
+        self.assertEqual(result["head_branch"], "feature/1-review")
+        self.assertEqual(result["base_branch"], "main")
+        self.assertEqual(self.gh.pull_data["title"], "Issue title")
+        self.assertIn("Closes #1", self.gh.pull_data["body"])
+        self.assertIn("## Verification", self.gh.pull_data["body"])
+        self.assertIn("## Untested", self.gh.pull_data["body"])
+        self.assertEqual(self.gh.issue_data["labels"], [{"name": "area:runtime"}, {"name": "phase:review"}])
+        self.assertEqual(len(self.gh.created_prs), 1)
+        self.assertEqual(len(self.gh.label_replacements), 1)
+        push.assert_called_once()
+
+    def test_ensure_review_pr_retry_reuses_pr_and_preserves_labels(self):
+        self.gh.issue_data["labels"] = [{"name": "area:runtime"}, {"name": "phase:ready"},
+                                         {"name": "phase:implementation"}]
+        first, _ = self.run_ensure()
+        second, push = self.run_ensure()
+        self.assertTrue(first["success"])
+        self.assertTrue(second["success"], second)
+        self.assertEqual(first["pr"], second["pr"])
+        self.assertFalse(second["created"])
+        self.assertTrue(second["reused"])
+        self.assertEqual(len(self.gh.created_prs), 1)
+        self.assertEqual(self.gh.updated_prs, [])
+        self.assertEqual(self.gh.issue_data["labels"], [{"name": "area:runtime"}, {"name": "phase:review"}])
+        self.assertEqual(len(self.gh.label_replacements), 1)
+        self.assertTrue(push.called)
+
+    def test_ensure_review_pr_validates_body_before_push_or_github(self):
+        cases = [
+            ("## Verification\npassed\n\n## Untested\nnone", "Closes #1"),
+            ("Closes #1\n\n## Verification\n\n## Untested\nnone", "Verification"),
+            ("Closes #1\n\n## Verification\npassed\n\n## Untested\n", "Untested"),
+            ("Closes #2\n\n## Verification\npassed\n\n## Untested\nnone", "Closes #1"),
+        ]
+        for body, expected in cases:
+            with self.subTest(expected=expected):
+                self.gh.lifecycle_calls.clear()
+                with patch("agent_workflow.delivery.push_review_branch") as push:
+                    with self.assertRaisesRegex(DeliveryError, expected):
+                        ensure_review_pr(self.repo, 1, body, self.gh)
+                push.assert_not_called()
+                self.assertEqual(self.gh.lifecycle_calls, [])
+
+    def test_ensure_review_pr_push_failure_has_no_pr_or_label_mutation(self):
+        self.gh.issue_data["labels"] = [{"name": "phase:implementation"}]
+        with patch("agent_workflow.delivery.push_review_branch",
+                   side_effect=GitLifecycleError("Git push failed (exit status 1)")):
+            with self.assertRaisesRegex(DeliveryError, "Git push failed"):
+                ensure_review_pr(self.repo, 1, self.pr_body, self.gh)
+        self.assertEqual(self.gh.created_prs, [])
+        self.assertEqual(self.gh.label_replacements, [])
+
+    def test_ensure_review_pr_fails_closed_for_conflict_draft_and_fork(self):
+        for changes, expected in [
+            ({"body": "Closes #2"}, "closes a different Issue"),
+            ({"draft": True}, "open and non-draft"),
+            ({"head": {"ref": "feature/1-review", "sha": self.head,
+                       "repo": {"full_name": "fork/repo"}}}, "fork or another repository"),
+        ]:
+            with self.subTest(expected=expected):
+                self.gh.created_prs = []
+                self.gh.updated_prs = []
+                self.gh.label_replacements = []
+                self._candidate_pr(**changes)
+                with patch("agent_workflow.delivery.push_review_branch", return_value={
+                    "head_sha": self.head, "head_branch": "feature/1-review", "base_branch": "main",
+                    "base_sha": "a" * 40, "ahead_by": 1, "pushed": True,
+                    "remote_head": self.head, "remote_head_verified": True,
+                }):
+                    with self.assertRaisesRegex(DeliveryError, expected):
+                        ensure_review_pr(self.repo, 1, self.pr_body, self.gh)
+                self.assertEqual(self.gh.created_prs, [])
+                self.assertEqual(self.gh.updated_prs, [])
+                self.assertEqual(self.gh.label_replacements, [])
+
+    def test_ensure_review_pr_fails_closed_on_duplicate_matches(self):
+        candidate = self._candidate_pr()
+        self.gh.pull_candidates.append(copy.deepcopy(candidate))
+        with patch("agent_workflow.delivery.push_review_branch", return_value={
+            "head_sha": self.head, "head_branch": "feature/1-review", "base_branch": "main",
+            "base_sha": "a" * 40, "ahead_by": 1, "pushed": True,
+            "remote_head": self.head, "remote_head_verified": True,
+        }):
+            with self.assertRaisesRegex(DeliveryError, "multiple open PRs"):
+                ensure_review_pr(self.repo, 1, self.pr_body, self.gh)
+        self.assertEqual(self.gh.created_prs, [])
+        self.assertEqual(self.gh.updated_prs, [])
+        self.assertEqual(self.gh.label_replacements, [])
+
+    def test_ensure_review_pr_updates_compatible_existing_pr_only_when_needed(self):
+        existing = self._candidate_pr()
+        self.gh.issue_data["labels"] = [{"name": "phase:implementation"}, {"name": "area:runtime"}]
+        result, _ = self.run_ensure()
+        self.assertTrue(result["success"], result)
+        self.assertTrue(result["reused"])
+        self.assertFalse(result["created"])
+        self.assertEqual(result["pr"], existing["number"])
+        self.assertEqual(len(self.gh.updated_prs), 1)
+        self.assertEqual(self.gh.updated_prs[0], (8, "Issue title", self.pr_body))
+        self.assertEqual(self.gh.created_prs, [])
+
+    def test_phase_failure_returns_pr_identity_and_retry_reuses_it(self):
+        self.gh.issue_data["labels"] = [{"name": "area:runtime"}, {"name": "phase:implementation"}]
+        self.gh.fail_label_replacement = True
+        failed, _ = self.run_ensure()
+        self.assertFalse(failed["success"])
+        self.assertEqual(failed["pr_url"], f"https://github.com/{self.gh.repo}/pull/{failed['pr']}")
+        self.assertFalse(failed["phase_transition"]["verified"])
+        self.assertEqual(len(self.gh.created_prs), 1)
+        self.gh.fail_label_replacement = False
+        retry, _ = self.run_ensure()
+        self.assertTrue(retry["success"], retry)
+        self.assertTrue(retry["reused"])
+        self.assertEqual(retry["pr"], failed["pr"])
+        self.assertEqual(len(self.gh.created_prs), 1)
+
+    def test_new_head_reuses_pr_and_pending_checks_still_block_delivery(self):
+        first, _ = self.run_ensure()
+        new_head = "f" * 40
+        for candidate in self.gh.pull_candidates:
+            candidate["head"]["sha"] = new_head
+        self.gh.pull_data["head"]["sha"] = new_head
+        second, _ = self.run_ensure(head_sha=new_head)
+        self.assertTrue(second["success"], second)
+        self.assertTrue(second["reused"])
+        self.assertEqual(first["pr"], second["pr"])
+        self.gh.runs = []
+        self.head = new_head
+        result = self.run_gate(published_review={
+            "stale": True, "schema_version": 2, "head": "d" * 40, "head_stale": True,
+            "contract_stale": False, "checklist_stale": False,
+            "review": {"items": [], "contract_sections": []},
+        })
+        self.assertFalse(result["passed"])
+        self.assertTrue(any("stale for the current PR HEAD" in error for error in result["errors"]))
+        self.assertTrue(any("Required Check" in error for error in result["errors"]))
+
+    def test_pending_required_checks_do_not_prevent_pr_establishment(self):
+        self.gh.runs = []
+        result, _ = self.run_ensure()
+        self.assertTrue(result["success"], result)
+        self.assertEqual(len(self.gh.created_prs), 1)
+        gate = self.run_gate()
+        self.assertFalse(gate["passed"])
+        self.assertTrue(any("Required Check" in error for error in gate["errors"]))
 
     def test_handoff_passes_only_with_current_review_and_green_app_check(self):
         result = self.run_gate()
@@ -2612,6 +3021,40 @@ macOS IDE smoke test not run
 
 
 class DistributionTests(unittest.TestCase):
+    def test_generated_packages_carry_handoff_authority_and_runtime_command(self):
+        files = build_dist.expected_files()
+        for host in build_dist.HOSTS:
+            with self.subTest(host=host):
+                implementation = files[f"dist/{host}/skills/implementation/SKILL.md"].decode("utf-8")
+                requirements = files[f"dist/{host}/skills/requirements/SKILL.md"].decode("utf-8")
+                delivery = files[f"dist/{host}/skills/delivery/SKILL.md"].decode("utf-8")
+                self_review = files[f"dist/{host}/skills/self-review/SKILL.md"].decode("utf-8")
+                all_skills = "\n".join(
+                    files[f"dist/{host}/skills/{name}/SKILL.md"].decode("utf-8")
+                    for name in build_dist.EXPECTED_SKILLS
+                )
+                runtime_delivery = files[f"dist/{host}/runtime/agent_workflow/delivery.py"].decode("utf-8")
+                runtime_cli = files[f"dist/{host}/runtime/agent_workflow/cli.py"].decode("utf-8")
+                self.assertIn("continue without another conversational prompt", implementation)
+                self.assertIn("Do not report implementation complete until an open, non-draft review PR exists", implementation)
+                self.assertIn("Do not request a later PR-specific conversational approval", requirements)
+                self.assertIn("merge/release", requirements)
+                self.assertIn("destructive Git operations", requirements)
+                self.assertIn("material scope/architecture changes", requirements)
+                for line in all_skills.splitlines():
+                    requests_later_approval = re.search(
+                        r"(?i)\b(?:ask|request|wait for)\b.*\b(?:separate|additional|another|later)\b"
+                        r".*\b(?:PR|pull request)\b.*\b(?:approval|confirmation)\b", line)
+                    if requests_later_approval:
+                        self.assertRegex(line, r"(?i)\b(?:do not|must not|never)\b")
+                self.assertIn("ensure-review-pr <issue> --body-file <path>", delivery)
+                self.assertIn("without another user prompt", self_review)
+                self.assertIn("def ensure_review_pr(", runtime_delivery)
+                self.assertIn('commands.add_parser("ensure-review-pr")', runtime_cli)
+        for path in ("dist/openai/plugin.json", "dist/claude/.claude-plugin/plugin.json"):
+            self.assertEqual(json.loads(files[path])['version'], __version__)
+        self.assertNotIn("version", json.loads(files["dist/antigravity/plugin.json"]))
+
     def test_openai_marketplace_uses_repository_contained_host_package(self):
         files = build_dist.expected_files()
         market = json.loads(files[".agents/plugins/marketplace.json"])
