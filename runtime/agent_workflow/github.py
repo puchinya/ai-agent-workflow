@@ -131,6 +131,36 @@ class GitHub:
     def pull(self, number: int) -> dict[str, Any]:
         return self.request("GET", f"{self.prefix}/pulls/{number}")
 
+    def open_pull_requests(self, head_branch: str, base_branch: str) -> list[dict[str, Any]]:
+        """List open same-base PR candidates and filter exact head/base refs, including fork heads."""
+        if (not isinstance(head_branch, str) or not head_branch or "\n" in head_branch or "\r" in head_branch
+                or not isinstance(base_branch, str) or not base_branch or "\n" in base_branch or "\r" in base_branch):
+            raise GitHubError("PR head and base branches must be non-empty single-line refs")
+        candidates = self._paginate(
+            f"{self.prefix}/pulls?state=open&base={quote(base_branch, safe='')}"
+        )
+        return [pull for pull in candidates
+                if isinstance(pull.get("head"), dict) and isinstance(pull.get("base"), dict)
+                and pull["head"].get("ref") == head_branch
+                and pull["base"].get("ref") == base_branch]
+
+    def create_pull_request(self, title: str, head: str, base: str, body: str) -> dict[str, Any]:
+        result = self.request("POST", f"{self.prefix}/pulls", {
+            "title": title, "head": head, "base": base, "body": body, "draft": False,
+        })
+        if (not isinstance(result, dict) or not isinstance(result.get("number"), int)
+                or isinstance(result.get("number"), bool) or result.get("number") < 1
+                or result.get("state") != "open" or result.get("draft") is not False):
+            raise GitHubError("created PR did not match the requested open non-draft PR")
+        return result
+
+    def update_pull_request(self, number: int, title: str, body: str) -> dict[str, Any]:
+        result = self.request("PATCH", f"{self.prefix}/pulls/{number}", {"title": title, "body": body})
+        if (not isinstance(result, dict) or result.get("number") != number
+                or result.get("title") != title or result.get("body") != body):
+            raise GitHubError("updated PR did not match the requested title and body")
+        return result
+
     def pull_comments(self, number: int) -> list[dict[str, Any]]:
         return self.request("GET", f"{self.prefix}/issues/{number}/comments?per_page=100")
 
@@ -151,6 +181,16 @@ class GitHub:
 
     def add_issue_label(self, number: int, label: str) -> None:
         self.request("POST", f"{self.prefix}/issues/{number}/labels", {"labels": [label]})
+
+    def replace_issue_labels(self, number: int, labels: list[str]) -> list[dict[str, Any]]:
+        if (not isinstance(labels, list) or any(not isinstance(label, str) or not label for label in labels)
+                or len(set(labels)) != len(labels)):
+            raise GitHubError("Issue label replacement requires unique non-empty label names")
+        result = self.request("PUT", f"{self.prefix}/issues/{number}/labels", {"labels": labels})
+        if (not isinstance(result, list) or any(not isinstance(label, dict) for label in result)
+                or {label.get("name") for label in result} != set(labels)):
+            raise GitHubError("Issue label replacement response did not match the requested labels")
+        return result
 
     def remove_issue_label(self, number: int, label: str) -> None:
         self.request("DELETE", f"{self.prefix}/issues/{number}/labels/{quote(label, safe='')}")

@@ -14,7 +14,7 @@ from . import __version__
 from .context import ContextError, affected_components, build_context, format_context
 from .contracts import (ContractError, publish_contract, restore_contract, save_contract,
                         verify_contract)
-from .delivery import DeliveryError, delivery_check, finalize_merged_issue
+from .delivery import DeliveryError, delivery_check, ensure_review_pr, finalize_merged_issue
 from .documents import resolve_document_impact, validate_docs
 from .github import GitHub, GitHubError, discover_repository
 from .git import GitLifecycleError, changed_document_paths, start_feature_branch
@@ -207,6 +207,16 @@ def _start_feature_branch(args: argparse.Namespace) -> tuple[dict[str, Any], int
                                 getattr(args, "base_ref", None), getattr(args, "expected_base_sha", None))
 
 
+def _ensure_review_pr(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
+    repo = _repo_arg(args.repo)
+    try:
+        body = args.body_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise CLIError("could not read --body-file as UTF-8 text") from exc
+    result = ensure_review_pr(repo, args.issue, body, _gh(repo), args.title, args.base_ref)
+    return result, 0 if result.get("success") else 1
+
+
 def _validate_docs(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     repo = _repo_arg(args.repo)
     if args.issue is not None:
@@ -354,6 +364,13 @@ def build_parser() -> argparse.ArgumentParser:
     feature.add_argument("--expected-base-sha", metavar="SHA40")
     feature.add_argument("--repo")
 
+    review_pr = commands.add_parser("ensure-review-pr")
+    review_pr.add_argument("issue", type=_number)
+    review_pr.add_argument("--body-file", type=Path, required=True)
+    review_pr.add_argument("--title")
+    review_pr.add_argument("--base-ref", metavar="BRANCH")
+    review_pr.add_argument("--repo")
+
     hook = commands.add_parser("run-hook")
     hook.add_argument("hook", choices=("branch_switch", "verify_quick", "verify_final"))
     scopes = hook.add_mutually_exclusive_group()
@@ -424,6 +441,8 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, int]:
         result = _ensure_milestone(args)
     elif args.command == "start-feature-branch":
         return _start_feature_branch(args)
+    elif args.command == "ensure-review-pr":
+        return _ensure_review_pr(args)
     elif args.command == "run-hook":
         result = _do_hook(args)
     elif args.command == "save-implementation-contract":

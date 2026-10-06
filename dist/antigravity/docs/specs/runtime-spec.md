@@ -13,7 +13,7 @@ Define observable behavior for the Python 3.10+ command `python -m agent_workflo
 
 ## Scope
 
-The CLI MUST provide `init-project`, `agent-context`, `validate-docs`, `run-hook`, `ensure-milestone`, `start-feature-branch`, `save-implementation-contract`, `publish-implementation-contract`, `restore-implementation-contract`, `verify-implementation-contract`, `prepare-self-review`, `validate-self-review`, `publish-self-review`, `validate-public-review`, `delivery-check`, and `finalize-merged-issue`.
+The CLI MUST provide `init-project`, `agent-context`, `validate-docs`, `run-hook`, `ensure-milestone`, `start-feature-branch`, `ensure-review-pr`, `save-implementation-contract`, `publish-implementation-contract`, `restore-implementation-contract`, `verify-implementation-contract`, `prepare-self-review`, `validate-self-review`, `publish-self-review`, `validate-public-review`, `delivery-check`, and `finalize-merged-issue`.
 
 The commands `update-template` and `refresh-template-manifest` are forbidden. No module other than `github.py` may invoke `gh` directly. Every GitHub mutation uses JSON input files or structured fields, never shell interpolation of user payloads.
 
@@ -63,6 +63,27 @@ Each row selects exactly one alternative. Every link must target the correspondi
 ### Feature branch bases
 
 `start-feature-branch N <description...> [--base-ref BRANCH] [--expected-base-sha SHA40]` uses the GitHub default branch when `--base-ref` is omitted. An explicit base must name an existing same-repository remote branch; a SHA cannot be supplied as the base branch. The runtime fetches and resolves `origin/<base-ref>`, then checks `--expected-base-sha` before any branch switch, cleanup, or hook. A new target branch starts directly at that fetched base. Existing current, local, and remote targets remain idempotent and are never rebased. Results include `base_ref`, `base_sha`, `stacked`, and `creation_source` (`current`, `local`, `remote`, or `new`). A base SHA mismatch leaves the current branch and worktree unchanged.
+
+### Review PR establishment
+
+`ensure-review-pr N --body-file PATH [--title TITLE] [--base-ref BRANCH]` pushes the current Issue feature branch safely, creates or reuses exactly one open same-repository review PR, verifies its identity, replaces phase labels so only `phase:review` remains among them, and reads the final state back. It establishes the PR required by self-review; it does not prepare or publish self-review itself. Success JSON contains `issue`, `pr`, `pr_url`, `head_sha`, `head_branch`, `base_branch`, `created`, `reused`, `push`, and `phase_transition`. A post-create phase failure returns a failed result with PR identity so a retry can reuse it.
+
+The command requires a readable UTF-8 body file. Before any push or PR/Issue mutation, validate a standalone logical line `Closes #N` for the owning Issue, a non-empty `## Verification` section, and a non-empty `## Untested` section. The command never invents claims. Resolve repository, open same-repository non-PR Issue, repository default branch, selected base, current branch, and HEAD. If base is omitted, use the default branch. An approved stacked branch passes the exact `base_ref` from `start-feature-branch`; never infer a different base.
+
+Before push, require a clean worktree, the current configured Issue feature branch, exactly one origin fetch URL and push URL both resolving to the same repository, no origin mirror-push configuration, a non-default branch, a valid same-repository remote base, and at least one commit ahead of that base with the base contained in the current branch history. GitHub reads may establish identity and default/base metadata, but all local preconditions must pass before network mutation. Push only the current branch to origin with argv-based Git, no force option, and no automatic tag following, then verify the remote branch SHA equals local HEAD. Push failure or mismatch prevents PR and phase mutation.
+
+After verified push, query open PRs on the exact base and filter the exact head branch, including fork heads so cross-repository matches fail closed. Create one non-draft PR when none matches. Reuse exactly one matching same-repository PR; update its title/body only when the body has no conflicting `Closes #N` and the requested payload differs. Fail closed for multiple matches, any conflicting Issue closure, draft PRs, missing/cross-repository head identity, or invalid PR identity/state. Do not create duplicates, rewrite a conflicting PR, or convert a draft. Verify head repository/ref/SHA, base repository/ref, open state, non-draft status, and Issue association after create/reuse. A repeated call reuses the same PR; a later HEAD may update the same branch/PR.
+
+Only after a compatible PR exists, read the latest Issue labels, preserve every non-`phase:*` label, replace all phase labels with exactly `phase:review` in one `github.py` label-replacement call, and read back Issue and PR state. A failed transition reports the PR number and URL; retry reuses that PR. Successful repeated calls are idempotent. Pending Required Checks do not prevent PR creation. Existing exact-HEAD self-review and delivery gates remain unchanged; a new HEAD stales the old review and requires republishing.
+
+| Condition | Required behavior |
+|---|---|
+| Missing/invalid body file, absent `Closes #N`, empty Verification/Untested | Fail before push, PR mutation, or label mutation. |
+| Dirty worktree, default-branch execution, invalid Issue branch/origin/base, or no commit ahead | Fail before push and all GitHub mutation. |
+| Push failure or remote HEAD mismatch | Fail before PR create/update and phase transition. |
+| Multiple exact matches, conflicting Issue PR, draft PR, or fork/cross-repository head | Fail closed without PR update/create or label mutation. |
+| PR created/reused but label replacement or readback fails | Return failure with PR identity; a retry reuses the same PR. |
+| Required Checks pending after PR creation | PR establishment succeeds; overall delivery stays blocked. |
 
 ### Implementation Contract bytes and storage
 
@@ -157,6 +178,11 @@ GitHub requests use authenticated `gh api` through one module. User payloads tra
 | Invalid explicit target milestone version | Fail before listing, creating, or assigning a Milestone. |
 | Issue already assigned to a different Milestone | Fail before create/assign and report the current and requested titles when available. |
 | Dirty worktree or invalid/non-open/foreign/PR Issue | Fail before any branch switch. |
+| Dirty worktree/default-branch/no-ahead feature handoff | Fail before push and before PR/Issue mutation. |
+| Push failure or remote HEAD mismatch | Fail before PR mutation and phase transition. |
+| Conflicting/draft/fork/multiple matching PR | Fail closed without rewriting, converting, duplicating, or changing Issue phase. |
+| PR exists but phase transition fails | Return PR identity and allow an idempotent retry. |
+| Required Checks pending after PR establishment | Keep the PR and report delivery blocked, not complete. |
 | Invalid/unknown base branch or mismatched expected base SHA | Fail before branch switch, cleanup, or hooks; preserve the current branch and worktree. |
 | Cleanup path escapes the repository | Reject the profile before Git mutation. |
 | Cleanup or hook fails after a real switch | Keep the new branch, report current branch and failed stage, and do not rerun switch work on same-branch retry. |

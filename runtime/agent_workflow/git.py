@@ -206,3 +206,94 @@ def start_feature_branch(repo: Path, profile: dict[str, Any], issue_number: int,
     return ({"issue": issue_number, "branch": target, "switched": True,
              **result_metadata,
              "cleanup_paths_removed": cleanup_removed, "hooks_run": hooks_run}, 0)
+
+
+def _repository_from_remote_url(url: str) -> str:
+    match = re.search(r"(?:^|@|://)github\.com[:/]([^/\s:?#]+/[^/\s:?#]+?)(?:\.git)?/?$", url, re.I)
+    if not match:
+        raise GitLifecycleError("origin is not a recognizable GitHub repository")
+    return match.group(1)
+
+
+def _origin_repository(repo: Path, *, push: bool = False) -> str:
+    """Return the sole GitHub repository configured for origin fetch or push."""
+    args = ["remote", "get-url"]
+    if push:
+        args.append("--push")
+    args.extend(["--all", "origin"])
+    urls = _invoke(repo, args, allow_failure=True)
+    if urls.returncode:
+        raise GitLifecycleError("could not identify the origin repository")
+    values = [line.strip() for line in urls.stdout.splitlines() if line.strip()]
+    if len(values) != 1:
+        raise GitLifecycleError("origin must have exactly one fetch and push URL")
+    return _repository_from_remote_url(values[0])
+
+
+def push_review_branch(repo: Path, profile: dict[str, Any], issue_number: int,
+                       repository: str, base_ref: str, default_base_ref: str) -> dict[str, Any]:
+    """Validate and push the current Issue branch without force, then verify remote HEAD."""
+    _require_clean(repo)
+    if not isinstance(repository, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+        raise GitLifecycleError("owning repository identity is invalid")
+    if not isinstance(default_base_ref, str) or not default_base_ref:
+        raise GitLifecycleError("repository default branch is missing")
+    _validate_ref(repo, default_base_ref, "GitHub default branch")
+    if not isinstance(base_ref, str) or not base_ref:
+        raise GitLifecycleError("selected base branch is missing")
+    _validate_ref(repo, base_ref, "selected base branch")
+
+    branch = _current_branch(repo)
+    if branch is None:
+        raise GitLifecycleError("HEAD must be attached to the Issue feature branch")
+    _validate_ref(repo, branch, "current branch")
+    if branch == default_base_ref:
+        raise GitLifecycleError("refusing to push the repository default branch")
+    prefix = profile.get("branch", {}).get("prefix")
+    expected = rf"{re.escape(prefix)}/{issue_number}-[a-z0-9]+(?:-[a-z0-9]+)*" if isinstance(prefix, str) else ""
+    if not expected or not re.fullmatch(expected, branch):
+        raise GitLifecycleError("current branch is not the configured feature branch for this Issue")
+    if (_origin_repository(repo).casefold() != repository.casefold()
+            or _origin_repository(repo, push=True).casefold() != repository.casefold()):
+        raise GitLifecycleError("origin repository does not match the owning Issue repository")
+    mirror = _invoke(repo, ["config", "--bool", "--get", "remote.origin.mirror"], allow_failure=True)
+    mirror_value = mirror.stdout.strip().casefold()
+    if mirror.returncode == 0 and mirror_value == "true":
+        raise GitLifecycleError("origin mirror-push configuration is not allowed for review handoff")
+    if mirror.returncode not in {0, 1} or (mirror.returncode == 0 and mirror_value not in {"true", "false"}):
+        raise GitLifecycleError("could not verify origin mirror-push configuration")
+
+    head_result = _invoke(repo, ["rev-parse", "--verify", "HEAD^{commit}"], allow_failure=True)
+    head_sha = head_result.stdout.strip()
+    if head_result.returncode or not re.fullmatch(r"[0-9a-f]{40}", head_sha):
+        raise GitLifecycleError("current HEAD is not a valid commit SHA")
+
+    base_sha = _fetch_base_ref(repo, base_ref)
+    ancestor = _invoke(repo, ["merge-base", "--is-ancestor", base_sha, head_sha], allow_failure=True)
+    if ancestor.returncode == 1:
+        raise GitLifecycleError("current branch does not contain the selected base; automatic rebase is forbidden")
+    if ancestor.returncode:
+        raise GitLifecycleError(f"Git merge-base failed (exit status {ancestor.returncode})")
+    ahead_result = _invoke(repo, ["rev-list", "--count", f"{base_sha}..{head_sha}"], allow_failure=True)
+    ahead_text = ahead_result.stdout.strip()
+    if ahead_result.returncode or not ahead_text.isdigit():
+        raise GitLifecycleError("could not determine commits ahead of the selected base")
+    ahead_by = int(ahead_text)
+    if ahead_by < 1:
+        raise GitLifecycleError("current branch has no commit ahead of the selected base")
+
+    remote_before = _remote_branch_sha(repo, branch)
+    pushed = False
+    if remote_before != head_sha:
+        push = _invoke(repo, ["push", "--porcelain", "--no-follow-tags", "origin",
+                              f"HEAD:refs/heads/{branch}"],
+                       allow_failure=True)
+        if push.returncode:
+            raise GitLifecycleError(f"Git push failed (exit status {push.returncode})")
+        pushed = True
+    remote_after = _remote_branch_sha(repo, branch)
+    if remote_after != head_sha:
+        raise GitLifecycleError("remote branch HEAD does not match local HEAD after push")
+    return {"head_sha": head_sha, "head_branch": branch, "base_branch": base_ref,
+            "base_sha": base_sha, "ahead_by": ahead_by, "pushed": pushed,
+            "remote_head": remote_after, "remote_head_verified": True}

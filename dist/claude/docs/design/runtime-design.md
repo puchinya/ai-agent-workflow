@@ -15,6 +15,8 @@ The CLI must be easy to run from a consumer checkout, fakeable in tests, and saf
 | Requirement | Design consequence |
 |---|---|
 | GitHub operations have one owner | `github.py` is the only module that invokes `gh api`; callers use typed repository/Issue/PR operations. |
+| Safe branch publication has one owner | `git.py` validates the Issue branch/base/worktree, pushes only the current branch without force, and verifies remote HEAD. |
+| PR establishment is deterministic and retryable | `delivery.py` sequences validation, verified push, exact head/base query, create/reuse, phase replacement, and readback; retries reuse the same PR. |
 | Fail before side effects on malformed input | `profile.py`, `contracts.py`, and `review.py` expose pure validators used before `process.py` or GitHub calls. |
 | Exact payload bytes and atomic mirrors | Contract codecs operate on `bytes`; `documents.py` owns same-repository Markdown path checks; a shared atomic writer uses sibling temporary files and `os.replace`. |
 | Stable sequential hook composition | `profile.py` returns an ordered immutable command/skip plan before `process.py` executes it. |
@@ -42,6 +44,10 @@ The dependency direction is CLI -> domain modules -> injected GitHub/process bou
 6. Perform one mutation only after preconditions pass; read it back and validate it. Milestone reuse and assignment are exact-title/idempotent; a different existing Issue Milestone fails without create/assign. Branch cleanup and hooks follow only an actual switch.
 7. Commit local state with atomic replacement only after remote verification, or keep old verified bytes on failure.
 8. Clean temporary files in `finally` paths and print bounded diagnostics. Hook diagnostics stay silent on success and emit only a redacted combined tail of at most 16 KiB on failure. Post-switch failures preserve and report the switched branch.
+
+### Review-PR establishment sequence
+
+The CLI reads the required body file and delegates to `delivery.ensure_review_pr`. Delivery validates body structure, repository/Issue/default/base identity, and the requested title, then asks `git.py` to verify clean worktree, current Issue feature branch, one same-repository origin fetch and push URL, no mirror-push configuration, non-default branch, selected-base ancestry, and a positive ahead count. Only after those checks does `git.py` push the current branch without force or tag following and verify origin's branch SHA against local HEAD. Delivery then queries exact base/head candidates through `github.py`, fails closed on duplicates, drafts, forks, or conflicting Issue closures, and creates or updates one compatible PR. Finally it replaces phase labels with exactly `phase:review`, preserving non-phase labels, and verifies fresh Issue and PR state. If label replacement/readback fails, the error includes the established PR identity; retries reuse that PR. No step merges the PR or weakens later self-review/Required Check gates.
 
 ## Failure handling
 

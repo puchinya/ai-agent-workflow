@@ -5,7 +5,7 @@ description: Review the full approved Implementation Contract and every effectiv
 # Self-review
 
 ## Trigger and inputs
-Use after implementation and before handing off a PR. Inputs are approved contract, Issue checklist, current diff, tests, and exact PR HEAD.
+Use after implementation and before handing off a PR. When ensure-review-pr has just created or reused the review PR, prepare and publish the exact-HEAD review immediately without another user prompt; approval of contract execution already covers this routine handoff. Inputs are approved contract, Issue checklist, current diff, tests, and exact PR HEAD.
 
 ## Procedure
 1. Run `python -m agent_workflow verify-implementation-contract <issue>`.
