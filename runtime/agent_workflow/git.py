@@ -50,6 +50,20 @@ def _require_clean(repo: Path) -> None:
         raise GitLifecycleError("worktree must be clean before starting a feature branch")
 
 
+def require_clean_worktree(repo: Path) -> None:
+    """Public read-only clean-worktree check for exact-HEAD evidence workflows."""
+    _require_clean(repo)
+
+
+def local_head_sha(repo: Path) -> str:
+    """Return the full commit SHA at local HEAD, failing closed on malformed output."""
+    result = _invoke(repo, ["rev-parse", "--verify", "HEAD^{commit}"])
+    sha = result.stdout.strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise GitLifecycleError("local HEAD did not resolve to a full commit SHA")
+    return sha
+
+
 def _branch_exists(repo: Path, branch: str) -> bool:
     result = _invoke(repo, ["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], allow_failure=True)
     if result.returncode not in {0, 1}:

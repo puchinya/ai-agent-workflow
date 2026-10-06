@@ -21,6 +21,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from agent_workflow.contracts import (ContractError, parse_comment, publish_contract,
                                       classify_reviewer_checklist_h2, restore_contract, save_contract, sha256,
+                                      normalize_reviewer_checklist,
                                       validate_payload, validate_reviewer_checklist_authoring,
                                       verify_contract)
 from agent_workflow.context import ContextError, affected_components, build_context
@@ -31,13 +32,17 @@ from agent_workflow.delivery import (DeliveryError, delivery_check, ensure_revie
                                      finalize_merged_issue)
 from agent_workflow.documents import resolve_document_impact, validate_markdown_file, validate_docs
 from agent_workflow.git import (GitLifecycleError, _remove_cleanup_path, changed_document_paths,
-                                feature_slug, push_review_branch, start_feature_branch)
+                                feature_slug, local_head_sha, push_review_branch, require_clean_worktree,
+                                start_feature_branch)
 from agent_workflow.github import GitHub, GitHubError
 from agent_workflow.profile import ProfileError, build_hook_plan, validate_profile
 from agent_workflow.process import ProcessError, run_command
+from agent_workflow.qa import QAError, prepare_qa, publish_qa, qa_path, validate_public_qa, validate_qa
 from agent_workflow.review import (ReviewError, _extract_items, _with_pointer,
                                    contract_review_units, load_review, prepare_review,
-                                   load_review_surface, publish_review, review_path,
+                                   load_review_surface, prepare_pr_review, pr_review_path,
+                                   publish_pr_review, publish_review, review_path,
+                                   validate_pr_review, validate_public_pr_review,
                                    validate_public_review)
 import build_dist
 import validate_dist
@@ -45,6 +50,8 @@ import package_release
 from agent_workflow import __version__
 from agent_workflow.versioning import (VersionError, _split_command, resolve_milestone_version,
                                        resolve_version)
+from agent_workflow.verification import (VerificationError, validate_public_final_verification,
+                                         verify_final)
 
 
 def profile_fixture():
@@ -242,6 +249,18 @@ def complete_review_draft(draft: dict, *, result: str = "pass") -> dict:
     for item in updated["items"]:
         item["result"] = result
         item["evidence"] = f"Checked {item['id']} against source and verification output."
+    return updated
+
+
+def complete_pr_review_draft(draft: dict, *, result: str = "pass", fresh_context: bool = True) -> dict:
+    updated = copy.deepcopy(draft)
+    for section in updated["contract_sections"]:
+        section["result"] = result
+        section["evidence"] = f"Independently reviewed {section['id']} against source and diff."
+    for item in updated["items"]:
+        item["result"] = result
+        item["evidence"] = f"Independently checked {item['id']} against source and evidence."
+    updated["fresh_context"] = fresh_context
     return updated
 
 
@@ -724,6 +743,15 @@ class GitLifecycleTests(unittest.TestCase):
         with self.assertRaises(GitLifecycleError):
             feature_slug("你好!!!", 48)
 
+    def test_public_head_helpers_require_clean_worktree_and_return_full_sha(self):
+        require_clean_worktree(self.repo)
+        head = local_head_sha(self.repo)
+        self.assertRegex(head, r"^[0-9a-f]{40}$")
+        self.assertEqual(head, self.git(self.repo, "rev-parse", "HEAD"))
+        (self.repo / "untracked.txt").write_text("dirty\n", encoding="utf-8")
+        with self.assertRaisesRegex(GitLifecycleError, "worktree must be clean"):
+            require_clean_worktree(self.repo)
+
     def test_cli_parses_both_lifecycle_commands(self):
         milestone = build_parser().parse_args(["ensure-milestone", "7", "--target-version", "0.4.0",
                                                 "--repo", str(self.repo)])
@@ -740,6 +768,18 @@ class GitLifecycleTests(unittest.TestCase):
                                             "--base-ref", "release/v2", "--title", "Review title"])
         self.assertEqual((ensure.command, ensure.issue, ensure.body_file, ensure.base_ref, ensure.title),
                          ("ensure-review-pr", 7, Path("pr.md"), "release/v2", "Review title"))
+
+    def test_cli_parses_final_verification_qa_and_independent_review_commands(self):
+        final = build_parser().parse_args(["verify-final", "7", "8", "--runtime-host", "linux",
+                                           "--architecture", "x86_64", "--capability", "docker"])
+        self.assertEqual((final.issue, final.pr, final.runtime_host, final.architecture, final.capability),
+                         (7, 8, "linux", "x86_64", ["docker"]))
+        for name in ("prepare-qa", "validate-qa", "publish-qa", "validate-public-qa",
+                     "prepare-pr-review", "validate-pr-review", "publish-pr-review",
+                     "validate-public-pr-review"):
+            with self.subTest(name=name):
+                parsed = build_parser().parse_args([name, "7", "8"])
+                self.assertEqual((parsed.command, parsed.issue, parsed.pr), (name, 7, 8))
 
     def test_new_local_and_remote_branch_paths(self):
         created, status = start_feature_branch(self.repo, self.profile(), 7, "new branch", self.github)
@@ -1342,6 +1382,7 @@ class ContractTests(unittest.TestCase):
         metadata = save_contract(self.repo, 1, self.source(raw))
         self.assertEqual((self.repo / ".agent-state/issues/1/implementation-contract.md").read_bytes(), raw)
         self.assertEqual(metadata["sha256"], hashlib.sha256(raw).hexdigest())
+        self.assertFalse(metadata["normalized"])
 
     def test_raw_size_nul_and_obvious_credentials_are_rejected(self):
         for raw in (b"x" * 65537, b"a\x00b", b"token=sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ123456"):
@@ -1361,10 +1402,83 @@ class ContractTests(unittest.TestCase):
             b"## Reviewer Checklist\n" + block + b"Unique runtime requirement outside checklist.\n"
         )
         gh = FakeGitHub()
-        with self.assertRaisesRegex(ContractError, "must not contain prose"):
+        with self.assertRaisesRegex(ContractError, "cannot be normalized safely"):
             publish_contract(self.repo / "bad", 1, gh, bad)
         self.assertEqual(gh.comments, [])
         self.assertEqual([call for call in gh.lifecycle_calls if call[0] == "issue"], [])
+
+    def test_checklist_normalizer_preserves_items_order_and_bytes_outside_h2(self):
+        prefix = b"Contract preamble\r\n\r\n## Architecture\r\nKeep these bytes.\r\n\r\n"
+        checklist = (
+            b"## 9. Reviewer Checklist\r\n"
+            b"- [ ] First item keeps its exact wording.\r\n"
+            b"- [ ] Second item stays second.\r\n\r\n"
+            b"Implementer MUST self-review every item.\r\n\r\n"
+        )
+        suffix = b"## Completion Report\r\nReport the result.\r\n"
+        raw = prefix + checklist + suffix
+
+        normalized = normalize_reviewer_checklist(raw)
+
+        self.assertTrue(normalized.startswith(prefix))
+        self.assertTrue(normalized.endswith(suffix))
+        self.assertIn(b"The implementer must self-review every item in this checklist.\r\n", normalized)
+        self.assertIn(b"<!-- AGENT_REVIEWER_CHECKLIST_V1 -->\r\n", normalized)
+        self.assertIn(b"- [ ] First item keeps its exact wording.\r\n- [ ] Second item stays second.", normalized)
+        self.assertNotIn(b"Implementer MUST self-review every item.", normalized)
+        self.assertEqual(normalize_reviewer_checklist(normalized), normalized)
+        self.assertEqual(classify_reviewer_checklist_h2(normalized).state, "strict-canonical")
+
+    def test_save_and_publish_bind_normalized_bytes_and_report_conversion(self):
+        raw = (
+            b"## Reviewer Checklist\n"
+            b"- [ ] Preserve this exact checklist item.\n"
+            b"Implementer MUST self-review every item.\n\n"
+            b"## Design\nKeep this section unchanged.\n"
+        )
+        expected = normalize_reviewer_checklist(raw)
+        metadata = save_contract(self.repo, 1, self.source(raw))
+        mirror = self.repo / ".agent-state/issues/1/implementation-contract.md"
+        self.assertTrue(metadata["normalized"])
+        self.assertEqual(mirror.read_bytes(), expected)
+        self.assertEqual(metadata["sha256"], hashlib.sha256(expected).hexdigest())
+
+        other_repo = self.repo / "publish"
+        source = self.source(raw)
+        result = publish_contract(other_repo, 1, self.gh, source)
+        remote_payload, remote_sha = parse_comment(self.gh.comments[0]["body"], 1)
+        self.assertTrue(result["normalized"])
+        self.assertEqual(remote_payload, expected)
+        self.assertEqual(remote_sha, hashlib.sha256(expected).hexdigest())
+        self.assertEqual(result["bytes"], len(expected))
+        self.assertEqual((other_repo / ".agent-state/issues/1/implementation-contract.md").read_bytes(), expected)
+        self.assertTrue(verify_contract(other_repo, 1, self.gh)["verified"])
+
+    def test_checklist_normalizer_rejects_ambiguous_or_unrelated_prose(self):
+        duplicate = (
+            b"## Reviewer Checklist\n- [ ] One\n"
+            b"## Reviewer Checklist (second)\n- [ ] Two\n"
+        )
+        with self.assertRaisesRegex(ContractError, "exactly one Reviewer Checklist H2"):
+            normalize_reviewer_checklist(duplicate)
+        prose = b"## Reviewer Checklist\n- [ ] One\nUnclassified requirement.\n"
+        with self.assertRaisesRegex(ContractError, "cannot be normalized safely"):
+            normalize_reviewer_checklist(prose)
+
+    def test_failed_normalization_keeps_old_pointer_comment_and_mirror(self):
+        old = b"## Reviewer Checklist\n<!-- AGENT_REVIEWER_CHECKLIST_V1 -->\n- [ ] Old item\n<!-- /AGENT_REVIEWER_CHECKLIST_V1 -->\n"
+        publish_contract(self.repo, 1, self.gh, self.source(old))
+        original_body = self.gh.issue_data["body"]
+        original_comments = copy.deepcopy(self.gh.comments)
+        original_mirror = (self.repo / ".agent-state/issues/1/implementation-contract.md").read_bytes()
+        malformed = self.source(b"## Reviewer Checklist\n- [ ] New item\nDo not discard me.\n")
+
+        with self.assertRaisesRegex(ContractError, "cannot be normalized safely"):
+            publish_contract(self.repo, 1, self.gh, malformed, supersede=True)
+
+        self.assertEqual(self.gh.issue_data["body"], original_body)
+        self.assertEqual(self.gh.comments, original_comments)
+        self.assertEqual((self.repo / ".agent-state/issues/1/implementation-contract.md").read_bytes(), original_mirror)
 
     def test_publish_readback_verify_and_same_sha_idempotence(self):
         raw = "# Contract\r\n\nnaïve\n".encode()
@@ -1437,6 +1551,423 @@ class ContractTests(unittest.TestCase):
             publish_contract(self.repo, 1, gh, self.source(b"payload"))
         self.assertEqual(gh.updates, 0)
         self.assertFalse((self.repo / ".agent-state/issues/1/implementation-contract.md").exists())
+
+
+class VerificationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.repo = Path(self.temp.name)
+        self.gh = FakeGitHub()
+        self.head = self._prepare_repository()
+        install_review_contract(self.repo, self.gh)
+        (self.repo / "approved-contract.md").unlink()
+        self.gh.issue_data["body"] = self.gh.issue_data["body"].replace(
+            "## Implementation Contract", "## Affected components\n- one\n\n## Implementation Contract", 1
+        )
+        self.gh.pull_data = {
+            "number": 2, "state": "open", "draft": False, "merged": False,
+            "base": {"ref": "main", "repo": {"full_name": self.gh.repo}},
+            "head": {"ref": "feature/1-final", "sha": self.head,
+                     "repo": {"full_name": self.gh.repo}},
+            "body": "Closes #1\n\n## Verification\nPending\n\n## Untested\nNone\n",
+        }
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def _git(self, *args):
+        return subprocess.run(["git", *args], cwd=self.repo, check=True, text=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout.strip()
+
+    def _prepare_repository(self):
+        subprocess.run(["git", "init", "-q", "-b", "main", str(self.repo)], check=True)
+        self._git("config", "user.name", "Test")
+        self._git("config", "user.email", "test@example.invalid")
+        profile = profile_fixture()
+        profile["components"] = profile["components"][:1]
+        profile["hooks"] = {"verify_final": [python_shell_command("pass")]}
+        profile["components"][0]["hooks"] = {"verify_final": [python_shell_command("pass")]}
+        (self.repo / ".agent").mkdir()
+        (self.repo / ".agent/project.json").write_text(json.dumps(profile), encoding="utf-8")
+        (self.repo / ".gitignore").write_text(".agent-state/\n", encoding="utf-8")
+        (self.repo / "README.md").write_text("verification fixture\n", encoding="utf-8")
+        self._git("add", ".")
+        self._git("commit", "-m", "fixture")
+        return self._git("rev-parse", "HEAD")
+
+    def test_receipt_hashes_commands_and_binds_exact_head_and_contract(self):
+        result = verify_final(self.repo, 1, 2, self.gh, runtime_host="linux",
+                              architecture="x86_64", capabilities=["docker"])
+        self.assertEqual(result["result"], "pass")
+        self.assertEqual(result["head"], self.head)
+        self.assertEqual(result["executed_count"], 2)
+        public = validate_public_final_verification(1, 2, self.gh)
+        self.assertFalse(public["stale"])
+        receipt = public["receipt"]
+        self.assertEqual([item["scope"] for item in receipt["executed"]], ["project", "component"])
+        self.assertEqual(receipt["executed"][0]["command_sha256"],
+                         hashlib.sha256(python_shell_command("pass").encode()).hexdigest())
+        published = self.gh.pull_comments[result["comment_id"]]["body"]
+        self.assertNotIn(python_shell_command("pass"), published)
+        self.assertEqual(receipt["contract_comment_id"], result["contract_comment_id"])
+
+    def test_skips_and_empty_plans_are_public_but_never_pass(self):
+        profile = json.loads((self.repo / ".agent/project.json").read_text(encoding="utf-8"))
+        profile["hooks"] = {"verify_final": []}
+        profile["components"][0]["hooks"] = {"verify_final": []}
+        profile["components"][0]["targets"][0]["runnable_on"] = ["windows"]
+        profile["components"][0]["targets"][0]["hooks"] = {"verify_final": ["echo target"]}
+        (self.repo / ".agent/project.json").write_text(json.dumps(profile), encoding="utf-8")
+        self._git("add", ".agent/project.json")
+        self._git("commit", "-m", "add final target")
+        self.head = self._git("rev-parse", "HEAD")
+        self.gh.pull_data["head"]["sha"] = self.head
+
+        partial = verify_final(self.repo, 1, 2, self.gh, runtime_host="linux")
+        self.assertEqual(partial["result"], "partial")
+        partial_public = validate_public_final_verification(1, 2, self.gh)
+        self.assertEqual(partial_public["receipt"]["skipped_targets"], [
+            {"component": "one", "target": "linux", "reason": "host_mismatch"}
+        ])
+
+        profile["components"][0]["targets"][0]["hooks"] = {"verify_final": []}
+        (self.repo / ".agent/project.json").write_text(json.dumps(profile), encoding="utf-8")
+        self._git("add", ".agent/project.json")
+        self._git("commit", "-m", "empty final plan")
+        self.head = self._git("rev-parse", "HEAD")
+        self.gh.pull_data["head"]["sha"] = self.head
+        empty = verify_final(self.repo, 1, 2, self.gh, runtime_host="linux")
+        self.assertEqual(empty["result"], "empty")
+        self.assertEqual(validate_public_final_verification(1, 2, self.gh)["receipt"]["executed"], [])
+
+    def test_dirty_worktree_wrong_pr_head_and_failed_hook_publish_no_pass(self):
+        (self.repo / "dirty.txt").write_text("dirty\n", encoding="utf-8")
+        with self.assertRaisesRegex(GitLifecycleError, "worktree must be clean"):
+            verify_final(self.repo, 1, 2, self.gh)
+        (self.repo / "dirty.txt").unlink()
+
+        self.gh.pull_data["head"]["sha"] = "f" * 40
+        with self.assertRaisesRegex(VerificationError, "local HEAD must exactly match"):
+            verify_final(self.repo, 1, 2, self.gh)
+        self.gh.pull_data["head"]["sha"] = self.head
+
+        profile = json.loads((self.repo / ".agent/project.json").read_text(encoding="utf-8"))
+        profile["hooks"]["verify_final"] = [python_shell_command("raise SystemExit(9)")]
+        (self.repo / ".agent/project.json").write_text(json.dumps(profile), encoding="utf-8")
+        self._git("add", ".agent/project.json")
+        self._git("commit", "-m", "failing verification")
+        self.head = self._git("rev-parse", "HEAD")
+        self.gh.pull_data["head"]["sha"] = self.head
+        with self.assertRaises(ProcessError):
+            verify_final(self.repo, 1, 2, self.gh)
+        self.assertEqual(self.gh.pull_comments, {})
+        self.assertNotIn("## Agent Final Verification", self.gh.pull_data["body"])
+
+    def test_failed_named_comment_readback_preserves_old_pointer(self):
+        first = verify_final(self.repo, 1, 2, self.gh, runtime_host="linux")
+        old_body = self.gh.pull_data["body"]
+        original_readback = self.gh.pull_comment
+
+        def bad_readback(comment_id):
+            comment = original_readback(comment_id)
+            comment["body"] += "tampered"
+            return comment
+
+        self.gh.pull_comment = bad_readback
+        with self.assertRaisesRegex(VerificationError, "named readback"):
+            verify_final(self.repo, 1, 2, self.gh, runtime_host="linux")
+        self.assertEqual(self.gh.pull_data["body"], old_body)
+        self.assertIn(first["comment_id"], self.gh.pull_comments)
+
+
+class QATests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.repo = Path(self.temp.name)
+        self.gh = FakeGitHub()
+        self.head = "a" * 40
+        self.contract, self.contract_publication, _surface = install_review_contract(self.repo, self.gh)
+        (self.repo / "approved-contract.md").unlink()
+        self.gh.pull_data = {
+            "number": 2, "state": "open", "draft": False, "merged": False,
+            "base": {"ref": "main", "repo": {"full_name": self.gh.repo}},
+            "head": {"ref": "feature/1-qa", "sha": self.head,
+                     "repo": {"full_name": self.gh.repo}},
+            "body": "Closes #1\n\n## Verification\nPassed\n\n## Untested\nIDE smoke test not run\n",
+        }
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def _complete_required(self):
+        prepared = prepare_qa(self.repo, 1, 2, self.gh)
+        path = Path(prepared["path"])
+        qa = json.loads(path.read_text(encoding="utf-8"))
+        qa["cases"] = [{"name": "CLI smoke", "action": "Run the package CLI help command",
+                        "expected": "The command exits successfully and lists workflow commands",
+                        "result": "pass", "evidence": "Exited 0; the help output listed the expected commands."}]
+        path.write_text(json.dumps(qa, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return path
+
+    def test_required_qa_passes_and_publishes_exact_head_contract_evidence(self):
+        path = self._complete_required()
+        checked = validate_qa(self.repo, 1, 2, self.gh, path)
+        self.assertTrue(checked["passed"])
+        self.assertEqual(checked["result"], "pass")
+        published = publish_qa(self.repo, 1, 2, self.gh, path)
+        public = validate_public_qa(1, 2, self.gh)
+        self.assertTrue(public["passed"])
+        self.assertEqual(public["comment_id"], published["comment_id"])
+        self.assertEqual(public["qa"]["head"], self.head)
+        self.assertIn("## Agent QA", self.gh.pull_data["body"])
+
+    def test_not_applicable_requires_reason_and_zero_cases(self):
+        path = self._complete_required()
+        qa = json.loads(path.read_text(encoding="utf-8"))
+        qa["mode"] = "not_applicable"
+        qa["reason"] = "This change only updates workflow documentation and does not add a user-facing behavior to exercise."
+        qa["cases"] = []
+        path.write_text(json.dumps(qa), encoding="utf-8")
+        self.assertEqual(validate_qa(self.repo, 1, 2, self.gh, path)["result"], "not_applicable")
+        qa["reason"] = "Not applicable"
+        path.write_text(json.dumps(qa), encoding="utf-8")
+        with self.assertRaisesRegex(QAError, "concrete reason"):
+            validate_qa(self.repo, 1, 2, self.gh, path)
+        qa["reason"] = "This change only updates workflow documentation and does not add a user-facing behavior to exercise."
+        qa["cases"] = [{"name": "extra", "action": "x", "expected": "y", "result": "pass", "evidence": "z"}]
+        path.write_text(json.dumps(qa), encoding="utf-8")
+        with self.assertRaisesRegex(QAError, "zero cases"):
+            validate_qa(self.repo, 1, 2, self.gh, path)
+
+    def test_fail_untested_pending_malformed_and_secret_evidence_never_pass(self):
+        path = self._complete_required()
+        qa = json.loads(path.read_text(encoding="utf-8"))
+        for result in ("fail", "untested", "pending"):
+            qa["cases"][0]["result"] = result
+            path.write_text(json.dumps(qa), encoding="utf-8")
+            if result == "pending":
+                with self.assertRaisesRegex(QAError, "result must be"):
+                    validate_qa(self.repo, 1, 2, self.gh, path)
+            else:
+                self.assertFalse(validate_qa(self.repo, 1, 2, self.gh, path)["passed"])
+        qa["cases"][0]["result"] = "pass"
+        qa["mode"] = []
+        path.write_text(json.dumps(qa), encoding="utf-8")
+        with self.assertRaisesRegex(QAError, "mode or cases"):
+            validate_qa(self.repo, 1, 2, self.gh, path)
+        qa["mode"] = "required"
+        qa["cases"][0]["evidence"] = "ghp_" + "A" * 24
+        path.write_text(json.dumps(qa), encoding="utf-8")
+        with self.assertRaisesRegex(QAError, "credential-like"):
+            validate_qa(self.repo, 1, 2, self.gh, path)
+
+    def test_stale_qa_is_detected_and_not_published(self):
+        path = self._complete_required()
+        self.gh.pull_data["head"]["sha"] = "b" * 40
+        result = validate_qa(self.repo, 1, 2, self.gh, path)
+        self.assertTrue(result["stale"])
+        self.assertFalse(result["passed"])
+        with self.assertRaisesRegex(QAError, "stale"):
+            publish_qa(self.repo, 1, 2, self.gh, path)
+        self.assertEqual(self.gh.pull_comments, {})
+
+    def test_contract_supersession_stales_qa(self):
+        path = self._complete_required()
+        changed = self.contract.replace(b"Review the complete contract.", b"Review every contract unit.")
+        source = self.repo / "superseding-contract.md"
+        source.write_bytes(changed)
+        publish_contract(self.repo, 1, self.gh, source, supersede=True)
+        result = validate_qa(self.repo, 1, 2, self.gh, path)
+        self.assertTrue(result["stale"])
+        self.assertFalse(result["passed"])
+        with self.assertRaisesRegex(QAError, "stale"):
+            publish_qa(self.repo, 1, 2, self.gh, path)
+
+    def test_prepare_qa_preserves_stale_draft_before_refresh(self):
+        path = self._complete_required()
+        old = path.read_bytes()
+        self.gh.pull_data["head"]["sha"] = "b" * 40
+        refreshed = prepare_qa(self.repo, 1, 2, self.gh)
+        self.assertNotEqual(refreshed["head"], self.head)
+        backup = qa_path(self.repo, 1, 2).with_name(
+            f"qa-pr-2.{hashlib.sha256(old).hexdigest()}.stale.json")
+        self.assertEqual(backup.read_bytes(), old)
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["head"], "b" * 40)
+
+    def test_failed_named_comment_readback_preserves_existing_qa_pointer(self):
+        path = self._complete_required()
+        first = publish_qa(self.repo, 1, 2, self.gh, path)
+        old_body = self.gh.pull_data["body"]
+        original_readback = self.gh.pull_comment
+
+        def bad_readback(comment_id):
+            comment = original_readback(comment_id)
+            comment["body"] += "changed"
+            return comment
+
+        self.gh.pull_comment = bad_readback
+        with self.assertRaisesRegex(QAError, "named readback"):
+            publish_qa(self.repo, 1, 2, self.gh, path)
+        self.assertEqual(self.gh.pull_data["body"], old_body)
+        self.assertIn(first["comment_id"], self.gh.pull_comments)
+
+
+class IndependentReviewTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.repo = Path(self.temp.name)
+        self.gh = FakeGitHub()
+        self.head = "c" * 40
+        self.contract, self.contract_publication, _surface = install_review_contract(self.repo, self.gh)
+        (self.repo / "approved-contract.md").unlink()
+        self.gh.pull_data = {
+            "number": 2, "state": "open", "draft": False, "merged": False,
+            "base": {"ref": "main", "repo": {"full_name": self.gh.repo}},
+            "head": {"ref": "feature/1-review", "sha": self.head,
+                     "repo": {"full_name": self.gh.repo}},
+            "body": "Closes #1\n\n## Verification\nPassed\n\n## Untested\nIDE smoke test not run\n",
+        }
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def _complete(self, fresh_context=True):
+        prepared = prepare_pr_review(self.repo, 1, 2, self.gh)
+        path = Path(prepared["path"])
+        draft = complete_pr_review_draft(json.loads(path.read_text(encoding="utf-8")),
+                                         fresh_context=fresh_context)
+        path.write_text(json.dumps(draft, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return path, draft
+
+    def test_independent_review_binds_current_surface_and_publishes(self):
+        path, _draft = self._complete()
+        validated = validate_pr_review(self.repo, 1, 2, self.gh, path)
+        self.assertTrue(validated["passed"])
+        published = publish_pr_review(self.repo, 1, 2, self.gh, path)
+        public = validate_public_pr_review(1, 2, self.gh)
+        self.assertTrue(public["passed"])
+        self.assertTrue(public["fresh_context"])
+        self.assertEqual(public["comment_id"], published["comment_id"])
+        self.assertIn("## Agent Independent Review", self.gh.pull_data["body"])
+
+    def test_fresh_context_attestation_is_required(self):
+        path, _draft = self._complete(fresh_context=False)
+        with self.assertRaisesRegex(ReviewError, "fresh_context: true"):
+            validate_pr_review(self.repo, 1, 2, self.gh, path)
+        with self.assertRaisesRegex(ReviewError, "fresh_context: true"):
+            publish_pr_review(self.repo, 1, 2, self.gh, path)
+        self.assertEqual(self.gh.pull_comments, {})
+
+    def test_pending_independent_review_items_cannot_validate_or_publish(self):
+        prepared = prepare_pr_review(self.repo, 1, 2, self.gh)
+        path = Path(prepared["path"])
+        draft = json.loads(path.read_text(encoding="utf-8"))
+        draft["fresh_context"] = True
+        path.write_text(json.dumps(draft), encoding="utf-8")
+        with self.assertRaisesRegex(ReviewError, "review is incomplete"):
+            validate_pr_review(self.repo, 1, 2, self.gh, path)
+        with self.assertRaisesRegex(ReviewError, "review is incomplete"):
+            publish_pr_review(self.repo, 1, 2, self.gh, path)
+        self.assertEqual(self.gh.pull_comments, {})
+
+    def test_a_b_block_c_is_explicit_d_does_not_and_contract_checklist_rules_apply(self):
+        path, draft = self._complete()
+        for severity in ("A", "B"):
+            changed = copy.deepcopy(draft)
+            changed["findings"] = [{"id": "F001", "severity": severity, "title": "Critical issue",
+                                    "evidence": "Observed unsafe behavior in module.py:12.", "blocking": True}]
+            path.write_text(json.dumps(changed), encoding="utf-8")
+            self.assertFalse(publish_pr_review(self.repo, 1, 2, self.gh, path)["blocking_finding_count"] == 0)
+            public = validate_public_pr_review(1, 2, self.gh)
+            self.assertFalse(public["passed"])
+            changed["findings"][0]["blocking"] = False
+            path.write_text(json.dumps(changed), encoding="utf-8")
+            with self.assertRaisesRegex(ReviewError, "A/B findings must block"):
+                validate_pr_review(self.repo, 1, 2, self.gh, path)
+        changed = copy.deepcopy(draft)
+        changed["findings"] = [{"id": "F001", "severity": "C", "title": "Potential issue",
+                                "evidence": "Only applies if optional setting is enabled.", "blocking": False},
+                               {"id": "F002", "severity": "D", "title": "Style note",
+                                "evidence": "Naming differs from local convention.", "blocking": False}]
+        path.write_text(json.dumps(changed), encoding="utf-8")
+        publish_pr_review(self.repo, 1, 2, self.gh, path)
+        self.assertTrue(validate_public_pr_review(1, 2, self.gh)["passed"])
+        changed["findings"][1]["blocking"] = True
+        path.write_text(json.dumps(changed), encoding="utf-8")
+        with self.assertRaisesRegex(ReviewError, "D findings must not block"):
+            validate_pr_review(self.repo, 1, 2, self.gh, path)
+        changed["findings"][1]["blocking"] = False
+        changed["findings"][0]["blocking"] = True
+        path.write_text(json.dumps(changed), encoding="utf-8")
+        self.assertFalse(validate_pr_review(self.repo, 1, 2, self.gh, path)["passed"])
+        changed["findings"][0].pop("blocking")
+        path.write_text(json.dumps(changed), encoding="utf-8")
+        with self.assertRaisesRegex(ReviewError, "finding 1 has an invalid schema"):
+            validate_pr_review(self.repo, 1, 2, self.gh, path)
+        changed = copy.deepcopy(draft)
+        changed["contract_sections"][0]["result"] = "untested"
+        path.write_text(json.dumps(changed), encoding="utf-8")
+        publish_pr_review(self.repo, 1, 2, self.gh, path)
+        self.assertFalse(validate_public_pr_review(1, 2, self.gh)["passed"])
+
+    def test_checklist_fail_and_stale_head_block_public_review(self):
+        path, draft = self._complete()
+        draft["items"][0]["result"] = "fail"
+        path.write_text(json.dumps(draft), encoding="utf-8")
+        publish_pr_review(self.repo, 1, 2, self.gh, path)
+        self.assertEqual(validate_public_pr_review(1, 2, self.gh)["checklist_fail_count"], 1)
+        self.assertFalse(validate_public_pr_review(1, 2, self.gh)["passed"])
+        self.gh.pull_data["head"]["sha"] = "d" * 40
+        public = validate_public_pr_review(1, 2, self.gh)
+        self.assertTrue(public["stale"])
+        self.assertFalse(public["passed"])
+
+    def test_contract_supersession_stales_independent_review(self):
+        path, _draft = self._complete()
+        changed = self.contract.replace(b"Review the complete contract.", b"Review every contract unit.")
+        source = self.repo / "superseding-contract.md"
+        source.write_bytes(changed)
+        publish_contract(self.repo, 1, self.gh, source, supersede=True)
+        result = validate_pr_review(self.repo, 1, 2, self.gh, path)
+        self.assertTrue(result["stale"])
+        self.assertFalse(result["passed"])
+        with self.assertRaisesRegex(ReviewError, "stale"):
+            publish_pr_review(self.repo, 1, 2, self.gh, path)
+
+    def test_prepare_pr_review_preserves_stale_draft_before_refresh(self):
+        path, _draft = self._complete()
+        old = path.read_bytes()
+        self.gh.pull_data["head"]["sha"] = "d" * 40
+        refreshed = prepare_pr_review(self.repo, 1, 2, self.gh)
+        self.assertNotEqual(refreshed["head"], self.head)
+        backup = pr_review_path(self.repo, 1, 2).with_name(
+            f"pr-review-pr-2.{hashlib.sha256(old).hexdigest()}.stale.json")
+        self.assertEqual(backup.read_bytes(), old)
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["head"], "d" * 40)
+
+    def test_failed_named_comment_readback_preserves_old_independent_review_pointer(self):
+        path, _draft = self._complete()
+        first = publish_pr_review(self.repo, 1, 2, self.gh, path)
+        old_body = self.gh.pull_data["body"]
+        original_readback = self.gh.pull_comment
+
+        def bad_readback(comment_id):
+            comment = original_readback(comment_id)
+            comment["body"] += "changed"
+            return comment
+
+        self.gh.pull_comment = bad_readback
+        with self.assertRaisesRegex(ReviewError, "named readback"):
+            publish_pr_review(self.repo, 1, 2, self.gh, path)
+        self.assertEqual(self.gh.pull_data["body"], old_body)
+        self.assertIn(first["comment_id"], self.gh.pull_comments)
+
+    def test_malformed_existing_pointer_fails_before_comment_creation(self):
+        path, _draft = self._complete()
+        self.gh.pull_data["body"] += "\n## Agent Independent Review\nComment ID: malformed\n"
+        with self.assertRaisesRegex(ReviewError, "pointer is malformed"):
+            publish_pr_review(self.repo, 1, 2, self.gh, path)
+        self.assertEqual(self.gh.pull_comments, {})
 
 
 class ReviewTests(unittest.TestCase):
@@ -2408,7 +2939,27 @@ class PaginationTests(unittest.TestCase):
                 "contract_sections": [{"id": "S001", "title": "Scope", "result": "pass"}],
             },
         }
-        with patch("agent_workflow.delivery.validate_public_review", return_value=published):
+        final = {"receipt": {"head": self.head, "contract_comment_id": 123,
+                             "contract_sha256": "e" * 64, "result": "pass", "host": "linux",
+                             "architecture": "x86_64", "components": ["root"],
+                             "executed": [{}, {}], "skipped_targets": []},
+                 "comment_id": 111, "sha256": "f" * 64, "stale": False, "stale_reasons": []}
+        qa = {"result": "pass", "qa": {"mode": "required", "cases": [{}]},
+              "comment_id": 112, "sha256": "a" * 64, "stale": False, "stale_reasons": [],
+              "current_contract_comment_id": 123, "current_contract_sha256": "e" * 64}
+        independent = {"passed": True, "head": self.head, "comment_id": 113,
+                       "sha256": "b" * 64, "fresh_context": True, "stale": False,
+                       "stale_reasons": [], "current_contract_comment_id": 123,
+                       "current_contract_sha256": "e" * 64, "contract_units_pass": True,
+                       "contract_unit_fail_count": 0, "contract_unit_untested_count": 0,
+                       "checklist_fail_count": 0, "finding_count": 0,
+                       "blocking_finding_count": 0, "blocking_findings": []}
+        with (patch("agent_workflow.delivery.validate_public_review", return_value=published),
+              patch("agent_workflow.delivery.validate_public_final_verification", return_value=final),
+              patch("agent_workflow.delivery.validate_public_qa", return_value=qa),
+              patch("agent_workflow.delivery.validate_public_pr_review", return_value=independent),
+              patch("agent_workflow.delivery.load_review_surface", return_value={
+                  "contract_comment_id": 123, "contract_sha256": "e" * 64})):
             return delivery_check(self.repo, 1, 2, self.gh)
 
     def test_pending_same_sha_contract_on_page_two_is_reused_without_post(self):
@@ -2626,6 +3177,25 @@ macOS IDE smoke test not run
                 ],
             },
         })
+        published_verification = changes.pop("published_verification", {
+            "receipt": {"head": self.head, "contract_comment_id": 123, "contract_sha256": "e" * 64,
+                        "result": "pass", "host": "linux", "architecture": "x86_64",
+                        "components": ["root"], "executed": [{}, {}], "skipped_targets": []},
+            "comment_id": 111, "sha256": "f" * 64, "stale": False, "stale_reasons": [],
+        })
+        published_qa = changes.pop("published_qa", {
+            "result": "pass", "qa": {"mode": "required", "cases": [{}]},
+            "comment_id": 112, "sha256": "a" * 64, "stale": False, "stale_reasons": [],
+            "current_contract_comment_id": 123, "current_contract_sha256": "e" * 64,
+        })
+        published_independent = changes.pop("published_independent_review", {
+            "passed": True, "head": self.head, "comment_id": 113, "sha256": "b" * 64,
+            "fresh_context": True, "stale": False, "stale_reasons": [],
+            "current_contract_comment_id": 123, "current_contract_sha256": "e" * 64,
+            "contract_units_pass": True, "contract_unit_fail_count": 0,
+            "contract_unit_untested_count": 0, "checklist_fail_count": 0,
+            "finding_count": 0, "blocking_finding_count": 0, "blocking_findings": [],
+        })
         if "issue_labels" in changes:
             self.gh.issue_data["labels"] = changes.pop("issue_labels")
         if "issue_state" in changes:
@@ -2640,7 +3210,12 @@ macOS IDE smoke test not run
                 self.gh.pull_data["body"] = value
             else:
                 self.gh.pull_data[key] = value
-        with patch("agent_workflow.delivery.validate_public_review", return_value=published):
+        with (patch("agent_workflow.delivery.validate_public_review", return_value=published),
+              patch("agent_workflow.delivery.validate_public_final_verification", return_value=published_verification),
+              patch("agent_workflow.delivery.validate_public_qa", return_value=published_qa),
+              patch("agent_workflow.delivery.validate_public_pr_review", return_value=published_independent),
+              patch("agent_workflow.delivery.load_review_surface", return_value={
+                  "contract_comment_id": 123, "contract_sha256": "e" * 64})):
             return delivery_check(self.repo, 1, 2, self.gh)
 
     def run_ensure(self, body=None, title=None, base_ref=None, head_sha=None):
@@ -2911,6 +3486,53 @@ macOS IDE smoke test not run
         self.assertTrue(result["passed"], result["errors"])
         self.assertEqual(result["contract_comment_id"], 123)
 
+    def test_handoff_reports_all_four_current_evidence_gates(self):
+        result = self.run_gate()
+        self.assertTrue(result["passed"], result["errors"])
+        self.assertEqual(result["final_verification_status"], "pass")
+        self.assertEqual(result["qa_status"], "pass")
+        self.assertEqual(result["independent_review_status"], "pass")
+        self.assertEqual(result["final_verification"]["head"], self.head)
+        self.assertEqual(result["qa"]["case_count"], 1)
+        self.assertEqual(result["independent_review"]["blocking_finding_count"], 0)
+
+    def test_each_new_evidence_gate_blocks_delivery_when_incomplete(self):
+        partial = {"receipt": {"head": self.head, "contract_comment_id": 123,
+                               "contract_sha256": "e" * 64, "result": "partial", "host": "linux",
+                               "architecture": "x86_64", "components": ["root"],
+                               "executed": [{}], "skipped_targets": [{"component": "root", "target": "win", "reason": "host_mismatch"}]},
+                   "comment_id": 111, "sha256": "f" * 64, "stale": False, "stale_reasons": []}
+        result = self.run_gate(published_verification=partial)
+        self.assertFalse(result["passed"])
+        self.assertTrue(any("final verification result must be pass" in error for error in result["errors"]))
+
+        qa = {"result": "untested", "qa": {"mode": "required", "cases": [{}]},
+              "comment_id": 112, "sha256": "a" * 64, "stale": False, "stale_reasons": [],
+              "current_contract_comment_id": 123, "current_contract_sha256": "e" * 64}
+        result = self.run_gate(published_qa=qa)
+        self.assertFalse(result["passed"])
+        self.assertTrue(any("QA result must be pass or not_applicable" in error for error in result["errors"]))
+
+        independent = {"passed": False, "head": self.head, "comment_id": 113,
+                       "sha256": "b" * 64, "fresh_context": True, "stale": False,
+                       "stale_reasons": [], "current_contract_comment_id": 123,
+                       "current_contract_sha256": "e" * 64, "contract_units_pass": True,
+                       "contract_unit_fail_count": 0, "contract_unit_untested_count": 0,
+                       "checklist_fail_count": 0, "finding_count": 1,
+                       "blocking_finding_count": 1,
+                       "blocking_findings": [{"id": "F001", "severity": "C", "title": "Blocks"}]}
+        result = self.run_gate(published_independent_review=independent)
+        self.assertFalse(result["passed"])
+        self.assertTrue(any("blocking finding" in error for error in result["errors"]))
+
+        independent["blocking_finding_count"] = 0
+        independent["contract_units_pass"] = False
+        independent["contract_unit_untested_count"] = 1
+        independent["passed"] = False
+        result = self.run_gate(published_independent_review=independent)
+        self.assertFalse(result["passed"])
+        self.assertTrue(any("every Implementation Contract unit to PASS" in error for error in result["errors"]))
+
     def test_current_review_fail_blocks_green_handoff_with_bounded_item_details(self):
         item = {"id": "C001", "text": "the runtime must reject failed review"}
         review = {
@@ -3117,12 +3739,16 @@ class DistributionTests(unittest.TestCase):
                 requirements = files[f"dist/{host}/skills/requirements/SKILL.md"].decode("utf-8")
                 delivery = files[f"dist/{host}/skills/delivery/SKILL.md"].decode("utf-8")
                 self_review = files[f"dist/{host}/skills/self-review/SKILL.md"].decode("utf-8")
+                qa_skill = files[f"dist/{host}/skills/qa/SKILL.md"].decode("utf-8")
+                pr_review = files[f"dist/{host}/skills/pr-review/SKILL.md"].decode("utf-8")
                 all_skills = "\n".join(
                     files[f"dist/{host}/skills/{name}/SKILL.md"].decode("utf-8")
                     for name in build_dist.EXPECTED_SKILLS
                 )
                 runtime_delivery = files[f"dist/{host}/runtime/agent_workflow/delivery.py"].decode("utf-8")
                 runtime_cli = files[f"dist/{host}/runtime/agent_workflow/cli.py"].decode("utf-8")
+                runtime_qa = files[f"dist/{host}/runtime/agent_workflow/qa.py"].decode("utf-8")
+                runtime_review = files[f"dist/{host}/runtime/agent_workflow/review.py"].decode("utf-8")
                 self.assertIn("continue without another conversational prompt", implementation)
                 self.assertIn("Do not report implementation complete until an open, non-draft review PR exists", implementation)
                 self.assertIn("Do not request a later PR-specific conversational approval", requirements)
@@ -3137,8 +3763,14 @@ class DistributionTests(unittest.TestCase):
                         self.assertRegex(line, r"(?i)\b(?:do not|must not|never)\b")
                 self.assertIn("ensure-review-pr <issue> --body-file <path>", delivery)
                 self.assertIn("without another user prompt", self_review)
+                self.assertIn("fresh_context: true", pr_review)
+                self.assertIn("validate-public-qa", qa_skill)
+                self.assertIn("def publish_qa(", runtime_qa)
+                self.assertIn("def publish_pr_review(", runtime_review)
                 self.assertIn("def ensure_review_pr(", runtime_delivery)
                 self.assertIn('commands.add_parser("ensure-review-pr")', runtime_cli)
+                self.assertIn('commands.add_parser("prepare-qa")', runtime_cli)
+                self.assertIn('commands.add_parser("prepare-pr-review")', runtime_cli)
         for path in ("dist/openai/plugin.json", "dist/claude/.claude-plugin/plugin.json"):
             self.assertEqual(json.loads(files[path])['version'], __version__)
         self.assertNotIn("version", json.loads(files["dist/antigravity/plugin.json"]))

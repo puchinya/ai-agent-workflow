@@ -21,9 +21,13 @@ from .git import GitLifecycleError, changed_document_paths, start_feature_branch
 from .profile import (APPLICATION_TYPES, ProfileError, build_hook_plan, load_profile,
                       normalize_host, validate_profile)
 from .process import ProcessError, run_command
+from .qa import QAError, prepare_qa, publish_qa, validate_public_qa, validate_qa
 from .review import (ReviewError, load_review, load_review_surface, prepare_review,
-                     publish_review, review_path, validate_public_review)
+                     prepare_pr_review, pr_review_path, publish_pr_review, publish_review,
+                     review_path, validate_pr_review, validate_public_pr_review,
+                     validate_public_review)
 from .versioning import VersionError, resolve_milestone_version
+from .verification import VerificationError, validate_public_final_verification, verify_final
 
 
 class CLIError(RuntimeError):
@@ -382,6 +386,20 @@ def build_parser() -> argparse.ArgumentParser:
     hook.add_argument("--diagnostic", action="store_true")
     hook.add_argument("--repo")
 
+    final = commands.add_parser("verify-final")
+    final.add_argument("issue", type=_number)
+    final.add_argument("pr", type=_number)
+    final.add_argument("--runtime-host", choices=("windows", "macos", "linux"))
+    final.add_argument("--architecture")
+    final.add_argument("--capability", action="append", default=[])
+    final.add_argument("--diagnostic", action="store_true")
+    final.add_argument("--repo")
+
+    public_final = commands.add_parser("validate-public-final-verification")
+    public_final.add_argument("issue", type=_number)
+    public_final.add_argument("pr", type=_number)
+    public_final.add_argument("--repo")
+
     save = commands.add_parser("save-implementation-contract")
     save.add_argument("issue", type=_number)
     save.add_argument("path", nargs="?", type=Path)
@@ -418,6 +436,44 @@ def build_parser() -> argparse.ArgumentParser:
     public.add_argument("pr", type=_number)
     public.add_argument("--repo")
 
+    prepare_independent = commands.add_parser("prepare-pr-review")
+    prepare_independent.add_argument("issue", type=_number)
+    prepare_independent.add_argument("pr", type=_number)
+    prepare_independent.add_argument("--repo")
+    validate_independent = commands.add_parser("validate-pr-review")
+    validate_independent.add_argument("issue", type=_number)
+    validate_independent.add_argument("pr", type=_number)
+    validate_independent.add_argument("--input", type=Path)
+    validate_independent.add_argument("--repo")
+    publish_independent = commands.add_parser("publish-pr-review")
+    publish_independent.add_argument("issue", type=_number)
+    publish_independent.add_argument("pr", type=_number)
+    publish_independent.add_argument("--input", type=Path)
+    publish_independent.add_argument("--repo")
+    validate_public_independent = commands.add_parser("validate-public-pr-review")
+    validate_public_independent.add_argument("issue", type=_number)
+    validate_public_independent.add_argument("pr", type=_number)
+    validate_public_independent.add_argument("--repo")
+
+    prepare_qa_cmd = commands.add_parser("prepare-qa")
+    prepare_qa_cmd.add_argument("issue", type=_number)
+    prepare_qa_cmd.add_argument("pr", type=_number)
+    prepare_qa_cmd.add_argument("--repo")
+    validate_qa_cmd = commands.add_parser("validate-qa")
+    validate_qa_cmd.add_argument("issue", type=_number)
+    validate_qa_cmd.add_argument("pr", type=_number)
+    validate_qa_cmd.add_argument("--input", type=Path)
+    validate_qa_cmd.add_argument("--repo")
+    publish_qa_cmd = commands.add_parser("publish-qa")
+    publish_qa_cmd.add_argument("issue", type=_number)
+    publish_qa_cmd.add_argument("pr", type=_number)
+    publish_qa_cmd.add_argument("--input", type=Path)
+    publish_qa_cmd.add_argument("--repo")
+    public_qa_cmd = commands.add_parser("validate-public-qa")
+    public_qa_cmd.add_argument("issue", type=_number)
+    public_qa_cmd.add_argument("pr", type=_number)
+    public_qa_cmd.add_argument("--repo")
+
     gate = commands.add_parser("delivery-check")
     gate.add_argument("issue", type=_number)
     gate.add_argument("pr", type=_number)
@@ -445,6 +501,16 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, int]:
         return _ensure_review_pr(args)
     elif args.command == "run-hook":
         result = _do_hook(args)
+    elif args.command == "verify-final":
+        repo = _repo_arg(args.repo)
+        result = verify_final(repo, args.issue, args.pr, _gh(repo),
+                              runtime_host=args.runtime_host, architecture=args.architecture,
+                              capabilities=args.capability, diagnostic=args.diagnostic)
+        return result, 0 if result["result"] == "pass" else 1
+    elif args.command == "validate-public-final-verification":
+        repo = _repo_arg(args.repo)
+        result = validate_public_final_verification(args.issue, args.pr, _gh(repo))
+        return result, 1 if result["stale"] else 0
     elif args.command == "save-implementation-contract":
         repo = _repo_arg(args.repo)
         result = save_contract(repo, args.issue, args.path)
@@ -475,6 +541,45 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, int]:
             "schema_version", "contract_conformance", "stale", "stale_reasons", "current_head",
         )}
         return result, 1 if result["stale"] else 0
+    elif args.command == "prepare-pr-review":
+        repo = _repo_arg(args.repo)
+        result = prepare_pr_review(repo, args.issue, args.pr, _gh(repo))
+    elif args.command == "validate-pr-review":
+        repo = _repo_arg(args.repo)
+        result = validate_pr_review(repo, args.issue, args.pr, _gh(repo), args.input)
+        return result, 0 if result["passed"] else 1
+    elif args.command == "publish-pr-review":
+        repo = _repo_arg(args.repo)
+        result = publish_pr_review(repo, args.issue, args.pr, _gh(repo), args.input)
+    elif args.command == "validate-public-pr-review":
+        repo = _repo_arg(args.repo)
+        result = validate_public_pr_review(args.issue, args.pr, _gh(repo))
+        result = {key: result[key] for key in (
+            "comment_id", "sha256", "head", "contract_comment_id", "current_contract_comment_id",
+            "contract_sha256", "current_contract_sha256", "checklist_sha256", "fresh_context",
+            "contract_units_pass", "checklist_fail_count", "finding_count", "blocking_finding_count",
+            "blocking_findings", "stale", "stale_reasons", "passed",
+        )}
+        return result, 0 if result["passed"] else 1
+    elif args.command == "prepare-qa":
+        repo = _repo_arg(args.repo)
+        result = prepare_qa(repo, args.issue, args.pr, _gh(repo))
+    elif args.command == "validate-qa":
+        repo = _repo_arg(args.repo)
+        result = validate_qa(repo, args.issue, args.pr, _gh(repo), args.input)
+        return result, 0 if result["passed"] else 1
+    elif args.command == "publish-qa":
+        repo = _repo_arg(args.repo)
+        result = publish_qa(repo, args.issue, args.pr, _gh(repo), args.input)
+        return result, 0 if result["result"] in {"pass", "not_applicable"} else 1
+    elif args.command == "validate-public-qa":
+        repo = _repo_arg(args.repo)
+        result = validate_public_qa(args.issue, args.pr, _gh(repo))
+        result = {key: result[key] for key in (
+            "comment_id", "sha256", "result", "passed", "stale", "stale_reasons",
+            "current_head", "current_contract_comment_id", "current_contract_sha256",
+        )}
+        return result, 0 if result["passed"] else 1
     elif args.command == "delivery-check":
         repo = _repo_arg(args.repo)
         result = delivery_check(repo, args.issue, args.pr, _gh(repo))
@@ -497,7 +602,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             _json(result)
         return status
-    except (ProfileError, ContextError, ContractError, ReviewError, DeliveryError,
+    except (ProfileError, ContextError, ContractError, ReviewError, VerificationError, QAError, DeliveryError,
             GitHubError, GitLifecycleError, VersionError, ProcessError, CLIError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return exc.returncode if isinstance(exc, ProcessError) else 1
