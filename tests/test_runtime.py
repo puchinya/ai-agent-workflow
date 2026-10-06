@@ -2716,7 +2716,13 @@ macOS IDE smoke test not run
                 self.assertEqual(self.gh.lifecycle_calls, [])
 
     def test_requested_body_closing_conflicts_fail_before_push_or_github(self):
-        for clause in ("Fixes #2", "Fixes other/repo#99", "Resolves other/repo#1"):
+        for clause in (
+            "Fixes #2",
+            "Fixes other/repo#99",
+            "Resolves other/repo#1",
+            "Closes #1, #2",
+            "Closes #1 and other/repo#2",
+        ):
             with self.subTest(clause=clause):
                 self.gh.lifecycle_calls.clear()
                 body = self.pr_body + "\n" + clause + "\n"
@@ -2762,10 +2768,27 @@ macOS IDE smoke test not run
             ("fixes #7", {("owner/repo", 7)}),
             ("resolve #8", {("owner/repo", 8)}),
             ("resolves #9", {("owner/repo", 9)}),
+            ("Closes #1; See #2", {("owner/repo", 1)}),
+            ("Closes #1 because discussion continues in #2", {("owner/repo", 1)}),
+            ("Closes #1. Follow-up is #2", {("owner/repo", 1)}),
+            ("Closes #1 — see #2", {("owner/repo", 1)}),
+            ("Closes #1 and other/repo#2", {("owner/repo", 1), ("other/repo", 2)}),
+            ("Closes #1 and #2", {("owner/repo", 1), ("owner/repo", 2)}),
+            ("Closes #1, and #2", {("owner/repo", 1), ("owner/repo", 2)}),
+            ("Closes #1; fixes #2", {("owner/repo", 1), ("owner/repo", 2)}),
         ]
         for body, expected in cases:
             with self.subTest(body=body):
                 self.assertEqual(_closing_references(body, "owner/repo"), expected)
+
+    def test_requested_body_ordinary_followup_reference_does_not_block(self):
+        body = (
+            "Closes #1\n\nCloses #1; See #2\n\n"
+            "## Verification\npassed\n\n## Untested\nnone\n"
+        )
+        result, push = self.run_ensure(body=body)
+        self.assertTrue(result["success"], result)
+        push.assert_called_once()
 
     def test_ensure_review_pr_push_failure_has_no_pr_or_label_mutation(self):
         self.gh.issue_data["labels"] = [{"name": "phase:implementation"}]
@@ -2823,6 +2846,19 @@ macOS IDE smoke test not run
         self.assertEqual(result["pr"], existing["number"])
         self.assertEqual(len(self.gh.updated_prs), 1)
         self.assertEqual(self.gh.updated_prs[0], (8, "Issue title", self.pr_body))
+        self.assertEqual(self.gh.created_prs, [])
+
+    def test_existing_pr_ordinary_followup_reference_remains_compatible(self):
+        body = (
+            "Closes #1\n\nCloses #1; See #2\n\n"
+            "## Verification\npassed\n\n## Untested\nnone\n"
+        )
+        self._candidate_pr(title="Issue title", body=body)
+        result, _ = self.run_ensure(body=body)
+        self.assertTrue(result["success"], result)
+        self.assertTrue(result["reused"])
+        self.assertEqual(result["pr"], 8)
+        self.assertEqual(self.gh.updated_prs, [])
         self.assertEqual(self.gh.created_prs, [])
 
     def test_phase_failure_returns_pr_identity_and_retry_reuses_it(self):

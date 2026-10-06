@@ -29,6 +29,49 @@ _CLOSING_KEYWORD = re.compile(r"\b(?:close[sd]?|fix(?:es|ed)?|resolve(?:s|d)?)\b
 _CLOSING_REFERENCE = re.compile(
     r"(?<![A-Za-z0-9_.-])(?:(?P<repository>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#(?P<number>\d+)\b"
 )
+_CLOSING_AND = re.compile(r"and\b", re.I)
+
+
+def _skip_horizontal_space(text: str, position: int) -> int:
+    while position < len(text) and text[position] in " \t":
+        position += 1
+    return position
+
+
+def _closing_clause_references(clause: str, current_repository: str) -> set[tuple[str, int]]:
+    """Consume one closing target and only comma/and-separated targets after it."""
+    position = _skip_horizontal_space(clause, 0)
+    first = _CLOSING_REFERENCE.match(clause, position)
+    if first is None:
+        return set()
+
+    references: set[tuple[str, int]] = set()
+
+    def add(reference: re.Match[str]) -> None:
+        repository = reference.group("repository")
+        references.add(((repository or current_repository).casefold(), int(reference.group("number"))))
+
+    add(first)
+    position = first.end()
+    while True:
+        position = _skip_horizontal_space(clause, position)
+        if position < len(clause) and clause[position] == ",":
+            position = _skip_horizontal_space(clause, position + 1)
+            conjunction = _CLOSING_AND.match(clause, position)
+            if conjunction is not None:
+                position = _skip_horizontal_space(clause, conjunction.end())
+        else:
+            conjunction = _CLOSING_AND.match(clause, position)
+            if conjunction is None:
+                break
+            position = _skip_horizontal_space(clause, conjunction.end())
+
+        reference = _CLOSING_REFERENCE.match(clause, position)
+        if reference is None:
+            break
+        add(reference)
+        position = reference.end()
+    return references
 
 
 def _closing_references(body: str, current_repository: str) -> set[tuple[str, int]]:
@@ -41,10 +84,7 @@ def _closing_references(body: str, current_repository: str) -> set[tuple[str, in
     references: set[tuple[str, int]] = set()
     for line in body.splitlines():
         for keyword in _CLOSING_KEYWORD.finditer(line):
-            clause = line[keyword.end():]
-            for reference in _CLOSING_REFERENCE.finditer(clause):
-                repository = reference.group("repository")
-                references.add(((repository or current).casefold(), int(reference.group("number"))))
+            references.update(_closing_clause_references(line[keyword.end():], current))
     return references
 
 
