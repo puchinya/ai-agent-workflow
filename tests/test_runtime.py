@@ -2715,6 +2715,58 @@ macOS IDE smoke test not run
                 push.assert_not_called()
                 self.assertEqual(self.gh.lifecycle_calls, [])
 
+    def test_requested_body_closing_conflicts_fail_before_push_or_github(self):
+        for clause in ("Fixes #2", "Fixes other/repo#99", "Resolves other/repo#1"):
+            with self.subTest(clause=clause):
+                self.gh.lifecycle_calls.clear()
+                body = self.pr_body + "\n" + clause + "\n"
+                with patch("agent_workflow.delivery.push_review_branch") as push:
+                    with self.assertRaisesRegex(DeliveryError, "closing reference"):
+                        ensure_review_pr(self.repo, 1, body, self.gh)
+                push.assert_not_called()
+                self.assertEqual(self.gh.lifecycle_calls, [])
+                self.assertEqual(self.gh.created_prs, [])
+                self.assertEqual(self.gh.updated_prs, [])
+                self.assertEqual(self.gh.label_replacements, [])
+
+    def test_existing_cross_repository_closing_conflicts_are_never_rewritten(self):
+        for closing_body in ("Fixes other/repo#1", "Closes #1, resolves other/repo#1"):
+            with self.subTest(closing_body=closing_body):
+                self.gh.created_prs = []
+                self.gh.updated_prs = []
+                self.gh.label_replacements = []
+                self._candidate_pr(body=closing_body)
+                with patch("agent_workflow.delivery.push_review_branch", return_value={
+                    "head_sha": self.head, "head_branch": "feature/1-review", "base_branch": "main",
+                    "base_sha": "a" * 40, "ahead_by": 1, "pushed": True,
+                    "remote_head": self.head, "remote_head_verified": True,
+                }):
+                    with self.assertRaisesRegex(DeliveryError, "closes a different Issue or repository"):
+                        ensure_review_pr(self.repo, 1, self.pr_body, self.gh)
+                self.assertEqual(self.gh.created_prs, [])
+                self.assertEqual(self.gh.updated_prs, [])
+                self.assertEqual(self.gh.label_replacements, [])
+
+    def test_repository_aware_closing_reference_parser(self):
+        from agent_workflow.delivery import _closing_references
+
+        cases = [
+            ("CLOSES: #1", {("owner/repo", 1)}),
+            ("fixed Other/Repo#2", {("other/repo", 2)}),
+            ("Resolved #3", {("owner/repo", 3)}),
+            ("Closes #1, #2", {("owner/repo", 1), ("owner/repo", 2)}),
+            ("See #99", set()),
+            ("close #4", {("owner/repo", 4)}),
+            ("closed #5", {("owner/repo", 5)}),
+            ("fix #6", {("owner/repo", 6)}),
+            ("fixes #7", {("owner/repo", 7)}),
+            ("resolve #8", {("owner/repo", 8)}),
+            ("resolves #9", {("owner/repo", 9)}),
+        ]
+        for body, expected in cases:
+            with self.subTest(body=body):
+                self.assertEqual(_closing_references(body, "owner/repo"), expected)
+
     def test_ensure_review_pr_push_failure_has_no_pr_or_label_mutation(self):
         self.gh.issue_data["labels"] = [{"name": "phase:implementation"}]
         with patch("agent_workflow.delivery.push_review_branch",

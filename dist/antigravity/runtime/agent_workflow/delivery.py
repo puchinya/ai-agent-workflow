@@ -25,15 +25,32 @@ def _issue_identity(issue_obj: dict[str, Any], issue: int, gh: GitHub) -> None:
         raise DeliveryError("Issue identity does not match configured repository")
 
 
-def _closing_issues(body: str) -> set[int]:
-    numbers: set[int] = set()
-    closing_clause = re.compile(
-        r"\b(?:close[sd]?|fix(?:es|ed)?|resolve(?:s|d)?)\s*:?\s+#\d+"
-        r"(?:\s*(?:,|\band\b)\s*#\d+)*", re.I
-    )
-    for match in closing_clause.finditer(body):
-        numbers.update(int(value) for value in re.findall(r"#(\d+)\b", match.group()))
-    return numbers
+_CLOSING_KEYWORD = re.compile(r"\b(?:close[sd]?|fix(?:es|ed)?|resolve(?:s|d)?)\b[ \t]*:?", re.I)
+_CLOSING_REFERENCE = re.compile(
+    r"(?<![A-Za-z0-9_.-])(?:(?P<repository>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#(?P<number>\d+)\b"
+)
+
+
+def _closing_references(body: str, current_repository: str) -> set[tuple[str, int]]:
+    """Return repository-qualified GitHub closing targets found in closing-keyword lines."""
+    if (not isinstance(body, str)
+            or not isinstance(current_repository, str)
+            or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", current_repository)):
+        raise DeliveryError("closing-reference body or repository identity is malformed")
+    current = current_repository.casefold()
+    references: set[tuple[str, int]] = set()
+    for line in body.splitlines():
+        for keyword in _CLOSING_KEYWORD.finditer(line):
+            clause = line[keyword.end():]
+            for reference in _CLOSING_REFERENCE.finditer(clause):
+                repository = reference.group("repository")
+                references.add(((repository or current).casefold(), int(reference.group("number"))))
+    return references
+
+
+def _has_conflicting_closing_reference(body: str, issue: int, repository: str) -> bool:
+    owning_target = (repository.casefold(), issue)
+    return any(target != owning_target for target in _closing_references(body, repository))
 
 
 def _review_pr_identity(pull: dict[str, Any], issue: int, gh: GitHub, head_branch: str,
@@ -63,9 +80,8 @@ def _review_pr_identity(pull: dict[str, Any], issue: int, gh: GitHub, head_branc
     body = pull.get("body") or ""
     if not isinstance(body, str):
         raise DeliveryError("matching PR body is malformed")
-    closes = _closing_issues(body)
-    if any(closed_issue != issue for closed_issue in closes):
-        raise DeliveryError("matching PR closes a different Issue; it was not changed")
+    if _has_conflicting_closing_reference(body, issue, gh.repo):
+        raise DeliveryError("matching PR closes a different Issue or repository; it was not changed")
     url = pull.get("html_url")
     if not isinstance(url, str) or url != f"https://github.com/{gh.repo}/pull/{number}":
         raise DeliveryError("matching PR URL is missing or does not match the repository")
@@ -84,6 +100,8 @@ def ensure_review_pr(repo: Path, issue: int, body: str, gh: GitHub, title: str |
         raise DeliveryError("PR body must contain a non-empty ## Verification section")
     if _section(body, "Untested") is None:
         raise DeliveryError("PR body must contain a non-empty ## Untested section")
+    if _has_conflicting_closing_reference(body, issue, gh.repo):
+        raise DeliveryError("PR body contains a closing reference outside the owning Issue")
 
     profile = load_profile(repo)
     if profile.get("schema_version") != 2:
@@ -120,10 +138,7 @@ def ensure_review_pr(repo: Path, issue: int, body: str, gh: GitHub, title: str |
     if matches:
         pull = matches[0]
         _review_pr_identity(pull, issue, gh, head_branch, selected_base, head_sha)
-        closes = _closing_issues(pull.get("body") or "")
         if pull.get("title") != requested_title or pull.get("body") != body:
-            if any(closed_issue != issue for closed_issue in closes):
-                raise DeliveryError("matching PR closes a different Issue; it was not changed")
             gh.update_pull_request(pull["number"], requested_title, body)
     else:
         pull = gh.create_pull_request(requested_title, head_branch, selected_base, body)
