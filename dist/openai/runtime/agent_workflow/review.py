@@ -10,7 +10,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from .contracts import classify_reviewer_checklist_h2, parse_comment, parse_pointer
+from .contracts import (ContractError, UNICODE_CHECKLIST_ITEM, classify_reviewer_checklist_h2,
+                        normalize_reviewer_checklist, parse_comment, parse_pointer)
 from .documents import without_fenced_blocks
 from .github import GitHub, GitHubError
 
@@ -76,7 +77,35 @@ def _heading_section(text: str, title: str) -> str | None:
     return "\n".join(lines[start:end])
 
 
+def _plain_numbered_checklist_section(text: str) -> str | None:
+    lines = text.splitlines()
+    clean_lines = without_fenced_blocks(text).splitlines()
+    heading = re.compile(r"^\s*\d+[.)]\s+Reviewer Checklist\s*$", re.I)
+    numbered_section = re.compile(r"^\s*\d+[.)]\s+\S")
+    matches = [i for i, line in enumerate(clean_lines) if heading.fullmatch(line)]
+    if len(matches) != 1:
+        return None
+    start = matches[0]
+    if start and clean_lines[start - 1].strip():
+        return None
+    end = next((i for i in range(start + 1, len(lines))
+                if numbered_section.match(clean_lines[i])), len(lines))
+    return "\n".join(lines[start + 1:end])
+
+
 def _extract_items(text: str) -> list[str]:
+    try:
+        raw = text.encode("utf-8")
+        classification = classify_reviewer_checklist_h2(raw)
+        if len(classification.checklist_indexes) == 1:
+            index = classification.checklist_indexes[0]
+            heading = classification.headings[index]
+            end = classification.headings[index + 1].start if index + 1 < len(classification.headings) else len(raw)
+            section = raw[heading.end:end].decode("utf-8")
+            if CANONICAL_BEGIN not in section and CANONICAL_END not in section:
+                text = normalize_reviewer_checklist(raw).decode("utf-8")
+    except (ContractError, UnicodeEncodeError):
+        pass
     text = without_fenced_blocks(text)
     lines = text.splitlines()
     begins = [i for i, line in enumerate(lines) if line.strip() == CANONICAL_BEGIN]
@@ -87,8 +116,15 @@ def _extract_items(text: str) -> list[str]:
     if section is None:
         section = _heading_section(text, "Reviewer Checklist")
     if section is None:
+        section = _plain_numbered_checklist_section(text)
+    if section is None:
         return []
-    return [m.group(1).strip() for line in section.splitlines() if (m := CHECK.match(line))]
+    items = []
+    for line in section.splitlines():
+        match = CHECK.match(line) or UNICODE_CHECKLIST_ITEM.fullmatch(line)
+        if match:
+            items.append(match.group(1).strip())
+    return items
 
 
 def contract_review_units(contract: bytes) -> list[dict[str, str]]:

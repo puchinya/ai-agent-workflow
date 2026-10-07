@@ -1441,6 +1441,27 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(normalize_reviewer_checklist(normalized), normalized)
         self.assertEqual(classify_reviewer_checklist_h2(normalized).state, "strict-canonical")
 
+    def test_checklist_normalizer_converts_unicode_empty_boxes_without_touching_outside_bytes(self):
+        prefix = b"Preamble bytes stay.\r\n\r\n"
+        checklist = (
+            "## 9. Reviewer Checklist\r\n"
+            "☐ First contract item.\r\n"
+            "☐ Second contract item stays second.\r\n"
+            "The implementer MUST self-review every item.\r\n\r\n"
+        ).encode("utf-8")
+        suffix = b"## Completion Report\r\nKeep this exact.\r\n"
+        raw = prefix + checklist + suffix
+
+        normalized = normalize_reviewer_checklist(raw)
+
+        self.assertTrue(normalized.startswith(prefix))
+        self.assertTrue(normalized.endswith(suffix))
+        self.assertIn(b"- [ ] First contract item.\r\n- [ ] Second contract item stays second.", normalized)
+        self.assertEqual(_extract_items(raw.decode("utf-8")), [
+            "First contract item.", "Second contract item stays second.",
+        ])
+        self.assertEqual(classify_reviewer_checklist_h2(normalized).state, "strict-canonical")
+
     def test_save_and_publish_bind_normalized_bytes_and_report_conversion(self):
         raw = (
             b"## Reviewer Checklist\n"
@@ -2047,6 +2068,14 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(_extract_items(text), ["canonical item"])
         self.assertEqual(_extract_items("## Checklist\n- [ ] ignored"), [])
         self.assertEqual(_extract_items("## 1. Reviewer Checklist (Issue)\n- [ ] accepted"), ["accepted"])
+        self.assertEqual(_extract_items("## 9. Reviewer Checklist\n☐ accepted from a contract"), [
+            "accepted from a contract",
+        ])
+        self.assertEqual(_extract_items(
+            "8. Architecture\nKeep current behavior.\n\n"
+            "9. Reviewer Checklist\n☐ first numbered item\n☐ second numbered item\n\n"
+            "10. Completion Report\nReport the result."
+        ), ["first numbered item", "second numbered item"])
         self.assertEqual(_extract_items("```md\n## Reviewer Checklist\n- [ ] ignored\n```"), [])
 
     def test_review_draft_requires_results_and_evidence(self):
