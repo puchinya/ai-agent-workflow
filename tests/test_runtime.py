@@ -4367,6 +4367,8 @@ class DistributionTests(unittest.TestCase):
         implementation = (ROOT / "workflow/skills/implementation/SKILL.md").read_text(encoding="utf-8")
         claude = (ROOT / "adapters/claude/README.md").read_text(encoding="utf-8")
         codex = (ROOT / "adapters/openai/README.md").read_text(encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        runtime_design = (ROOT / "docs/design/runtime-design.md").read_text(encoding="utf-8")
 
         self.assertLess(implementation.index("resolve that same-repository remote ref to its full SHA"),
                         implementation.index("asking the host for isolation"))
@@ -4386,6 +4388,9 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("required` blocks before edits", codex)
         self.assertIn("Product behavior has not been smoke-tested", claude)
         self.assertIn("Product behavior has not been smoke-tested", codex)
+        self.assertLess(readme.index("resolve the selected base ref and exact SHA before evaluating host isolation"),
+                        readme.index("Only in the current-checkout flow"))
+        self.assertIn("resolves the selected base ref and exact SHA before evaluating host capability", runtime_design)
 
     def test_generated_host_files_match_canonical_sources(self):
         files = build_dist.expected_files()
