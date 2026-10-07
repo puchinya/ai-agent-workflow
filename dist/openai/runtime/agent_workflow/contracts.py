@@ -33,6 +33,10 @@ CHECKLIST_HEADING = re.compile(
 )
 CHECKLIST_ITEM = re.compile(r"^\s*[-*+]\s+\[[ xX]\]\s+\S.*$")
 ALLOWED_CHECKLIST_INTRO = "The implementer must self-review every item in this checklist."
+LEGACY_CHECKLIST_INTROS = {
+    "Implementer MUST self-review every item.",
+    "The implementer MUST self-review every item.",
+}
 
 
 @dataclass(frozen=True)
@@ -137,6 +141,78 @@ def validate_reviewer_checklist_authoring(data: bytes) -> None:
     raise ContractError(classification.authoring_error or "Reviewer Checklist H2 is not strict-canonical")
 
 
+def normalize_reviewer_checklist(data: bytes) -> bytes:
+    """Canonicalize a recognizable legacy Reviewer Checklist H2 without dropping prose."""
+    if not isinstance(data, bytes):
+        raise ContractError("Implementation Contract must be exact bytes")
+    classification = classify_reviewer_checklist_h2(data)
+    if classification.state in {"absent", "strict-canonical"}:
+        return data
+    headings = classification.headings
+    checklist_indexes = classification.checklist_indexes
+    if len(checklist_indexes) != 1:
+        raise ContractError(classification.authoring_error or "Implementation Contract must contain exactly one Reviewer Checklist H2")
+
+    index = checklist_indexes[0]
+    heading = headings[index]
+    end = headings[index + 1].start if index + 1 < len(headings) else len(data)
+    body = data[heading.end:end].decode("utf-8", errors="strict")
+    lines = body.splitlines()
+    begin_count = sum(line.strip() == CHECKLIST_BEGIN for line in lines)
+    end_count = sum(line.strip() == CHECKLIST_END for line in lines)
+    marker_rows = {CHECKLIST_BEGIN, CHECKLIST_END}
+    if begin_count > 1 or end_count > 1 or any(
+        "AGENT_REVIEWER_CHECKLIST_V1" in line and line.strip() not in marker_rows
+        for line in lines
+    ):
+        raise ContractError("Reviewer Checklist markers are ambiguous; no contract bytes were changed")
+
+    intro_count = 0
+    items: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped in marker_rows:
+            continue
+        if stripped == ALLOWED_CHECKLIST_INTRO or stripped in LEGACY_CHECKLIST_INTROS:
+            intro_count += 1
+            continue
+        if CHECKLIST_ITEM.fullmatch(line):
+            items.append(line)
+            continue
+        raise ContractError(
+            "Reviewer Checklist contains prose that cannot be normalized safely; "
+            "move each requirement into a checkbox item"
+        )
+
+    if intro_count > 1:
+        raise ContractError("Reviewer Checklist contains multiple self-review introductions")
+    if not items:
+        raise ContractError("Reviewer Checklist must contain at least one checkbox item to normalize")
+
+    section = data[heading.start:end]
+    newline_match = re.search(rb"\r\n|\n|\r", section)
+    newline = newline_match.group(0) if newline_match else b"\n"
+    block_lines = [
+        ALLOWED_CHECKLIST_INTRO,
+        "",
+        CHECKLIST_BEGIN,
+        *items,
+        CHECKLIST_END,
+        "",
+    ]
+    canonical_body = newline + newline.join(line.encode("utf-8") for line in block_lines) + newline
+    return data[:heading.end] + canonical_body + data[end:]
+
+
+def _prepare_contract_input(data: bytes, issue: int) -> tuple[bytes, bool]:
+    """Validate raw input, canonicalize safe checklist formatting, then bind exact bytes."""
+    validate_payload(data, issue)
+    normalized = normalize_reviewer_checklist(data)
+    validate_payload(normalized, issue)
+    validate_reviewer_checklist_authoring(normalized)
+    return normalized, normalized != data
+
+
 def contract_dir(repo: Path, issue: int) -> Path:
     return repo / ".agent-state" / "issues" / str(issue)
 
@@ -222,8 +298,9 @@ def save_contract(repo: Path, issue: int, source: Path | None = None) -> dict[st
         raw = path.read_bytes()
     except OSError as exc:
         raise ContractError(f"could not read contract source {path}: {exc}") from exc
-    result = _write_mirror(repo, issue, raw)
-    return {**result, "path": str(payload_path(repo, issue))}
+    data, normalized = _prepare_contract_input(raw, issue)
+    result = _write_mirror(repo, issue, data)
+    return {**result, "path": str(payload_path(repo, issue)), "normalized": normalized}
 
 
 def _pointer_error(reason: str) -> ContractError:
@@ -323,16 +400,16 @@ def publish_contract(repo: Path, issue: int, gh: GitHub, source: Path | None = N
                      supersede: bool = False) -> dict[str, Any]:
     source_path = source or payload_path(repo, issue)
     try:
-        data = source_path.read_bytes()
+        raw = source_path.read_bytes()
     except OSError as exc:
         raise ContractError(f"could not read contract source {source_path}: {exc}") from exc
-    digest, count, text = validate_payload(data, issue)  # reject locally before any network mutation
-    validate_reviewer_checklist_authoring(data)
+    data, normalized = _prepare_contract_input(raw, issue)  # reject locally before any network mutation
+    digest, count, text = validate_payload(data, issue)
     local_has_state = payload_path(repo, issue).exists() or record_path(repo, issue).exists()
     local_record = None
     if local_has_state:
         local_record, local_bytes = _record_local(repo, issue)
-        if local_bytes != data and not supersede:
+        if local_bytes != data and normalize_reviewer_checklist(local_bytes) != data and not supersede:
             raise ContractError("local verified contract has a different SHA; explicit --supersede is required")
     issue_obj = gh.issue(issue)
     _issue_identity(issue_obj, gh, issue)
@@ -347,10 +424,10 @@ def publish_contract(repo: Path, issue: int, gh: GitHub, source: Path | None = N
         remote_payload, remote_sha = parse_comment(comment.get("body", ""), issue)
         if remote_sha != digest or remote_payload != data:
             raise ContractError("current Issue pointer comment differs from local source bytes")
-        if local_has_state and local_bytes != data:
+        if local_has_state and local_bytes != data and normalize_reviewer_checklist(local_bytes) != data:
             raise ContractError("local mirror differs from the current Issue contract; use restore --replace-stale explicitly")
         result = _write_mirror(repo, issue, data)
-        return {**result, "comment_id": current_id, "idempotent": True}
+        return {**result, "comment_id": current_id, "idempotent": True, "normalized": normalized}
     if current_sha is not None and not supersede:
         raise ContractError("a different approved contract is current; explicit --supersede is required")
 
@@ -392,7 +469,7 @@ def publish_contract(repo: Path, issue: int, gh: GitHub, source: Path | None = N
     if read_id != matching_id or read_sha != digest:
         raise ContractError("Issue contract pointer failed readback verification")
     result = _write_mirror(repo, issue, data)
-    return {**result, "comment_id": matching_id, "idempotent": False}
+    return {**result, "comment_id": matching_id, "idempotent": False, "normalized": normalized}
 
 
 def restore_contract(repo: Path, issue: int, gh: GitHub, replace_stale: bool = False) -> dict[str, Any]:

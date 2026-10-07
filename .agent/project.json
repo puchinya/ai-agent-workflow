@@ -34,6 +34,11 @@
   "hooks": {
     "branch_switch": [],
     "verify_quick": [],
-    "verify_final": []
+    "verify_final": [
+      "python -m compileall runtime tools tests",
+      "python -m unittest discover -s tests -p \"test_*.py\"",
+      "python tools/build_dist.py --check",
+      "python tools/validate_dist.py"
+    ]
   }
 }

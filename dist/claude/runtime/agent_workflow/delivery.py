@@ -10,7 +10,9 @@ from .context import affected_components
 from .github import GitHub, GitHubError
 from .git import GitLifecycleError, push_review_branch
 from .profile import ProfileError, load_profile
-from .review import ReviewError, validate_public_review
+from .qa import QAError, validate_public_qa
+from .review import ReviewError, load_review_surface, validate_public_pr_review, validate_public_review
+from .verification import VerificationError, validate_public_final_verification
 
 
 class DeliveryError(ValueError):
@@ -319,6 +321,12 @@ def delivery_check(repo: Path, issue: int, pr: int, gh: GitHub) -> dict[str, Any
     head = pull.get("head", {}).get("sha")
     if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{7,40}", head):
         raise DeliveryError("PR head SHA is missing or malformed")
+    snapshot_issue_body = issue_obj.get("body")
+    snapshot_pr_body = pull.get("body")
+    snapshot_states = (issue_obj.get("state"), pull.get("state"), pull.get("draft"), pull.get("merged"))
+    snapshot_has_review_phase = "phase:review" in labels
+    gate_issue = issue_obj
+    gate_pull_body = pull.get("body") or ""
     profile = load_profile(repo, allow_uninitialized=True)
     errors: list[str] = []
     if pull.get("merged"):
@@ -331,7 +339,9 @@ def delivery_check(repo: Path, issue: int, pr: int, gh: GitHub) -> dict[str, Any
                 "contract_review_failures": [], "contract_review_failure_count": 0,
                 "contract_review_untested": [], "contract_review_untested_count": 0,
                 "contract_comment_id": None, "contract_sha256": None,
-                "review_schema_version": None, **base_details}
+                "review_schema_version": None, "final_verification_status": None,
+                "final_verification": None, "qa_status": None, "qa": None,
+                "independent_review_status": None, "independent_review": None, **base_details}
 
     if issue_obj.get("state") != "open":
         errors.append("handoff requires an open Issue")
@@ -356,11 +366,41 @@ def delivery_check(repo: Path, issue: int, pr: int, gh: GitHub) -> dict[str, Any
     contract_comment_id = None
     contract_sha256 = None
     review_schema_version = None
+    final_verification_status = None
+    final_verification = None
+    evidence_contract_comment_id = None
+    evidence_contract_sha256 = None
+    try:
+        verification = validate_public_final_verification(issue, pr, gh, issue_obj=issue_obj, pull=pull)
+        receipt = verification["receipt"]
+        evidence_contract_comment_id = receipt.get("contract_comment_id")
+        evidence_contract_sha256 = receipt.get("contract_sha256")
+        final_verification_status = receipt.get("result")
+        final_verification = {"comment_id": verification.get("comment_id"),
+                              "sha256": verification.get("sha256"),
+                              "head": receipt.get("head"), "result": final_verification_status,
+                              "stale": verification.get("stale"),
+                              "stale_reasons": verification.get("stale_reasons", []),
+                              "host": receipt.get("host"), "architecture": receipt.get("architecture"),
+                              "components": receipt.get("components"),
+                              "executed_count": len(receipt.get("executed", [])),
+                              "skipped_target_count": len(receipt.get("skipped_targets", []))}
+        if verification.get("stale") or receipt.get("head") != head:
+            errors.append("published final verification is stale for current PR HEAD or approved contract")
+        if final_verification_status != "pass":
+            errors.append(f"published final verification result must be pass; got {final_verification_status}")
+    except (VerificationError, ValueError) as exc:
+        errors.append(f"published final verification is invalid: {exc}")
     try:
         published = validate_public_review(issue, pr, gh, issue_obj=issue_obj, pull=pull)
         review_schema_version = published.get("schema_version")
         contract_comment_id = published.get("current_contract_comment_id")
         contract_sha256 = published.get("current_contract_sha256")
+        if ((contract_comment_id is not None and evidence_contract_comment_id is not None
+             and contract_comment_id != evidence_contract_comment_id)
+                or (contract_sha256 is not None and evidence_contract_sha256 is not None
+                    and contract_sha256 != evidence_contract_sha256)):
+            errors.append("self-review was validated against a different approved Implementation Contract")
         review_current = not published.get("stale", True) and published.get("head") == head
         if review_schema_version == 1:
             errors.append(
@@ -433,6 +473,61 @@ def delivery_check(repo: Path, issue: int, pr: int, gh: GitHub) -> dict[str, Any
                 )
     except (ReviewError, ValueError) as exc:
         errors.append(f"published self-review is invalid: {exc}")
+
+    qa_status = None
+    qa_summary = None
+    try:
+        qa_public = validate_public_qa(issue, pr, gh, issue_obj=issue_obj, pull=pull)
+        qa_status = qa_public.get("result")
+        if (evidence_contract_comment_id is not None
+                and qa_public.get("current_contract_comment_id") != evidence_contract_comment_id
+                or evidence_contract_sha256 is not None
+                and qa_public.get("current_contract_sha256") != evidence_contract_sha256):
+            errors.append("QA was validated against a different approved Implementation Contract")
+        qa_summary = {"comment_id": qa_public.get("comment_id"), "sha256": qa_public.get("sha256"),
+                      "result": qa_status, "mode": qa_public.get("qa", {}).get("mode"),
+                      "case_count": len(qa_public.get("qa", {}).get("cases", [])),
+                      "stale": qa_public.get("stale"), "stale_reasons": qa_public.get("stale_reasons", [])}
+        if qa_public.get("stale"):
+            errors.append("published QA is stale for current PR HEAD or approved contract")
+        if qa_status not in {"pass", "not_applicable"}:
+            errors.append(f"published QA result must be pass or not_applicable; got {qa_status}")
+    except (QAError, ValueError) as exc:
+        errors.append(f"published QA is invalid: {exc}")
+
+    independent_review_status = None
+    independent_review = None
+    try:
+        independent = validate_public_pr_review(issue, pr, gh, issue_obj=issue_obj, pull=pull)
+        if (evidence_contract_comment_id is not None
+                and independent.get("current_contract_comment_id") != evidence_contract_comment_id
+                or evidence_contract_sha256 is not None
+                and independent.get("current_contract_sha256") != evidence_contract_sha256):
+            errors.append("independent review was validated against a different approved Implementation Contract")
+        independent_review_status = "pass" if independent.get("passed") else "blocked"
+        independent_review = {"comment_id": independent.get("comment_id"),
+                              "sha256": independent.get("sha256"), "head": independent.get("head"),
+                              "fresh_context": independent.get("fresh_context"),
+                              "stale": independent.get("stale"),
+                              "stale_reasons": independent.get("stale_reasons", []),
+                              "contract_units_pass": independent.get("contract_units_pass"),
+                              "contract_unit_fail_count": independent.get("contract_unit_fail_count", 0),
+                              "contract_unit_untested_count": independent.get("contract_unit_untested_count", 0),
+                              "checklist_fail_count": independent.get("checklist_fail_count"),
+                              "finding_count": independent.get("finding_count"),
+                              "blocking_finding_count": independent.get("blocking_finding_count"),
+                              "blocking_findings": independent.get("blocking_findings", [])}
+        if independent.get("stale") or independent.get("head") != head:
+            errors.append("published independent review is stale for current PR HEAD, contract, or checklist")
+        if not independent.get("contract_units_pass"):
+            errors.append("independent review requires every Implementation Contract unit to PASS")
+        if independent.get("checklist_fail_count", 0):
+            errors.append("independent review contains failed Reviewer Checklist items")
+        if independent.get("blocking_finding_count", 0):
+            errors.append(f"independent review has {independent['blocking_finding_count']} blocking finding(s)")
+    except (ReviewError, ValueError) as exc:
+        errors.append(f"published independent review is invalid: {exc}")
+
     checks = _required_checks(profile)
     if not checks:
         errors.append("no Required Checks are configured")
@@ -443,9 +538,49 @@ def delivery_check(repo: Path, issue: int, pr: int, gh: GitHub) -> dict[str, Any
             if not _check_passed(required, check_runs, statuses, head):
                 check_name = required if isinstance(required, str) else required.get("name", "<invalid>") if isinstance(required, dict) else "<invalid>"
                 errors.append(f"Required Check is not green on current HEAD: {check_name}")
-    affected = affected_components(issue_obj.get("body") or "", profile)
+    try:
+        final_issue = gh.issue(issue)
+        final_pull = gh.pull(pr)
+        _identity(final_issue, final_pull, issue, pr, gh)
+        gate_issue = final_issue
+        final_head_obj = final_pull.get("head") if isinstance(final_pull.get("head"), dict) else {}
+        final_head = final_head_obj.get("sha")
+        final_body = final_pull.get("body")
+        if not isinstance(final_body, str):
+            raise DeliveryError("final PR body is missing or malformed")
+        gate_pull_body = final_body
+        if final_issue.get("state") != "open" or final_pull.get("state") != "open" or final_pull.get("draft"):
+            errors.append("Issue or PR state changed while delivery evidence was being validated")
+        if final_head != head:
+            errors.append("PR HEAD changed while delivery evidence was being validated")
+        if final_pull.get("body") != snapshot_pr_body:
+            errors.append("PR body changed after evidence validation (current-evidence-state race)")
+        if final_issue.get("body") != snapshot_issue_body:
+            errors.append("Issue body changed after evidence validation (current-evidence-state race)")
+        final_states = (final_issue.get("state"), final_pull.get("state"),
+                        final_pull.get("draft"), final_pull.get("merged"))
+        if final_states != snapshot_states:
+            errors.append("Issue/PR open/draft/merged state changed after evidence validation")
+        final_has_review_phase = "phase:review" in _labels(final_issue)
+        if final_has_review_phase != snapshot_has_review_phase:
+            errors.append("Issue phase:review presence changed after evidence validation")
+        if not final_has_review_phase:
+            errors.append("Issue phase changed while delivery evidence was being validated")
+        if not re.search(rf"(?im)^\s*closes\s+#{issue}\b", final_body):
+            errors.append("final PR body no longer contains Closes #N")
+        if _section(final_body, "Verification") is None or _section(final_body, "Untested") is None:
+            errors.append("final PR Verification or Untested field is empty")
+        final_surface = load_review_surface(issue, final_issue.get("body") or "", gh)
+        expected_contract_id = evidence_contract_comment_id or contract_comment_id
+        expected_contract_sha = evidence_contract_sha256 or contract_sha256
+        if ((expected_contract_id is not None and final_surface["contract_comment_id"] != expected_contract_id)
+                or (expected_contract_sha is not None and final_surface["contract_sha256"] != expected_contract_sha)):
+            errors.append("approved Implementation Contract changed while delivery evidence was being validated")
+    except (ReviewError, ValueError, GitHubError) as exc:
+        errors.append(f"could not confirm current Issue/PR/contract after evidence validation: {exc}")
+    affected = affected_components(gate_issue.get("body") or "", profile)
     generic = any("generic" in c.get("application_types", []) for c in affected)
-    if generic and not re.search(r"(?im)^\s*Generic profile rationale:\s*\S.+$", pull.get("body") or ""):
+    if generic and not re.search(r"(?im)^\s*Generic profile rationale:\s*\S.+$", gate_pull_body):
         errors.append("PR affecting a generic component requires a concrete Generic profile rationale:")
     return {"gate": "handoff", "passed": not errors, "errors": errors,
             "issue": issue, "pr": pr, "head": head, "required_checks": checks,
@@ -457,6 +592,12 @@ def delivery_check(repo: Path, issue: int, pr: int, gh: GitHub) -> dict[str, Any
             "contract_comment_id": contract_comment_id,
             "contract_sha256": contract_sha256,
             "review_schema_version": review_schema_version,
+            "final_verification_status": final_verification_status,
+            "final_verification": final_verification,
+            "qa_status": qa_status,
+            "qa": qa_summary,
+            "independent_review_status": independent_review_status,
+            "independent_review": independent_review,
             **base_details}
 
 

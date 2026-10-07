@@ -11,13 +11,15 @@ Use after implementation and before handing off a PR. When ensure-review-pr has 
 1. Run `python -m agent_workflow verify-implementation-contract <issue>`.
 2. Run `python -m agent_workflow restore-implementation-contract <issue>`.
 3. Read the restored approved contract in full before assigning any contract-section result. Historical approved contracts remain readable even if their Reviewer Checklist H2 does not meet today's publication whitelist; review the generated legacy/non-canonical H2 as a contract unit as well as preserving its existing checklist extraction. If the verified pointer superseded a stale local mirror, inspect the mismatch and use `--replace-stale` only deliberately; never bypass contract verification.
-4. Run `python -m agent_workflow prepare-self-review <issue> <pr>`.
-5. Check every generated contract review unit against the exact final diff, source, tests, repository state, and required evidence.
-6. For each section, name the important obligations checked, cite concrete source paths/symbols, diff facts, command results, API state, or other reproducible evidence, and explain why the final implementation conforms. Generic evidence such as “tests passed”, “diff reviewed”, “looks correct”, or “checklist passed” is insufficient by itself for a multi-obligation section. A source/diff-reviewable section must not be marked `untested` to avoid checking it.
-7. Separately review every effective Reviewer Checklist item.
-8. Re-evaluate `Document impact` against the final diff; verify linked owners and the reasons for `unchanged` or `evidence-only` decisions.
-9. Classify findings A contract violation, B ambiguity, C new requirement, or D optional improvement. Run `python -m agent_workflow validate-self-review <issue> <pr>`, then `python -m agent_workflow publish-self-review <issue> <pr>`.
-10. Recreate the entire review after any new PR commit, approved contract supersession, or effective checklist change.
+4. Confirm `python -m agent_workflow validate-public-final-verification <issue> <pr>` reports a current `pass` receipt.
+5. Run `python -m agent_workflow prepare-self-review <issue> <pr>`.
+6. Check every generated contract review unit against the exact final diff, source, tests, repository state, and required evidence.
+7. For each section, name the important obligations checked, cite concrete source paths/symbols, diff facts, command results, API state, or other reproducible evidence, and explain why the final implementation conforms. Generic evidence such as “tests passed”, “diff reviewed”, “looks correct”, or “checklist passed” is insufficient by itself for a multi-obligation section. A source/diff-reviewable section must not be marked `untested` to avoid checking it.
+8. Separately review every effective Reviewer Checklist item.
+9. Re-evaluate `Document impact` against the final diff; verify linked owners and the reasons for `unchanged` or `evidence-only` decisions.
+10. Classify findings A contract violation, B ambiguity, C new requirement, or D optional improvement. Run `python -m agent_workflow validate-self-review <issue> <pr>`, then `python -m agent_workflow publish-self-review <issue> <pr>`.
+11. Follow the [QA Skill](../qa/SKILL.md), then hand the PR to the separate fresh-context [PR review Skill](../pr-review/SKILL.md). The implementation session must not author the independent review.
+12. Recreate the entire review after any new PR commit, approved contract supersession, or effective checklist change.
 
 > The Reviewer Checklist is a summary review surface, not a substitute for full Implementation Contract conformance review.
 

@@ -17,7 +17,7 @@ from agent_workflow import __version__  # noqa: E402
 
 HOSTS = ("openai", "claude", "antigravity")
 EXPECTED_SKILLS = ("requirements", "design", "implementation-contract", "implementation",
-                   "evidence", "checkpoint", "self-review", "pr-review", "delivery")
+                   "evidence", "checkpoint", "self-review", "pr-review", "qa", "delivery")
 GENERATED_ROOT_FILES = {".agents/plugins/marketplace.json", ".claude-plugin/marketplace.json"}
 
 

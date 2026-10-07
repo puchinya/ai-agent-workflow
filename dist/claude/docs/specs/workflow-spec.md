@@ -13,7 +13,7 @@ Define the reusable development workflow shared by OpenAI/Codex, Claude Code, an
 
 ## Scope
 
-The repository owns nine Skills, shared standards and templates, application profiles, implementation-contract handling, evidence and checkpoints, self-review, PR delivery, project-profile routing, deterministic validation, and host-specific packages. A consumer project owns its source, `.agent/project.json`, Issue-specific documents, hooks, and verification commands.
+The repository owns ten Skills, shared standards and templates, application profiles, implementation-contract handling, evidence and checkpoints, self-review, independent PR review, QA, PR delivery, project-profile routing, deterministic validation, and host-specific packages. A consumer project owns its source, `.agent/project.json`, Issue-specific documents, hooks, and verification commands.
 
 The product does not own a service, database, daemon, GUI, project-template repository, source synchronization, automatic semantic document rewriting, stack-wide detectors, or existing-consumer migration.
 
@@ -41,7 +41,7 @@ Once a user authorizes execution of an approved Issue-scoped Implementation Cont
 
 That authorization does not cover material scope or architecture changes, contract supersession, an ambiguous or conflicting owning Issue/base, force-push or branch deletion, merge, tag/release creation, publication outside the review PR workflow, credential or permission escalation, mutation of an unrelated Issue/PR, or an explicit user request to stop before PR creation. A conflict requiring one of these decisions blocks only the dependent work.
 
-For an authorized contract, the implementation Skill owns the full sequence: final local verification -> commit -> `ensure-review-pr` (safe non-force push and PR create/reuse) -> set `phase:review` -> prepare, validate, and publish exact-HEAD self-review -> delivery-check. It MUST NOT report implementation complete before an open, non-draft review PR exists. Pending Required Checks are reported as `BLOCKED_DELIVERY_CHECKS_PENDING`; the review PR must already exist. Human or independent PR review remains separate, and automatic merge is forbidden.
+For an authorized contract, the implementation Skill owns the full sequence: `verify_quick` -> commit -> `ensure-review-pr` (safe non-force push and PR create/reuse) -> `verify-final` -> exact-HEAD self-review -> QA -> fresh-context independent PR review -> `delivery-check`. The implementation session MUST NOT author the independent review artifact; the `pr-review` Skill requires a new session/subagent or human. If that reviewer is unavailable, report the exact blocker with the review PR URL. The workflow MUST NOT claim runtime proof of fresh context or assume a host-specific session API. It MUST NOT report implementation complete before an open, non-draft review PR exists. Pending Required Checks are reported as `BLOCKED_DELIVERY_CHECKS_PENDING`; the review PR must already exist. Automatic merge is forbidden.
 
 ### Skills
 
@@ -55,7 +55,8 @@ Canonical Skill source is `workflow/skills/`. It contains exactly these task are
 6. `checkpoint` — save and resume Issue-scoped progress.
 7. `self-review` — review every approved contract section and every effective checklist item against evidence.
 8. `pr-review` — review a change independently against its contract and current HEAD.
-9. `delivery` — enforce PR handoff and merged-delivery gates.
+9. `qa` — record current-HEAD functional cases or a reasoned not-applicable result.
+10. `delivery` — enforce PR handoff and merged-delivery gates.
 
 Each Skill MUST have concise YAML frontmatter with `name` and `description`. Detailed shared policy belongs in standards or referenced resources. A Skill MUST state its trigger, expected inputs, ordered procedure, output, uncertainty behavior, and supporting resources where relevant. Skill copies in `dist/**` are generated.
 
@@ -74,9 +75,15 @@ Category C is not implementer failure. An implementation is complete only throug
 
 A self-review has two separate layers: Contract Conformance Review covers the complete approved Implementation Contract, and Reviewer Checklist Review covers every effective Contract/Issue checklist item. The Reviewer Checklist is a concise summary review surface, not a substitute for reading and checking the full approved contract. Both layers bind to the same exact PR HEAD, approved contract comment ID, and approved contract SHA.
 
-Strict Reviewer Checklist H2 authoring validation applies at the write boundary when a new or superseding contract is published. It does not invalidate already-approved historical contract bytes. Historical checklist extraction keeps the canonical-block precedence and narrow-heading fallback; a legacy/non-canonical Reviewer Checklist H2 is also included in contract-conformance coverage, while a strict-canonical H2 may be excluded. Self-review publication reads back the exact named comment after creation and verifies its PR association and body before any pointer update; this check is separate from the subsequent HEAD and contract race revalidation.
+Independent PR review is a separate public artifact bound to the same exact HEAD, contract, contract review units, and checklist. Its required `fresh_context: true` is a reviewer attestation only; runtime verifies the payload and binding but cannot prove who or which session authored it. A/B findings block delivery; D findings do not; each C finding states an explicit `blocking` value. Delivery also requires every independent contract unit to pass and no independent checklist item to fail. The implementation session cannot prepare, edit, validate as its own, or publish this artifact; a new session/subagent or human reviewer performs it.
+
+QA is a separate record bound to current HEAD and contract. A `required` QA record has at least one completed test case with action, expected outcome, result, and concrete evidence. A `not_applicable` record has no cases and a concrete reason. Delivery accepts only all-PASS cases or N/A; failures, untested/pending cases, or stale records block. QA evidence does not substitute for self-review or independent review.
+
+When saving or publishing a new contract, the runtime automatically canonicalizes a recognizable legacy Reviewer Checklist H2 before hashing. It preserves checkbox wording and order plus every byte outside that H2, inserts the required markers and approved introduction, and rejects ambiguous headings, malformed/missing items, or unrelated prose before GitHub mutation. The contract SHA binds the normalized exact bytes. This does not invalidate or rewrite already-approved historical contract bytes; restoration remains byte-for-byte. Historical checklist extraction keeps canonical-block precedence and the narrow-heading fallback; a legacy/non-canonical historical H2 remains included in contract-conformance coverage, while a strict-canonical H2 may be excluded. Self-review publication reads back the exact named comment after creation and verifies its PR association and body before any pointer update; this check is separate from the subsequent HEAD and contract race revalidation.
 
 A current contract section or checklist item with `result: fail` blocks handoff even when Required Checks are green. Contract-section `untested` is valid evidence of an unresolved blocker and blocks handoff. Checklist-level `untested` remains valid, non-blocking evidence by itself; its evidence must identify the unavailable verification or residual uncertainty. A source/diff-reviewable contract section must not be marked `untested` to avoid checking it. Mandatory verification and configured Required Checks remain independent gates.
+
+Final Verification is a machine-generated current-HEAD receipt. It requires a clean local worktree whose HEAD equals the full PR HEAD, runs Issue-routed final hooks, stores only command identities and hashes, and publishes an immutable receipt. A skipped target yields `partial`, and an empty plan yields `empty`; neither satisfies delivery. A passing receipt needs at least one executed command and no skipped target. This gate is independent from Required Checks.
 
 Schema-v1 public self-reviews may be read for diagnostics, but they do not establish full-contract conformance and cannot satisfy handoff. Delivery gives explicit guidance to regenerate and publish a schema-v2 review with the current workflow; historical comments are not rewritten automatically.
 
