@@ -4327,6 +4327,8 @@ class DistributionTests(unittest.TestCase):
 
         self.assertLess(implementation.index("resolve that same-repository remote ref to its full SHA"),
                         implementation.index("asking the host for isolation"))
+        self.assertIn("For an existing binding, do not rerun `start-feature-branch`", implementation)
+        self.assertIn("For a new current-checkout execution only", implementation)
         self.assertIn("exact selected base SHA", implementation)
         self.assertIn("auto` continues in the current-checkout branch flow", implementation)
         self.assertIn("required` stops before edits", implementation)
