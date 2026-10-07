@@ -271,9 +271,10 @@ def _pointer(body: str) -> dict[str, Any] | None:
             break
         if ": " in line:
             key, value = line.split(": ", 1)
+            key = key.strip()
             if key in fields:
                 raise QAError("QA pointer contains duplicate fields")
-            fields[key.strip()] = value.strip()
+            fields[key] = value.strip()
     if set(fields) != {"Comment ID", "SHA-256", "HEAD", "Contract Comment ID", "Contract SHA-256", "Mode", "Result"}:
         raise QAError("QA pointer is malformed")
     try:

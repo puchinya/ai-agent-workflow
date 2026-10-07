@@ -22,6 +22,3 @@ Use only after Issue, contract, Reviewer Checklist, and required design are appr
 
 ## Output and uncertainty
 Report changed paths, commit/push/PR state, exact-HEAD Verification/QA/self-review evidence, independent-review status, Required Check state, unverified checks, and delivery result. Approval of the contract execution authorizes the routine handoff operations above; do not ask for a separate PR-creation approval. Stop on contract conflict that requires a new decision; never broaden unknown scope or infer application type. See the [application profile index](../../standards/application-profiles/README.md).
-
-## Sandbox-external execution
-When the user has already authorized sandbox-external work for the current workflow, use the environment's approved escalation mechanism for the authorized repository operations. Treat that authorization as persistent for the same scope and do not ask again for the same permission. Keep command output limited to verification needs and never expose credentials or secrets.

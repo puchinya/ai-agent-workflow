@@ -35,7 +35,7 @@ from agent_workflow.git import (GitLifecycleError, _remove_cleanup_path, changed
                                 feature_slug, local_head_sha, push_review_branch, require_clean_worktree,
                                 start_feature_branch)
 from agent_workflow.github import GitHub, GitHubError
-from agent_workflow.profile import ProfileError, build_hook_plan, validate_profile
+from agent_workflow.profile import ProfileError, build_hook_plan, load_profile, validate_profile
 from agent_workflow.process import ProcessError, run_command
 from agent_workflow.qa import QAError, prepare_qa, publish_qa, qa_path, validate_public_qa, validate_qa
 from agent_workflow.review import (ReviewError, _extract_items, _with_pointer,
@@ -276,6 +276,18 @@ class ProfileTests(unittest.TestCase):
         result = validate_profile(profile_fixture(), self.repo)
         self.assertEqual(result["components"][0]["stacks"], ["unknown-stack"])
         self.assertEqual(result["components"][0]["application_types"], ["cli"])
+
+    def test_repository_self_host_profile_has_exact_four_global_final_commands(self):
+        expected = [
+            "python -m compileall runtime tools tests",
+            'python -m unittest discover -s tests -p "test_*.py"',
+            "python tools/build_dist.py --check",
+            "python tools/validate_dist.py",
+        ]
+        profile = load_profile(ROOT)
+        self.assertEqual(profile["hooks"]["verify_final"], expected)
+        plan = build_hook_plan(profile, "verify_final", host="linux")
+        self.assertEqual([step.command for step in plan.steps], expected)
 
     def test_schema1_flat_hooks_remain_readable(self):
         value = {"schema_version": 1, "project_name": "legacy", "hooks": {"verify_quick": ["python -V"]}}
@@ -1720,6 +1732,19 @@ class QATests(unittest.TestCase):
         self.assertEqual(public["comment_id"], published["comment_id"])
         self.assertEqual(public["qa"]["head"], self.head)
         self.assertIn("## Agent QA", self.gh.pull_data["body"])
+
+    def test_qa_pointer_rejects_whitespace_normalized_duplicate_before_publish_or_accept(self):
+        path = self._complete_required()
+        self.gh.pull_data["body"] += (
+            "\n## Agent QA\n"
+            "Comment ID: 101\n"
+            " Comment ID: 102\n"
+        )
+        with self.assertRaisesRegex(QAError, "duplicate fields"):
+            publish_qa(self.repo, 1, 2, self.gh, path)
+        self.assertEqual(self.gh.pull_comments, {})
+        with self.assertRaisesRegex(QAError, "duplicate fields"):
+            validate_public_qa(1, 2, self.gh)
 
     def test_not_applicable_requires_reason_and_zero_cases(self):
         path = self._complete_required()
@@ -3496,6 +3521,91 @@ macOS IDE smoke test not run
         self.assertEqual(result["qa"]["case_count"], 1)
         self.assertEqual(result["independent_review"]["blocking_finding_count"], 0)
 
+    def test_pr_pointer_only_body_change_after_evidence_validation_blocks_handoff(self):
+        original_body = (
+            self.pr_body + "\n## Agent QA\n"
+            "Comment ID: 112\nSHA-256: " + "a" * 64 + "\n"
+            "HEAD: " + self.head + "\nContract Comment ID: 123\nContract SHA-256: " + "e" * 64 + "\n"
+            "Mode: required\nResult: pass\n"
+        )
+        self.gh.pull_data["body"] = original_body
+        original_pull = self.gh.pull
+        calls = 0
+
+        def change_pointer_on_final_read(number):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                self.gh.pull_data["body"] = original_body.replace("Comment ID: 112", "Comment ID: 999", 1)
+            return original_pull(number)
+
+        self.gh.pull = change_pointer_on_final_read
+        result = self.run_gate()
+        self.assertFalse(result["passed"])
+        self.assertTrue(any(
+            "PR body changed after evidence validation" in error
+            and "current-evidence-state race" in error
+            for error in result["errors"]
+        ), result["errors"])
+
+    def test_issue_contract_pointer_only_body_change_after_validation_blocks_handoff(self):
+        original_body = (
+            "## Affected components\n- root\n\n## Implementation Contract\n"
+            "Comment ID: 123\nSHA-256: " + "e" * 64 + "\nState: approved\n"
+        )
+        self.gh.issue_data["body"] = original_body
+        original_issue = self.gh.issue
+        calls = 0
+
+        def change_contract_pointer_on_final_read(number):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                self.gh.issue_data["body"] = original_body.replace("Comment ID: 123", "Comment ID: 124", 1)
+            return original_issue(number)
+
+        self.gh.issue = change_contract_pointer_on_final_read
+        result = self.run_gate()
+        self.assertFalse(result["passed"])
+        self.assertTrue(any(
+            "Issue body changed after evidence validation" in error
+            and "current-evidence-state race" in error
+            for error in result["errors"]
+        ), result["errors"])
+
+    def test_pr_state_and_issue_phase_changes_after_validation_block_handoff(self):
+        original_pull = self.gh.pull
+        pull_calls = 0
+
+        def change_draft_on_final_read(number):
+            nonlocal pull_calls
+            pull_calls += 1
+            if pull_calls == 2:
+                self.gh.pull_data["draft"] = True
+            return original_pull(number)
+
+        self.gh.pull = change_draft_on_final_read
+        result = self.run_gate()
+        self.assertFalse(result["passed"])
+        self.assertTrue(any("open/draft/merged state changed" in error for error in result["errors"]))
+
+        self.gh.pull_data["draft"] = False
+        self.gh.pull = original_pull
+        original_issue = self.gh.issue
+        issue_calls = 0
+
+        def remove_phase_on_final_read(number):
+            nonlocal issue_calls
+            issue_calls += 1
+            if issue_calls == 2:
+                self.gh.issue_data["labels"] = []
+            return original_issue(number)
+
+        self.gh.issue = remove_phase_on_final_read
+        result = self.run_gate()
+        self.assertFalse(result["passed"])
+        self.assertTrue(any("phase:review presence changed" in error for error in result["errors"]))
+
     def test_each_new_evidence_gate_blocks_delivery_when_incomplete(self):
         partial = {"receipt": {"head": self.head, "contract_comment_id": 123,
                                "contract_sha256": "e" * 64, "result": "partial", "host": "linux",
@@ -3733,6 +3843,9 @@ macOS IDE smoke test not run
 class DistributionTests(unittest.TestCase):
     def test_generated_packages_carry_handoff_authority_and_runtime_command(self):
         files = build_dist.expected_files()
+        self.assertEqual(len(build_dist.EXPECTED_SKILLS), 10)
+        self.assertEqual(validate_dist.validate(), [])
+        self.assertNotIn("sandbox-external", (ROOT / "README.md").read_text(encoding="utf-8").casefold())
         for host in build_dist.HOSTS:
             with self.subTest(host=host):
                 implementation = files[f"dist/{host}/skills/implementation/SKILL.md"].decode("utf-8")
@@ -3765,6 +3878,8 @@ class DistributionTests(unittest.TestCase):
                 self.assertIn("without another user prompt", self_review)
                 self.assertIn("fresh_context: true", pr_review)
                 self.assertIn("validate-public-qa", qa_skill)
+                self.assertNotIn("sandbox-external", implementation.casefold())
+                self.assertNotIn("sandbox-external", all_skills.casefold())
                 self.assertIn("def publish_qa(", runtime_qa)
                 self.assertIn("def publish_pr_review(", runtime_review)
                 self.assertIn("def ensure_review_pr(", runtime_delivery)

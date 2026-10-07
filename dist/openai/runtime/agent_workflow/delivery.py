@@ -321,6 +321,10 @@ def delivery_check(repo: Path, issue: int, pr: int, gh: GitHub) -> dict[str, Any
     head = pull.get("head", {}).get("sha")
     if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{7,40}", head):
         raise DeliveryError("PR head SHA is missing or malformed")
+    snapshot_issue_body = issue_obj.get("body")
+    snapshot_pr_body = pull.get("body")
+    snapshot_states = (issue_obj.get("state"), pull.get("state"), pull.get("draft"), pull.get("merged"))
+    snapshot_has_review_phase = "phase:review" in labels
     gate_issue = issue_obj
     gate_pull_body = pull.get("body") or ""
     profile = load_profile(repo, allow_uninitialized=True)
@@ -549,7 +553,18 @@ def delivery_check(repo: Path, issue: int, pr: int, gh: GitHub) -> dict[str, Any
             errors.append("Issue or PR state changed while delivery evidence was being validated")
         if final_head != head:
             errors.append("PR HEAD changed while delivery evidence was being validated")
-        if "phase:review" not in _labels(final_issue):
+        if final_pull.get("body") != snapshot_pr_body:
+            errors.append("PR body changed after evidence validation (current-evidence-state race)")
+        if final_issue.get("body") != snapshot_issue_body:
+            errors.append("Issue body changed after evidence validation (current-evidence-state race)")
+        final_states = (final_issue.get("state"), final_pull.get("state"),
+                        final_pull.get("draft"), final_pull.get("merged"))
+        if final_states != snapshot_states:
+            errors.append("Issue/PR open/draft/merged state changed after evidence validation")
+        final_has_review_phase = "phase:review" in _labels(final_issue)
+        if final_has_review_phase != snapshot_has_review_phase:
+            errors.append("Issue phase:review presence changed after evidence validation")
+        if not final_has_review_phase:
             errors.append("Issue phase changed while delivery evidence was being validated")
         if not re.search(rf"(?im)^\s*closes\s+#{issue}\b", final_body):
             errors.append("final PR body no longer contains Closes #N")

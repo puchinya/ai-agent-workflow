@@ -20,9 +20,6 @@ Schema-v2 self-review binds the complete approved contract comment ID/SHA and ea
 
 `verify-final` requires a clean worktree and local HEAD identical to PR HEAD. Its immutable receipt stores command hashes and execution identities, never raw commands or output; skipped and empty plans are visible but do not pass. QA records required test cases or a concrete N/A reason and passes only when all cases pass or N/A applies. Independent review binds the same HEAD, contract units, and checklist, requires a `fresh_context: true` reviewer attestation, and blocks for any non-passing contract unit, checklist failure, or blocking A/B/C finding. Runtime checks the attestation but cannot prove reviewer provenance. Delivery evaluates Final Verification, self-review, QA, and Independent Review before Required Checks.
 
-When the user has authorized sandbox-external work, the [implementation Skill](workflow/skills/implementation/SKILL.md) directs the workflow to use the environment's approved escalation route for the authorized operations, without asking again for the same permission.
-
-
 ## Development
 
 Python 3.10+ is required; runtime code uses the standard library. Install the local CLI for development with `python -m pip install -e .`. Build generated packages and validate them with:
