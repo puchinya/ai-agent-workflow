@@ -337,18 +337,21 @@ def push_review_branch(repo: Path, profile: dict[str, Any], issue_number: int,
         if local_branch is None:
             raise GitLifecycleError("HEAD must be attached to the Issue feature branch")
         _validate_ref(repo, local_branch, "current branch")
-        if local_branch == default_base_ref:
-            raise GitLifecycleError("refusing to push the repository default branch")
-        if not is_configured_issue_branch(profile, issue_number, local_branch):
-            raise GitLifecycleError("current branch is not the configured feature branch for this Issue")
         target_branch = local_branch
     else:
         _validate_ref(repo, publication_branch, "canonical publication branch")
-        if not is_configured_issue_branch(profile, issue_number, publication_branch):
-            raise GitLifecycleError("canonical publication branch is not configured for this Issue")
         if local_branch is not None:
             _validate_ref(repo, local_branch, "current branch")
         target_branch = publication_branch
+    if target_branch == default_base_ref:
+        raise GitLifecycleError("refusing to push the repository default branch")
+    if target_branch == base_ref:
+        raise GitLifecycleError("refusing to publish the selected base branch as the PR head")
+    if publication_branch is None:
+        if not is_configured_issue_branch(profile, issue_number, target_branch):
+            raise GitLifecycleError("current branch is not the configured feature branch for this Issue")
+    elif not is_configured_issue_branch(profile, issue_number, target_branch):
+        raise GitLifecycleError("canonical publication branch is not configured for this Issue")
     if (_origin_repository(repo).casefold() != repository.casefold()
             or _origin_repository(repo, push=True).casefold() != repository.casefold()):
         raise GitLifecycleError("origin repository does not match the owning Issue repository")

@@ -917,6 +917,49 @@ class GitLifecycleTests(unittest.TestCase):
         self.assertEqual(self.git(self.repo, "branch", "--show-current"), "worktree-host")
         self.assertEqual(second["head_branch"], canonical)
 
+    def test_isolated_review_push_rejects_canonical_branch_equal_to_repository_default(self):
+        canonical = "feature/7-canonical-branch"
+        (self.repo / "isolated-default.txt").write_text("isolated\n", encoding="utf-8")
+        self.git(self.repo, "add", "isolated-default.txt")
+        self.git(self.repo, "commit", "-m", "isolated default branch guard")
+        self.git(self.repo, "switch", "--detach", "HEAD")
+        real_invoke = __import__("agent_workflow.git", fromlist=["_invoke"])._invoke
+        pushes = []
+
+        def track_push(repo, args, **kwargs):
+            if args[0] == "push":
+                pushes.append(list(args))
+            return real_invoke(repo, args, **kwargs)
+
+        with patch("agent_workflow.git._origin_repository", return_value="owner/repo"), \
+             patch("agent_workflow.git._invoke", side_effect=track_push):
+            with self.assertRaisesRegex(GitLifecycleError, "repository default branch"):
+                push_review_branch(
+                    self.repo, self.profile(), 7, "owner/repo", "main", canonical,
+                    publication_branch=canonical,
+                )
+        self.assertEqual(pushes, [])
+
+    def test_review_push_rejects_publication_branch_equal_to_selected_base(self):
+        canonical = "feature/7-canonical-branch"
+        self.git(self.repo, "switch", "-c", canonical)
+        real_invoke = __import__("agent_workflow.git", fromlist=["_invoke"])._invoke
+        pushes = []
+
+        def track_push(repo, args, **kwargs):
+            if args[0] == "push":
+                pushes.append(list(args))
+            return real_invoke(repo, args, **kwargs)
+
+        with patch("agent_workflow.git._origin_repository", return_value="owner/repo"), \
+             patch("agent_workflow.git._invoke", side_effect=track_push):
+            with self.assertRaisesRegex(GitLifecycleError, "selected base branch as the PR head"):
+                push_review_branch(
+                    self.repo, self.profile(), 7, "owner/repo", canonical, "main",
+                    publication_branch=canonical,
+                )
+        self.assertEqual(pushes, [])
+
     def test_bound_frozen_base_survives_remote_base_advancement(self):
         frozen_base = self.git(self.repo, "rev-parse", "main")
         self.git(self.repo, "switch", "-c", "advance-base", "main")
