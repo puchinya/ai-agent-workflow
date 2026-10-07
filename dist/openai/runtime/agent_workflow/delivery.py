@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .context import affected_components
+from .execution import ExecutionError, load_execution
 from .github import GitHub, GitHubError
 from .git import GitLifecycleError, push_review_branch
 from .profile import ProfileError, load_profile
@@ -166,7 +167,22 @@ def ensure_review_pr(repo: Path, issue: int, body: str, gh: GitHub, title: str |
         raise DeliveryError("PR title must be a non-empty single-line value")
 
     try:
-        pushed = push_review_branch(repo, profile, issue, gh.repo, selected_base, default_base)
+        binding = load_execution(repo, issue, gh)
+    except (ExecutionError, GitLifecycleError, GitHubError) as exc:
+        raise DeliveryError(str(exc)) from exc
+    publication_branch = (
+        binding["canonical_branch"]
+        if binding is not None and binding["mode"] == "isolated"
+        else None
+    )
+    try:
+        if publication_branch is None:
+            pushed = push_review_branch(repo, profile, issue, gh.repo, selected_base, default_base)
+        else:
+            pushed = push_review_branch(
+                repo, profile, issue, gh.repo, selected_base, default_base,
+                publication_branch=publication_branch,
+            )
     except GitLifecycleError as exc:
         raise DeliveryError(str(exc)) from exc
     head_branch, head_sha = pushed["head_branch"], pushed["head_sha"]

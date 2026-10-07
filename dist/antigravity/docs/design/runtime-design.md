@@ -27,6 +27,7 @@ The CLI must be easy to run from a consumer checkout, fakeable in tests, and saf
 | Stacked branch creation is fail-closed | `git.py` fetches the selected same-repository remote branch, verifies an optional expected SHA before switching, and never rebases existing targets. |
 | Hook diagnostics are safe and temporary | `process.py` keeps output silent by default and emits only a redacted bounded tail from temporary capture files on diagnostic failure. |
 | Milestones and branches follow consumer policy | `versioning.py` resolves an approved Issue target or configured fallback; `git.py` owns only argv-based local Git lifecycle; remote metadata and milestone mutations remain in `github.py`. |
+| Workspace policy is enforced at execution start | `execution.py` verifies the approved Contract and atomically binds an Issue to a selected workspace/base; `git.py` reports Git metadata and publishes an isolated execution to its frozen canonical branch. The host owns creation, access control, resume, and cleanup. |
 
 ## Architecture
 
@@ -45,9 +46,15 @@ The dependency direction is CLI -> domain modules -> injected GitHub/process bou
 7. Commit local state with atomic replacement only after remote verification, or keep old verified bytes on failure.
 8. Clean temporary files in `finally` paths and print bounded diagnostics. Hook diagnostics stay silent on success and emit only a redacted combined tail of at most 16 KiB on failure. Post-switch failures preserve and report the switched branch.
 
+### Workspace binding and publication
+
+The implementation Skill resolves the host capability first. A managed linked worktree is reused or entered by the host; an allowed current-checkout fallback uses the existing feature-branch lifecycle. Before source edits, `prepare-implementation` verifies the Issue, exact approved Contract pointer, clean current workspace, base ref/SHA, initial HEAD, and execution mode. A local binding under `.agent-state/issues/N/execution.json` is atomic and ignored. Reuse after commits retains the frozen base and canonical branch. Explicit Contract supersession changes only its bound comment ID/SHA.
+
+`execution.py` receives a GitHub boundary and calls Git helpers; it owns no raw subprocess or GitHub transport. `git.py` detects a linked worktree by comparing Git's per-worktree git directory with its common git directory. For isolated mode it leaves the local host branch or detached HEAD unchanged, but pushes HEAD to the binding's canonical branch using the existing non-force and remote-readback protections. Current mode and no-binding calls retain the existing configured-feature-branch requirement. Neither module creates or cleans up worktrees.
+
 ### Review-PR establishment sequence
 
-The CLI reads the required body file and delegates to `delivery.ensure_review_pr`. Delivery validates body structure, repository/Issue/default/base identity, and the requested title, then asks `git.py` to verify clean worktree, current Issue feature branch, one same-repository origin fetch and push URL, no mirror-push configuration, non-default branch, selected-base ancestry, and a positive ahead count. Only after those checks does `git.py` push the current branch without force or tag following and verify origin's branch SHA against local HEAD. Delivery then queries exact base/head candidates through `github.py`, fails closed on duplicates, drafts, forks, or conflicting Issue closures, and creates or updates one compatible PR. Finally it replaces phase labels with exactly `phase:review`, preserving non-phase labels, and verifies fresh Issue and PR state. If label replacement/readback fails, the error includes the established PR identity; retries reuse that PR. No step merges the PR or weakens later self-review/Required Check gates.
+The CLI reads the required body file and delegates to `delivery.ensure_review_pr`. Delivery validates body structure, repository/Issue/default/base identity, and the requested title, then loads the current execution binding. `git.py` verifies clean worktree, origin identity, no mirror-push configuration, selected-base ancestry, and a positive ahead count. With isolated mode it pushes HEAD to the frozen canonical Issue branch without changing the host-owned local branch; current mode and no binding retain the attached configured-feature-branch check. Delivery uses the published canonical head branch for exact PR lookup/create/reuse, then replaces phase labels with exactly `phase:review`, preserving non-phase labels, and verifies fresh Issue and PR state. A failed phase transition retains PR identity for retry. No step merges the PR or weakens later self-review/Required Check gates.
 
 ## Failure handling
 

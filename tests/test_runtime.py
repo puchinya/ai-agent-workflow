@@ -30,10 +30,12 @@ from agent_workflow.cli import (_ensure_milestone, _init_project, _start_feature
                                 main as cli_main)
 from agent_workflow.delivery import (DeliveryError, delivery_check, ensure_review_pr,
                                      finalize_merged_issue)
+from agent_workflow.execution import (ExecutionError, execution_path, execution_status,
+                                      load_execution, prepare_implementation)
 from agent_workflow.documents import resolve_document_impact, validate_markdown_file, validate_docs
 from agent_workflow.git import (GitLifecycleError, _remove_cleanup_path, changed_document_paths,
                                 feature_slug, local_head_sha, push_review_branch, require_clean_worktree,
-                                start_feature_branch)
+                                start_feature_branch, workspace_identity)
 from agent_workflow.github import GitHub, GitHubError
 from agent_workflow.profile import ProfileError, build_hook_plan, load_profile, validate_profile
 from agent_workflow.process import ProcessError, run_command
@@ -277,6 +279,17 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(result["components"][0]["stacks"], ["unknown-stack"])
         self.assertEqual(result["components"][0]["application_types"], ["cli"])
 
+    def test_workspace_policy_defaults_strictly_and_schema1_is_unchanged(self):
+        value = profile_fixture()
+        self.assertEqual(validate_profile(value, self.repo)["workspace"], {"isolation": "auto"})
+        for workspace in ({"isolation": "sometimes"}, {"isolation": "auto", "root": "/tmp/x"}, []):
+            value = profile_fixture()
+            value["workspace"] = workspace
+            with self.subTest(workspace=workspace), self.assertRaises(ProfileError):
+                validate_profile(value, self.repo)
+        legacy = {"schema_version": 1, "workspace": {"legacy": True}}
+        self.assertEqual(validate_profile(legacy, self.repo), legacy)
+
     def test_repository_self_host_profile_has_exact_four_global_final_commands(self):
         expected = [
             "python -m compileall runtime tools tests",
@@ -444,6 +457,7 @@ class ProfileTests(unittest.TestCase):
             self.assertEqual(profile["hooks"]["branch_switch"], [])
             self.assertEqual(profile["milestones"], {"mode": "auto", "version_source": "auto"})
             self.assertEqual(profile["branch"]["cleanup_on_switch"], [])
+            self.assertEqual(profile["workspace"], {"isolation": "auto"})
             self.assertIsNotNone(result["warning"])
         finally:
             import shutil
@@ -764,6 +778,19 @@ class GitLifecycleTests(unittest.TestCase):
         with self.assertRaisesRegex(GitLifecycleError, "worktree must be clean"):
             require_clean_worktree(self.repo)
 
+    def test_workspace_identity_uses_git_metadata_for_main_linked_and_detached(self):
+        main = workspace_identity(self.repo)
+        self.assertFalse(main.linked_worktree)
+        self.assertEqual(main.branch, "main")
+        linked = self.root / "linked-identity"
+        self.git(self.repo, "worktree", "add", "--detach", str(linked), "HEAD")
+        self.assertTrue((linked / ".git").is_file())
+        identity = workspace_identity(linked)
+        self.assertTrue(identity.linked_worktree)
+        self.assertIsNone(identity.branch)
+        self.assertEqual(identity.root, linked.resolve())
+        self.assertEqual(identity.common_git_dir, main.common_git_dir)
+
     def test_cli_parses_both_lifecycle_commands(self):
         milestone = build_parser().parse_args(["ensure-milestone", "7", "--target-version", "0.4.0",
                                                 "--repo", str(self.repo)])
@@ -780,6 +807,14 @@ class GitLifecycleTests(unittest.TestCase):
                                             "--base-ref", "release/v2", "--title", "Review title"])
         self.assertEqual((ensure.command, ensure.issue, ensure.body_file, ensure.base_ref, ensure.title),
                          ("ensure-review-pr", 7, Path("pr.md"), "release/v2", "Review title"))
+        implementation = build_parser().parse_args([
+            "prepare-implementation", "7", "--mode", "isolated", "--base-ref", "release/v2",
+            "--expected-base-sha", "a" * 40, "--supersede",
+        ])
+        self.assertEqual((implementation.command, implementation.issue, implementation.mode,
+                          implementation.base_ref, implementation.expected_base_sha,
+                          implementation.supersede),
+                         ("prepare-implementation", 7, "isolated", "release/v2", "a" * 40, True))
 
     def test_cli_parses_final_verification_qa_and_independent_review_commands(self):
         final = build_parser().parse_args(["verify-final", "7", "8", "--runtime-host", "linux",
@@ -860,6 +895,57 @@ class GitLifecycleTests(unittest.TestCase):
         self.assertEqual(first["head_sha"], expected_head)
         self.assertEqual(first["remote_head"], expected_head)
         self.assertEqual(self._remote_sha("feature/7-review-branch"), expected_head)
+
+    def test_isolated_review_push_uses_frozen_canonical_branch_from_detached_or_host_branch(self):
+        canonical = "feature/7-canonical-branch"
+        (self.repo / "isolated.txt").write_text("isolated\n", encoding="utf-8")
+        self.git(self.repo, "add", "isolated.txt")
+        self.git(self.repo, "commit", "-m", "isolated change")
+        self.git(self.repo, "switch", "--detach", "HEAD")
+        before = self.git(self.repo, "rev-parse", "HEAD")
+        with patch("agent_workflow.git._origin_repository", return_value="owner/repo"):
+            result = push_review_branch(self.repo, self.profile(), 7, "owner/repo", "main", "main",
+                                        publication_branch=canonical)
+        self.assertEqual(self.git(self.repo, "branch", "--show-current"), "")
+        self.assertEqual(result["head_branch"], canonical)
+        self.assertEqual(self._remote_sha(canonical), before)
+
+        self.git(self.repo, "switch", "-c", "worktree-host")
+        with patch("agent_workflow.git._origin_repository", return_value="owner/repo"):
+            second = push_review_branch(self.repo, self.profile(), 7, "owner/repo", "main", "main",
+                                        publication_branch=canonical)
+        self.assertEqual(self.git(self.repo, "branch", "--show-current"), "worktree-host")
+        self.assertEqual(second["head_branch"], canonical)
+
+    def test_isolated_review_push_rejects_diverged_canonical_remote_without_force(self):
+        canonical = "feature/7-canonical-branch"
+        # Publish a remote commit based on main, then create a different local commit from main.
+        self.git(self.repo, "branch", canonical, "main")
+        self.git(self.repo, "switch", canonical)
+        (self.repo / "remote.txt").write_text("remote\n", encoding="utf-8")
+        self.git(self.repo, "add", "remote.txt")
+        self.git(self.repo, "commit", "-m", "remote branch change")
+        self.git(self.repo, "push", "origin", canonical)
+        self.git(self.repo, "switch", "main")
+        (self.repo / "local.txt").write_text("local\n", encoding="utf-8")
+        self.git(self.repo, "add", "local.txt")
+        self.git(self.repo, "commit", "-m", "isolated local change")
+        real_invoke = __import__("agent_workflow.git", fromlist=["_invoke"])._invoke
+        pushes = []
+
+        def track_push(repo, args, **kwargs):
+            if args[0] == "push":
+                pushes.append(list(args))
+            return real_invoke(repo, args, **kwargs)
+
+        with patch("agent_workflow.git._origin_repository", return_value="owner/repo"), \
+             patch("agent_workflow.git._invoke", side_effect=track_push):
+            with self.assertRaisesRegex(GitLifecycleError, "Git push failed"):
+                push_review_branch(self.repo, self.profile(), 7, "owner/repo", "main", "main",
+                                   publication_branch=canonical)
+        self.assertEqual(len(pushes), 1)
+        self.assertNotIn("--force", pushes[0])
+        self.assertNotIn("--force-with-lease", pushes[0])
 
     def test_review_push_origin_identity_requires_one_parseable_fetch_or_push_url(self):
         git_module = __import__("agent_workflow.git", fromlist=["_origin_repository"])
@@ -1139,6 +1225,189 @@ class GitLifecycleTests(unittest.TestCase):
                 _start_feature_branch(args)
         start.assert_not_called()
         self.assertEqual(self.git(self.repo, "branch", "--show-current"), "main")
+
+
+class ExecutionBindingTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.repo = self.root / "repo"
+        self.remote = self.root / "remote.git"
+        self.repo.mkdir()
+        subprocess.run(["git", "init", "--bare", "-q", str(self.remote)], check=True)
+        subprocess.run(["git", "init", "-q", "-b", "main", str(self.repo)], check=True)
+        self.git(self.repo, "config", "user.name", "Test")
+        self.git(self.repo, "config", "user.email", "test@example.invalid")
+        (self.repo / "README.md").write_text("base\n", encoding="utf-8")
+        (self.repo / ".gitignore").write_text(".agent-state/\n", encoding="utf-8")
+        (self.repo / ".agent").mkdir()
+        self.write_profile(self.repo, "auto")
+        self.git(self.repo, "add", "README.md", ".gitignore", ".agent/project.json")
+        self.git(self.repo, "commit", "-m", "base")
+        self.git(self.repo, "remote", "add", "origin", str(self.remote))
+        self.git(self.repo, "push", "-u", "origin", "main")
+        self.github = FakeGitHub()
+        self.payload, self.published, _surface = install_review_contract(self.repo, self.github)
+        (self.repo / "approved-contract.md").unlink()
+        self.linked = self.root / "implementation-worktree"
+        self.git(self.repo, "worktree", "add", "-b", "worktree-issue-1", str(self.linked), "main")
+        self.base_sha = self.git(self.repo, "rev-parse", "main")
+
+    def git(self, repo, *args):
+        return subprocess.run(["git", *args], cwd=repo, check=True, text=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout.strip()
+
+    def write_profile(self, repo: Path, isolation: str):
+        data = {
+            "schema_version": 2, "initialized": True, "project_name": "execution-test",
+            "workspace": {"isolation": isolation},
+            "components": [{"id": "root", "roots": ["."], "stacks": [],
+                            "application_types": ["generic"], "targets": [], "hooks": {}}],
+            "branch": {"prefix": "feature", "max_slug_length": 48},
+            "milestones": {"mode": "auto", "version_source": "auto"}, "hooks": {},
+        }
+        (repo / ".agent/project.json").write_text(json.dumps(data), encoding="utf-8")
+
+    def prepare(self, repo=None, *, mode="isolated", **kwargs):
+        with patch("agent_workflow.execution.origin_repository", return_value="owner/repo"):
+            return prepare_implementation(repo or self.linked, 1, self.github, mode=mode, **kwargs)
+
+    def test_initial_isolated_binding_freezes_contract_base_and_canonical_branch(self):
+        self.assertTrue(workspace_identity(self.linked).linked_worktree)
+        result = self.prepare(expected_base_sha=self.base_sha)
+        self.assertFalse(result["reused"])
+        self.assertEqual(result["mode"], "isolated")
+        self.assertEqual(result["base_ref"], "main")
+        self.assertEqual(result["base_sha"], self.base_sha)
+        self.assertEqual(result["initial_head"], self.base_sha)
+        self.assertEqual(result["canonical_branch"], "feature/1-issue-title")
+        self.assertEqual(result["contract_comment_id"], self.published["comment_id"])
+        self.assertEqual(result["contract_sha256"], self.published["sha256"])
+        self.assertTrue(execution_path(self.linked, 1).is_file())
+        record = json.loads(execution_path(self.linked, 1).read_text(encoding="utf-8"))
+        self.assertEqual(set(record), {
+            "schema_version", "issue", "repository", "contract_comment_id", "contract_sha256",
+            "workspace_root", "mode", "base_ref", "base_sha", "initial_head", "canonical_branch",
+        })
+        self.assertEqual(self.git(self.linked, "status", "--porcelain"), "")
+        with patch("agent_workflow.execution.origin_repository", return_value="owner/repo"):
+            self.assertEqual(execution_status(self.linked, 1, self.github)["current"], True)
+
+    def test_reuse_after_commits_and_status_expose_no_workspace_path(self):
+        original = self.prepare()
+        (self.linked / "change.txt").write_text("implementation\n", encoding="utf-8")
+        self.git(self.linked, "add", "change.txt")
+        self.git(self.linked, "commit", "-m", "implementation commit")
+        with patch("agent_workflow.execution.origin_repository", return_value="owner/repo"):
+            reused = prepare_implementation(self.linked, 1, self.github, mode="isolated")
+            loaded = load_execution(self.linked, 1, self.github)
+            status = execution_status(self.linked, 1, self.github)
+        self.assertTrue(reused["reused"])
+        self.assertEqual(reused["initial_head"], original["initial_head"])
+        self.assertEqual(loaded["canonical_branch"], original["canonical_branch"])
+        self.assertEqual(status["canonical_branch"], "feature/1-issue-title")
+        self.assertNotIn("workspace_root", status)
+
+    def test_stale_contract_requires_explicit_supersede_and_only_refreshes_contract_identity(self):
+        original = self.prepare()
+        new_source = self.root / "updated-contract.md"
+        new_source.write_bytes(self.payload.replace(b"Review the complete contract.", b"Review the updated contract."))
+        from agent_workflow.contracts import publish_contract as publish_updated
+        updated = publish_updated(self.linked, 1, self.github, new_source, supersede=True)
+        with patch("agent_workflow.execution.origin_repository", return_value="owner/repo"):
+            with self.assertRaisesRegex(ExecutionError, "--supersede"):
+                prepare_implementation(self.linked, 1, self.github, mode="isolated")
+            result = prepare_implementation(self.linked, 1, self.github, mode="isolated", supersede=True)
+        self.assertTrue(result["reused"])
+        self.assertTrue(result["superseded"])
+        for field in ("workspace_root", "mode", "base_ref", "base_sha", "initial_head", "canonical_branch"):
+            self.assertEqual(result[field], original[field])
+        self.assertEqual(result["contract_comment_id"], updated["comment_id"])
+        self.assertEqual(result["contract_sha256"], updated["sha256"])
+
+    def test_isolation_dirty_base_policy_and_current_mode_fail_closed(self):
+        with self.assertRaisesRegex(ExecutionError, "linked Git worktree"):
+            self.prepare(repo=self.repo)
+        with self.assertRaisesRegex(ExecutionError, "expected base SHA"):
+            self.prepare(expected_base_sha="0" * 40)
+        self.assertFalse(execution_path(self.linked, 1).exists())
+
+        (self.linked / "dirty.txt").write_text("dirty\n", encoding="utf-8")
+        with self.assertRaisesRegex(ExecutionError, "worktree must be clean"):
+            self.prepare()
+        (self.linked / "dirty.txt").unlink()
+        self.write_profile(self.repo, "required")
+        # The linked worktree reads the committed profile; a main-checkout profile edit is not its state.
+        self.write_profile(self.linked, "required")
+        with self.assertRaisesRegex(ExecutionError, "requires host-managed isolated mode"):
+            self.prepare(mode="current")
+        self.write_profile(self.linked, "disabled")
+        with self.assertRaisesRegex(ExecutionError, "requires current mode"):
+            self.prepare(mode="isolated")
+
+        current_branch = "feature/1-issue-title"
+        self.git(self.repo, "branch", current_branch, "main")
+        self.git(self.repo, "switch", current_branch)
+        self.write_profile(self.repo, "auto")
+        (self.repo / ".agent/project.json").write_bytes((self.linked / ".agent/project.json").read_bytes())
+        # Restore the tracked profile to auto and keep current mode at the exact base.
+        self.git(self.repo, "checkout", "HEAD", "--", ".agent/project.json")
+        self.assertEqual(self.git(self.repo, "status", "--porcelain"), "")
+        with patch("agent_workflow.execution.origin_repository", return_value="owner/repo"):
+            current = prepare_implementation(self.repo, 1, self.github, mode="current")
+        self.assertEqual(current["canonical_branch"], current_branch)
+        self.assertEqual(current["base_sha"], self.base_sha)
+
+    def test_binding_cannot_be_copied_to_another_workspace_or_issue(self):
+        self.prepare()
+        second = self.root / "second-worktree"
+        self.git(self.repo, "worktree", "add", "--detach", str(second), "main")
+        copied_path = execution_path(second, 1)
+        copied_path.parent.mkdir(parents=True)
+        copied_path.write_bytes(execution_path(self.linked, 1).read_bytes())
+        with patch("agent_workflow.execution.origin_repository", return_value="owner/repo"):
+            with self.assertRaisesRegex(ExecutionError, "different workspace"):
+                prepare_implementation(second, 1, self.github, mode="isolated")
+        record_path = execution_path(self.linked, 1)
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        record["issue"] = 2
+        record_path.write_text(json.dumps(record), encoding="utf-8")
+        with patch("agent_workflow.execution.origin_repository", return_value="owner/repo"):
+            with self.assertRaisesRegex(ExecutionError, "different Issue"):
+                prepare_implementation(self.linked, 1, self.github, mode="isolated")
+
+    def test_new_execution_rejects_a_worktree_behind_the_selected_remote_base(self):
+        (self.repo / "base-advance.txt").write_text("advanced base\n", encoding="utf-8")
+        self.git(self.repo, "add", "base-advance.txt")
+        self.git(self.repo, "commit", "-m", "advance main")
+        self.git(self.repo, "push", "origin", "main")
+        with patch("agent_workflow.execution.origin_repository", return_value="owner/repo"):
+            with self.assertRaisesRegex(ExecutionError, "HEAD does not match the selected base"):
+                prepare_implementation(self.linked, 1, self.github, mode="isolated")
+        self.assertFalse(execution_path(self.linked, 1).exists())
+
+    def test_current_mode_requires_configured_issue_branch_and_exact_base(self):
+        with patch("agent_workflow.execution.origin_repository", return_value="owner/repo"):
+            with self.assertRaisesRegex(ExecutionError, "configured Issue feature branch"):
+                prepare_implementation(self.repo, 1, self.github, mode="current")
+        self.assertFalse(execution_path(self.repo, 1).exists())
+
+    def test_agent_context_reports_workspace_policy_and_bounded_execution_status(self):
+        self.assertFalse(execution_path(self.linked, 1).exists())
+        with patch("agent_workflow.context._pull_requests", return_value=[]), \
+             patch("agent_workflow.execution.origin_repository", return_value="owner/repo"), \
+             patch("agent_workflow.context._git", return_value="a" * 40):
+            before = build_context(self.linked, 1, self.github)
+        self.assertEqual(before["workspace"], {"isolation": "auto", "execution": None})
+        self.assertFalse(execution_path(self.linked, 1).exists())
+        self.prepare()
+        with patch("agent_workflow.context._pull_requests", return_value=[]), \
+             patch("agent_workflow.execution.origin_repository", return_value="owner/repo"), \
+             patch("agent_workflow.context._git", return_value="a" * 40):
+            after = build_context(self.linked, 1, self.github)
+        self.assertEqual(after["workspace"]["execution"]["mode"], "isolated")
+        self.assertNotIn("workspace_root", after["workspace"]["execution"])
 
 
 class DocumentTests(unittest.TestCase):
@@ -1634,6 +1903,16 @@ class VerificationTests(unittest.TestCase):
         published = self.gh.pull_comments[result["comment_id"]]["body"]
         self.assertNotIn(python_shell_command("pass"), published)
         self.assertEqual(receipt["contract_comment_id"], result["contract_comment_id"])
+
+    def test_final_verification_ignores_dirty_unrelated_linked_worktree(self):
+        sibling = self.repo.parent / f"{self.repo.name}-unrelated-worktree"
+        import shutil
+        self.addCleanup(lambda: shutil.rmtree(sibling, ignore_errors=True))
+        self._git("worktree", "add", "--detach", str(sibling), self.head)
+        (sibling / "local-only.txt").write_text("unrelated dirty state\n", encoding="utf-8")
+        result = verify_final(self.repo, 1, 2, self.gh, runtime_host="linux")
+        self.assertEqual(result["result"], "pass")
+        self.assertEqual(result["head"], self.head)
 
     def test_skips_and_empty_plans_are_public_but_never_pass(self):
         profile = json.loads((self.repo / ".agent/project.json").read_text(encoding="utf-8"))
@@ -3322,6 +3601,22 @@ macOS IDE smoke test not run
         self.assertEqual(len(self.gh.created_prs), 1)
         self.assertEqual(len(self.gh.label_replacements), 1)
         push.assert_called_once()
+
+    def test_ensure_review_pr_uses_isolated_binding_canonical_head(self):
+        canonical = "feature/1-issue-title"
+        pushed = {"head_sha": self.head, "head_branch": canonical, "base_branch": "main",
+                  "base_sha": "a" * 40, "ahead_by": 1, "pushed": True,
+                  "remote_head": self.head, "remote_head_verified": True}
+        with patch("agent_workflow.delivery.load_execution", return_value={
+                "mode": "isolated", "canonical_branch": canonical}) as binding, \
+             patch("agent_workflow.delivery.push_review_branch", return_value=pushed) as push:
+            result = ensure_review_pr(self.repo, 1, self.pr_body, self.gh)
+        binding.assert_called_once_with(self.repo, 1, self.gh)
+        push.assert_called_once_with(self.repo, load_profile(self.repo), 1, self.gh.repo,
+                                     "main", "main", publication_branch=canonical)
+        self.assertTrue(result["success"], result)
+        self.assertEqual(result["head_branch"], canonical)
+        self.assertEqual(self.gh.created_prs[0]["head"]["ref"], canonical)
 
     def test_ensure_review_pr_retry_reuses_pr_and_preserves_labels(self):
         self.gh.issue_data["labels"] = [{"name": "area:runtime"}, {"name": "phase:ready"},

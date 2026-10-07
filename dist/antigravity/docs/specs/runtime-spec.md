@@ -13,7 +13,7 @@ Define observable behavior for the Python 3.10+ command `python -m agent_workflo
 
 ## Scope
 
-The CLI MUST provide `init-project`, `agent-context`, `validate-docs`, `run-hook`, `ensure-milestone`, `start-feature-branch`, `ensure-review-pr`, `verify-final`, `validate-public-final-verification`, `save-implementation-contract`, `publish-implementation-contract`, `restore-implementation-contract`, `verify-implementation-contract`, `prepare-self-review`, `validate-self-review`, `publish-self-review`, `validate-public-review`, `prepare-qa`, `validate-qa`, `publish-qa`, `validate-public-qa`, `prepare-pr-review`, `validate-pr-review`, `publish-pr-review`, `validate-public-pr-review`, `delivery-check`, and `finalize-merged-issue`.
+The CLI MUST provide `init-project`, `agent-context`, `validate-docs`, `run-hook`, `ensure-milestone`, `start-feature-branch`, `prepare-implementation`, `ensure-review-pr`, `verify-final`, `validate-public-final-verification`, `save-implementation-contract`, `publish-implementation-contract`, `restore-implementation-contract`, `verify-implementation-contract`, `prepare-self-review`, `validate-self-review`, `publish-self-review`, `validate-public-review`, `prepare-qa`, `validate-qa`, `publish-qa`, `validate-public-qa`, `prepare-pr-review`, `validate-pr-review`, `publish-pr-review`, `validate-public-pr-review`, `delivery-check`, and `finalize-merged-issue`.
 
 The commands `update-template` and `refresh-template-manifest` are forbidden. No module other than `github.py` may invoke `gh` directly. Every GitHub mutation uses JSON input files or structured fields, never shell interpolation of user payloads.
 
@@ -27,7 +27,15 @@ GitHub comment, event, check-run, commit-status, and milestone collections MUST 
 
 Schema 2 separates components, stacks, application types, targets, and invocation-time runtime host. Application types are exactly `generic`, `desktop-gui`, `cli`, `mobile`, `server`, `embedded`, and `library`; `generic` does not select a profile document. Types are never inferred. Explicit unknown non-empty stack IDs remain opaque. Component roots are safe repository-relative paths; components and targets have unique IDs in their scope; hook values are arrays of non-empty trusted command strings. Target `runnable_on` contains only `any`, `windows`, `macos`, or `linux`. Optional target `requirements` has exactly three required arrays: `architectures`, `tools`, `capabilities`.
 
-`init-project` deterministically writes a validated root component with root `.`, detected or explicitly supplied stacks, generic unless explicitly selected, and no targets unless requested. New targets default to `runnable_on: ["any"]`. Branch and milestone policy are objects; new projects use branch prefix `feature`, slug limit 48, empty `cleanup_on_switch` and `required_checks` arrays, and milestones `{ "mode": "auto", "version_source": "auto" }`. `cargo clean` is added only to the global `branch_switch` hook when Rust is detected and `--cargo-clean on` is explicit. Initializing a generic component emits a warning.
+`init-project` deterministically writes a validated root component with root `.`, detected or explicitly supplied stacks, generic unless explicitly selected, and no targets unless requested. New targets default to `runnable_on: ["any"]`. Branch, workspace, and milestone policy are objects; new projects use branch prefix `feature`, slug limit 48, empty `cleanup_on_switch` and `required_checks` arrays, workspace isolation `auto`, and milestones `{ "mode": "auto", "version_source": "auto" }`. `cargo clean` is added only to the global `branch_switch` hook when Rust is detected and `--cargo-clean on` is explicit. Initializing a generic component emits a warning.
+
+Schema 2 accepts exactly `workspace: {"isolation": "auto"|"required"|"disabled"}`. A missing workspace object normalizes in memory to `{"isolation":"auto"}` and is never written back during validation. Unknown workspace fields, non-object values, and unknown isolation values fail validation. Schema 1 remains unchanged and does not gain automatic workspace isolation.
+
+- `auto` asks the active host surface to establish or reuse a host-managed isolated worktree before edits. If that capability is unavailable, the Skill uses the existing current-checkout flow.
+- `required` blocks before source edits if the host cannot establish or reuse managed isolation.
+- `disabled` does not request new isolation. A session already running in a worktree remains there.
+
+The runtime never creates, deletes, repairs, unlocks, or prunes worktrees. It does not claim to prove host session provenance.
 
 Schema 2 milestone mode is `auto`, `required`, or `disabled`. Legacy `enabled: false` maps to `disabled` and `enabled: true` maps to `required`; a profile containing both `enabled` and `mode` is invalid. Version sources are `auto`, `{type: json|toml|python-attr, path, field}`, or `{type: command, command}`. File paths are repository-relative and cannot escape the repository. Values from file or command sources must be non-empty single-line strings and are used unchanged as titles. `auto` extracts only the required TOML string scalars and reads all of `package.json:version`, `Cargo.toml:package.version`, `Cargo.toml:workspace.package.version`, and `pyproject.toml:project.version`: no values is unresolved, one distinct value is resolved, and conflicting values fail with `VERSION_AMBIGUOUS`. It adds no dependency and does not change the Python minimum.
 
@@ -65,6 +73,18 @@ Each row selects exactly one alternative. Every link must target the correspondi
 ### Feature branch bases
 
 `start-feature-branch N <description...> [--base-ref BRANCH] [--expected-base-sha SHA40]` uses the GitHub default branch when `--base-ref` is omitted. An explicit base must name an existing same-repository remote branch; a SHA cannot be supplied as the base branch. The runtime fetches and resolves `origin/<base-ref>`, then checks `--expected-base-sha` before any branch switch, cleanup, or hook. A new target branch starts directly at that fetched base. Existing current, local, and remote targets remain idempotent and are never rebased. Results include `base_ref`, `base_sha`, `stacked`, and `creation_source` (`current`, `local`, `remote`, or `new`). A base SHA mismatch leaves the current branch and worktree unchanged.
+
+### Implementation execution workspaces
+
+`WorkspaceIdentity` is read from Git metadata: the absolute worktree root, per-worktree git directory, common git directory, whether the checkout is linked, full HEAD SHA, and attached branch or null for detached HEAD. The runtime does not infer isolation from path names or scan sibling directories.
+
+`prepare-implementation ISSUE [--base-ref BRANCH] [--expected-base-sha SHA40] --mode isolated|current [--supersede]` binds an execution after the host has selected the workspace and before source edits. It validates an open same-repository non-PR Issue, the byte-verified approved Contract pointer, Schema 2 profile, clean worktree, same-repository remote base, and local HEAD equal to the resolved base SHA. An expected SHA must match exactly. Isolated mode requires a linked worktree; current mode requires the attached configured Issue branch. Canonical branch names use the configured prefix and slug rules and are frozen in the binding.
+
+The ignored local binding is `.agent-state/issues/N/execution.json`, Schema 1, with exactly `schema_version`, `issue`, `repository`, `contract_comment_id`, `contract_sha256`, `workspace_root`, `mode`, `base_ref`, `base_sha`, `initial_head`, and `canonical_branch`. It is atomically replaced, never published, and is not evidence of host or session provenance. Reuse requires the same Issue, repository, workspace root, mode, and current approved Contract; it remains valid after commits without resetting HEAD or re-resolving the frozen base. A changed Contract is stale until explicit `--supersede`; supersession updates only the Contract comment ID and SHA.
+
+For an isolated binding, the local branch may be host-owned or HEAD may be detached. The runtime never renames or switches that branch. `ensure-review-pr` supplies the verified frozen canonical branch to publication, and `git.py` pushes `HEAD` non-force to that branch. It retains clean-worktree, same-origin, selected-base ancestry, ahead-of-base, non-force, and remote-HEAD readback checks. A divergent remote branch fails without rebase or overwrite. Current-mode and unbound publication retain the existing attached configured-feature-branch check exactly.
+
+`agent-context N` reports normalized workspace policy. A structurally valid binding for that Issue is summarized only by mode, canonical branch, base ref/SHA, Contract comment ID/SHA, and a current boolean; it never exposes the workspace path or arbitrary environment data.
 
 ### Review PR establishment
 
@@ -167,15 +187,15 @@ Commands produce bounded JSON or explicitly described skip lines. They identify 
 
 ## Data and API formats
 
-Schema-2 profile fields are `schema_version`, `initialized`, `project_name`, `components`, `branch`, `milestones`, and project `hooks`. `branch` contains `prefix`, `max_slug_length`, optional `cleanup_on_switch` (default `[]`), and `required_checks`. `branch.required_checks` is an array of names or `{name, app_id}` entries; an empty array prevents handoff. `milestones` contains `mode` and `version_source`, with the legacy `enabled` compatibility mapping described above. Each component declares `id`, `roots`, `stacks`, `application_types`, `targets`, and verification `hooks`; targets declare `id`, `runnable_on`, verification `hooks`, and optional `requirements`. Hook arrays contain command strings; project hooks may include `branch_switch`, while component and target hooks may not.
+Schema-2 profile fields are `schema_version`, `initialized`, `project_name`, `components`, `branch`, `workspace`, `milestones`, and project `hooks`. `branch` contains `prefix`, `max_slug_length`, optional `cleanup_on_switch` (default `[]`), and `required_checks`. `branch.required_checks` is an array of names or `{name, app_id}` entries; an empty array prevents handoff. `workspace` contains only `isolation`, one of `auto|required|disabled`, defaulting to `auto` when omitted. `milestones` contains `mode` and `version_source`, with the legacy `enabled` compatibility mapping described above. Each component declares `id`, `roots`, `stacks`, `application_types`, `targets`, and verification `hooks`; targets declare `id`, `runnable_on`, verification `hooks`, and optional `requirements`. Hook arrays contain command strings; project hooks may include `branch_switch`, while component and target hooks may not.
 
 The canonical checklist block is delimited by the exact lines `<!-- AGENT_REVIEWER_CHECKLIST_V1 -->` and `<!-- /AGENT_REVIEWER_CHECKLIST_V1 -->`; valid Markdown checkbox items inside it take precedence over the narrow Markdown `Reviewer Checklist` H2 fallback. Safe normalization recognizes only legacy Markdown checkbox formatting in one recognizable checklist H2, preserving item text, order, and all bytes outside that H2. Bare Unicode `☐` items and plain numbered prose headings are not accepted substitutes for Markdown checklist syntax.
 
-Issue-scoped local state lives below `.agent-state/issues/N/`. Contract state contains the exact payload and SHA metadata. Self-review state records schema version, Issue, PR, HEAD, approved contract comment ID/SHA, ordered contract section identities/evidence, checklist SHA, and checklist item evidence. Temporary JSON/payload files are outside committed source and are removed after use.
+Issue-scoped local state lives below `.agent-state/issues/N/`. Contract state contains the exact payload and SHA metadata. Execution state contains only the binding fields defined above and is never published or used as host-provenance evidence. Self-review state records schema version, Issue, PR, HEAD, approved contract comment ID/SHA, ordered contract section identities/evidence, checklist SHA, and checklist item evidence. Temporary JSON/payload files are outside committed source and are removed after use.
 
 ## Security and privacy
 
-GitHub requests use authenticated `gh api` through one module. User payloads travel as structured JSON input, not shell strings. Local contract state is Issue-scoped and should remain uncommitted; temporary data is cleaned after use.
+GitHub requests use authenticated `gh api` through one module. User payloads travel as structured JSON input, not shell strings. Local contract and execution state is Issue-scoped and should remain uncommitted; temporary data is cleaned after use. Host worktree placement, access control, resume, and cleanup remain host-owned. `.worktreeinclude` is optional project-owned configuration for ignored files; no secrets or ignored files are inferred or copied.
 
 ## Error and boundary behavior
 
@@ -192,6 +212,12 @@ GitHub requests use authenticated `gh api` through one module. User payloads tra
 | PR exists but phase transition fails | Return PR identity and allow an idempotent retry. |
 | Required Checks pending after PR establishment | Keep the PR and report delivery blocked, not complete. |
 | Invalid/unknown base branch or mismatched expected base SHA | Fail before branch switch, cleanup, or hooks; preserve the current branch and worktree. |
+| Invalid workspace policy or unknown workspace fields | Fail Schema 2 profile validation before output, hooks, or GitHub mutation. |
+| Required isolation unavailable | Stop before source edits or binding creation. |
+| Isolated mode on the main checkout, dirty initial workspace, wrong base SHA, or current mode off the configured Issue branch | Fail before writing the execution binding. |
+| Execution binding belongs to another Issue, repository, or workspace | Fail closed without rebinding it. |
+| Approved Contract changed after binding | Require explicit `--supersede`; preserve workspace, base, initial HEAD, and canonical branch. |
+| Isolated review branch cannot fast-forward or remote readback differs | Fail without force push, rebase, rename, or branch cleanup. |
 | Cleanup path escapes the repository | Reject the profile before Git mutation. |
 | Cleanup or hook fails after a real switch | Keep the new branch, report current branch and failed stage, and do not rerun switch work on same-branch retry. |
 | Missing/malformed Issue component list | Fail before hook execution or partial context output. |

@@ -9,6 +9,7 @@ Use when creating or checking the Issue contract pointer or local mirror. Inputs
 
 ## Procedure
 1. Run `python -m agent_workflow verify-implementation-contract <issue>` before relying on an existing pointer.
+   Approval or publishing alone does not allocate a workspace; isolation is considered only when the approved Contract is executed.
 2. Never hand-edit the approved contract comment or Issue pointer. The body pointer has exactly this canonical form and no appended prose:
 
    ```text
