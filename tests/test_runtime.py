@@ -3645,6 +3645,16 @@ macOS IDE smoke test not run
         self.assertFalse(result["passed"])
         self.assertTrue(any("final verification result must be pass" in error for error in result["errors"]))
 
+        empty = {"receipt": {"head": self.head, "contract_comment_id": 123,
+                             "contract_sha256": "e" * 64, "result": "empty", "host": "linux",
+                             "architecture": "x86_64", "components": ["root"],
+                             "executed": [], "skipped_targets": []},
+                 "comment_id": 111, "sha256": "f" * 64, "stale": False, "stale_reasons": []}
+        result = self.run_gate(published_verification=empty)
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["final_verification_status"], "empty")
+        self.assertTrue(any("final verification result must be pass" in error for error in result["errors"]))
+
         qa = {"result": "untested", "qa": {"mode": "required", "cases": [{}]},
               "comment_id": 112, "sha256": "a" * 64, "stale": False, "stale_reasons": [],
               "current_contract_comment_id": 123, "current_contract_sha256": "e" * 64}
