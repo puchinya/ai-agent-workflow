@@ -1441,26 +1441,17 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(normalize_reviewer_checklist(normalized), normalized)
         self.assertEqual(classify_reviewer_checklist_h2(normalized).state, "strict-canonical")
 
-    def test_checklist_normalizer_converts_unicode_empty_boxes_without_touching_outside_bytes(self):
-        prefix = b"Preamble bytes stay.\r\n\r\n"
+    def test_checklist_normalizer_rejects_bare_unicode_empty_boxes(self):
         checklist = (
             "## 9. Reviewer Checklist\r\n"
             "☐ First contract item.\r\n"
-            "☐ Second contract item stays second.\r\n"
+            "- ☐ Second contract item stays second.\r\n"
             "The implementer MUST self-review every item.\r\n\r\n"
         ).encode("utf-8")
-        suffix = b"## Completion Report\r\nKeep this exact.\r\n"
-        raw = prefix + checklist + suffix
-
-        normalized = normalize_reviewer_checklist(raw)
-
-        self.assertTrue(normalized.startswith(prefix))
-        self.assertTrue(normalized.endswith(suffix))
-        self.assertIn(b"- [ ] First contract item.\r\n- [ ] Second contract item stays second.", normalized)
-        self.assertEqual(_extract_items(raw.decode("utf-8")), [
-            "First contract item.", "Second contract item stays second.",
-        ])
-        self.assertEqual(classify_reviewer_checklist_h2(normalized).state, "strict-canonical")
+        with self.assertRaisesRegex(ContractError, "cannot be normalized safely"):
+            normalize_reviewer_checklist(checklist)
+        self.assertEqual(classify_reviewer_checklist_h2(checklist).state, "legacy/non-canonical")
+        self.assertEqual(_extract_items(checklist.decode("utf-8")), [])
 
     def test_save_and_publish_bind_normalized_bytes_and_report_conversion(self):
         raw = (
@@ -2068,15 +2059,17 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(_extract_items(text), ["canonical item"])
         self.assertEqual(_extract_items("## Checklist\n- [ ] ignored"), [])
         self.assertEqual(_extract_items("## 1. Reviewer Checklist (Issue)\n- [ ] accepted"), ["accepted"])
-        self.assertEqual(_extract_items("## 9. Reviewer Checklist\n☐ accepted from a contract"), [
-            "accepted from a contract",
-        ])
-        self.assertEqual(_extract_items(
-            "8. Architecture\nKeep current behavior.\n\n"
-            "9. Reviewer Checklist\n☐ first numbered item\n☐ second numbered item\n\n"
-            "10. Completion Report\nReport the result."
-        ), ["first numbered item", "second numbered item"])
+        self.assertEqual(_extract_items("## 9. Reviewer Checklist\n☐ rejected Unicode item"), [])
         self.assertEqual(_extract_items("```md\n## Reviewer Checklist\n- [ ] ignored\n```"), [])
+
+    def test_plain_numbered_reviewer_checklist_is_not_a_markdown_fallback(self):
+        text = (
+            "8. Architecture\nKeep current behavior.\n\n"
+            "9. Reviewer Checklist\n- [ ] this is not an H2 checklist\n\n"
+            "10. Completion Report\nReport the result."
+        )
+        self.assertEqual(_extract_items(text), [])
+        self.assertEqual([unit["id"] for unit in contract_review_units(text.encode("utf-8"))], ["P000"])
 
     def test_review_draft_requires_results_and_evidence(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -2114,6 +2107,24 @@ class ReviewTests(unittest.TestCase):
         legacy_checklist = newline.join(lines[8:10]) + newline
         self.assertEqual(units[2]["section_sha256"], hashlib.sha256(legacy_checklist).hexdigest())
         self.assertEqual(units[3]["section_sha256"], hashlib.sha256(extra).hexdigest())
+
+    def test_markdown_contract_review_units_split_each_non_checklist_h2(self):
+        contract = (
+            b"Contract preamble.\n\n"
+            b"## 1. Repository Baseline\nBaseline requirements.\n\n"
+            b"## 2. Architecture Decisions\nArchitecture requirements.\n\n"
+            b"## Reviewer Checklist\n"
+            b"<!-- AGENT_REVIEWER_CHECKLIST_V1 -->\n"
+            b"- [ ] Verify each requirement separately.\n"
+            b"<!-- /AGENT_REVIEWER_CHECKLIST_V1 -->\n\n"
+            b"## 3. Completion Report\nReport completion.\n"
+        )
+        units = contract_review_units(contract)
+        self.assertEqual([unit["id"] for unit in units], ["P000", "S001", "S002", "S003"])
+        self.assertEqual([unit["title"] for unit in units], [
+            "Contract Preamble", "1. Repository Baseline", "2. Architecture Decisions", "3. Completion Report",
+        ])
+        self.assertEqual(_extract_items(contract.decode("utf-8")), ["Verify each requirement separately."])
 
     def test_strict_canonical_first_heading_does_not_leak_into_preamble(self):
         newline = bytes((13, 10))

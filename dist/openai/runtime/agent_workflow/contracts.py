@@ -32,7 +32,6 @@ CHECKLIST_HEADING = re.compile(
     r"^(?:\d+[.)]?\s*)?Reviewer Checklist(?:\s*[（(][^()（）]*[)）])?$", re.I
 )
 CHECKLIST_ITEM = re.compile(r"^\s*[-*+]\s+\[[ xX]\]\s+\S.*$")
-UNICODE_CHECKLIST_ITEM = re.compile(r"^\s*(?:[-*+]\s+)?☐\s+(.+?)\s*$")
 ALLOWED_CHECKLIST_INTRO = "The implementer must self-review every item in this checklist."
 LEGACY_CHECKLIST_INTROS = {
     "Implementer MUST self-review every item.",
@@ -179,10 +178,6 @@ def normalize_reviewer_checklist(data: bytes) -> bytes:
             continue
         if CHECKLIST_ITEM.fullmatch(line):
             items.append(line)
-            continue
-        unicode_item = UNICODE_CHECKLIST_ITEM.fullmatch(line)
-        if unicode_item:
-            items.append(f"- [ ] {unicode_item.group(1)}")
             continue
         raise ContractError(
             "Reviewer Checklist contains prose that cannot be normalized safely; "
