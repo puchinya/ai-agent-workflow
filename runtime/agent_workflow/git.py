@@ -315,7 +315,8 @@ def origin_repository(repo: Path, *, push: bool = False) -> str:
 
 def push_review_branch(repo: Path, profile: dict[str, Any], issue_number: int,
                        repository: str, base_ref: str, default_base_ref: str,
-                       publication_branch: str | None = None) -> dict[str, Any]:
+                       publication_branch: str | None = None,
+                       frozen_base_sha: str | None = None) -> dict[str, Any]:
     """Validate and push HEAD without force, then verify the selected remote branch."""
     _require_clean(repo)
     if not isinstance(repository, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
@@ -326,6 +327,10 @@ def push_review_branch(repo: Path, profile: dict[str, Any], issue_number: int,
     if not isinstance(base_ref, str) or not base_ref:
         raise GitLifecycleError("selected base branch is missing")
     _validate_ref(repo, base_ref, "selected base branch")
+    if (frozen_base_sha is not None
+            and (not isinstance(frozen_base_sha, str)
+                 or not re.fullmatch(r"[0-9a-f]{40}", frozen_base_sha))):
+        raise GitLifecycleError("frozen execution base SHA is malformed")
 
     local_branch = _current_branch(repo)
     if publication_branch is None:
@@ -365,6 +370,18 @@ def push_review_branch(repo: Path, profile: dict[str, Any], issue_number: int,
         raise GitLifecycleError("current branch does not contain the selected base; automatic rebase is forbidden")
     if ancestor.returncode:
         raise GitLifecycleError(f"Git merge-base failed (exit status {ancestor.returncode})")
+    if frozen_base_sha is not None:
+        frozen_ancestor = _invoke(
+            repo, ["merge-base", "--is-ancestor", frozen_base_sha, head_sha], allow_failure=True
+        )
+        if frozen_ancestor.returncode == 1:
+            raise GitLifecycleError(
+                "current HEAD does not contain the frozen execution base; automatic rebase is forbidden"
+            )
+        if frozen_ancestor.returncode:
+            raise GitLifecycleError(
+                f"Git merge-base for frozen execution base failed (exit status {frozen_ancestor.returncode})"
+            )
     ahead_result = _invoke(repo, ["rev-list", "--count", f"{base_sha}..{head_sha}"], allow_failure=True)
     ahead_text = ahead_result.stdout.strip()
     if ahead_result.returncode or not ahead_text.isdigit():

@@ -37,11 +37,13 @@ Feature work uses `python -m agent_workflow start-feature-branch <issue> <descri
 
 Publishing, reviewing, or approving an Implementation Contract does not allocate a workspace. Execution of the approved Contract is the trigger. The normal user request remains “Implement this Contract”; the Skill reads the Schema 2 `workspace.isolation` policy before edits and lets the active host establish or reuse isolation.
 
-- `auto` prefers a native managed worktree when the active host surface exposes one, then binds that execution with `prepare-implementation`. If the host cannot create or enter managed isolation, the Skill uses the existing current-checkout branch flow.
-- `required` stops before edits when host-managed isolation cannot be established.
+- Before host isolation, resolve the selected same-repository base ref and its full SHA. For an already-bound execution, reuse its frozen `base_ref` and `base_sha`.
+- Native isolation is available only when the active host surface can create or reuse a workspace whose initial `HEAD` is exactly the selected base SHA. A host worktree feature alone does not satisfy this requirement. Verify the initial HEAD before `prepare-implementation`.
+- `auto` prefers exact-base native isolation when available. Otherwise it uses the existing current-checkout branch flow with the same `base_ref` and expected SHA.
+- `required` stops before edits when host-managed isolation at the exact selected base cannot be established.
 - `disabled` does not request a new worktree and does not force a session already in a worktree back to the main checkout.
 
-Codex uses its current surface's managed worktree or task-fork capability when exposed. Claude Code reuses a valid worktree or enters one through native `EnterWorktree` when available. Antigravity and unverified hosts fall back for `auto` and block for `required`. The runtime never invokes another coding-agent binary or runs raw automatic `git worktree add`; it does not manage host permissions, placement, resume, or cleanup and cannot prove session provenance.
+Codex uses its current surface's managed worktree or task-fork capability when exposed and selects the approved starting ref when supported; the resulting HEAD must equal the selected SHA. Claude Code reuses a valid worktree or enters one through native `EnterWorktree` only when it can preserve the exact selected base. For unsupported stacked/non-default bases, and any other unverified exact-base capability, `auto` falls back and `required` blocks. Do not create a wrong-base workspace and repair it by switching, resetting, merging, or rebasing. The runtime never invokes another coding-agent binary or runs raw automatic `git worktree add`; it does not manage host permissions, placement, resume, or cleanup and cannot prove session provenance.
 
 Issue/PR identity remains the user's routing key. One implementation writer owns an execution, and ordinary follow-up answers or corrections reuse the same binding and workspace. A changed approved Contract blocks continuation until explicit supersession refreshes only its bound comment ID/SHA. This version does not add global task discovery, a database, daemon, Issue DAG scheduler, or parallelism setting.
 

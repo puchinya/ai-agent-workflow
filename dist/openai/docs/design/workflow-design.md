@@ -63,15 +63,16 @@ consumer Issue + .agent/project.json
 
 ```text
 approved Contract
- -> workspace policy
- -> host-managed isolation or allowed current-checkout fallback
+ -> resolve selected base ref/SHA
+ -> host capability for that exact base
+ -> isolated | current-checkout fallback | blocked
  -> prepare-implementation binding
  -> implementation
  -> canonical remote branch / PR
  -> evidence gates / independent review
 ```
 
-Issue and PR remain the user-facing identities. One implementation writer owns an execution; corrections reuse the same host workspace and binding. The host owns worktree creation, resume, access control, and cleanup. The runtime never shells out to another coding-agent binary, creates raw automatic sibling worktrees, copies secrets, or routes work globally. Independent Review stays in a fresh context separate from the implementation execution.
+Issue and PR remain the user-facing identities. One implementation writer owns an execution; corrections reuse the same host workspace and binding, including its frozen base ref/SHA. On a new execution, native isolation is eligible only when the host can start the workspace at the exact selected base SHA; `auto` otherwise falls back to the current checkout and `required` blocks before edits. The host owns worktree creation, resume, access control, and cleanup. The runtime never shells out to another coding-agent binary, creates raw automatic sibling worktrees, copies secrets, or routes work globally. Independent Review stays in a fresh context separate from the implementation execution.
 
 ## Failure handling
 

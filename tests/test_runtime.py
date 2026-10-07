@@ -917,6 +917,57 @@ class GitLifecycleTests(unittest.TestCase):
         self.assertEqual(self.git(self.repo, "branch", "--show-current"), "worktree-host")
         self.assertEqual(second["head_branch"], canonical)
 
+    def test_bound_frozen_base_survives_remote_base_advancement(self):
+        frozen_base = self.git(self.repo, "rev-parse", "main")
+        self.git(self.repo, "switch", "-c", "advance-base", "main")
+        (self.repo / "base-advance.txt").write_text("base advanced\n", encoding="utf-8")
+        self.git(self.repo, "add", "base-advance.txt")
+        self.git(self.repo, "commit", "-m", "advance selected base")
+        advanced_base = self.git(self.repo, "rev-parse", "HEAD")
+        self.git(self.repo, "push", "origin", "HEAD:refs/heads/main")
+
+        start_feature_branch(self.repo, self.profile(), 7, "after base advance", self.github)
+        (self.repo / "implementation.txt").write_text("implementation\n", encoding="utf-8")
+        self.git(self.repo, "add", "implementation.txt")
+        self.git(self.repo, "commit", "-m", "implementation on advanced base")
+        binding = {"base_ref": "main", "base_sha": frozen_base}
+
+        with patch("agent_workflow.git._origin_repository", return_value="owner/repo"):
+            result = push_review_branch(
+                self.repo, self.profile(), 7, "owner/repo", binding["base_ref"], "main",
+                frozen_base_sha=binding["base_sha"],
+            )
+
+        self.assertEqual(advanced_base, result["base_sha"])
+        self.assertEqual(binding["base_sha"], frozen_base)
+        self.assertEqual(result["base_branch"], binding["base_ref"])
+
+    def test_bound_frozen_base_must_be_an_ancestor_before_push(self):
+        self.git(self.repo, "switch", "-c", "diverged-frozen-base", "main")
+        (self.repo / "diverged.txt").write_text("diverged\n", encoding="utf-8")
+        self.git(self.repo, "add", "diverged.txt")
+        self.git(self.repo, "commit", "-m", "diverged frozen base")
+        frozen_base = self.git(self.repo, "rev-parse", "HEAD")
+        self.git(self.repo, "switch", "main")
+        start_feature_branch(self.repo, self.profile(), 7, "frozen base guard", self.github)
+        (self.repo / "implementation.txt").write_text("implementation\n", encoding="utf-8")
+        self.git(self.repo, "add", "implementation.txt")
+        self.git(self.repo, "commit", "-m", "implementation without frozen base")
+        pushes = []
+        real_invoke = __import__("agent_workflow.git", fromlist=["_invoke"])._invoke
+
+        def track_push(repo, args, **kwargs):
+            if args[0] == "push":
+                pushes.append(list(args))
+            return real_invoke(repo, args, **kwargs)
+
+        with patch("agent_workflow.git._origin_repository", return_value="owner/repo"), \
+             patch("agent_workflow.git._invoke", side_effect=track_push):
+            with self.assertRaisesRegex(GitLifecycleError, "does not contain the frozen execution base"):
+                push_review_branch(self.repo, self.profile(), 7, "owner/repo", "main", "main",
+                                   frozen_base_sha=frozen_base)
+        self.assertEqual(pushes, [])
+
     def test_isolated_review_push_rejects_diverged_canonical_remote_without_force(self):
         canonical = "feature/7-canonical-branch"
         # Publish a remote commit based on main, then create a different local commit from main.
@@ -3608,15 +3659,98 @@ macOS IDE smoke test not run
                   "base_sha": "a" * 40, "ahead_by": 1, "pushed": True,
                   "remote_head": self.head, "remote_head_verified": True}
         with patch("agent_workflow.delivery.load_execution", return_value={
-                "mode": "isolated", "canonical_branch": canonical}) as binding, \
+                "mode": "isolated", "canonical_branch": canonical,
+                "base_ref": "main", "base_sha": "a" * 40}) as binding, \
              patch("agent_workflow.delivery.push_review_branch", return_value=pushed) as push:
             result = ensure_review_pr(self.repo, 1, self.pr_body, self.gh)
         binding.assert_called_once_with(self.repo, 1, self.gh)
         push.assert_called_once_with(self.repo, load_profile(self.repo), 1, self.gh.repo,
-                                     "main", "main", publication_branch=canonical)
+                                     "main", "main", publication_branch=canonical,
+                                     frozen_base_sha="a" * 40)
         self.assertTrue(result["success"], result)
         self.assertEqual(result["head_branch"], canonical)
         self.assertEqual(self.gh.created_prs[0]["head"]["ref"], canonical)
+
+    def test_bound_stacked_base_is_authoritative_for_isolated_and_current_modes(self):
+        selected_base = "feature/100-base"
+        frozen_base_sha = "a" * 40
+        cases = (("isolated", "feature/1-issue-title", "feature/1-issue-title"),
+                 ("current", "feature/1-review", "feature/1-review"))
+        for mode, publication_branch, expected_head in cases:
+            with self.subTest(mode=mode):
+                self.gh = FakeGitHub("## Affected components\n- root\n")
+                self.gh.repository_data["default_branch"] = "main"
+                pushed = {"head_sha": self.head, "head_branch": publication_branch,
+                          "base_branch": selected_base, "base_sha": frozen_base_sha,
+                          "ahead_by": 1, "pushed": True, "remote_head": self.head,
+                          "remote_head_verified": True}
+                with patch("agent_workflow.delivery.load_execution", return_value={
+                        "mode": mode, "canonical_branch": "feature/1-issue-title",
+                        "base_ref": selected_base, "base_sha": frozen_base_sha}), \
+                     patch("agent_workflow.delivery.push_review_branch", return_value=pushed) as push:
+                    result = ensure_review_pr(self.repo, 1, self.pr_body, self.gh)
+
+                self.assertTrue(result["success"], result)
+                self.assertEqual(result["base_branch"], selected_base)
+                self.assertEqual(self.gh.created_prs[0]["base"]["ref"], selected_base)
+                self.assertIn(("open_pull_requests", expected_head, selected_base), self.gh.lifecycle_calls)
+                self.assertFalse(any(call[0] == "open_pull_requests" and call[2] == "main"
+                                     for call in self.gh.lifecycle_calls))
+                kwargs = {"frozen_base_sha": frozen_base_sha}
+                if mode == "isolated":
+                    kwargs["publication_branch"] = "feature/1-issue-title"
+                push.assert_called_once_with(self.repo, load_profile(self.repo), 1, self.gh.repo,
+                                             selected_base, "main", **kwargs)
+
+    def test_bound_matching_explicit_base_is_accepted(self):
+        selected_base = "feature/100-base"
+        pushed = {"head_sha": self.head, "head_branch": "feature/1-review",
+                  "base_branch": selected_base, "base_sha": "a" * 40, "ahead_by": 1,
+                  "pushed": True, "remote_head": self.head, "remote_head_verified": True}
+        with patch("agent_workflow.delivery.load_execution", return_value={
+                "mode": "current", "canonical_branch": "feature/1-issue-title",
+                "base_ref": selected_base, "base_sha": "a" * 40}), \
+             patch("agent_workflow.delivery.push_review_branch", return_value=pushed) as push:
+            result = ensure_review_pr(self.repo, 1, self.pr_body, self.gh, base_ref=selected_base)
+        self.assertTrue(result["success"], result)
+        self.assertEqual(self.gh.created_prs[0]["base"]["ref"], selected_base)
+        push.assert_called_once_with(self.repo, load_profile(self.repo), 1, self.gh.repo,
+                                     selected_base, "main", frozen_base_sha="a" * 40)
+
+    def test_bound_conflicting_base_fails_before_push_pr_or_label_mutation(self):
+        self.gh.issue_data["labels"] = [{"name": "phase:implementation"}]
+        with patch("agent_workflow.delivery.load_execution", return_value={
+                "mode": "current", "canonical_branch": "feature/1-issue-title",
+                "base_ref": "feature/100-base", "base_sha": "a" * 40}), \
+             patch("agent_workflow.delivery.push_review_branch") as push:
+            with self.assertRaisesRegex(DeliveryError, "conflicts with the frozen implementation execution base"):
+                ensure_review_pr(self.repo, 1, self.pr_body, self.gh, base_ref="main")
+        push.assert_not_called()
+        self.assertFalse(any(call[0] == "open_pull_requests" for call in self.gh.lifecycle_calls))
+        self.assertEqual(self.gh.created_prs, [])
+        self.assertEqual(self.gh.updated_prs, [])
+        self.assertEqual(self.gh.label_replacements, [])
+        self.assertEqual(self.gh.issue_data["labels"], [{"name": "phase:implementation"}])
+
+    def test_unbound_base_selection_keeps_explicit_and_default_behavior(self):
+        with patch("agent_workflow.delivery.push_review_branch", return_value={
+                "head_sha": self.head, "head_branch": "feature/1-review",
+                "base_branch": "release/v2", "base_sha": "a" * 40, "ahead_by": 1,
+                "pushed": True, "remote_head": self.head, "remote_head_verified": True}) as push:
+            result = ensure_review_pr(self.repo, 1, self.pr_body, self.gh, base_ref="release/v2")
+        self.assertTrue(result["success"], result)
+        self.assertEqual(self.gh.created_prs[0]["base"]["ref"], "release/v2")
+        self.assertEqual(push.call_args.args[4:6], ("release/v2", "main"))
+
+        self.gh = FakeGitHub("## Affected components\n- root\n")
+        with patch("agent_workflow.delivery.push_review_branch", return_value={
+                "head_sha": self.head, "head_branch": "feature/1-review",
+                "base_branch": "main", "base_sha": "a" * 40, "ahead_by": 1,
+                "pushed": True, "remote_head": self.head, "remote_head_verified": True}) as push:
+            result = ensure_review_pr(self.repo, 1, self.pr_body, self.gh)
+        self.assertTrue(result["success"], result)
+        self.assertEqual(self.gh.created_prs[0]["base"]["ref"], "main")
+        self.assertEqual(push.call_args.args[4:6], ("main", "main"))
 
     def test_ensure_review_pr_retry_reuses_pr_and_preserves_labels(self):
         self.gh.issue_data["labels"] = [{"name": "area:runtime"}, {"name": "phase:ready"},
@@ -4186,6 +4320,38 @@ macOS IDE smoke test not run
 
 
 class DistributionTests(unittest.TestCase):
+    def test_host_isolation_requires_the_exact_selected_base(self):
+        implementation = (ROOT / "workflow/skills/implementation/SKILL.md").read_text(encoding="utf-8")
+        claude = (ROOT / "adapters/claude/README.md").read_text(encoding="utf-8")
+        codex = (ROOT / "adapters/openai/README.md").read_text(encoding="utf-8")
+
+        self.assertLess(implementation.index("resolve that same-repository remote ref to its full SHA"),
+                        implementation.index("asking the host for isolation"))
+        self.assertIn("exact selected base SHA", implementation)
+        self.assertIn("auto` continues in the current-checkout branch flow", implementation)
+        self.assertIn("required` stops before edits", implementation)
+        self.assertIn("Never shell out to `codex` or `claude`", implementation)
+        self.assertIn("raw automatic `git worktree add`", implementation)
+        self.assertIn("auto` falls back to the current-checkout flow", claude)
+        self.assertIn("required` blocks before edits", claude)
+        self.assertIn("exact selected base", claude)
+        self.assertIn("approved starting branch/ref", codex)
+        self.assertIn("resulting HEAD equals the selected SHA", codex)
+        self.assertIn("auto` falls back to the current checkout", codex)
+        self.assertIn("required` blocks before edits", codex)
+        self.assertIn("Product behavior has not been smoke-tested", claude)
+        self.assertIn("Product behavior has not been smoke-tested", codex)
+
+    def test_generated_host_files_match_canonical_sources(self):
+        files = build_dist.expected_files()
+        for host in build_dist.HOSTS:
+            skill = (ROOT / "workflow/skills/implementation/SKILL.md").read_bytes()
+            skill = skill.replace(b"../../../docs/specs/", b"../../docs/specs/")
+            self.assertEqual(files[f"dist/{host}/skills/implementation/SKILL.md"], skill)
+            self.assertEqual(files[f"dist/{host}/README.md"],
+                             (ROOT / f"adapters/{host}/README.md").read_bytes())
+        self.assertEqual(validate_dist.validate(), [])
+
     def test_generated_packages_carry_handoff_authority_and_runtime_command(self):
         files = build_dist.expected_files()
         self.assertEqual(len(build_dist.EXPECTED_SKILLS), 10)

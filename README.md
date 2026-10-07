@@ -16,6 +16,8 @@ Schema 2 profiles support `workspace.isolation`: `auto` (the default), `required
 
 Codex uses a native managed worktree or task-fork capability when the current surface exposes one. Claude Code reuses its worktree or enters one with in-session `EnterWorktree`. Antigravity support is unverified. With `auto`, unsupported surfaces continue with the current-checkout branch flow; `required` blocks before source edits when native isolation cannot be established. `disabled` does not request a new worktree and does not force a session already in one back to the main checkout.
 
+`auto` uses native isolation only when the host can start the workspace at the exact approved base. Otherwise it falls back to the current checkout; `required` blocks.
+
 The implementation Skill binds the selected workspace with `prepare-implementation` before edits. The host owns worktree placement, access control, resume, and cleanup. The runtime never shells out to another coding-agent binary or creates automatic sibling worktrees. A project may opt in to `.worktreeinclude` patterns for specific ignored local files required in host-created worktrees; the plugin never creates that file, infers secrets, or copies credentials or ignored files without an explicit project-owned pattern.
 
 New durable Issues record Specification, Design, and Status choices under `## Document impact`; use matching `docs/specs/`, `docs/design/`, and `docs/status/` links, or a reason for `unchanged` and `evidence-only` decisions. Requirements/design establish the choices, implementation checks them against the final diff, and self-review verifies the final match.
