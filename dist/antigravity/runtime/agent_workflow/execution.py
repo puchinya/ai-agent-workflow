@@ -532,15 +532,24 @@ def recover_implementation_binding(repo: Path, issue: int, pr: int, gh: GitHub, 
         latest_contract_id, latest_contract_sha = _approved_contract(issue, gh)
         latest_issue = gh.issue(issue)
         latest_pull = gh.pull(pr)
+        latest_origin = origin_repository(repo)
         latest_identity = workspace_identity(repo)
         require_clean_worktree(repo)
     except (GitLifecycleError, GitHubError) as exc:
         raise ExecutionError(str(exc)) from exc
     if latest_base_sha != expected_base_sha:
         raise ExecutionError("selected base changed during continuation recovery")
-    if (latest_contract_id != contract_comment_id or latest_contract_sha != contract_sha
-            or not isinstance(latest_issue, dict) or latest_issue.get("title") != title):
-        raise ExecutionError("Issue or approved Contract changed during continuation recovery")
+    if latest_origin.casefold() != gh.repo.casefold():
+        raise ExecutionError("origin repository changed during continuation recovery")
+    if (not isinstance(latest_issue, dict) or type(latest_issue.get("number")) is not int
+            or latest_issue.get("number") != issue
+            or latest_issue.get("repository_url") != expected_issue_url
+            or latest_issue.get("pull_request") or latest_issue.get("state") != "open"):
+        raise ExecutionError("Issue identity or state changed during continuation recovery")
+    if latest_issue.get("title") != title:
+        raise ExecutionError("Issue title changed during continuation recovery")
+    if latest_contract_id != contract_comment_id or latest_contract_sha != contract_sha:
+        raise ExecutionError("approved Contract changed during continuation recovery")
     _verify_recovery_pull(latest_pull, issue, pr, gh.repo, canonical_branch, base_ref,
                           expected_base_sha, identity.head_sha)
     if (latest_identity.root != identity.root or latest_identity.head_sha != identity.head_sha

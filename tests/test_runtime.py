@@ -1587,6 +1587,34 @@ class ExecutionBindingTests(unittest.TestCase):
                 )
         self.assertFalse(execution_path(self.repo, 1).exists())
 
+    def test_recovery_rechecks_issue_open_state_and_repository_before_write(self):
+        self.prepare_continuation()
+        issue_baseline = copy.deepcopy(self.github.issue_data)
+        changed_issues = []
+        for field, value, message in (
+            ("state", "closed", "Issue identity or state changed"),
+            ("repository_url", "https://api.github.com/repos/foreign/repo",
+             "Issue identity or state changed"),
+            ("pull_request", {"url": "https://api.github.com/repos/owner/repo/pulls/1"},
+             "Issue identity or state changed"),
+        ):
+            changed = copy.deepcopy(issue_baseline)
+            changed[field] = value
+            changed_issues.append((changed, message))
+
+        for changed, message in changed_issues:
+            with self.subTest(message=message, issue=changed):
+                with patch.object(
+                    self.github, "issue",
+                    side_effect=[issue_baseline, issue_baseline, issue_baseline, changed],
+                ), patch("agent_workflow.execution.origin_repository", return_value="owner/repo"):
+                    with self.assertRaisesRegex(ExecutionError, message):
+                        recover_implementation_binding(
+                            self.repo, 1, 25, self.github, base_ref="main",
+                            expected_base_sha=self.base_sha,
+                        )
+                self.assertFalse(execution_path(self.repo, 1).exists())
+
     def test_recovery_rejects_unrelated_base_and_invalid_identity_before_binding(self):
         branch = "feature/1-issue-title"
         self.git(self.repo, "switch", "--orphan", branch)
