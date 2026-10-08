@@ -30,6 +30,22 @@ Schema-v2 self-review binds the complete approved contract comment ID/SHA and ea
 
 `verify-final` requires a clean worktree and local HEAD identical to PR HEAD. Its immutable receipt stores command hashes and execution identities, never raw commands or output; skipped and empty plans are visible but do not pass. QA records required test cases or a concrete N/A reason and passes only when all cases pass or N/A applies. Independent review binds the same HEAD, contract units, and checklist, requires a `fresh_context: true` reviewer attestation, and blocks for any non-passing contract unit, checklist failure, or blocking A/B/C finding. Runtime checks the attestation but cannot prove reviewer provenance. Delivery evaluates Final Verification, self-review, QA, and Independent Review before Required Checks.
 
+### Contract and chat-project templates
+
+Start new Implementation Contracts from [`workflow/templates/implementation-contract-template.md`](workflow/templates/implementation-contract-template.md). Fill its authoring placeholders, then run `python -m agent_workflow validate-implementation-contract-structure <issue> <path>` before saving or publishing. The preflight validates the ten ordered sections, required content, checklist format, and unresolved placeholders without changing the source file or contacting GitHub. It is an opt-in preflight for new template-based contracts; the legacy save/publish/restore/verify APIs remain compatible with historical contracts.
+
+The command order for saving a local mirror and publishing its source is:
+
+```sh
+python -m agent_workflow validate-implementation-contract-structure <issue> <path>
+python -m agent_workflow save-implementation-contract <issue> <path>
+python -m agent_workflow publish-implementation-contract <issue> --source <path>
+```
+
+For direct publication, run the preflight first and then use `publish-implementation-contract <issue> --source <path>` without the save step.
+
+For ChatGPT Projects, Claude Projects, or a comparable chat project, copy the single Japanese instruction body in [`workflow/templates/chat-project-instructions-template.md`](workflow/templates/chat-project-instructions-template.md). Change only its top line, `対象リポジトリ: https://github.com/OWNER/REPO`, to the consumer repository URL, then paste the complete body into the project's instructions. The text does not configure a host API or grant repository access, tools, or credentials.
+
 ## Development
 
 Python 3.10+ is required; runtime code uses the standard library. Install the local CLI for development with `python -m pip install -e .`. Build generated packages and validate them with:

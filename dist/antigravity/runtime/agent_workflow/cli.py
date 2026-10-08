@@ -13,7 +13,7 @@ from typing import Any
 from . import __version__
 from .context import ContextError, affected_components, build_context, format_context
 from .contracts import (ContractError, publish_contract, restore_contract, save_contract,
-                        verify_contract)
+                        validate_contract_structure, verify_contract)
 from .delivery import DeliveryError, delivery_check, ensure_review_pr, finalize_merged_issue
 from .documents import resolve_document_impact, validate_docs
 from .execution import ExecutionError, prepare_implementation, resolve_implementation_base
@@ -420,6 +420,10 @@ def build_parser() -> argparse.ArgumentParser:
     save.add_argument("issue", type=_number)
     save.add_argument("path", nargs="?", type=Path)
     save.add_argument("--repo")
+    structure = commands.add_parser("validate-implementation-contract-structure")
+    structure.add_argument("issue", type=_number)
+    structure.add_argument("path", type=Path)
+    structure.add_argument("--repo")
     publish = commands.add_parser("publish-implementation-contract")
     publish.add_argument("issue", type=_number)
     publish.add_argument("--source", type=Path)
@@ -542,6 +546,14 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, int]:
     elif args.command == "save-implementation-contract":
         repo = _repo_arg(args.repo)
         result = save_contract(repo, args.issue, args.path)
+    elif args.command == "validate-implementation-contract-structure":
+        if not args.path.is_file():
+            raise ContractError("Implementation Contract path must name an existing regular file")
+        try:
+            raw = args.path.read_bytes()
+        except OSError as exc:
+            raise ContractError("could not read Implementation Contract path") from exc
+        result = validate_contract_structure(raw, args.issue)
     elif args.command == "publish-implementation-contract":
         repo = _repo_arg(args.repo)
         result = publish_contract(repo, args.issue, _gh(repo), args.source, args.supersede)

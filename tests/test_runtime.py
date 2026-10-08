@@ -22,6 +22,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 from agent_workflow.contracts import (ContractError, parse_comment, publish_contract,
                                       classify_reviewer_checklist_h2, restore_contract, save_contract, sha256,
                                       normalize_reviewer_checklist,
+                                      validate_contract_structure,
                                       validate_payload, validate_reviewer_checklist_authoring,
                                       verify_contract)
 from agent_workflow.context import ContextError, affected_components, build_context
@@ -1895,6 +1896,19 @@ class ChangedDocumentValidationTests(unittest.TestCase):
 
 
 class ContractTests(unittest.TestCase):
+    STRUCTURAL_HEADINGS = (
+        "1. Repository Baseline",
+        "2. Architecture Decisions",
+        "3. Exact Change Set",
+        "4. Implementation Sequence",
+        "5. Required Runtime Semantics",
+        "6. Non-goals / Forbidden Changes",
+        "7. Concrete Tests",
+        "8. Verification",
+        "9. Reviewer Checklist",
+        "10. Completion Report",
+    )
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.repo = Path(self.temp.name)
@@ -1907,6 +1921,194 @@ class ContractTests(unittest.TestCase):
         path = self.repo / "source.md"
         path.write_bytes(content)
         return path
+
+    def structural_contract(self, bodies: dict[int, str] | None = None) -> bytes:
+        body_map = bodies or {}
+        sections = []
+        for index, heading in enumerate(self.STRUCTURAL_HEADINGS):
+            if index == 8:
+                body = ("The implementer must self-review every item in this checklist.\n\n"
+                        "<!-- AGENT_REVIEWER_CHECKLIST_V1 -->\n"
+                        "- [ ] Review this contract section.\n"
+                        "<!-- /AGENT_REVIEWER_CHECKLIST_V1 -->\n")
+            else:
+                body = body_map.get(index, f"Decision and evidence for section {index + 1}.\n")
+            sections.append(f"## {heading}\n\n{body}")
+        return ("# Contract\n\n" + "\n".join(sections)).encode("utf-8")
+
+    def test_structural_preflight_accepts_exact_sections_extensions_h3_and_fenced_faux_heading(self):
+        payload = self.structural_contract({
+            4: "Required behavior is specified.\n\n### Retry behavior\nRetries preserve the same identity.\n\n"
+               "```md\n## 5. Required Runtime Semantics\n```\n",
+        }) + b"\n## Extension Review Surface\n\nReview this additional unit.\n"
+
+        result = validate_contract_structure(payload, 24)
+
+        self.assertEqual(result, {
+            "valid": True,
+            "issue": 24,
+            "normalized": False,
+            "section_count": 11,
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "bytes": len(payload),
+        })
+        units = contract_review_units(payload)
+        self.assertIn("Extension Review Surface", [unit["title"] for unit in units])
+        self.assertEqual(sum(unit["title"] == "5. Required Runtime Semantics" for unit in units), 1)
+
+    def test_structural_preflight_rejects_missing_duplicate_reordered_and_empty_sections(self):
+        complete = self.structural_contract()
+        missing = complete.replace(b"## 3. Exact Change Set\n\nDecision and evidence for section 3.\n\n", b"")
+        duplicate = complete + b"\n## 5. Required Runtime Semantics\n\nRepeated section.\n"
+        sections = complete.decode("utf-8").split("## ")
+        sections[1], sections[2] = sections[2], sections[1]
+        reordered = (sections[0] + "## " + "## ".join(sections[1:])).encode("utf-8")
+        empty = complete.replace(b"## 7. Concrete Tests\n\nDecision and evidence for section 7.\n", b"## 7. Concrete Tests\n\n")
+
+        cases = (
+            (missing, "missing required section '3. Exact Change Set'"),
+            (duplicate, "section '5. Required Runtime Semantics' is repeated"),
+            (reordered, "section '1. Repository Baseline' is out of order"),
+            (empty, "section '7. Concrete Tests' is empty"),
+        )
+        for payload, message in cases:
+            with self.subTest(message=message), self.assertRaisesRegex(ContractError, re.escape(message)):
+                validate_contract_structure(payload, 24)
+
+    def test_structural_preflight_rejects_reserved_aliases_and_unfilled_markers_without_echoing_them(self):
+        alias = self.structural_contract().replace(b"## 4. Implementation Sequence", b"## 4) Implementation Sequence")
+        with self.assertRaisesRegex(ContractError, "heading must be exactly '4. Implementation Sequence'"):
+            validate_contract_structure(alias, 24)
+
+        for marker in (b"{{ISSUE_URL}}", b"```md\n{{ISSUE_URL}}\n```"):
+            payload = self.structural_contract() + b"\n" + marker
+            with self.subTest(marker=marker), self.assertRaises(ContractError) as raised:
+                validate_contract_structure(payload, 24)
+            self.assertIn("unresolved authoring placeholder", str(raised.exception))
+            self.assertNotIn("ISSUE_URL", str(raised.exception))
+
+    def test_structural_preflight_normalizes_legacy_checklist_only_in_memory(self):
+        payload = self.structural_contract()
+        legacy = payload.replace(
+            b"The implementer must self-review every item in this checklist.\n\n"
+            b"<!-- AGENT_REVIEWER_CHECKLIST_V1 -->\n"
+            b"- [ ] Review this contract section.\n"
+            b"<!-- /AGENT_REVIEWER_CHECKLIST_V1 -->\n",
+            b"- [ ] Review this contract section.\nImplementer MUST self-review every item.\n",
+        )
+        source = self.source(legacy)
+        result = validate_contract_structure(source.read_bytes(), 24)
+        normalized = normalize_reviewer_checklist(legacy)
+
+        self.assertTrue(result["normalized"])
+        self.assertEqual(result["sha256"], hashlib.sha256(normalized).hexdigest())
+        self.assertEqual(result["bytes"], len(normalized))
+        self.assertEqual(source.read_bytes(), legacy)
+
+    def test_structural_preflight_reuses_payload_encoding_size_secret_and_checklist_gates(self):
+        malformed_checklist = self.structural_contract().replace(
+            b"<!-- /AGENT_REVIEWER_CHECKLIST_V1 -->", b"<!-- AGENT_REVIEWER_CHECKLIST_V1 -->"
+        )
+        partial_marker = self.structural_contract().replace(
+            b"<!-- /AGENT_REVIEWER_CHECKLIST_V1 -->\n", b""
+        )
+        for payload, message in (
+            (b"", "non-empty bytes"),
+            (b"\xff", "valid UTF-8"),
+            (self.structural_contract() + b"\x00", "NUL byte"),
+            (b"x" * 65537, "maximum is 65536"),
+            (self.structural_contract() + b"\napi_key=secret-value", "credential material"),
+            (malformed_checklist, "markers are ambiguous"),
+            (partial_marker, "markers must occur as one canonical pair"),
+        ):
+            with self.subTest(message=message), self.assertRaisesRegex(ContractError, re.escape(message)):
+                validate_contract_structure(payload, 24)
+
+    def test_structure_cli_is_bounded_deterministic_read_only_and_accepts_relative_and_absolute_paths(self):
+        payload = self.structural_contract().replace(
+            b"The implementer must self-review every item in this checklist.\n\n"
+            b"<!-- AGENT_REVIEWER_CHECKLIST_V1 -->\n"
+            b"- [ ] Review this contract section.\n"
+            b"<!-- /AGENT_REVIEWER_CHECKLIST_V1 -->\n",
+            b"- [ ] Review this contract section.\nImplementer MUST self-review every item.\n",
+        )
+        with tempfile.TemporaryDirectory(dir=ROOT) as temporary:
+            path = Path(temporary) / "draft.md"
+            path.write_bytes(payload)
+            relative = path.relative_to(ROOT)
+            previous_cwd = Path.cwd()
+            try:
+                import os
+                os.chdir(ROOT)
+                output_pairs = []
+                with patch("agent_workflow.cli._gh", side_effect=AssertionError("network boundary called")):
+                    for path_arg in (str(path), str(relative), str(relative)):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        with redirect_stdout(stdout), redirect_stderr(stderr):
+                            status = cli_main([
+                                "validate-implementation-contract-structure", "24", path_arg,
+                                "--repo", str(self.repo),
+                            ])
+                        self.assertEqual(status, 0)
+                        self.assertEqual(stderr.getvalue(), "")
+                        output_pairs.append(stdout.getvalue())
+            finally:
+                os.chdir(previous_cwd)
+
+            self.assertEqual(output_pairs[0], output_pairs[1])
+            self.assertEqual(output_pairs[1], output_pairs[2])
+            decoded = json.loads(output_pairs[0])
+            self.assertEqual(set(decoded), {"valid", "issue", "normalized", "section_count", "sha256", "bytes"})
+            self.assertTrue(decoded["valid"])
+            self.assertTrue(decoded["normalized"])
+            self.assertNotIn("Review this contract section", output_pairs[0])
+            self.assertEqual(path.read_bytes(), payload)
+            self.assertFalse((self.repo / ".agent-state").exists())
+
+    def test_structure_cli_failures_are_nonzero_and_do_not_echo_payload(self):
+        source = self.source(self.structural_contract() + b"\n{{PRIVATE_MARKER}}")
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            status = cli_main([
+                "validate-implementation-contract-structure", "24", str(source), "--repo", str(self.repo),
+            ])
+        self.assertEqual(status, 1)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("unresolved authoring placeholder", stderr.getvalue())
+        self.assertNotIn("PRIVATE_MARKER", stderr.getvalue())
+        self.assertEqual(source.read_bytes(), self.structural_contract() + b"\n{{PRIVATE_MARKER}}")
+
+    def test_chat_project_template_has_one_repository_edit_and_survives_url_substitution(self):
+        source = ROOT / "workflow/templates/chat-project-instructions-template.md"
+        body = source.read_text(encoding="utf-8")
+        repository_token = "https://github.com/OWNER/REPO"
+        self.assertEqual(body.count(repository_token), 1)
+        self.assertEqual(body.splitlines()[2], f"**対象リポジトリ:** {repository_token}")
+        self.assertEqual(len(re.findall(r"https?://", body)), 1)
+        self.assertNotRegex(body, r"\{\{[A-Z][A-Z0-9_]*\}\}")
+        self.assertNotRegex(body, r"/(?:mnt|workspace|Users|home)/")
+
+        consumer_url = "https://github.com/example/consumer"
+        substituted = body.replace(repository_token, consumer_url)
+        markdown_links = re.compile(r"\[[^\]]+\]\([^)]+\)")
+        self.assertEqual(markdown_links.findall(substituted), markdown_links.findall(body))
+        inline_references = re.compile(r"`([^`]+)`")
+        self.assertEqual(inline_references.findall(substituted), inline_references.findall(body))
+        self.assertIn("workflow/templates/implementation-contract-template.md", inline_references.findall(body))
+        for obligation in (
+            "質問・調査・指示書作成",
+            "実装が明示的に依頼された場合のみ",
+            "Closes #<issue-number>",
+            "A: Contract violation / B: Contract ambiguity / C: Newly discovered requirement / D: Optional improvement",
+        ):
+            self.assertIn(obligation, substituted)
+        self.assertNotIn("puchinya", substituted)
+        self.assertNotIn("#22", substituted)
+        for host in ("openai", "claude", "antigravity"):
+            packaged = ROOT / "dist" / host / "templates/chat-project-instructions-template.md"
+            self.assertEqual(packaged.read_bytes(), source.read_bytes())
 
     def test_pointer_error_shows_canonical_block_and_forbids_appended_prose(self):
         from agent_workflow.contracts import parse_pointer

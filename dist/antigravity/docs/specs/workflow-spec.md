@@ -13,7 +13,7 @@ Define the reusable development workflow shared by OpenAI/Codex, Claude Code, an
 
 ## Scope
 
-The repository owns ten Skills, shared standards and templates, application profiles, implementation-contract handling, evidence and checkpoints, self-review, independent PR review, QA, PR delivery, project-profile routing, deterministic validation, and host-specific packages. A consumer project owns its source, `.agent/project.json`, Issue-specific documents, hooks, and verification commands.
+The repository owns ten Skills, shared standards and templates, application profiles, implementation-contract handling, evidence and checkpoints, self-review, independent PR review, QA, PR delivery, project-profile routing, deterministic validation, and host-specific packages. Canonical reusable documents under `workflow/templates/` include specification/design/status templates, a ten-section Implementation Contract starting point, and one portable Chat project-instructions body. A consumer project owns its source, `.agent/project.json`, Issue-specific documents, hooks, and verification commands.
 
 The product does not own a service, database, daemon, GUI, project-template repository, source synchronization, automatic semantic document rewriting, stack-wide detectors, or existing-consumer migration.
 
@@ -82,6 +82,8 @@ Canonical Skill source is `workflow/skills/`. It contains exactly these task are
 Each Skill MUST have concise YAML frontmatter with `name` and `description`. Detailed shared policy belongs in standards or referenced resources. A Skill MUST state its trigger, expected inputs, ordered procedure, output, uncertainty behavior, and supporting resources where relevant. Skill copies in `dist/**` are generated.
 
 The requirements Skill creates/validates the Issue first and then runs `ensure-milestone`, passing `--target-version` only when the approved Issue requirements explicitly supply it; it may continue after `NOT_APPLICABLE` only when the profile mode is `auto`. On approved Contract execution, the implementation Skill checks workspace policy, establishes/reuses host-managed isolation where available, starts the feature branch only in the allowed current-checkout path, and runs `prepare-implementation` before source edits. It preserves any approved target version unchanged through the implementation handoff.
+
+New Implementation Contracts use `workflow/templates/implementation-contract-template.md` as a starting point. Before saving or publishing a new contract created from that template, the requirements and implementation-contract Skills run `python -m agent_workflow validate-implementation-contract-structure <issue> <path>`. This deterministic read-only preflight checks the required numbered H2 layout and filled authoring markers; it does not approve contract content or change the existing publication flow. Historical contracts are not retroactively gated. The Japanese `workflow/templates/chat-project-instructions-template.md` is a single copy/paste project-instructions body whose only repository-specific substitution is its top repository URL line; it does not claim capabilities supplied only by a host or plugin.
 
 ### Review and delivery principles
 
