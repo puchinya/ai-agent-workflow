@@ -32,7 +32,7 @@ IMPLEMENTATION_CONTRACT_SECTIONS = (
     "1. Repository Baseline",
     "2. Architecture Decisions",
     "3. Exact Change Set",
-    "4. Implementation Sequence",
+    "4. Implementation Outcomes",
     "5. Required Runtime Semantics",
     "6. Non-goals / Forbidden Changes",
     "7. Concrete Tests",

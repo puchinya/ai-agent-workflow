@@ -82,6 +82,19 @@ def local_head_sha(repo: Path) -> str:
     return sha
 
 
+def is_commit_ancestor(repo: Path, ancestor_sha: str, descendant_sha: str) -> bool:
+    """Check commit ancestry through Git without changing refs or the worktree."""
+    if (not isinstance(ancestor_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", ancestor_sha)
+            or not isinstance(descendant_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", descendant_sha)):
+        raise GitLifecycleError("commit ancestry requires full 40-character SHA values")
+    result = _invoke(repo, ["merge-base", "--is-ancestor", ancestor_sha, descendant_sha], allow_failure=True)
+    if result.returncode == 0:
+        return True
+    if result.returncode == 1:
+        return False
+    raise GitLifecycleError(f"Git merge-base failed (exit status {result.returncode})")
+
+
 def workspace_identity(repo: Path) -> WorkspaceIdentity:
     """Read checkout identity from Git metadata without inspecting neighboring paths."""
     root_result = _invoke(repo, ["rev-parse", "--show-toplevel"], allow_failure=True)

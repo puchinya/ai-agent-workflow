@@ -21,7 +21,7 @@ Goals are explicit Issue authority, progressive context loading, reliable local 
 | Compact context routing | The runtime emits validated paths and identifiers rather than document contents. |
 | Review is evidence, not approval | Self-review and independent-review records bind claims to contract units, checklist, and exact PR HEAD; runtime validates the fresh-context attestation but cannot prove provenance. |
 | Self-review covers the complete approved contract | A schema-v2 contract-conformance layer records evidence for deterministic H2 units; safely normalized new Reviewer Checklist H2 may be excluded, while legacy/non-canonical historical checklist H2 remains covered as a unit. The Reviewer Checklist remains a separate concise summary. |
-| Durable document decisions stay explicit through implementation | The Issue carries Specification, Design, and Status decisions; implementation checks them against the final diff, and self-review verifies alignment. |
+| Durable documents agree in the final result | The Issue carries Specification, Design, and Status decisions; implementation checks them against the final diff, and self-review verifies alignment. Artifact creation/edit order is not an acceptance condition. |
 | Four evidence gates precede Required Checks | The delivery gate checks Final Verification, self-review, QA, and Independent Review in order before Required Checks for the same current HEAD. |
 | Host-specific packages differ | The builder emits three isolated packages from shared sources and adapters. |
 | Milestone and feature-branch lifecycle is reusable | Milestone mode and fallback source stay in Schema 2 `.agent/project.json`; an approved target release is Issue-scoped input, and the requirements and implementation Skills call standard runtime commands. |
@@ -70,10 +70,12 @@ approved Contract
  -> agent-context
  -> existing binding?
       yes -> reuse frozen base_ref/base_sha -> prepare-implementation reuse
-      no  -> resolve-implementation-base -> exact base_ref/base_sha
-               -> exact-base host capability
-               -> isolated | current fallback | blocked
-               -> prepare-implementation binding
+      no  -> existing exact PR continuation?
+               yes -> recover-implementation-binding -> prepare-implementation
+               no  -> resolve-implementation-base -> exact base_ref/base_sha
+                        -> exact-base host capability
+                        -> isolated | current fallback | blocked
+                        -> prepare-implementation binding
  -> implementation
  -> canonical remote branch / PR
  -> evidence gates / independent review
@@ -81,7 +83,7 @@ approved Contract
 
 Issue and PR remain the user-facing identities. One implementation writer owns an execution; corrections reuse the same host workspace and binding, including its frozen base ref/SHA. On a new execution, native isolation is eligible only when the host can start the workspace at the exact selected base SHA; `auto` otherwise falls back to the current checkout and `required` blocks before edits. The host owns worktree creation, resume, access control, and cleanup. The runtime never shells out to another coding-agent binary, creates raw automatic sibling worktrees, copies secrets, or routes work globally. Independent Review stays in a fresh context separate from the implementation execution.
 
-Git cleanliness sees untracked content in the main checkout. Claude Code’s default `.claude/worktrees/` location is nested under that checkout, but host settings or `WorktreeCreate` hooks can place worktrees elsewhere. Project-owned ignore rules are therefore guidance and configuration, not runtime host-path inference or a universal preflight. This does not change host-owned worktree lifecycle, the execution registry or binding, or PR gates.
+Git cleanliness sees untracked content in the main checkout. Claude Code’s default `.claude/worktrees/` location is nested under that checkout, but host settings or `WorktreeCreate` hooks can place worktrees elsewhere. Project-owned ignore rules are therefore guidance and configuration, not runtime host-path inference or a universal preflight. This does not change host-owned worktree lifecycle or PR gates. If a local binding is lost, a verified exact PR continuation can restore an Issue-scoped Schema 2 binding without changing branches or worktrees; normal new executions continue to resolve and bind the selected base.
 
 ## Failure handling
 

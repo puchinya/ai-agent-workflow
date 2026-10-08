@@ -34,12 +34,14 @@ Target release: {{APPROVED_TARGET_OR_NOT_APPLICABLE}}
 - Boundaries explicitly left unchanged: {{UNTOUCHED_BOUNDARIES}}
 - Generated outputs (builder only): {{GENERATED_OUTPUTS}}
 
-## 4. Implementation Sequence
+## 4. Implementation Outcomes
 
-1. {{DEPENDENCY_ORDERED_STEP_1}}
-2. {{DEPENDENCY_ORDERED_STEP_2}}
-3. {{DEPENDENCY_ORDERED_STEP_3}}
-4. {{FINAL_GENERATION_AND_HANDOFF_STEP}}
+List the required final artifacts, behaviors, tests, and handoff results. The list order is illustrative and does not constrain source edits, document edits, tests, commits, or publication timing. Completion is based on the aggregate final result.
+
+- {{REQUIRED_OUTCOME_1}}
+- {{REQUIRED_OUTCOME_2}}
+- {{REQUIRED_OUTCOME_3}}
+- {{REQUIRED_OUTCOME_4}}
 
 ## 5. Required Runtime Semantics
 

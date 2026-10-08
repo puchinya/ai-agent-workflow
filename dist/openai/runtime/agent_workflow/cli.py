@@ -16,7 +16,8 @@ from .contracts import (ContractError, publish_contract, restore_contract, save_
                         validate_contract_structure, verify_contract)
 from .delivery import DeliveryError, delivery_check, ensure_review_pr, finalize_merged_issue
 from .documents import resolve_document_impact, validate_docs
-from .execution import ExecutionError, prepare_implementation, resolve_implementation_base
+from .execution import (ExecutionError, prepare_implementation, recover_implementation_binding,
+                        resolve_implementation_base)
 from .github import GitHub, GitHubError, discover_repository
 from .git import GitLifecycleError, changed_document_paths, start_feature_branch
 from .profile import (APPLICATION_TYPES, ProfileError, build_hook_plan, load_profile,
@@ -384,6 +385,13 @@ def build_parser() -> argparse.ArgumentParser:
     implementation.add_argument("--supersede", action="store_true")
     implementation.add_argument("--repo")
 
+    recover_binding = commands.add_parser("recover-implementation-binding")
+    recover_binding.add_argument("issue", type=_number)
+    recover_binding.add_argument("pr", type=_number)
+    recover_binding.add_argument("--base-ref", metavar="BRANCH", required=True)
+    recover_binding.add_argument("--expected-base-sha", metavar="SHA40", required=True)
+    recover_binding.add_argument("--repo")
+
     review_pr = commands.add_parser("ensure-review-pr")
     review_pr.add_argument("issue", type=_number)
     review_pr.add_argument("--body-file", type=Path, required=True)
@@ -528,6 +536,12 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, int]:
         result = prepare_implementation(
             repo, args.issue, _gh(repo), mode=args.mode, base_ref=args.base_ref,
             expected_base_sha=args.expected_base_sha, supersede=args.supersede,
+        )
+    elif args.command == "recover-implementation-binding":
+        repo = _repo_arg(args.repo)
+        result = recover_implementation_binding(
+            repo, args.issue, args.pr, _gh(repo), base_ref=args.base_ref,
+            expected_base_sha=args.expected_base_sha,
         )
     elif args.command == "ensure-review-pr":
         return _ensure_review_pr(args)

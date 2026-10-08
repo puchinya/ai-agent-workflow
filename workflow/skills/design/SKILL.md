@@ -10,7 +10,7 @@ Use after requirements are approved and before implementation. Read the owning I
 ## Procedure
 1. Identify durable rules and assign one specification owner to each.
 2. Set the Issue's Specification, Design, and Status decisions before writing; each row uses matching-tree links or its allowed unchanged/evidence-only reason.
-3. Write or update Schema 2 specs, then design documents with traceability.
+3. Keep Schema 2 specifications and design documents traceable and consistent with the approved decisions; their editing order is not a completion condition.
 4. Record boundaries, errors, data ownership, security, alternatives, and verification.
 5. Link Issue, specification, and design owners; validate local links, required sections, and the declared Document impact.
 6. Publish the Reviewer Checklist before implementation.

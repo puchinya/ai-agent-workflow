@@ -14,14 +14,14 @@ GitHubの最新のリポジトリ状態を一次情報として扱う。作業�
 
 ## 仕様・設計・Implementation Contract
 
-開発計画は原則として `requirements → specifications → design → implementation/tests → evidence/status → review → PR` の順序で扱う。Issue-firstで進め、既存Issue・PRとの重複を調べる。現行アーキテクチャ・互換性・所有権・ライフサイクル・失敗時の挙動・テスト境界を先に確定する。要求されていないリファクタリングや拡張を混ぜない。
+開発ではIssue-firstで進め、既存Issue・PRとの重複を調べる。requirements、specifications、design、implementation/tests、evidence/statusの各成果物は、それぞれの所有権を保ちながら最終結果で互いに整合させる。作成・編集・commitの順番は完了条件にしない。現行アーキテクチャ・互換性・所有権・ライフサイクル・失敗時の挙動・テスト境界を満たし、要求されていないリファクタリングや拡張を混ぜない。
 
 Codex / Claude Code等に実装を委任するときは、単なるタスク説明でなく、**Decision-Complete / Context-EfficientなImplementation Contract**をMarkdownで作成する。リポジトリに `workflow/templates/implementation-contract-template.md` があればその様式を用いる。なければ次の10章を用いる。
 
 1. Repository Baseline
 2. Architecture Decisions
 3. Exact Change Set
-4. Implementation Sequence
+4. Implementation Outcomes
 5. Required Runtime Semantics
 6. Non-goals / Forbidden Changes
 7. Concrete Tests
@@ -29,7 +29,7 @@ Codex / Claude Code等に実装を委任するときは、単なるタスク説�
 9. Reviewer Checklist
 10. Completion Report
 
-各項目には判断済みの結論を先に書き、関連ファイルパス・型・関数・spec/designの章を根拠として示す。コード・文書全文を大量に転記しない。実装者に重大な設計判断を丸投げしない。必要なら却下した設計案も記載する。
+各項目には判断済みの結論と、関連ファイルパス・型・関数・spec/designの章による根拠を含める。コード・文書全文を大量に転記しない。実装者に重大な設計判断を丸投げしない。必要なら却下した設計案も記載する。
 
 すべてのImplementation Contractに次の実行ルールを含める。
 
