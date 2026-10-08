@@ -4533,6 +4533,177 @@ macOS IDE smoke test not run
         self.assertEqual(self.gh.removed, [])
 
 
+class ClaudeWorktreeGuidanceTests(unittest.TestCase):
+    base_sha = "97b0f43efc0ba54359df72520ba944d4ad88e618"
+
+    def _git(self, repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(["git", *args], cwd=repo, text=True, encoding="utf-8",
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+    def _repo_with_committed_ignore(self, directory: str) -> Path:
+        repo = Path(directory) / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+        self._git(repo, "config", "user.name", "Test").check_returncode()
+        self._git(repo, "config", "user.email", "test@example.invalid").check_returncode()
+        (repo / ".gitignore").write_bytes((ROOT / ".gitignore").read_bytes())
+        (repo / "README.md").write_text("fixture\n", encoding="utf-8")
+        self._git(repo, "add", ".gitignore", "README.md").check_returncode()
+        self._git(repo, "commit", "-m", "fixture").check_returncode()
+        return repo
+
+    def test_t01_root_ignore_rule_is_exact_and_preserves_existing_patterns(self):
+        rules = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(rules.count(".claude/worktrees/"), 1)
+        for existing in (".agent-state/", "__pycache__/", "*.py[cod]", ".venv/"):
+            self.assertEqual(rules.count(existing), 1)
+        for broad_claude_rule in (".claude", ".claude/", ".claude/**", "**/.claude", "**/.claude/",
+                                  "**/.claude/**"):
+            self.assertNotIn(broad_claude_rule, rules)
+
+    def test_t02_default_path_is_ignored_and_absent_from_status(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = self._repo_with_committed_ignore(temporary)
+            nested = repo / ".claude/worktrees/probe/file.txt"
+            nested.parent.mkdir(parents=True)
+            nested.write_text("worktree content\n", encoding="utf-8")
+            ignored = self._git(repo, "check-ignore", "-q", "--no-index",
+                                ".claude/worktrees/probe/file.txt")
+            self.assertEqual(ignored.returncode, 0, ignored.stderr)
+            status = self._git(repo, "status", "--porcelain", "--untracked-files=all",
+                               "--ignore-submodules=none")
+            self.assertEqual(status.returncode, 0, status.stderr)
+            self.assertNotIn(".claude/worktrees/", status.stdout)
+
+    def test_t03_unrelated_claude_config_remains_trackable(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = self._repo_with_committed_ignore(temporary)
+            config = repo / ".claude/agents/example.md"
+            config.parent.mkdir(parents=True)
+            config.write_text("agent configuration\n", encoding="utf-8")
+            ignored = self._git(repo, "check-ignore", "-q", "--no-index",
+                                ".claude/agents/example.md")
+            self.assertNotEqual(ignored.returncode, 0)
+            status = self._git(repo, "status", "--porcelain", "--untracked-files=all")
+            self.assertEqual(status.returncode, 0, status.stderr)
+            self.assertIn(".claude/agents/example.md", status.stdout)
+
+    def test_t04_clean_worktree_gate_ignores_default_path_but_rejects_source_file(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = self._repo_with_committed_ignore(temporary)
+            nested = repo / ".claude/worktrees/probe/file.txt"
+            nested.parent.mkdir(parents=True)
+            nested.write_text("worktree content\n", encoding="utf-8")
+            require_clean_worktree(repo)
+            (repo / "untracked-source.txt").write_text("source change\n", encoding="utf-8")
+            with self.assertRaisesRegex(GitLifecycleError, "worktree must be clean"):
+                require_clean_worktree(repo)
+
+    def test_t05_claude_adapter_documents_owner_diagnostic_and_custom_paths(self):
+        adapter = (ROOT / "adapters/claude/README.md").read_text(encoding="utf-8")
+        for expected in (
+            "### Worktree ignore configuration",
+            "<repo>/.claude/worktrees/<name>/",
+            "`.claude/worktrees/`",
+            "consumer project owner",
+            "git check-ignore -v --no-index .claude/worktrees/probe",
+            "No matching result requires owner review",
+            "makes no file changes",
+            "`probe` does not need to exist",
+            "actual relative directory",
+            "outside it",
+            "`WorktreeCreate` hooks",
+            "optional `.worktreeinclude`",
+            "does not edit consumer ignore files",
+            "does not inspect the effective host path",
+            "or create worktrees itself",
+            "https://code.claude.com/docs/en/worktrees",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, adapter)
+
+    def test_t06_shared_skill_guidance_is_claude_only_and_nonblocking(self):
+        skill = (ROOT / "workflow/skills/implementation/SKILL.md").read_text(encoding="utf-8")
+        for retained in (
+            "resolve-implementation-base <issue>", "prepare-implementation",
+            "`auto` uses isolation when exact-base capability is available",
+            "`required` blocks before edits", "`disabled` uses the current-checkout flow",
+            "Claude Code’s default `.claude/worktrees/` destination",
+            "informational", "never authorizes changing the consumer’s `.gitignore`",
+            "running a generic preflight", "overriding the host’s worktree placement",
+        ):
+            with self.subTest(retained=retained):
+                self.assertIn(retained, skill)
+        self.assertNotIn("git check-ignore", skill)
+        self.assertNotIn(".worktreeinclude", skill)
+        self.assertEqual(len(re.findall(r"^\d+\.", skill, flags=re.M)), 11)
+
+    def test_t07_spec_and_design_preserve_owners_and_host_boundaries(self):
+        spec = (ROOT / "docs/specs/workflow-spec.md").read_text(encoding="utf-8")
+        design = (ROOT / "docs/design/workflow-design.md").read_text(encoding="utf-8")
+        for expected in (
+            "consumer project owns ignoring", "actual relative path",
+            "neither mutates ignore files", "generic ignore-path preflight/availability checks",
+            "Issue/PR identity remains the user's routing key", "frozen tuple",
+            "Independent Review remains a fresh session",
+        ):
+            self.assertIn(expected, spec)
+        for expected in (
+            "Git cleanliness sees untracked content", "host settings or `WorktreeCreate` hooks",
+            "guidance and configuration", "host-owned worktree lifecycle",
+            "execution registry or binding", "PR gates", "Independent Review stays in a fresh context",
+        ):
+            self.assertIn(expected, design)
+
+    def test_t08_generated_packages_propagate_shared_docs_and_claude_adapter_only(self):
+        files = build_dist.expected_files()
+        self.assertEqual(validate_dist.validate(), [])
+        def normalize_newlines(value):
+            return value.replace("\r\n", "\n")
+
+        for host in build_dist.HOSTS:
+            prefix = f"dist/{host}"
+            skill = normalize_newlines(
+                files[f"{prefix}/skills/implementation/SKILL.md"].decode("utf-8")
+            )
+            skill_source = (ROOT / "workflow/skills/implementation/SKILL.md").read_text(encoding="utf-8")
+            skill_source = skill_source.replace("../../../docs/specs/", "../../docs/specs/")
+            self.assertEqual(skill, skill_source)
+            for relative, expected in (
+                ("docs/specs/workflow-spec.md", "consumer project owns ignoring"),
+                ("docs/design/workflow-design.md", "Git cleanliness sees untracked content"),
+            ):
+                generated = normalize_newlines(files[f"{prefix}/{relative}"].decode("utf-8"))
+                self.assertIn(expected, generated)
+                source = (ROOT / relative).read_text(encoding="utf-8")
+                self.assertEqual(generated, normalize_newlines(source))
+        claude_readme = files["dist/claude/README.md"].decode("utf-8")
+        self.assertIn("### Worktree ignore configuration", claude_readme)
+        for host in ("openai", "antigravity"):
+            self.assertNotIn("### Worktree ignore configuration",
+                             files[f"dist/{host}/README.md"].decode("utf-8"))
+        self.assertFalse(any(path.endswith("/.gitignore") for path in files))
+
+    def test_t09_runtime_boundary_has_no_ignore_preflight(self):
+        protected = [
+            "runtime/agent_workflow/git.py", "runtime/agent_workflow/execution.py",
+            "runtime/agent_workflow/cli.py", "runtime/agent_workflow/profile.py",
+        ]
+        for path in protected:
+            self.assertNotIn("git check-ignore", (ROOT / path).read_text(encoding="utf-8"))
+        git_source = (ROOT / protected[0]).read_text(encoding="utf-8")
+        execution_source = (ROOT / protected[1]).read_text(encoding="utf-8")
+        cli_source = (ROOT / protected[2]).read_text(encoding="utf-8")
+        self.assertIn('"status", "--porcelain"', git_source)
+        self.assertIn("def prepare_implementation", execution_source)
+        self.assertNotIn('commands.add_parser("check-ignore")', cli_source)
+
+    def test_t10_adapter_does_not_claim_host_product_smoke(self):
+        adapter = (ROOT / "adapters/claude/README.md").read_text(encoding="utf-8")
+        self.assertIn("Product behavior has not been smoke-tested", adapter)
+        self.assertNotIn("EnterWorktree was tested", adapter)
+
+
 class DistributionTests(unittest.TestCase):
     def test_host_isolation_requires_the_exact_selected_base(self):
         implementation = (ROOT / "workflow/skills/implementation/SKILL.md").read_text(encoding="utf-8")
