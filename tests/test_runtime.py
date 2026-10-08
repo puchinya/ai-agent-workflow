@@ -4658,9 +4658,14 @@ class ClaudeWorktreeGuidanceTests(unittest.TestCase):
     def test_t08_generated_packages_propagate_shared_docs_and_claude_adapter_only(self):
         files = build_dist.expected_files()
         self.assertEqual(validate_dist.validate(), [])
+        def normalize_newlines(value):
+            return value.replace("\r\n", "\n")
+
         for host in build_dist.HOSTS:
             prefix = f"dist/{host}"
-            skill = files[f"{prefix}/skills/implementation/SKILL.md"].decode("utf-8")
+            skill = normalize_newlines(
+                files[f"{prefix}/skills/implementation/SKILL.md"].decode("utf-8")
+            )
             skill_source = (ROOT / "workflow/skills/implementation/SKILL.md").read_text(encoding="utf-8")
             skill_source = skill_source.replace("../../../docs/specs/", "../../docs/specs/")
             self.assertEqual(skill, skill_source)
@@ -4668,9 +4673,10 @@ class ClaudeWorktreeGuidanceTests(unittest.TestCase):
                 ("docs/specs/workflow-spec.md", "consumer project owns ignoring"),
                 ("docs/design/workflow-design.md", "Git cleanliness sees untracked content"),
             ):
-                generated = files[f"{prefix}/{relative}"].decode("utf-8")
+                generated = normalize_newlines(files[f"{prefix}/{relative}"].decode("utf-8"))
                 self.assertIn(expected, generated)
-                self.assertEqual(generated, (ROOT / relative).read_text(encoding="utf-8"))
+                source = (ROOT / relative).read_text(encoding="utf-8")
+                self.assertEqual(generated, normalize_newlines(source))
         claude_readme = files["dist/claude/README.md"].decode("utf-8")
         self.assertIn("### Worktree ignore configuration", claude_readme)
         for host in ("openai", "antigravity"):
