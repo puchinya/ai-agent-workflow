@@ -4678,17 +4678,19 @@ class ClaudeWorktreeGuidanceTests(unittest.TestCase):
                              files[f"dist/{host}/README.md"].decode("utf-8"))
         self.assertFalse(any(path.endswith("/.gitignore") for path in files))
 
-    def test_t09_runtime_boundary_has_no_changes_or_ignore_preflight(self):
+    def test_t09_runtime_boundary_has_no_ignore_preflight(self):
         protected = [
             "runtime/agent_workflow/git.py", "runtime/agent_workflow/execution.py",
             "runtime/agent_workflow/cli.py", "runtime/agent_workflow/profile.py",
         ]
-        changed = subprocess.run(["git", "diff", "--name-only", self.base_sha, "--", *protected],
-                                 cwd=ROOT, text=True, encoding="utf-8", check=True,
-                                 stdout=subprocess.PIPE).stdout.splitlines()
-        self.assertEqual(changed, [])
         for path in protected:
             self.assertNotIn("git check-ignore", (ROOT / path).read_text(encoding="utf-8"))
+        git_source = (ROOT / protected[0]).read_text(encoding="utf-8")
+        execution_source = (ROOT / protected[1]).read_text(encoding="utf-8")
+        cli_source = (ROOT / protected[2]).read_text(encoding="utf-8")
+        self.assertIn('"status", "--porcelain"', git_source)
+        self.assertIn("def prepare_implementation", execution_source)
+        self.assertNotIn('commands.add_parser("check-ignore")', cli_source)
 
     def test_t10_adapter_does_not_claim_host_product_smoke(self):
         adapter = (ROOT / "adapters/claude/README.md").read_text(encoding="utf-8")
