@@ -1964,12 +1964,17 @@ class ContractTests(unittest.TestCase):
         sections[1], sections[2] = sections[2], sections[1]
         reordered = (sections[0] + "## " + "## ".join(sections[1:])).encode("utf-8")
         empty = complete.replace(b"## 7. Concrete Tests\n\nDecision and evidence for section 7.\n", b"## 7. Concrete Tests\n\n")
+        unicode_whitespace = complete.replace(
+            b"## 5. Required Runtime Semantics\n\nDecision and evidence for section 5.\n",
+            "## 5. Required Runtime Semantics\n\n　　\n".encode("utf-8"),
+        )
 
         cases = (
             (missing, "missing required section '3. Exact Change Set'"),
             (duplicate, "section '5. Required Runtime Semantics' is repeated"),
             (reordered, "section '1. Repository Baseline' is out of order"),
             (empty, "section '7. Concrete Tests' is empty"),
+            (unicode_whitespace, "section '5. Required Runtime Semantics' is empty"),
         )
         for payload, message in cases:
             with self.subTest(message=message), self.assertRaisesRegex(ContractError, re.escape(message)):

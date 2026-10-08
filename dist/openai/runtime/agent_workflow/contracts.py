@@ -287,7 +287,8 @@ def validate_contract_structure(data: bytes, issue: int) -> dict[str, Any]:
     for section_index, position in enumerate(expected_positions):
         heading = headings[position]
         end = headings[position + 1].start if position + 1 < len(headings) else len(normalized)
-        if not normalized[heading.end:end].strip():
+        section_body = normalized[heading.end:end].decode("utf-8", errors="strict")
+        if not section_body.strip():
             required = IMPLEMENTATION_CONTRACT_SECTIONS[section_index]
             raise ContractError(f"Implementation Contract section '{required}' is empty")
 
