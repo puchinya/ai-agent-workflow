@@ -161,6 +161,51 @@ def _load_profile(repo: Path) -> dict[str, Any]:
     return profile
 
 
+def resolve_implementation_base(repo: Path, issue: int, gh: GitHub, *,
+                                base_ref: str | None = None,
+                                expected_base_sha: str | None = None) -> dict[str, Any]:
+    """Resolve the approved execution's selected same-origin base without changing workspace state."""
+    _positive_issue(issue)
+    if expected_base_sha is not None and (
+            not isinstance(expected_base_sha, str) or not SHA40.fullmatch(expected_base_sha)):
+        raise ExecutionError("--expected-base-sha must be exactly 40 lowercase hexadecimal characters")
+
+    profile = _load_profile(repo)
+    try:
+        if origin_repository(repo).casefold() != gh.repo.casefold():
+            raise ExecutionError("origin fetch repository does not match the owning Issue")
+    except GitLifecycleError as exc:
+        raise ExecutionError(str(exc)) from exc
+
+    contract_comment_id, contract_sha = _approved_contract(issue, gh)
+    try:
+        default_base_ref = gh.repository().get("default_branch")
+    except GitHubError as exc:
+        raise ExecutionError(str(exc)) from exc
+    if not isinstance(default_base_ref, str) or not default_base_ref.strip():
+        raise ExecutionError("GitHub repository default branch is missing")
+    try:
+        validate_branch_ref(repo, default_base_ref, "GitHub repository default branch")
+        selected_base = default_base_ref if base_ref is None else base_ref
+        validate_branch_ref(repo, selected_base, "selected base branch")
+        base_sha = fetch_base_ref(repo, selected_base)
+    except GitLifecycleError as exc:
+        raise ExecutionError(str(exc)) from exc
+    if expected_base_sha is not None and expected_base_sha != base_sha:
+        raise ExecutionError("expected base SHA does not match the selected remote branch")
+
+    return {
+        "issue": issue,
+        "repository": gh.repo,
+        "contract_comment_id": contract_comment_id,
+        "contract_sha256": contract_sha,
+        "default_base_ref": default_base_ref,
+        "base_ref": selected_base,
+        "base_sha": base_sha,
+        "stacked": selected_base != default_base_ref,
+    }
+
+
 def _execution_status(record: dict[str, Any], current: bool) -> dict[str, Any]:
     return {
         "mode": record["mode"],

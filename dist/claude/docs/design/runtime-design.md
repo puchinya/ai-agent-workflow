@@ -46,6 +46,10 @@ The dependency direction is CLI -> domain modules -> injected GitHub/process bou
 7. Commit local state with atomic replacement only after remote verification, or keep old verified bytes on failure.
 8. Clean temporary files in `finally` paths and print bounded diagnostics. Hook diagnostics stay silent on success and emit only a redacted combined tail of at most 16 KiB on failure. Post-switch failures preserve and report the switched branch.
 
+### Implementation-base resolution ownership
+
+`execution.py` owns the implementation-base orchestration and authority checks: Schema 2 profile, origin repository identity, approved Issue/Contract, default branch, selected branch, and optional expected-SHA comparison. `git.py` remains the sole raw Git boundary and resolves/fetches a same-origin base through `fetch_base_ref`. `cli.py` parses and prints the bounded result only. The resolver performs no workspace lifecycle, hook, binding, source, or GitHub mutation and does not require a clean checkout. New execution setup carries its returned `(base_ref, base_sha)` unchanged through host capability evaluation and setup; an existing binding skips resolution and keeps its frozen tuple.
+
 ### Workspace binding and publication
 
 The implementation Skill resolves the selected base ref and exact SHA before evaluating host capability. Isolation is available only when the host can establish the workspace at that exact SHA; otherwise `auto` uses the current-checkout flow and `required` blocks. A valid managed linked worktree is reused; a new one is entered only after its starting base is verified. Before source edits, `prepare-implementation` verifies the Issue, exact approved Contract pointer, clean current workspace, base ref/SHA, initial HEAD, and execution mode. A local binding under `.agent-state/issues/N/execution.json` is atomic and ignored. Reuse after commits retains the frozen base and canonical branch. Explicit Contract supersession changes only its bound comment ID/SHA.

@@ -63,10 +63,13 @@ consumer Issue + .agent/project.json
 
 ```text
 approved Contract
- -> resolve selected base ref/SHA
- -> host capability for that exact base
- -> isolated | current-checkout fallback | blocked
- -> prepare-implementation binding
+ -> agent-context
+ -> existing binding?
+      yes -> reuse frozen base_ref/base_sha -> prepare-implementation reuse
+      no  -> resolve-implementation-base -> exact base_ref/base_sha
+               -> exact-base host capability
+               -> isolated | current fallback | blocked
+               -> prepare-implementation binding
  -> implementation
  -> canonical remote branch / PR
  -> evidence gates / independent review

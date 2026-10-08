@@ -13,7 +13,7 @@ Define observable behavior for the Python 3.10+ command `python -m agent_workflo
 
 ## Scope
 
-The CLI MUST provide `init-project`, `agent-context`, `validate-docs`, `run-hook`, `ensure-milestone`, `start-feature-branch`, `prepare-implementation`, `ensure-review-pr`, `verify-final`, `validate-public-final-verification`, `save-implementation-contract`, `publish-implementation-contract`, `restore-implementation-contract`, `verify-implementation-contract`, `prepare-self-review`, `validate-self-review`, `publish-self-review`, `validate-public-review`, `prepare-qa`, `validate-qa`, `publish-qa`, `validate-public-qa`, `prepare-pr-review`, `validate-pr-review`, `publish-pr-review`, `validate-public-pr-review`, `delivery-check`, and `finalize-merged-issue`.
+The CLI MUST provide `init-project`, `agent-context`, `validate-docs`, `run-hook`, `ensure-milestone`, `start-feature-branch`, `resolve-implementation-base`, `prepare-implementation`, `ensure-review-pr`, `verify-final`, `validate-public-final-verification`, `save-implementation-contract`, `publish-implementation-contract`, `restore-implementation-contract`, `verify-implementation-contract`, `prepare-self-review`, `validate-self-review`, `publish-self-review`, `validate-public-review`, `prepare-qa`, `validate-qa`, `publish-qa`, `validate-public-qa`, `prepare-pr-review`, `validate-pr-review`, `publish-pr-review`, `validate-public-pr-review`, `delivery-check`, and `finalize-merged-issue`.
 
 The commands `update-template` and `refresh-template-manifest` are forbidden. No module other than `github.py` may invoke `gh` directly. Every GitHub mutation uses JSON input files or structured fields, never shell interpolation of user payloads.
 
@@ -73,6 +73,29 @@ Each row selects exactly one alternative. Every link must target the correspondi
 ### Feature branch bases
 
 `start-feature-branch N <description...> [--base-ref BRANCH] [--expected-base-sha SHA40]` uses the GitHub default branch when `--base-ref` is omitted. An explicit base must name an existing same-repository remote branch; a SHA cannot be supplied as the base branch. The runtime fetches and resolves `origin/<base-ref>`, then checks `--expected-base-sha` before any branch switch, cleanup, or hook. A new target branch starts directly at that fetched base. Existing current, local, and remote targets remain idempotent and are never rebased. Results include `base_ref`, `base_sha`, `stacked`, and `creation_source` (`current`, `local`, `remote`, or `new`). A base SHA mismatch leaves the current branch and worktree unchanged.
+
+### Implementation base resolution
+
+`resolve-implementation-base ISSUE [--base-ref BRANCH] [--expected-base-sha SHA40] [--repo PATH]` resolves the exact base identity for a new Implementation Contract execution before host capability selection. It is owned by `execution.py` for orchestration, calls the approved-contract and profile validation boundaries, and delegates remote-ref validation/fetch only to `git.py`'s `fetch_base_ref`. It requires a positive Issue number, Schema 2 profile, origin fetch repository matching the configured GitHub repository, an open same-repository non-PR Issue, the current approved Contract pointer and exact named comment bytes, a valid GitHub default branch, and a valid selected same-origin branch. Omitted `--base-ref` selects the GitHub default branch; an explicit value selects that branch. The resolver returns only Issue/repository identity, Contract comment ID/SHA, default/base refs, exact 40-character base SHA, and `stacked` (true exactly when base ref differs from default).
+
+The successful JSON result has exactly this identity-only shape:
+
+~~~json
+{
+  "issue": 20,
+  "repository": "owner/repo",
+  "contract_comment_id": 123,
+  "contract_sha256": "<64 lowercase hex>",
+  "default_base_ref": "main",
+  "base_ref": "feature/100-base",
+  "base_sha": "<40 lowercase hex>",
+  "stacked": true
+}
+~~~
+
+It does not require a clean worktree. Its only Git side effect is fetching the selected origin branch; it never switches or creates branches/worktrees, runs hooks, writes execution state, edits source, or mutates GitHub.
+
+When supplied, `--expected-base-sha` must be exactly 40 lowercase hexadecimal characters and equal the fetched selected-base SHA. A syntax or value mismatch fails closed before host isolation or any branch/worktree/binding/hook/GitHub mutation. This expected-SHA check is used by later setup commands to detect remote advancement between resolution and binding; callers must restart resolution deliberately rather than silently adopt a newer tip. A valid existing binding skips this command and reuses its frozen base ref/SHA.
 
 ### Implementation execution workspaces
 

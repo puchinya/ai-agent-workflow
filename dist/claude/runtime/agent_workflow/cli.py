@@ -16,7 +16,7 @@ from .contracts import (ContractError, publish_contract, restore_contract, save_
                         verify_contract)
 from .delivery import DeliveryError, delivery_check, ensure_review_pr, finalize_merged_issue
 from .documents import resolve_document_impact, validate_docs
-from .execution import ExecutionError, prepare_implementation
+from .execution import ExecutionError, prepare_implementation, resolve_implementation_base
 from .github import GitHub, GitHubError, discover_repository
 from .git import GitLifecycleError, changed_document_paths, start_feature_branch
 from .profile import (APPLICATION_TYPES, ProfileError, build_hook_plan, load_profile,
@@ -370,6 +370,12 @@ def build_parser() -> argparse.ArgumentParser:
     feature.add_argument("--expected-base-sha", metavar="SHA40")
     feature.add_argument("--repo")
 
+    resolve_base = commands.add_parser("resolve-implementation-base")
+    resolve_base.add_argument("issue", type=_number)
+    resolve_base.add_argument("--base-ref", metavar="BRANCH")
+    resolve_base.add_argument("--expected-base-sha", metavar="SHA40")
+    resolve_base.add_argument("--repo")
+
     implementation = commands.add_parser("prepare-implementation")
     implementation.add_argument("issue", type=_number)
     implementation.add_argument("--base-ref", metavar="BRANCH")
@@ -507,6 +513,12 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, int]:
         result = _ensure_milestone(args)
     elif args.command == "start-feature-branch":
         return _start_feature_branch(args)
+    elif args.command == "resolve-implementation-base":
+        repo = _repo_arg(args.repo)
+        result = resolve_implementation_base(
+            repo, args.issue, _gh(repo), base_ref=args.base_ref,
+            expected_base_sha=args.expected_base_sha,
+        )
     elif args.command == "prepare-implementation":
         repo = _repo_arg(args.repo)
         result = prepare_implementation(

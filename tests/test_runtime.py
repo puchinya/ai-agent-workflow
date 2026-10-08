@@ -31,7 +31,8 @@ from agent_workflow.cli import (_ensure_milestone, _init_project, _start_feature
 from agent_workflow.delivery import (DeliveryError, delivery_check, ensure_review_pr,
                                      finalize_merged_issue)
 from agent_workflow.execution import (ExecutionError, execution_path, execution_status,
-                                      load_execution, prepare_implementation)
+                                      load_execution, prepare_implementation,
+                                      resolve_implementation_base)
 from agent_workflow.documents import resolve_document_impact, validate_markdown_file, validate_docs
 from agent_workflow.git import (GitLifecycleError, _remove_cleanup_path, changed_document_paths,
                                 feature_slug, local_head_sha, push_review_branch, require_clean_worktree,
@@ -816,6 +817,28 @@ class GitLifecycleTests(unittest.TestCase):
                           implementation.supersede),
                          ("prepare-implementation", 7, "isolated", "release/v2", "a" * 40, True))
 
+        resolve = build_parser().parse_args([
+            "resolve-implementation-base", "7", "--base-ref", "release/v2",
+            "--expected-base-sha", "b" * 40, "--repo", str(self.repo),
+        ])
+        self.assertEqual((resolve.command, resolve.issue, resolve.base_ref,
+                          resolve.expected_base_sha, resolve.repo),
+                         ("resolve-implementation-base", 7, "release/v2", "b" * 40,
+                          str(self.repo)))
+
+    def test_cli_dispatches_resolver_and_prints_its_json_result(self):
+        result = {"issue": 7, "base_ref": "main", "base_sha": "a" * 40, "stacked": False}
+        output = io.StringIO()
+        with patch("agent_workflow.cli._repo_arg", return_value=self.repo), \
+                patch("agent_workflow.cli._gh", return_value=self.github), \
+                patch("agent_workflow.cli.resolve_implementation_base", return_value=result) as resolver, \
+                redirect_stdout(output):
+            status = cli_main(["resolve-implementation-base", "7", "--repo", str(self.repo)])
+        self.assertEqual(status, 0)
+        self.assertEqual(json.loads(output.getvalue()), result)
+        resolver.assert_called_once_with(self.repo, 7, self.github, base_ref=None,
+                                         expected_base_sha=None)
+
     def test_cli_parses_final_verification_qa_and_independent_review_commands(self):
         final = build_parser().parse_args(["verify-final", "7", "8", "--runtime-host", "linux",
                                            "--architecture", "x86_64", "--capability", "docker"])
@@ -1366,6 +1389,154 @@ class ExecutionBindingTests(unittest.TestCase):
     def prepare(self, repo=None, *, mode="isolated", **kwargs):
         with patch("agent_workflow.execution.origin_repository", return_value="owner/repo"):
             return prepare_implementation(repo or self.linked, 1, self.github, mode=mode, **kwargs)
+
+    def resolve_base(self, repo=None, **kwargs):
+        with patch("agent_workflow.execution.origin_repository", return_value="owner/repo"):
+            return resolve_implementation_base(repo or self.repo, 1, self.github, **kwargs)
+
+    def test_t01_default_base_resolution_returns_approved_exact_identity(self):
+        result = self.resolve_base()
+        self.assertEqual(result, {
+            "issue": 1, "repository": "owner/repo",
+            "contract_comment_id": self.published["comment_id"],
+            "contract_sha256": self.published["sha256"],
+            "default_base_ref": "main", "base_ref": "main",
+            "base_sha": self.base_sha, "stacked": False,
+        })
+
+    def test_t02_stacked_base_resolution_uses_explicit_same_origin_branch(self):
+        self.git(self.repo, "branch", "feature/100-base", "main")
+        self.git(self.repo, "push", "origin", "feature/100-base")
+        result = self.resolve_base(base_ref="feature/100-base")
+        self.assertEqual(result["base_ref"], "feature/100-base")
+        self.assertEqual(result["base_sha"], self.base_sha)
+        self.assertTrue(result["stacked"])
+
+    def test_t03_expected_base_sha_match_preserves_exact_sha(self):
+        result = self.resolve_base(expected_base_sha=self.base_sha)
+        self.assertEqual(result["base_sha"], self.base_sha)
+
+    def test_t04_expected_base_sha_mismatch_fails_without_workflow_mutation(self):
+        branch_before = self.git(self.repo, "branch", "--show-current")
+        with self.assertRaisesRegex(ExecutionError, "expected base SHA"):
+            self.resolve_base(expected_base_sha="0" * 40)
+        self.assertEqual(self.git(self.repo, "branch", "--show-current"), branch_before)
+        self.assertFalse(execution_path(self.repo, 1).exists())
+        self.assertEqual(self.github.created_prs, [])
+        self.assertEqual(self.github.updated_prs, [])
+        self.assertEqual(self.github.label_replacements, [])
+        self.assertFalse(any(call[0].startswith(("create_", "update_", "assign_"))
+                             for call in self.github.lifecycle_calls))
+
+    def test_t05_invalid_or_missing_same_origin_base_fails(self):
+        for ref in ("bad..ref", "missing/base"):
+            with self.subTest(ref=ref), self.assertRaises(ExecutionError):
+                self.resolve_base(base_ref=ref)
+
+    def test_t06_resolver_rejects_invalid_issue_and_contract_authority(self):
+        prior_calls = list(self.github.lifecycle_calls)
+        closed = copy.deepcopy(self.github)
+        closed.issue_data["state"] = "closed"
+        foreign = copy.deepcopy(self.github)
+        foreign.issue_data["repository_url"] = "https://api.github.com/repos/elsewhere/repo"
+        pull = copy.deepcopy(self.github)
+        pull.issue_data["pull_request"] = {"url": "https://api.github.com/repos/owner/repo/pulls/1"}
+        bad_pointer = copy.deepcopy(self.github)
+        bad_pointer.issue_data["body"] = "## Implementation Contract\nComment ID: malformed\n"
+        bad_bytes = copy.deepcopy(self.github)
+        bad_bytes.comments[0]["body"] += "tampered"
+        missing_comment = copy.deepcopy(self.github)
+        missing_comment.issue_data["body"] = (
+            "## Implementation Contract\nComment ID: 999\nSHA-256: " + "a" * 64 + "\nState: approved\n"
+        )
+        missing_comment.issue_comment = lambda *_: (_ for _ in ()).throw(GitHubError("comment not found"))
+        cases = ((closed, "open"), (foreign, "identity"), (pull, "identity"),
+                 (bad_pointer, "pointer"), (bad_bytes, "SHA"), (missing_comment, "comment"))
+        for github, message in cases:
+            with self.subTest(message=message), \
+                    patch("agent_workflow.execution.origin_repository", return_value="owner/repo"), \
+                    self.assertRaises(ExecutionError):
+                resolve_implementation_base(self.repo, 1, github)
+        with self.assertRaises(ExecutionError):
+            resolve_implementation_base(self.repo, 0, self.github)
+        self.assertEqual(self.github.lifecycle_calls, prior_calls)
+
+    def test_resolver_requires_schema_two_and_valid_default_branch_before_fetch(self):
+        (self.repo / ".agent/project.json").write_text('{"schema_version": 1}', encoding="utf-8")
+        with self.assertRaisesRegex(ExecutionError, "Schema 2"):
+            self.resolve_base()
+        self.write_profile(self.repo, "auto")
+        self.github.repository_data["default_branch"] = "bad..default"
+        with self.assertRaisesRegex(ExecutionError, "valid Git branch"):
+            self.resolve_base()
+
+    def test_t07_origin_repository_mismatch_fails_before_github_reads(self):
+        prior_calls = list(self.github.lifecycle_calls)
+        with patch("agent_workflow.execution.origin_repository", return_value="foreign/repo"):
+            with self.assertRaisesRegex(ExecutionError, "origin fetch repository"):
+                resolve_implementation_base(self.repo, 1, self.github)
+        self.assertEqual(self.github.lifecycle_calls, prior_calls)
+
+    def test_expected_sha_syntax_is_rejected_before_profile_or_github_access(self):
+        prior_calls = list(self.github.lifecycle_calls)
+        (self.repo / ".agent/project.json").write_text("{}", encoding="utf-8")
+        with self.assertRaisesRegex(ExecutionError, "exactly 40 lowercase"):
+            resolve_implementation_base(self.repo, 1, self.github, expected_base_sha="A" * 40)
+        self.assertEqual(self.github.lifecycle_calls, prior_calls)
+
+    def test_t08_dirty_checkout_is_allowed_and_source_branch_are_unchanged(self):
+        dirty = self.repo / "README.md"
+        original = dirty.read_bytes()
+        dirty.write_bytes(original + b"uncommitted\n")
+        branch_before = self.git(self.repo, "branch", "--show-current")
+        try:
+            result = self.resolve_base()
+            self.assertEqual(result["base_sha"], self.base_sha)
+            self.assertEqual(self.git(self.repo, "branch", "--show-current"), branch_before)
+            self.assertEqual(dirty.read_bytes(), original + b"uncommitted\n")
+        finally:
+            dirty.write_bytes(original)
+
+    def test_t09_resolver_does_not_create_execution_binding(self):
+        self.resolve_base()
+        self.assertFalse(execution_path(self.repo, 1).exists())
+
+    def test_t10_t11_skill_resolves_once_before_host_and_propagates_same_tuple(self):
+        skill = (ROOT / "workflow/skills/implementation/SKILL.md").read_text(encoding="utf-8")
+        agent_context = skill.index("agent-context <issue>")
+        existing_binding = skill.index("If a valid binding exists")
+        resolver = skill.index("resolve-implementation-base <issue>")
+        host_decision = skill.index("Before selecting host isolation")
+        fallback = skill.index("start-feature-branch <issue>")
+        prepare = skill.index("Then run `prepare-implementation <issue> --mode isolated|current")
+        self.assertLess(agent_context, existing_binding)
+        self.assertLess(existing_binding, resolver)
+        self.assertLess(resolver, host_decision)
+        self.assertLess(host_decision, fallback)
+        self.assertLess(fallback, prepare)
+        self.assertIn("Do not run the resolver", skill)
+        self.assertIn("same returned `base_ref` and `base_sha`", skill)
+        self.assertIn("--expected-base-sha <base_sha>", skill)
+
+    def test_t12_generated_packages_contain_resolver_skill_runtime_docs_and_version(self):
+        files = build_dist.expected_files()
+        source_skill = (ROOT / "workflow/skills/implementation/SKILL.md").read_bytes()
+        source_skill = source_skill.replace(b"../../../docs/specs/", b"../../docs/specs/")
+        for host in build_dist.HOSTS:
+            prefix = f"dist/{host}"
+            self.assertEqual(files[f"{prefix}/skills/implementation/SKILL.md"], source_skill)
+            self.assertIn(b"resolve_implementation_base", files[f"{prefix}/runtime/agent_workflow/execution.py"])
+            self.assertIn(b"resolve-implementation-base", files[f"{prefix}/runtime/agent_workflow/cli.py"])
+            self.assertIn(b"Implementation base resolution", files[f"{prefix}/docs/specs/runtime-spec.md"])
+            self.assertIn(b"Implementation-base resolution ownership", files[f"{prefix}/docs/design/runtime-design.md"])
+            self.assertIn(b"resolve-implementation-base ISSUE", files[f"{prefix}/docs/specs/workflow-spec.md"])
+            self.assertIn(b"existing binding?", files[f"{prefix}/docs/design/workflow-design.md"])
+            runtime_version = files[f"{prefix}/runtime/agent_workflow/__init__.py"].decode("utf-8")
+            self.assertIn('__version__ = "0.8.0"', runtime_version)
+            if host == "openai":
+                self.assertEqual(json.loads(files[f"{prefix}/plugin.json"])["version"], "0.8.0")
+            elif host == "claude":
+                self.assertEqual(json.loads(files[f"{prefix}/.claude-plugin/plugin.json"])["version"], "0.8.0")
 
     def test_initial_isolated_binding_freezes_contract_base_and_canonical_branch(self):
         self.assertTrue(workspace_identity(self.linked).linked_worktree)
@@ -4370,13 +4541,13 @@ class DistributionTests(unittest.TestCase):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         runtime_design = (ROOT / "docs/design/runtime-design.md").read_text(encoding="utf-8")
 
-        self.assertLess(implementation.index("resolve that same-repository remote ref to its full SHA"),
-                        implementation.index("asking the host for isolation"))
-        self.assertIn("For an existing binding, do not rerun `start-feature-branch`", implementation)
-        self.assertIn("For a new current-checkout execution only", implementation)
-        self.assertIn("exact selected base SHA", implementation)
-        self.assertIn("auto` continues in the current-checkout branch flow", implementation)
-        self.assertIn("required` stops before edits", implementation)
+        self.assertLess(implementation.index("resolve-implementation-base <issue>"),
+                        implementation.index("Before selecting host isolation"))
+        self.assertIn("Do not run the resolver", implementation)
+        self.assertIn("For a new current-checkout execution", implementation)
+        self.assertIn("at that exact `base_sha`", implementation)
+        self.assertIn("`auto` uses isolation when exact-base capability is available", implementation)
+        self.assertIn("`required` blocks before edits", implementation)
         self.assertIn("Never shell out to `codex` or `claude`", implementation)
         self.assertIn("raw automatic `git worktree add`", implementation)
         self.assertIn("auto` falls back to the current-checkout flow", claude)
@@ -4388,7 +4559,7 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("required` blocks before edits", codex)
         self.assertIn("Product behavior has not been smoke-tested", claude)
         self.assertIn("Product behavior has not been smoke-tested", codex)
-        self.assertLess(readme.index("resolve the selected base ref and exact SHA before evaluating host isolation"),
+        self.assertLess(readme.index("resolve-implementation-base"),
                         readme.index("Only in the current-checkout flow"))
         self.assertIn("resolves the selected base ref and exact SHA before evaluating host capability", runtime_design)
 
