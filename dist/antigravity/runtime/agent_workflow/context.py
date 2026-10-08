@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .documents import resolve_document_impact, section_body
+from .execution import execution_status
 from .github import GitHub
 from .profile import ProfileError, load_profile, normalize_arch, normalize_host
 
@@ -105,6 +106,12 @@ def build_context(repo: Path, issue_number: int, gh: GitHub, runtime_host: str |
         ([], [], None, []) if closed else resolve_document_impact(issue.get("body") or "", repo, gh.repo)
     )
     app_types = sorted({app for component in chosen for app in component.get("application_types", []) if app != "generic"})
+    workspace = None
+    if profile.get("schema_version") == 2:
+        workspace = {
+            "isolation": profile["workspace"]["isolation"],
+            "execution": execution_status(repo, issue_number, gh),
+        }
     context = {
         "issue": {"number": issue_number, "url": issue.get("html_url"), "state": issue.get("state"),
                   "phase": phase, "labels": sorted(labels)},
@@ -114,6 +121,7 @@ def build_context(repo: Path, issue_number: int, gh: GitHub, runtime_host: str |
         "head": _git(repo, "rev-parse", "HEAD"),
         "pull_requests": _pull_requests(issue_number, gh),
         "implementation_contract": _contract_pointer(issue.get("body") or ""),
+        **({"workspace": workspace} if workspace is not None else {}),
         "profile": {"schema_version": profile.get("schema_version"), "initialized": profile.get("initialized", True),
                     "runtime_host": f"{normalize_host(runtime_host)}/{normalize_arch(architecture)}"},
         "affected_components": [{"id": component["id"], "roots": component.get("roots", []),

@@ -25,6 +25,7 @@ Goals are explicit Issue authority, progressive context loading, reliable local 
 | Four evidence gates precede Required Checks | The delivery gate checks Final Verification, self-review, QA, and Independent Review in order before Required Checks for the same current HEAD. |
 | Host-specific packages differ | The builder emits three isolated packages from shared sources and adapters. |
 | Milestone and feature-branch lifecycle is reusable | Milestone mode and fallback source stay in Schema 2 `.agent/project.json`; an approved target release is Issue-scoped input, and the requirements and implementation Skills call standard runtime commands. |
+| Approved Contract execution has a stable workspace | The Contract execution Skill asks the host to reuse/create its native isolated workspace according to policy, then writes a local Issue execution binding before edits; host lifecycle stays outside the runtime. |
 | Execution authorization continues to the review PR | An approved Issue contract covers routine Issue-scoped commit/push/PR/review-phase/self-review/check operations; Skills do not add a PR-specific prompt. |
 | Implementation owns end-to-end handoff | The implementation flow continues through a review-ready PR, exact-HEAD self-review, and delivery gate before reporting completion. |
 
@@ -57,6 +58,24 @@ consumer Issue + .agent/project.json
 4. Contract, receipt, QA, and review payloads are validated locally before GitHub mutations. New contract input with a recognizable legacy Reviewer Checklist H2 is structurally normalized before its exact payload SHA is computed; item text/order and bytes outside the checklist remain unchanged, and ambiguous prose fails closed. Historical approved bytes remain readable and restorable unchanged. Final Verification requires a clean worktree and exact local/PR HEAD equality, then publishes only command identities and hashes. Self-review binds the named approved contract ID and verified SHA, derives exact-byte section identities, and keeps contract conformance separate from checklist review. QA remains a separate HEAD/contract-bound result. Independent review requires a fresh-context attestation and binds every contract unit and checklist item; the implementation session does not author it. Each immutable comment is read back by exact ID before its pointer is changed; a failed readback or changed state leaves orphan evidence.
 5. For an authorized implementation, the sequence is `verify_quick`, commit, `ensure-review-pr` (safe push and deterministic PR establishment), `verify-final`, exact-HEAD self-review, QA, fresh-context independent review, and `delivery-check`. Pending Required Checks block completion after PR creation. Handoff reads fresh Issue, PR, evidence, and Required Check state; merged delivery remains a separate operation.
 6. `build_dist.py` constructs each host package in memory from canonical source and adapter metadata, then writes a deterministic path set.
+
+## Workspace execution flow
+
+```text
+approved Contract
+ -> agent-context
+ -> existing binding?
+      yes -> reuse frozen base_ref/base_sha -> prepare-implementation reuse
+      no  -> resolve-implementation-base -> exact base_ref/base_sha
+               -> exact-base host capability
+               -> isolated | current fallback | blocked
+               -> prepare-implementation binding
+ -> implementation
+ -> canonical remote branch / PR
+ -> evidence gates / independent review
+```
+
+Issue and PR remain the user-facing identities. One implementation writer owns an execution; corrections reuse the same host workspace and binding, including its frozen base ref/SHA. On a new execution, native isolation is eligible only when the host can start the workspace at the exact selected base SHA; `auto` otherwise falls back to the current checkout and `required` blocks before edits. The host owns worktree creation, resume, access control, and cleanup. The runtime never shells out to another coding-agent binary, creates raw automatic sibling worktrees, copies secrets, or routes work globally. Independent Review stays in a fresh context separate from the implementation execution.
 
 ## Failure handling
 

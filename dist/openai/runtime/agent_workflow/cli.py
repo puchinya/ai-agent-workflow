@@ -16,6 +16,7 @@ from .contracts import (ContractError, publish_contract, restore_contract, save_
                         verify_contract)
 from .delivery import DeliveryError, delivery_check, ensure_review_pr, finalize_merged_issue
 from .documents import resolve_document_impact, validate_docs
+from .execution import ExecutionError, prepare_implementation, resolve_implementation_base
 from .github import GitHub, GitHubError, discover_repository
 from .git import GitLifecycleError, changed_document_paths, start_feature_branch
 from .profile import (APPLICATION_TYPES, ProfileError, build_hook_plan, load_profile,
@@ -88,6 +89,7 @@ def _init_project(args: argparse.Namespace) -> dict[str, Any]:
                                "hooks": component_hooks}],
                "branch": {"prefix": "feature", "max_slug_length": 48,
                           "cleanup_on_switch": [], "required_checks": []},
+               "workspace": {"isolation": "auto"},
                "milestones": {"mode": "auto", "version_source": "auto"}, "hooks": global_hooks}
     validate_profile(profile, repo)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -368,6 +370,20 @@ def build_parser() -> argparse.ArgumentParser:
     feature.add_argument("--expected-base-sha", metavar="SHA40")
     feature.add_argument("--repo")
 
+    resolve_base = commands.add_parser("resolve-implementation-base")
+    resolve_base.add_argument("issue", type=_number)
+    resolve_base.add_argument("--base-ref", metavar="BRANCH")
+    resolve_base.add_argument("--expected-base-sha", metavar="SHA40")
+    resolve_base.add_argument("--repo")
+
+    implementation = commands.add_parser("prepare-implementation")
+    implementation.add_argument("issue", type=_number)
+    implementation.add_argument("--base-ref", metavar="BRANCH")
+    implementation.add_argument("--expected-base-sha", metavar="SHA40")
+    implementation.add_argument("--mode", choices=("isolated", "current"), required=True)
+    implementation.add_argument("--supersede", action="store_true")
+    implementation.add_argument("--repo")
+
     review_pr = commands.add_parser("ensure-review-pr")
     review_pr.add_argument("issue", type=_number)
     review_pr.add_argument("--body-file", type=Path, required=True)
@@ -497,6 +513,18 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, int]:
         result = _ensure_milestone(args)
     elif args.command == "start-feature-branch":
         return _start_feature_branch(args)
+    elif args.command == "resolve-implementation-base":
+        repo = _repo_arg(args.repo)
+        result = resolve_implementation_base(
+            repo, args.issue, _gh(repo), base_ref=args.base_ref,
+            expected_base_sha=args.expected_base_sha,
+        )
+    elif args.command == "prepare-implementation":
+        repo = _repo_arg(args.repo)
+        result = prepare_implementation(
+            repo, args.issue, _gh(repo), mode=args.mode, base_ref=args.base_ref,
+            expected_base_sha=args.expected_base_sha, supersede=args.supersede,
+        )
     elif args.command == "ensure-review-pr":
         return _ensure_review_pr(args)
     elif args.command == "run-hook":
@@ -602,7 +630,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             _json(result)
         return status
-    except (ProfileError, ContextError, ContractError, ReviewError, VerificationError, QAError, DeliveryError,
+    except (ProfileError, ContextError, ContractError, ExecutionError, ReviewError, VerificationError, QAError, DeliveryError,
             GitHubError, GitLifecycleError, VersionError, ProcessError, CLIError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return exc.returncode if isinstance(exc, ProcessError) else 1

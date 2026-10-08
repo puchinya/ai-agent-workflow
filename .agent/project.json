@@ -23,6 +23,9 @@
       {"name": "test (macos-latest, 3.14)"}
     ]
   },
+  "workspace": {
+    "isolation": "auto"
+  },
   "milestones": {
     "mode": "required",
     "version_source": {

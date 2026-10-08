@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import re
+import os
 import shutil
 import stat
 import subprocess
 import unicodedata
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -16,6 +18,16 @@ from .profile import build_hook_plan
 
 class GitLifecycleError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class WorkspaceIdentity:
+    root: Path
+    git_dir: Path
+    common_git_dir: Path
+    linked_worktree: bool
+    head_sha: str
+    branch: str | None
 
 
 def feature_slug(description: str, max_length: int) -> str:
@@ -44,6 +56,12 @@ def _validate_ref(repo: Path, ref: str, description: str = "branch") -> None:
         raise GitLifecycleError(f"{description} is not a valid Git branch name")
 
 
+def validate_branch_ref(repo: Path, ref: str, description: str = "branch") -> str:
+    """Validate one branch ref through Git's own format checker."""
+    _validate_ref(repo, ref, description)
+    return ref
+
+
 def _require_clean(repo: Path) -> None:
     result = _invoke(repo, ["status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none"])
     if result.stdout:
@@ -62,6 +80,46 @@ def local_head_sha(repo: Path) -> str:
     if not re.fullmatch(r"[0-9a-f]{40}", sha):
         raise GitLifecycleError("local HEAD did not resolve to a full commit SHA")
     return sha
+
+
+def workspace_identity(repo: Path) -> WorkspaceIdentity:
+    """Read checkout identity from Git metadata without inspecting neighboring paths."""
+    root_result = _invoke(repo, ["rev-parse", "--show-toplevel"], allow_failure=True)
+    if root_result.returncode or not root_result.stdout.strip():
+        raise GitLifecycleError("could not resolve the current Git worktree root")
+    root = Path(root_result.stdout.strip()).resolve()
+
+    git_result = _invoke(repo, ["rev-parse", "--absolute-git-dir"], allow_failure=True)
+    if git_result.returncode or not git_result.stdout.strip():
+        raise GitLifecycleError("could not resolve the current Git directory")
+    git_dir = Path(git_result.stdout.strip()).resolve()
+
+    common_result = _invoke(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+                            allow_failure=True)
+    if common_result.returncode == 0 and common_result.stdout.strip():
+        common_git_dir = Path(common_result.stdout.strip()).resolve()
+    else:
+        common_result = _invoke(repo, ["rev-parse", "--git-common-dir"], allow_failure=True)
+        if common_result.returncode or not common_result.stdout.strip():
+            raise GitLifecycleError("could not resolve the common Git directory")
+        common_path = Path(common_result.stdout.strip())
+        common_git_dir = (common_path if common_path.is_absolute() else root / common_path).resolve()
+
+    branch_result = _invoke(repo, ["symbolic-ref", "--quiet", "--short", "HEAD"], allow_failure=True)
+    if branch_result.returncode not in {0, 1}:
+        raise GitLifecycleError("could not resolve the current Git branch")
+    branch = branch_result.stdout.strip() or None
+    head_sha = local_head_sha(repo)
+    linked = os.path.normcase(str(git_dir)) != os.path.normcase(str(common_git_dir))
+    return WorkspaceIdentity(root, git_dir, common_git_dir, linked, head_sha, branch)
+
+
+def is_configured_issue_branch(profile: dict[str, Any], issue_number: int, branch: str | None) -> bool:
+    prefix = profile.get("branch", {}).get("prefix")
+    if not isinstance(prefix, str) or not isinstance(branch, str):
+        return False
+    expected = rf"{re.escape(prefix)}/{issue_number}-[a-z0-9]+(?:-[a-z0-9]+)*"
+    return re.fullmatch(expected, branch) is not None
 
 
 def _branch_exists(repo: Path, branch: str) -> bool:
@@ -94,6 +152,12 @@ def _fetch_base_ref(repo: Path, branch: str) -> str:
     if resolved.returncode or not re.fullmatch(r"[0-9a-f]{40}", sha):
         raise GitLifecycleError(f"could not resolve fetched origin/{branch} to a commit SHA")
     return sha
+
+
+def fetch_base_ref(repo: Path, branch: str) -> str:
+    """Fetch and resolve one same-origin branch through the Git lifecycle boundary."""
+    _validate_ref(repo, branch, "selected base branch")
+    return _fetch_base_ref(repo, branch)
 
 
 def _fetch_target_ref(repo: Path, branch: str) -> bool:
@@ -244,9 +308,16 @@ def _origin_repository(repo: Path, *, push: bool = False) -> str:
     return _repository_from_remote_url(values[0])
 
 
+def origin_repository(repo: Path, *, push: bool = False) -> str:
+    """Return the repository identity for origin's sole fetch or push URL."""
+    return _origin_repository(repo, push=push)
+
+
 def push_review_branch(repo: Path, profile: dict[str, Any], issue_number: int,
-                       repository: str, base_ref: str, default_base_ref: str) -> dict[str, Any]:
-    """Validate and push the current Issue branch without force, then verify remote HEAD."""
+                       repository: str, base_ref: str, default_base_ref: str,
+                       publication_branch: str | None = None,
+                       frozen_base_sha: str | None = None) -> dict[str, Any]:
+    """Validate and push HEAD without force, then verify the selected remote branch."""
     _require_clean(repo)
     if not isinstance(repository, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
         raise GitLifecycleError("owning repository identity is invalid")
@@ -256,17 +327,31 @@ def push_review_branch(repo: Path, profile: dict[str, Any], issue_number: int,
     if not isinstance(base_ref, str) or not base_ref:
         raise GitLifecycleError("selected base branch is missing")
     _validate_ref(repo, base_ref, "selected base branch")
+    if (frozen_base_sha is not None
+            and (not isinstance(frozen_base_sha, str)
+                 or not re.fullmatch(r"[0-9a-f]{40}", frozen_base_sha))):
+        raise GitLifecycleError("frozen execution base SHA is malformed")
 
-    branch = _current_branch(repo)
-    if branch is None:
-        raise GitLifecycleError("HEAD must be attached to the Issue feature branch")
-    _validate_ref(repo, branch, "current branch")
-    if branch == default_base_ref:
+    local_branch = _current_branch(repo)
+    if publication_branch is None:
+        if local_branch is None:
+            raise GitLifecycleError("HEAD must be attached to the Issue feature branch")
+        _validate_ref(repo, local_branch, "current branch")
+        target_branch = local_branch
+    else:
+        _validate_ref(repo, publication_branch, "canonical publication branch")
+        if local_branch is not None:
+            _validate_ref(repo, local_branch, "current branch")
+        target_branch = publication_branch
+    if target_branch == default_base_ref:
         raise GitLifecycleError("refusing to push the repository default branch")
-    prefix = profile.get("branch", {}).get("prefix")
-    expected = rf"{re.escape(prefix)}/{issue_number}-[a-z0-9]+(?:-[a-z0-9]+)*" if isinstance(prefix, str) else ""
-    if not expected or not re.fullmatch(expected, branch):
-        raise GitLifecycleError("current branch is not the configured feature branch for this Issue")
+    if target_branch == base_ref:
+        raise GitLifecycleError("refusing to publish the selected base branch as the PR head")
+    if publication_branch is None:
+        if not is_configured_issue_branch(profile, issue_number, target_branch):
+            raise GitLifecycleError("current branch is not the configured feature branch for this Issue")
+    elif not is_configured_issue_branch(profile, issue_number, target_branch):
+        raise GitLifecycleError("canonical publication branch is not configured for this Issue")
     if (_origin_repository(repo).casefold() != repository.casefold()
             or _origin_repository(repo, push=True).casefold() != repository.casefold()):
         raise GitLifecycleError("origin repository does not match the owning Issue repository")
@@ -288,6 +373,18 @@ def push_review_branch(repo: Path, profile: dict[str, Any], issue_number: int,
         raise GitLifecycleError("current branch does not contain the selected base; automatic rebase is forbidden")
     if ancestor.returncode:
         raise GitLifecycleError(f"Git merge-base failed (exit status {ancestor.returncode})")
+    if frozen_base_sha is not None:
+        frozen_ancestor = _invoke(
+            repo, ["merge-base", "--is-ancestor", frozen_base_sha, head_sha], allow_failure=True
+        )
+        if frozen_ancestor.returncode == 1:
+            raise GitLifecycleError(
+                "current HEAD does not contain the frozen execution base; automatic rebase is forbidden"
+            )
+        if frozen_ancestor.returncode:
+            raise GitLifecycleError(
+                f"Git merge-base for frozen execution base failed (exit status {frozen_ancestor.returncode})"
+            )
     ahead_result = _invoke(repo, ["rev-list", "--count", f"{base_sha}..{head_sha}"], allow_failure=True)
     ahead_text = ahead_result.stdout.strip()
     if ahead_result.returncode or not ahead_text.isdigit():
@@ -296,18 +393,18 @@ def push_review_branch(repo: Path, profile: dict[str, Any], issue_number: int,
     if ahead_by < 1:
         raise GitLifecycleError("current branch has no commit ahead of the selected base")
 
-    remote_before = _remote_branch_sha(repo, branch)
+    remote_before = _remote_branch_sha(repo, target_branch)
     pushed = False
     if remote_before != head_sha:
         push = _invoke(repo, ["push", "--porcelain", "--no-follow-tags", "origin",
-                              f"HEAD:refs/heads/{branch}"],
+                              f"HEAD:refs/heads/{target_branch}"],
                        allow_failure=True)
         if push.returncode:
             raise GitLifecycleError(f"Git push failed (exit status {push.returncode})")
         pushed = True
-    remote_after = _remote_branch_sha(repo, branch)
+    remote_after = _remote_branch_sha(repo, target_branch)
     if remote_after != head_sha:
         raise GitLifecycleError("remote branch HEAD does not match local HEAD after push")
-    return {"head_sha": head_sha, "head_branch": branch, "base_branch": base_ref,
+    return {"head_sha": head_sha, "head_branch": target_branch, "base_branch": base_ref,
             "base_sha": base_sha, "ahead_by": ahead_by, "pushed": pushed,
             "remote_head": remote_after, "remote_head_verified": True}

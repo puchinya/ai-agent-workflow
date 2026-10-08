@@ -13,6 +13,7 @@ from typing import Any, Iterable
 
 
 APPLICATION_TYPES = {"generic", "desktop-gui", "cli", "mobile", "server", "embedded", "library"}
+WORKSPACE_ISOLATION = {"auto", "required", "disabled"}
 RUNNABLE_ON = {"any", "windows", "macos", "linux"}
 VERIFICATION_HOOKS = {"verify_quick", "verify_final"}
 GLOBAL_HOOKS = {"branch_switch", *VERIFICATION_HOOKS}
@@ -148,6 +149,16 @@ def _branch(value: Any, repo: Path) -> dict[str, Any]:
             "cleanup_on_switch": clean_paths, "required_checks": required_checks}
 
 
+def _workspace(value: Any) -> dict[str, str]:
+    _need(isinstance(value, dict), "workspace must be an object")
+    unknown = set(value) - {"isolation"}
+    _need(not unknown, f"workspace contains unsupported field(s): {', '.join(sorted(unknown))}")
+    isolation = value.get("isolation", "auto")
+    _need(isinstance(isolation, str) and isolation in WORKSPACE_ISOLATION,
+          "workspace.isolation must be auto, required, or disabled")
+    return {"isolation": isolation}
+
+
 def _hooks(value: Any, where: str, allowed: set[str] | None = None) -> dict[str, list[str]]:
     _need(isinstance(value, dict), f"{where} must be an object")
     allowed = allowed or VERIFICATION_HOOKS
@@ -197,6 +208,7 @@ def validate_profile(data: Any, repo: Path) -> dict[str, Any]:
     _need(isinstance(data.get("initialized"), bool), "initialized must be boolean")
     _need(isinstance(data.get("project_name"), str) and bool(data["project_name"].strip()), "project_name must be non-empty")
     branch = _branch(data.get("branch", {}), repo)
+    workspace = _workspace(data.get("workspace", {}))
     milestones = _milestones(data.get("milestones", {}), repo)
     global_hooks = _hooks(data.get("hooks", {}), "hooks", GLOBAL_HOOKS)
     components = data.get("components")
@@ -244,7 +256,7 @@ def validate_profile(data: Any, repo: Path) -> dict[str, Any]:
             clean_targets.append({**target, "id": tid, "runnable_on": runnable, "hooks": target_hooks})
         clean_components.append({**comp, "id": cid, "roots": roots, "stacks": stacks,
                                  "application_types": app_types, "targets": clean_targets, "hooks": comp_hooks})
-    return {**data, "schema_version": 2, "branch": branch, "milestones": milestones,
+    return {**data, "schema_version": 2, "branch": branch, "workspace": workspace, "milestones": milestones,
             "hooks": global_hooks, "components": clean_components}
 
 

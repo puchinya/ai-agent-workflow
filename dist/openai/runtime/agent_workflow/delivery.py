@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .context import affected_components
+from .execution import ExecutionError, load_execution
 from .github import GitHub, GitHubError
 from .git import GitLifecycleError, push_review_branch
 from .profile import ProfileError, load_profile
@@ -155,18 +156,47 @@ def ensure_review_pr(repo: Path, issue: int, body: str, gh: GitHub, title: str |
     default_base = gh.repository().get("default_branch")
     if not isinstance(default_base, str) or not default_base:
         raise DeliveryError("GitHub repository default branch is missing")
-    if base_ref is None:
-        selected_base = default_base
-    elif not isinstance(base_ref, str) or not base_ref:
-        raise DeliveryError("--base-ref must name a non-empty branch")
-    else:
-        selected_base = base_ref
     requested_title = title if title is not None else issue_obj.get("title")
     if not isinstance(requested_title, str) or not requested_title.strip() or "\n" in requested_title or "\r" in requested_title:
         raise DeliveryError("PR title must be a non-empty single-line value")
 
     try:
-        pushed = push_review_branch(repo, profile, issue, gh.repo, selected_base, default_base)
+        binding = load_execution(repo, issue, gh)
+    except (ExecutionError, GitLifecycleError, GitHubError) as exc:
+        raise DeliveryError(str(exc)) from exc
+    if binding is not None:
+        frozen_base = binding.get("base_ref")
+        if not isinstance(frozen_base, str) or not frozen_base:
+            raise DeliveryError("execution binding has an invalid frozen base branch")
+        if base_ref is not None and base_ref != frozen_base:
+            raise DeliveryError("--base-ref conflicts with the frozen implementation execution base")
+        selected_base = frozen_base
+    elif base_ref is None:
+        selected_base = default_base
+    elif not isinstance(base_ref, str) or not base_ref:
+        raise DeliveryError("--base-ref must name a non-empty branch")
+    else:
+        selected_base = base_ref
+    publication_branch = (
+        binding["canonical_branch"]
+        if binding is not None and binding["mode"] == "isolated"
+        else None
+    )
+    try:
+        if publication_branch is None:
+            if binding is None:
+                pushed = push_review_branch(repo, profile, issue, gh.repo, selected_base, default_base)
+            else:
+                pushed = push_review_branch(
+                    repo, profile, issue, gh.repo, selected_base, default_base,
+                    frozen_base_sha=binding["base_sha"],
+                )
+        else:
+            pushed = push_review_branch(
+                repo, profile, issue, gh.repo, selected_base, default_base,
+                publication_branch=publication_branch,
+                frozen_base_sha=binding["base_sha"],
+            )
     except GitLifecycleError as exc:
         raise DeliveryError(str(exc)) from exc
     head_branch, head_sha = pushed["head_branch"], pushed["head_sha"]
