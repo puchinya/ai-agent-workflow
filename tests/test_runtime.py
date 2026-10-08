@@ -1615,6 +1615,54 @@ class ExecutionBindingTests(unittest.TestCase):
                         )
                 self.assertFalse(execution_path(self.repo, 1).exists())
 
+    def test_recovery_rechecks_approved_contract_pointer_and_comment_before_write(self):
+        self.prepare_continuation()
+        old_issue = copy.deepcopy(self.github.issue_data)
+        next_payload = self.payload + b"\nSupplementary approved decision.\n"
+        next_source = self.root / "next-approved-contract.md"
+        next_source.write_bytes(next_payload)
+        publish_contract(self.repo, 1, self.github, next_source, supersede=True)
+        new_issue = copy.deepcopy(self.github.issue_data)
+        self.github.issue_data = old_issue
+
+        with patch.object(
+            self.github, "issue",
+            side_effect=[old_issue, old_issue, new_issue, new_issue],
+        ), patch("agent_workflow.execution.origin_repository", return_value="owner/repo"):
+            with self.assertRaisesRegex(ExecutionError, "approved Contract changed"):
+                recover_implementation_binding(
+                    self.repo, 1, 25, self.github, base_ref="main",
+                    expected_base_sha=self.base_sha,
+                )
+        self.assertFalse(execution_path(self.repo, 1).exists())
+
+    def test_recovery_rechecks_workspace_identity_and_origin_before_write(self):
+        self.prepare_continuation()
+        initial_identity = workspace_identity(self.repo)
+        changed_identity = type(initial_identity)(
+            initial_identity.root, initial_identity.git_dir, initial_identity.common_git_dir,
+            initial_identity.linked_worktree, initial_identity.head_sha, "feature/1-other",
+        )
+        with patch("agent_workflow.execution.origin_repository",
+                   side_effect=["owner/repo", "owner/repo"]), \
+                patch("agent_workflow.execution.workspace_identity",
+                      side_effect=[initial_identity, changed_identity]):
+            with self.assertRaisesRegex(ExecutionError, "workspace identity changed"):
+                recover_implementation_binding(
+                    self.repo, 1, 25, self.github, base_ref="main",
+                    expected_base_sha=self.base_sha,
+                )
+        self.assertFalse(execution_path(self.repo, 1).exists())
+
+        with patch("agent_workflow.execution.origin_repository",
+                   side_effect=["owner/repo", "foreign/repo"]):
+            with self.assertRaisesRegex(ExecutionError, "origin repository changed"):
+                recover_implementation_binding(
+                    self.repo, 1, 25, self.github, base_ref="main",
+                    expected_base_sha=self.base_sha,
+                )
+        self.assertFalse(execution_path(self.repo, 1).exists())
+
     def test_recovery_rejects_unrelated_base_and_invalid_identity_before_binding(self):
         branch = "feature/1-issue-title"
         self.git(self.repo, "switch", "--orphan", branch)
