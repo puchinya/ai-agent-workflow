@@ -14,7 +14,9 @@ from .git import (
     GitLifecycleError,
     fetch_base_ref,
     feature_slug,
+    is_commit_ancestor,
     is_configured_issue_branch,
+    local_head_sha,
     origin_repository,
     require_clean_worktree,
     validate_branch_ref,
@@ -28,10 +30,12 @@ class ExecutionError(ValueError):
     pass
 
 
-FIELDS = {
+SCHEMA_1_FIELDS = {
     "schema_version", "issue", "repository", "contract_comment_id", "contract_sha256",
     "workspace_root", "mode", "base_ref", "base_sha", "initial_head", "canonical_branch",
 }
+SCHEMA_2_FIELDS = SCHEMA_1_FIELDS | {"recovery"}
+FIELDS = SCHEMA_1_FIELDS
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -78,10 +82,16 @@ def _approved_contract(issue: int, gh: GitHub) -> tuple[int, str]:
 
 def _validate_record(record: Any, repo: Path, issue: int, repository: str,
                      root: Path, profile: dict[str, Any]) -> dict[str, Any]:
-    if not isinstance(record, dict) or set(record) != FIELDS:
-        raise ExecutionError("execution binding must contain exactly the Schema 1 fields")
-    if record.get("schema_version") != 1:
+    if not isinstance(record, dict):
+        raise ExecutionError("execution binding must be a JSON object")
+    version = record.get("schema_version")
+    expected_fields = SCHEMA_1_FIELDS if version == 1 and type(version) is int else (
+        SCHEMA_2_FIELDS if version == 2 and type(version) is int else None
+    )
+    if expected_fields is None:
         raise ExecutionError("unsupported execution binding schema version")
+    if set(record) != expected_fields:
+        raise ExecutionError(f"execution binding must contain exactly the Schema {version} fields")
     if record.get("issue") != issue or isinstance(record.get("issue"), bool):
         raise ExecutionError("execution binding belongs to a different Issue")
     if record.get("repository") != repository:
@@ -113,6 +123,23 @@ def _validate_record(record: Any, repo: Path, issue: int, repository: str,
     canonical = record.get("canonical_branch")
     if not isinstance(canonical, str) or not is_configured_issue_branch(profile, issue, canonical):
         raise ExecutionError("execution binding canonical branch is not configured for this Issue")
+    if version == 2:
+        recovery = record.get("recovery")
+        if (record.get("mode") != "current" or not isinstance(recovery, dict)
+                or set(recovery) != {"kind", "pr", "head_sha"}
+                or recovery.get("kind") != "verified-open-pr-continuation"
+                or type(recovery.get("pr")) is not int or recovery["pr"] < 1
+                or not isinstance(recovery.get("head_sha"), str)
+                or not SHA40.fullmatch(recovery["head_sha"])):
+            raise ExecutionError("execution binding Schema 2 recovery metadata is invalid")
+        try:
+            checkpoint_is_ancestor = is_commit_ancestor(
+                repo, recovery["head_sha"], local_head_sha(repo)
+            )
+        except GitLifecycleError as exc:
+            raise ExecutionError(str(exc)) from exc
+        if not checkpoint_is_ancestor:
+            raise ExecutionError("current HEAD is not a descendant of the recovered PR checkpoint")
     return record
 
 
@@ -149,6 +176,32 @@ def _atomic_write(path: Path, record: dict[str, Any]) -> None:
             pass
         temp.unlink(missing_ok=True)
         raise
+
+
+def _atomic_create(path: Path, record: dict[str, Any]) -> None:
+    """Atomically create a new binding without replacing a concurrent record."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = (json.dumps(record, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8")
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temp = Path(temp_name)
+    try:
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temp, path)
+        temp.unlink()
+    except OSError as exc:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        temp.unlink(missing_ok=True)
+        if isinstance(exc, FileExistsError):
+            raise ExecutionError("an execution binding appeared during continuation recovery") from exc
+        raise ExecutionError("could not atomically create the execution binding") from exc
 
 
 def _load_profile(repo: Path) -> dict[str, Any]:
@@ -387,3 +440,156 @@ def prepare_implementation(repo: Path, issue: int, gh: GitHub, *, mode: str,
     _validate_record(record, repo, issue, gh.repo, identity.root, profile)
     _atomic_write(execution_path(repo, issue), record)
     return {**record, "reused": False, "superseded": False}
+
+
+def _verify_recovery_pull(pull: Any, issue: int, pr: int, repository: str,
+                          branch: str, base_ref: str, base_sha: str,
+                          head_sha: str) -> None:
+    if not isinstance(pull, dict) or type(pull.get("number")) is not int or pull.get("number") != pr:
+        raise ExecutionError("PR identity does not match the requested continuation PR")
+    if pull.get("state") != "open" or pull.get("draft") is not False or pull.get("merged") is True:
+        raise ExecutionError("continuation recovery requires an open, non-draft PR")
+    head, base = pull.get("head"), pull.get("base")
+    head_repo = head.get("repo") if isinstance(head, dict) else None
+    base_repo = base.get("repo") if isinstance(base, dict) else None
+    if (not isinstance(head_repo, dict) or not isinstance(base_repo, dict)
+            or str(head_repo.get("full_name", "")).casefold() != repository.casefold()
+            or str(base_repo.get("full_name", "")).casefold() != repository.casefold()):
+        raise ExecutionError("continuation PR head and base must belong to the configured repository")
+    body = pull.get("body")
+    if not isinstance(body, str) or not re.search(rf"(?im)^\s*closes\s+#{issue}\s*$", body):
+        raise ExecutionError(f"continuation PR body must contain a standalone Closes #{issue} line")
+    if (head.get("ref") != branch or head.get("sha") != head_sha
+            or base.get("ref") != base_ref or base.get("sha") != base_sha):
+        raise ExecutionError("continuation PR refs or SHAs do not match the verified checkout and base")
+
+
+def recover_implementation_binding(repo: Path, issue: int, pr: int, gh: GitHub, *,
+                                   base_ref: str, expected_base_sha: str) -> dict[str, Any]:
+    """Recover a missing local binding from an exact, open same-repository continuation PR."""
+    _positive_issue(issue)
+    if not isinstance(pr, int) or isinstance(pr, bool) or pr < 1:
+        raise ExecutionError("PR number must be a positive integer")
+    if not isinstance(expected_base_sha, str) or not SHA40.fullmatch(expected_base_sha):
+        raise ExecutionError("--expected-base-sha must be exactly 40 lowercase hexadecimal characters")
+
+    profile = _load_profile(repo)
+    if profile["workspace"]["isolation"] == "required":
+        raise ExecutionError("workspace.isolation=required does not allow current-mode binding recovery")
+    try:
+        if origin_repository(repo).casefold() != gh.repo.casefold():
+            raise ExecutionError("origin fetch repository does not match the owning Issue")
+        validate_branch_ref(repo, base_ref, "--base-ref")
+    except GitLifecycleError as exc:
+        raise ExecutionError(str(exc)) from exc
+
+    contract_comment_id, contract_sha = _approved_contract(issue, gh)
+    if _read_record(repo, issue) is not None:
+        raise ExecutionError("an execution binding already exists; validate it with prepare-implementation")
+    try:
+        require_clean_worktree(repo)
+        identity = workspace_identity(repo)
+    except GitLifecycleError as exc:
+        raise ExecutionError(str(exc)) from exc
+    if not identity.branch:
+        raise ExecutionError("continuation recovery requires a current Issue branch workspace")
+
+    issue_obj = gh.issue(issue)
+    expected_issue_url = f"https://api.github.com/repos/{gh.repo}"
+    if (not isinstance(issue_obj, dict) or type(issue_obj.get("number")) is not int
+            or issue_obj.get("number") != issue or issue_obj.get("repository_url") != expected_issue_url
+            or issue_obj.get("pull_request") or issue_obj.get("state") != "open"):
+        raise ExecutionError("Issue identity or state changed during continuation recovery")
+    title = issue_obj.get("title")
+    if not isinstance(title, str) or not title.strip() or "\n" in title or "\r" in title:
+        raise ExecutionError("Issue title is missing or malformed")
+    try:
+        canonical_branch = f"{profile['branch']['prefix']}/{issue}-{feature_slug(title, profile['branch']['max_slug_length'])}"
+    except GitLifecycleError as exc:
+        raise ExecutionError(str(exc)) from exc
+    if identity.branch != canonical_branch:
+        raise ExecutionError("continuation recovery requires the configured canonical Issue branch")
+
+    try:
+        base_sha = fetch_base_ref(repo, base_ref)
+    except GitLifecycleError as exc:
+        raise ExecutionError(str(exc)) from exc
+    if base_sha != expected_base_sha:
+        raise ExecutionError("expected base SHA does not match the selected remote branch")
+
+    pull = gh.pull(pr)
+    _verify_recovery_pull(pull, issue, pr, gh.repo, canonical_branch, base_ref,
+                          expected_base_sha, identity.head_sha)
+    try:
+        if not is_commit_ancestor(repo, expected_base_sha, identity.head_sha):
+            raise ExecutionError("selected base is not an ancestor of the continuation PR HEAD")
+    except GitLifecycleError as exc:
+        raise ExecutionError(str(exc)) from exc
+
+    # Recheck all authority and mutable refs immediately before the atomic local write.
+    try:
+        latest_base_sha = fetch_base_ref(repo, base_ref)
+        latest_contract_id, latest_contract_sha = _approved_contract(issue, gh)
+        latest_issue = gh.issue(issue)
+        latest_pull = gh.pull(pr)
+        latest_origin = origin_repository(repo)
+        latest_identity = workspace_identity(repo)
+        require_clean_worktree(repo)
+    except (GitLifecycleError, GitHubError) as exc:
+        raise ExecutionError(str(exc)) from exc
+    if latest_base_sha != expected_base_sha:
+        raise ExecutionError("selected base changed during continuation recovery")
+    if latest_origin.casefold() != gh.repo.casefold():
+        raise ExecutionError("origin repository changed during continuation recovery")
+    if (not isinstance(latest_issue, dict) or type(latest_issue.get("number")) is not int
+            or latest_issue.get("number") != issue
+            or latest_issue.get("repository_url") != expected_issue_url
+            or latest_issue.get("pull_request") or latest_issue.get("state") != "open"):
+        raise ExecutionError("Issue identity or state changed during continuation recovery")
+    if latest_issue.get("title") != title:
+        raise ExecutionError("Issue title changed during continuation recovery")
+    if latest_contract_id != contract_comment_id or latest_contract_sha != contract_sha:
+        raise ExecutionError("approved Contract changed during continuation recovery")
+    _verify_recovery_pull(latest_pull, issue, pr, gh.repo, canonical_branch, base_ref,
+                          expected_base_sha, identity.head_sha)
+    if (latest_identity.root != identity.root or latest_identity.head_sha != identity.head_sha
+            or latest_identity.branch != identity.branch
+            or latest_identity.linked_worktree != identity.linked_worktree):
+        raise ExecutionError("workspace identity changed during continuation recovery")
+    if _read_record(repo, issue) is not None:
+        raise ExecutionError("an execution binding appeared during continuation recovery")
+
+    record = {
+        "schema_version": 2,
+        "issue": issue,
+        "repository": gh.repo,
+        "contract_comment_id": contract_comment_id,
+        "contract_sha256": contract_sha,
+        "workspace_root": str(identity.root.resolve()),
+        "mode": "current",
+        "base_ref": base_ref,
+        "base_sha": expected_base_sha,
+        "initial_head": expected_base_sha,
+        "canonical_branch": canonical_branch,
+        "recovery": {
+            "kind": "verified-open-pr-continuation",
+            "pr": pr,
+            "head_sha": identity.head_sha,
+        },
+    }
+    _validate_record(record, repo, issue, gh.repo, identity.root, profile)
+    _atomic_create(execution_path(repo, issue), record)
+    return {
+        "issue": issue,
+        "repository": gh.repo,
+        "contract_comment_id": contract_comment_id,
+        "contract_sha256": contract_sha,
+        "pr": pr,
+        "canonical_branch": canonical_branch,
+        "mode": "current",
+        "base_ref": base_ref,
+        "base_sha": expected_base_sha,
+        "initial_head": expected_base_sha,
+        "recovered_head": identity.head_sha,
+        "recovered": True,
+    }

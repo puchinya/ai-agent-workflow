@@ -22,6 +22,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 from agent_workflow.contracts import (ContractError, parse_comment, publish_contract,
                                       classify_reviewer_checklist_h2, restore_contract, save_contract, sha256,
                                       normalize_reviewer_checklist,
+                                      validate_contract_structure,
                                       validate_payload, validate_reviewer_checklist_authoring,
                                       verify_contract)
 from agent_workflow.context import ContextError, affected_components, build_context
@@ -30,12 +31,12 @@ from agent_workflow.cli import (_ensure_milestone, _init_project, _start_feature
                                 main as cli_main)
 from agent_workflow.delivery import (DeliveryError, delivery_check, ensure_review_pr,
                                      finalize_merged_issue)
-from agent_workflow.execution import (ExecutionError, execution_path, execution_status,
+from agent_workflow.execution import (ExecutionError, _atomic_create, execution_path, execution_status,
                                       load_execution, prepare_implementation,
-                                      resolve_implementation_base)
+                                      recover_implementation_binding, resolve_implementation_base)
 from agent_workflow.documents import resolve_document_impact, validate_markdown_file, validate_docs
 from agent_workflow.git import (GitLifecycleError, _remove_cleanup_path, changed_document_paths,
-                                feature_slug, local_head_sha, push_review_branch, require_clean_worktree,
+                                feature_slug, is_commit_ancestor, local_head_sha, push_review_branch, require_clean_worktree,
                                 start_feature_branch, workspace_identity)
 from agent_workflow.github import GitHub, GitHubError
 from agent_workflow.profile import ProfileError, build_hook_plan, load_profile, validate_profile
@@ -1394,6 +1395,335 @@ class ExecutionBindingTests(unittest.TestCase):
         with patch("agent_workflow.execution.origin_repository", return_value="owner/repo"):
             return resolve_implementation_base(repo or self.repo, 1, self.github, **kwargs)
 
+    def prepare_continuation(self):
+        branch = "feature/1-issue-title"
+        self.git(self.repo, "switch", "-c", branch)
+        (self.repo / "continuation.txt").write_text("existing PR work\n", encoding="utf-8")
+        self.git(self.repo, "add", "continuation.txt")
+        self.git(self.repo, "commit", "-m", "existing PR implementation")
+        self.git(self.repo, "push", "origin", branch)
+        head_sha = self.git(self.repo, "rev-parse", "HEAD")
+        self.github.issue_data["title"] = "Issue title"
+        self.github.pull_data = {
+            "number": 25,
+            "state": "open",
+            "draft": False,
+            "merged": False,
+            "body": "Closes #1\n\n## Verification\nPASS\n",
+            "base": {"ref": "main", "sha": self.base_sha, "repo": {"full_name": "owner/repo"}},
+            "head": {"ref": branch, "sha": head_sha, "repo": {"full_name": "owner/repo"}},
+        }
+        return branch, head_sha
+
+    def recover_continuation(self, pr=25, **kwargs):
+        base_ref = kwargs.pop("base_ref", "main")
+        expected_base_sha = kwargs.pop("expected_base_sha", self.base_sha)
+        with patch("agent_workflow.execution.origin_repository", return_value="owner/repo"):
+            return recover_implementation_binding(
+                self.repo, 1, pr, self.github, base_ref=base_ref,
+                expected_base_sha=expected_base_sha, **kwargs
+            )
+
+    def test_recover_binding_accepts_exact_open_pr_continuation_and_schema2_reuses(self):
+        branch, head_sha = self.prepare_continuation()
+        before_branch = self.git(self.repo, "branch", "--show-current")
+        before_worktrees = self.git(self.repo, "worktree", "list", "--porcelain")
+        before_mutations = (list(self.github.created_prs), list(self.github.updated_prs),
+                            list(self.github.label_replacements))
+
+        with patch("agent_workflow.git.run_command") as hook:
+            recovered = self.recover_continuation()
+        hook.assert_not_called()
+
+        self.assertEqual(recovered, {
+            "issue": 1, "repository": "owner/repo",
+            "contract_comment_id": self.published["comment_id"],
+            "contract_sha256": self.published["sha256"],
+            "pr": 25, "canonical_branch": branch, "mode": "current",
+            "base_ref": "main", "base_sha": self.base_sha,
+            "initial_head": self.base_sha, "recovered_head": head_sha, "recovered": True,
+        })
+        record = json.loads(execution_path(self.repo, 1).read_text(encoding="utf-8"))
+        self.assertEqual(record["schema_version"], 2)
+        self.assertEqual(record["recovery"], {
+            "kind": "verified-open-pr-continuation", "pr": 25, "head_sha": head_sha,
+        })
+        self.assertEqual(record["initial_head"], record["base_sha"])
+        self.assertEqual(self.git(self.repo, "branch", "--show-current"), before_branch)
+        self.assertEqual(self.git(self.repo, "worktree", "list", "--porcelain"), before_worktrees)
+        self.assertEqual(self.git(self.repo, "status", "--porcelain"), "")
+        self.assertEqual((self.github.created_prs, self.github.updated_prs,
+                          self.github.label_replacements), before_mutations)
+
+        with patch("agent_workflow.execution.origin_repository", return_value="owner/repo"):
+            reused = prepare_implementation(
+                self.repo, 1, self.github, mode="current", base_ref="main",
+                expected_base_sha=self.base_sha, supersede=True,
+            )
+        self.assertTrue(reused["reused"])
+        self.assertEqual(reused["schema_version"], 2)
+
+    def test_recovered_binding_requires_checkpoint_ancestor_and_supports_descendant_commits(self):
+        _branch, head_sha = self.prepare_continuation()
+        self.recover_continuation()
+        (self.repo / "follow-up.txt").write_text("descendant\n", encoding="utf-8")
+        self.git(self.repo, "add", "follow-up.txt")
+        self.git(self.repo, "commit", "-m", "follow-up")
+        self.assertTrue(is_commit_ancestor(self.repo, head_sha, local_head_sha(self.repo)))
+        with patch("agent_workflow.execution.origin_repository", return_value="owner/repo"):
+            result = prepare_implementation(
+                self.repo, 1, self.github, mode="current", base_ref="main",
+                expected_base_sha=self.base_sha,
+            )
+        self.assertTrue(result["reused"])
+        self.assertEqual(result["recovery"]["head_sha"], head_sha)
+
+        self.git(self.repo, "reset", "--hard", self.base_sha)
+        with patch("agent_workflow.execution.origin_repository", return_value="owner/repo"):
+            with self.assertRaisesRegex(ExecutionError, "not a descendant of the recovered PR checkpoint"):
+                prepare_implementation(self.repo, 1, self.github, mode="current")
+
+    def test_recovery_mismatch_dirty_existing_and_required_policy_fail_without_binding(self):
+        branch, head_sha = self.prepare_continuation()
+        cases = []
+        for field, value, message in (
+            ("state", "closed", "open, non-draft"),
+            ("draft", True, "open, non-draft"),
+            ("merged", True, "open, non-draft"),
+            ("body", "not associated", "Closes #1"),
+        ):
+            altered = copy.deepcopy(self.github.pull_data)
+            altered[field] = value
+            cases.append((altered, message))
+        for side, field, value, message in (
+            ("head", "ref", "feature/1-other", "refs or SHAs"),
+            ("head", "sha", "0" * 40, "refs or SHAs"),
+            ("base", "ref", "release", "refs or SHAs"),
+            ("base", "sha", "0" * 40, "refs or SHAs"),
+        ):
+            altered = copy.deepcopy(self.github.pull_data)
+            altered[side][field] = value
+            cases.append((altered, message))
+        for pull, message in cases:
+            with self.subTest(message=message):
+                self.github.pull_data = pull
+                with self.assertRaisesRegex(ExecutionError, message):
+                    self.recover_continuation()
+                self.assertFalse(execution_path(self.repo, 1).exists())
+        self.github.pull_data = copy.deepcopy(self.github.pull_data)
+        self.github.pull_data["head"]["ref"] = branch
+        self.github.pull_data["head"]["sha"] = head_sha
+        self.github.pull_data["base"]["ref"] = "main"
+        self.github.pull_data["base"]["sha"] = self.base_sha
+        self.github.pull_data["state"] = "open"
+        self.github.pull_data["draft"] = False
+        self.github.pull_data["merged"] = False
+        self.github.pull_data["body"] = "Closes #1\n"
+
+        (self.repo / "dirty.txt").write_text("dirty\n", encoding="utf-8")
+        with self.assertRaisesRegex(ExecutionError, "worktree must be clean"):
+            self.recover_continuation()
+        (self.repo / "dirty.txt").unlink()
+        self.write_profile(self.repo, "required")
+        with self.assertRaisesRegex(ExecutionError, "does not allow current-mode"):
+            self.recover_continuation()
+        self.write_profile(self.repo, "auto")
+        self.assertFalse(execution_path(self.repo, 1).exists())
+
+        record_path = execution_path(self.repo, 1)
+        record_path.parent.mkdir(parents=True, exist_ok=True)
+        record_path.write_text("{}", encoding="utf-8")
+        with self.assertRaisesRegex(ExecutionError, "binding already exists"):
+            self.recover_continuation()
+
+    def test_recovery_fails_closed_on_foreign_pr_and_authority_race(self):
+        self.prepare_continuation()
+        foreign = copy.deepcopy(self.github.pull_data)
+        foreign["head"]["repo"]["full_name"] = "other/repo"
+        self.github.pull_data = foreign
+        with self.assertRaisesRegex(ExecutionError, "must belong to the configured repository"):
+            self.recover_continuation()
+        self.assertFalse(execution_path(self.repo, 1).exists())
+
+        valid = copy.deepcopy(foreign)
+        valid["head"]["repo"]["full_name"] = "owner/repo"
+        changed = copy.deepcopy(valid)
+        changed["head"]["sha"] = "f" * 40
+        with patch.object(self.github, "pull", side_effect=[valid, changed]), \
+                patch("agent_workflow.execution.origin_repository", return_value="owner/repo"):
+            with self.assertRaisesRegex(ExecutionError, "refs or SHAs"):
+                recover_implementation_binding(
+                    self.repo, 1, 25, self.github, base_ref="main", expected_base_sha=self.base_sha,
+                )
+        self.assertFalse(execution_path(self.repo, 1).exists())
+
+    def test_recovery_rechecks_open_same_repository_issue_and_approved_contract(self):
+        self.prepare_continuation()
+        issue_baseline = copy.deepcopy(self.github.issue_data)
+        bad_issues = []
+        for field, value, message in (
+            ("state", "closed", "open"),
+            ("repository_url", "https://api.github.com/repos/foreign/repo", "identity"),
+            ("pull_request", {"url": "https://api.github.com/repos/owner/repo/pulls/1"}, "identity"),
+            ("body", "## Implementation Contract\nComment ID: bad\n", "pointer"),
+        ):
+            changed = copy.deepcopy(issue_baseline)
+            changed[field] = value
+            bad_issues.append((changed, message))
+        for changed, message in bad_issues:
+            with self.subTest(message=message):
+                self.github.issue_data = changed
+                with self.assertRaises(ExecutionError):
+                    self.recover_continuation()
+                self.assertFalse(execution_path(self.repo, 1).exists())
+        self.github.issue_data = issue_baseline
+
+        with patch("agent_workflow.execution.origin_repository", return_value="owner/repo"), \
+                patch("agent_workflow.execution.fetch_base_ref",
+                      side_effect=[self.base_sha, "f" * 40]):
+            with self.assertRaisesRegex(ExecutionError, "selected base changed"):
+                recover_implementation_binding(
+                    self.repo, 1, 25, self.github, base_ref="main", expected_base_sha=self.base_sha,
+                )
+        self.assertFalse(execution_path(self.repo, 1).exists())
+
+    def test_recovery_rechecks_issue_open_state_and_repository_before_write(self):
+        self.prepare_continuation()
+        issue_baseline = copy.deepcopy(self.github.issue_data)
+        changed_issues = []
+        for field, value, message in (
+            ("state", "closed", "Issue identity or state changed"),
+            ("repository_url", "https://api.github.com/repos/foreign/repo",
+             "Issue identity or state changed"),
+            ("pull_request", {"url": "https://api.github.com/repos/owner/repo/pulls/1"},
+             "Issue identity or state changed"),
+        ):
+            changed = copy.deepcopy(issue_baseline)
+            changed[field] = value
+            changed_issues.append((changed, message))
+
+        for changed, message in changed_issues:
+            with self.subTest(message=message, issue=changed):
+                with patch.object(
+                    self.github, "issue",
+                    side_effect=[issue_baseline, issue_baseline, issue_baseline, changed],
+                ), patch("agent_workflow.execution.origin_repository", return_value="owner/repo"):
+                    with self.assertRaisesRegex(ExecutionError, message):
+                        recover_implementation_binding(
+                            self.repo, 1, 25, self.github, base_ref="main",
+                            expected_base_sha=self.base_sha,
+                        )
+                self.assertFalse(execution_path(self.repo, 1).exists())
+
+    def test_recovery_rechecks_approved_contract_pointer_and_comment_before_write(self):
+        self.prepare_continuation()
+        old_issue = copy.deepcopy(self.github.issue_data)
+        next_payload = self.payload + b"\nSupplementary approved decision.\n"
+        next_source = self.root / "next-approved-contract.md"
+        next_source.write_bytes(next_payload)
+        publish_contract(self.repo, 1, self.github, next_source, supersede=True)
+        new_issue = copy.deepcopy(self.github.issue_data)
+        self.github.issue_data = old_issue
+
+        with patch.object(
+            self.github, "issue",
+            side_effect=[old_issue, old_issue, new_issue, new_issue],
+        ), patch("agent_workflow.execution.origin_repository", return_value="owner/repo"):
+            with self.assertRaisesRegex(ExecutionError, "approved Contract changed"):
+                recover_implementation_binding(
+                    self.repo, 1, 25, self.github, base_ref="main",
+                    expected_base_sha=self.base_sha,
+                )
+        self.assertFalse(execution_path(self.repo, 1).exists())
+
+    def test_recovery_rechecks_workspace_identity_and_origin_before_write(self):
+        self.prepare_continuation()
+        initial_identity = workspace_identity(self.repo)
+        changed_identity = type(initial_identity)(
+            initial_identity.root, initial_identity.git_dir, initial_identity.common_git_dir,
+            initial_identity.linked_worktree, initial_identity.head_sha, "feature/1-other",
+        )
+        with patch("agent_workflow.execution.origin_repository",
+                   side_effect=["owner/repo", "owner/repo"]), \
+                patch("agent_workflow.execution.workspace_identity",
+                      side_effect=[initial_identity, changed_identity]):
+            with self.assertRaisesRegex(ExecutionError, "workspace identity changed"):
+                recover_implementation_binding(
+                    self.repo, 1, 25, self.github, base_ref="main",
+                    expected_base_sha=self.base_sha,
+                )
+        self.assertFalse(execution_path(self.repo, 1).exists())
+
+        with patch("agent_workflow.execution.origin_repository",
+                   side_effect=["owner/repo", "foreign/repo"]):
+            with self.assertRaisesRegex(ExecutionError, "origin repository changed"):
+                recover_implementation_binding(
+                    self.repo, 1, 25, self.github, base_ref="main",
+                    expected_base_sha=self.base_sha,
+                )
+        self.assertFalse(execution_path(self.repo, 1).exists())
+
+    def test_recovery_rejects_unrelated_base_and_invalid_identity_before_binding(self):
+        branch = "feature/1-issue-title"
+        self.git(self.repo, "switch", "--orphan", branch)
+        (self.repo / ".agent").mkdir()
+        self.write_profile(self.repo, "auto")
+        (self.repo / ".gitignore").write_text(".agent-state/\n", encoding="utf-8")
+        (self.repo / "unrelated.txt").write_text("unrelated root\n", encoding="utf-8")
+        self.git(self.repo, "add", "--all")
+        self.git(self.repo, "commit", "-m", "unrelated PR root")
+        self.git(self.repo, "push", "origin", branch)
+        head_sha = self.git(self.repo, "rev-parse", "HEAD")
+        self.github.pull_data = {
+            "number": 25, "state": "open", "draft": False, "merged": False,
+            "body": "Closes #1\n",
+            "base": {"ref": "main", "sha": self.base_sha, "repo": {"full_name": "owner/repo"}},
+            "head": {"ref": branch, "sha": head_sha, "repo": {"full_name": "owner/repo"}},
+        }
+        with self.assertRaisesRegex(ExecutionError, "not an ancestor"):
+            self.recover_continuation()
+        self.assertFalse(execution_path(self.repo, 1).exists())
+
+        prior_calls = list(self.github.lifecycle_calls)
+        with self.assertRaisesRegex(ExecutionError, "positive integer"):
+            recover_implementation_binding(
+                self.repo, 1, 0, self.github, base_ref="main", expected_base_sha=self.base_sha,
+            )
+        with self.assertRaisesRegex(ExecutionError, "valid Git branch"):
+            self.recover_continuation(base_ref="bad..ref")
+        with self.assertRaisesRegex(ExecutionError, "exactly 40 lowercase"):
+            recover_implementation_binding(
+                self.repo, 1, 25, self.github, base_ref="main", expected_base_sha="A" * 40,
+            )
+        self.assertEqual(self.github.lifecycle_calls, prior_calls)
+        self.assertFalse(execution_path(self.repo, 1).exists())
+
+    def test_recovery_cli_requires_explicit_pr_base_identity_and_dispatches(self):
+        with self.assertRaises(SystemExit):
+            build_parser().parse_args(["recover-implementation-binding", "1", "25"])
+        expected = {"recovered": True}
+        with patch("agent_workflow.cli._repo_arg", return_value=self.repo), \
+                patch("agent_workflow.cli._gh", return_value=self.github), \
+                patch("agent_workflow.cli.recover_implementation_binding", return_value=expected) as recover, \
+                redirect_stdout(io.StringIO()) as output:
+            status = cli_main([
+                "recover-implementation-binding", "1", "25", "--base-ref", "main",
+                "--expected-base-sha", self.base_sha, "--repo", str(self.repo),
+            ])
+        self.assertEqual(status, 0)
+        self.assertEqual(json.loads(output.getvalue()), expected)
+        recover.assert_called_once_with(
+            self.repo, 1, 25, self.github, base_ref="main", expected_base_sha=self.base_sha,
+        )
+
+    def test_atomic_recovery_create_never_replaces_a_concurrent_binding(self):
+        path = execution_path(self.repo, 1)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"concurrent binding\n")
+        with self.assertRaisesRegex(ExecutionError, "binding appeared during"):
+            _atomic_create(path, {"schema_version": 2})
+        self.assertEqual(path.read_bytes(), b"concurrent binding\n")
+
     def test_t01_default_base_resolution_returns_approved_exact_identity(self):
         result = self.resolve_base()
         self.assertEqual(result, {
@@ -1505,11 +1835,14 @@ class ExecutionBindingTests(unittest.TestCase):
         skill = (ROOT / "workflow/skills/implementation/SKILL.md").read_text(encoding="utf-8")
         agent_context = skill.index("agent-context <issue>")
         existing_binding = skill.index("If a valid binding exists")
+        recovery = skill.index("recover-implementation-binding")
         resolver = skill.index("resolve-implementation-base <issue>")
         host_decision = skill.index("Before selecting host isolation")
         fallback = skill.index("start-feature-branch <issue>")
         prepare = skill.index("Then run `prepare-implementation <issue> --mode isolated|current")
         self.assertLess(agent_context, existing_binding)
+        self.assertLess(existing_binding, recovery)
+        self.assertLess(recovery, resolver)
         self.assertLess(existing_binding, resolver)
         self.assertLess(resolver, host_decision)
         self.assertLess(host_decision, fallback)
@@ -1895,6 +2228,19 @@ class ChangedDocumentValidationTests(unittest.TestCase):
 
 
 class ContractTests(unittest.TestCase):
+    STRUCTURAL_HEADINGS = (
+        "1. Repository Baseline",
+        "2. Architecture Decisions",
+        "3. Exact Change Set",
+        "4. Implementation Outcomes",
+        "5. Required Runtime Semantics",
+        "6. Non-goals / Forbidden Changes",
+        "7. Concrete Tests",
+        "8. Verification",
+        "9. Reviewer Checklist",
+        "10. Completion Report",
+    )
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.repo = Path(self.temp.name)
@@ -1907,6 +2253,234 @@ class ContractTests(unittest.TestCase):
         path = self.repo / "source.md"
         path.write_bytes(content)
         return path
+
+    def structural_contract(self, bodies: dict[int, str] | None = None) -> bytes:
+        body_map = bodies or {}
+        sections = []
+        for index, heading in enumerate(self.STRUCTURAL_HEADINGS):
+            if index == 8:
+                body = ("The implementer must self-review every item in this checklist.\n\n"
+                        "<!-- AGENT_REVIEWER_CHECKLIST_V1 -->\n"
+                        "- [ ] Review this contract section.\n"
+                        "<!-- /AGENT_REVIEWER_CHECKLIST_V1 -->\n")
+            else:
+                body = body_map.get(index, f"Decision and evidence for section {index + 1}.\n")
+            sections.append(f"## {heading}\n\n{body}")
+        return ("# Contract\n\n" + "\n".join(sections)).encode("utf-8")
+
+    def test_structural_preflight_accepts_exact_sections_extensions_h3_and_fenced_faux_heading(self):
+        payload = self.structural_contract({
+            4: "Required behavior is specified.\n\n### Retry behavior\nRetries preserve the same identity.\n\n"
+               "```md\n## 5. Required Runtime Semantics\n```\n",
+        }) + b"\n## Extension Review Surface\n\nReview this additional unit.\n"
+
+        result = validate_contract_structure(payload, 24)
+
+        self.assertEqual(result, {
+            "valid": True,
+            "issue": 24,
+            "normalized": False,
+            "section_count": 11,
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "bytes": len(payload),
+        })
+        units = contract_review_units(payload)
+        self.assertIn("Extension Review Surface", [unit["title"] for unit in units])
+        self.assertEqual(sum(unit["title"] == "5. Required Runtime Semantics" for unit in units), 1)
+
+    def test_template_and_chat_instructions_use_outcomes_without_artifact_edit_order(self):
+        contract_template = (ROOT / "workflow/templates/implementation-contract-template.md").read_text(encoding="utf-8")
+        chat_template = (ROOT / "workflow/templates/chat-project-instructions-template.md").read_text(encoding="utf-8")
+        documentation_sync = (ROOT / "workflow/standards/documentation-sync.md").read_text(encoding="utf-8")
+        self.assertIn("## 4. Implementation Outcomes", contract_template)
+        self.assertIn("list order is illustrative", contract_template)
+        self.assertIn("aggregate final result", contract_template)
+        self.assertNotIn("Implementation Sequence", contract_template)
+        self.assertNotIn("DEPENDENCY_ORDERED_STEP_", contract_template)
+        self.assertIn("4. Implementation Outcomes", chat_template)
+        self.assertIn("作成・編集・commitの順番は完了条件にしない", chat_template)
+        self.assertNotIn("Implementation Sequence", chat_template)
+        self.assertIn("artifact authoring chronology is not a requirement", documentation_sync)
+        self.assertNotIn("Update the owning artifact first", documentation_sync)
+
+    def test_workflow_skills_keep_authorization_and_final_consistency_without_edit_chronology(self):
+        spec = (ROOT / "docs/specs/workflow-spec.md").read_text(encoding="utf-8")
+        design_skill = (ROOT / "workflow/skills/design/SKILL.md").read_text(encoding="utf-8")
+        implementation_skill = (ROOT / "workflow/skills/implementation/SKILL.md").read_text(encoding="utf-8")
+        for source in (spec, design_skill, implementation_skill):
+            self.assertNotIn("durable document sequence", source)
+            self.assertNotIn("specifications first", source)
+        self.assertIn("must agree in the final result", spec)
+        self.assertIn("editing order is not a completion condition", design_skill)
+        self.assertIn("artifact editing order is not a completion condition", implementation_skill)
+        self.assertIn("Do not edit source until the binding succeeds", implementation_skill)
+        self.assertIn("required` blocks before edits", implementation_skill)
+        self.assertIn("fresh-context independent PR review", spec)
+        self.assertIn("recover-implementation-binding", implementation_skill)
+
+    def test_structural_preflight_rejects_missing_duplicate_reordered_and_empty_sections(self):
+        complete = self.structural_contract()
+        missing = complete.replace(b"## 3. Exact Change Set\n\nDecision and evidence for section 3.\n\n", b"")
+        duplicate = complete + b"\n## 5. Required Runtime Semantics\n\nRepeated section.\n"
+        sections = complete.decode("utf-8").split("## ")
+        sections[1], sections[2] = sections[2], sections[1]
+        reordered = (sections[0] + "## " + "## ".join(sections[1:])).encode("utf-8")
+        empty = complete.replace(b"## 7. Concrete Tests\n\nDecision and evidence for section 7.\n", b"## 7. Concrete Tests\n\n")
+        unicode_whitespace = complete.replace(
+            b"## 5. Required Runtime Semantics\n\nDecision and evidence for section 5.\n",
+            "## 5. Required Runtime Semantics\n\n　　\n".encode("utf-8"),
+        )
+
+        cases = (
+            (missing, "missing required section '3. Exact Change Set'"),
+            (duplicate, "section '5. Required Runtime Semantics' is repeated"),
+            (reordered, "section '1. Repository Baseline' is out of order"),
+            (empty, "section '7. Concrete Tests' is empty"),
+            (unicode_whitespace, "section '5. Required Runtime Semantics' is empty"),
+        )
+        for payload, message in cases:
+            with self.subTest(message=message), self.assertRaisesRegex(ContractError, re.escape(message)):
+                validate_contract_structure(payload, 24)
+
+    def test_structural_preflight_rejects_reserved_aliases_and_unfilled_markers_without_echoing_them(self):
+        alias = self.structural_contract().replace(b"## 4. Implementation Outcomes", b"## 4) Implementation Outcomes")
+        with self.assertRaisesRegex(ContractError, "heading must be exactly '4. Implementation Outcomes'"):
+            validate_contract_structure(alias, 24)
+        legacy_title = self.structural_contract().replace(
+            b"## 4. Implementation Outcomes", b"## 4. Implementation Sequence"
+        )
+        with self.assertRaisesRegex(ContractError, "missing required section '4. Implementation Outcomes'"):
+            validate_contract_structure(legacy_title, 24)
+
+        for marker in (b"{{ISSUE_URL}}", b"```md\n{{ISSUE_URL}}\n```"):
+            payload = self.structural_contract() + b"\n" + marker
+            with self.subTest(marker=marker), self.assertRaises(ContractError) as raised:
+                validate_contract_structure(payload, 24)
+            self.assertIn("unresolved authoring placeholder", str(raised.exception))
+            self.assertNotIn("ISSUE_URL", str(raised.exception))
+
+    def test_structural_preflight_normalizes_legacy_checklist_only_in_memory(self):
+        payload = self.structural_contract()
+        legacy = payload.replace(
+            b"The implementer must self-review every item in this checklist.\n\n"
+            b"<!-- AGENT_REVIEWER_CHECKLIST_V1 -->\n"
+            b"- [ ] Review this contract section.\n"
+            b"<!-- /AGENT_REVIEWER_CHECKLIST_V1 -->\n",
+            b"- [ ] Review this contract section.\nImplementer MUST self-review every item.\n",
+        )
+        source = self.source(legacy)
+        result = validate_contract_structure(source.read_bytes(), 24)
+        normalized = normalize_reviewer_checklist(legacy)
+
+        self.assertTrue(result["normalized"])
+        self.assertEqual(result["sha256"], hashlib.sha256(normalized).hexdigest())
+        self.assertEqual(result["bytes"], len(normalized))
+        self.assertEqual(source.read_bytes(), legacy)
+
+    def test_structural_preflight_reuses_payload_encoding_size_secret_and_checklist_gates(self):
+        malformed_checklist = self.structural_contract().replace(
+            b"<!-- /AGENT_REVIEWER_CHECKLIST_V1 -->", b"<!-- AGENT_REVIEWER_CHECKLIST_V1 -->"
+        )
+        partial_marker = self.structural_contract().replace(
+            b"<!-- /AGENT_REVIEWER_CHECKLIST_V1 -->\n", b""
+        )
+        for payload, message in (
+            (b"", "non-empty bytes"),
+            (b"\xff", "valid UTF-8"),
+            (self.structural_contract() + b"\x00", "NUL byte"),
+            (b"x" * 65537, "maximum is 65536"),
+            (self.structural_contract() + b"\napi_key=secret-value", "credential material"),
+            (malformed_checklist, "markers are ambiguous"),
+            (partial_marker, "markers must occur as one canonical pair"),
+        ):
+            with self.subTest(message=message), self.assertRaisesRegex(ContractError, re.escape(message)):
+                validate_contract_structure(payload, 24)
+
+    def test_structure_cli_is_bounded_deterministic_read_only_and_accepts_relative_and_absolute_paths(self):
+        payload = self.structural_contract().replace(
+            b"The implementer must self-review every item in this checklist.\n\n"
+            b"<!-- AGENT_REVIEWER_CHECKLIST_V1 -->\n"
+            b"- [ ] Review this contract section.\n"
+            b"<!-- /AGENT_REVIEWER_CHECKLIST_V1 -->\n",
+            b"- [ ] Review this contract section.\nImplementer MUST self-review every item.\n",
+        )
+        with tempfile.TemporaryDirectory(dir=ROOT) as temporary:
+            path = Path(temporary) / "draft.md"
+            path.write_bytes(payload)
+            relative = path.relative_to(ROOT)
+            previous_cwd = Path.cwd()
+            try:
+                import os
+                os.chdir(ROOT)
+                output_pairs = []
+                with patch("agent_workflow.cli._gh", side_effect=AssertionError("network boundary called")):
+                    for path_arg in (str(path), str(relative), str(relative)):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        with redirect_stdout(stdout), redirect_stderr(stderr):
+                            status = cli_main([
+                                "validate-implementation-contract-structure", "24", path_arg,
+                                "--repo", str(self.repo),
+                            ])
+                        self.assertEqual(status, 0)
+                        self.assertEqual(stderr.getvalue(), "")
+                        output_pairs.append(stdout.getvalue())
+            finally:
+                os.chdir(previous_cwd)
+
+            self.assertEqual(output_pairs[0], output_pairs[1])
+            self.assertEqual(output_pairs[1], output_pairs[2])
+            decoded = json.loads(output_pairs[0])
+            self.assertEqual(set(decoded), {"valid", "issue", "normalized", "section_count", "sha256", "bytes"})
+            self.assertTrue(decoded["valid"])
+            self.assertTrue(decoded["normalized"])
+            self.assertNotIn("Review this contract section", output_pairs[0])
+            self.assertEqual(path.read_bytes(), payload)
+            self.assertFalse((self.repo / ".agent-state").exists())
+
+    def test_structure_cli_failures_are_nonzero_and_do_not_echo_payload(self):
+        source = self.source(self.structural_contract() + b"\n{{PRIVATE_MARKER}}")
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            status = cli_main([
+                "validate-implementation-contract-structure", "24", str(source), "--repo", str(self.repo),
+            ])
+        self.assertEqual(status, 1)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("unresolved authoring placeholder", stderr.getvalue())
+        self.assertNotIn("PRIVATE_MARKER", stderr.getvalue())
+        self.assertEqual(source.read_bytes(), self.structural_contract() + b"\n{{PRIVATE_MARKER}}")
+
+    def test_chat_project_template_has_one_repository_edit_and_survives_url_substitution(self):
+        source = ROOT / "workflow/templates/chat-project-instructions-template.md"
+        body = source.read_text(encoding="utf-8")
+        repository_token = "https://github.com/OWNER/REPO"
+        self.assertEqual(body.count(repository_token), 1)
+        self.assertEqual(body.splitlines()[2], f"**対象リポジトリ:** {repository_token}")
+        self.assertEqual(len(re.findall(r"https?://", body)), 1)
+        self.assertNotRegex(body, r"\{\{[A-Z][A-Z0-9_]*\}\}")
+        self.assertNotRegex(body, r"/(?:mnt|workspace|Users|home)/")
+
+        consumer_url = "https://github.com/example/consumer"
+        substituted = body.replace(repository_token, consumer_url)
+        markdown_links = re.compile(r"\[[^\]]+\]\([^)]+\)")
+        self.assertEqual(markdown_links.findall(substituted), markdown_links.findall(body))
+        inline_references = re.compile(r"`([^`]+)`")
+        self.assertEqual(inline_references.findall(substituted), inline_references.findall(body))
+        self.assertIn("workflow/templates/implementation-contract-template.md", inline_references.findall(body))
+        for obligation in (
+            "質問・調査・指示書作成",
+            "実装が明示的に依頼された場合のみ",
+            "Closes #<issue-number>",
+            "A: Contract violation / B: Contract ambiguity / C: Newly discovered requirement / D: Optional improvement",
+        ):
+            self.assertIn(obligation, substituted)
+        self.assertNotIn("puchinya", substituted)
+        self.assertNotIn("#22", substituted)
+        for host in ("openai", "claude", "antigravity"):
+            packaged = ROOT / "dist" / host / "templates/chat-project-instructions-template.md"
+            self.assertEqual(packaged.read_bytes(), source.read_bytes())
 
     def test_pointer_error_shows_canonical_block_and_forbids_appended_prose(self):
         from agent_workflow.contracts import parse_pointer
@@ -4636,7 +5210,7 @@ class ClaudeWorktreeGuidanceTests(unittest.TestCase):
                 self.assertIn(retained, skill)
         self.assertNotIn("git check-ignore", skill)
         self.assertNotIn(".worktreeinclude", skill)
-        self.assertEqual(len(re.findall(r"^\d+\.", skill, flags=re.M)), 11)
+        self.assertEqual(len(re.findall(r"^\d+\.", skill, flags=re.M)), 12)
 
     def test_t07_spec_and_design_preserve_owners_and_host_boundaries(self):
         spec = (ROOT / "docs/specs/workflow-spec.md").read_text(encoding="utf-8")
@@ -4651,7 +5225,7 @@ class ClaudeWorktreeGuidanceTests(unittest.TestCase):
         for expected in (
             "Git cleanliness sees untracked content", "host settings or `WorktreeCreate` hooks",
             "guidance and configuration", "host-owned worktree lifecycle",
-            "execution registry or binding", "PR gates", "Independent Review stays in a fresh context",
+            "PR gates", "Independent Review stays in a fresh context",
         ):
             self.assertIn(expected, design)
 
@@ -4765,6 +5339,11 @@ class DistributionTests(unittest.TestCase):
                 runtime_cli = files[f"dist/{host}/runtime/agent_workflow/cli.py"].decode("utf-8")
                 runtime_qa = files[f"dist/{host}/runtime/agent_workflow/qa.py"].decode("utf-8")
                 runtime_review = files[f"dist/{host}/runtime/agent_workflow/review.py"].decode("utf-8")
+                runtime_execution = files[f"dist/{host}/runtime/agent_workflow/execution.py"].decode("utf-8")
+                runtime_contracts = files[f"dist/{host}/runtime/agent_workflow/contracts.py"].decode("utf-8")
+                runtime_spec = files[f"dist/{host}/docs/specs/runtime-spec.md"].decode("utf-8")
+                workflow_spec = files[f"dist/{host}/docs/specs/workflow-spec.md"].decode("utf-8")
+                contract_template = files[f"dist/{host}/templates/implementation-contract-template.md"].decode("utf-8")
                 self.assertIn("continue without another conversational prompt", implementation)
                 self.assertIn("Do not report implementation complete until an open, non-draft review PR exists", implementation)
                 self.assertIn("Do not request a later PR-specific conversational approval", requirements)
@@ -4789,6 +5368,13 @@ class DistributionTests(unittest.TestCase):
                 self.assertIn('commands.add_parser("ensure-review-pr")', runtime_cli)
                 self.assertIn('commands.add_parser("prepare-qa")', runtime_cli)
                 self.assertIn('commands.add_parser("prepare-pr-review")', runtime_cli)
+                self.assertIn('commands.add_parser("recover-implementation-binding")', runtime_cli)
+                self.assertIn("def recover_implementation_binding", runtime_execution)
+                self.assertIn("SCHEMA_2_FIELDS", runtime_execution)
+                self.assertIn("4. Implementation Outcomes", runtime_contracts)
+                self.assertIn("recover-implementation-binding ISSUE PR", runtime_spec)
+                self.assertIn("no chronology for creating or editing those artifacts", workflow_spec)
+                self.assertIn("## 4. Implementation Outcomes", contract_template)
         for path in ("dist/openai/plugin.json", "dist/claude/.claude-plugin/plugin.json"):
             self.assertEqual(json.loads(files[path])['version'], __version__)
         self.assertNotIn("version", json.loads(files["dist/antigravity/plugin.json"]))

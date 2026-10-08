@@ -13,10 +13,11 @@ from typing import Any
 from . import __version__
 from .context import ContextError, affected_components, build_context, format_context
 from .contracts import (ContractError, publish_contract, restore_contract, save_contract,
-                        verify_contract)
+                        validate_contract_structure, verify_contract)
 from .delivery import DeliveryError, delivery_check, ensure_review_pr, finalize_merged_issue
 from .documents import resolve_document_impact, validate_docs
-from .execution import ExecutionError, prepare_implementation, resolve_implementation_base
+from .execution import (ExecutionError, prepare_implementation, recover_implementation_binding,
+                        resolve_implementation_base)
 from .github import GitHub, GitHubError, discover_repository
 from .git import GitLifecycleError, changed_document_paths, start_feature_branch
 from .profile import (APPLICATION_TYPES, ProfileError, build_hook_plan, load_profile,
@@ -384,6 +385,13 @@ def build_parser() -> argparse.ArgumentParser:
     implementation.add_argument("--supersede", action="store_true")
     implementation.add_argument("--repo")
 
+    recover_binding = commands.add_parser("recover-implementation-binding")
+    recover_binding.add_argument("issue", type=_number)
+    recover_binding.add_argument("pr", type=_number)
+    recover_binding.add_argument("--base-ref", metavar="BRANCH", required=True)
+    recover_binding.add_argument("--expected-base-sha", metavar="SHA40", required=True)
+    recover_binding.add_argument("--repo")
+
     review_pr = commands.add_parser("ensure-review-pr")
     review_pr.add_argument("issue", type=_number)
     review_pr.add_argument("--body-file", type=Path, required=True)
@@ -420,6 +428,10 @@ def build_parser() -> argparse.ArgumentParser:
     save.add_argument("issue", type=_number)
     save.add_argument("path", nargs="?", type=Path)
     save.add_argument("--repo")
+    structure = commands.add_parser("validate-implementation-contract-structure")
+    structure.add_argument("issue", type=_number)
+    structure.add_argument("path", type=Path)
+    structure.add_argument("--repo")
     publish = commands.add_parser("publish-implementation-contract")
     publish.add_argument("issue", type=_number)
     publish.add_argument("--source", type=Path)
@@ -525,6 +537,12 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, int]:
             repo, args.issue, _gh(repo), mode=args.mode, base_ref=args.base_ref,
             expected_base_sha=args.expected_base_sha, supersede=args.supersede,
         )
+    elif args.command == "recover-implementation-binding":
+        repo = _repo_arg(args.repo)
+        result = recover_implementation_binding(
+            repo, args.issue, args.pr, _gh(repo), base_ref=args.base_ref,
+            expected_base_sha=args.expected_base_sha,
+        )
     elif args.command == "ensure-review-pr":
         return _ensure_review_pr(args)
     elif args.command == "run-hook":
@@ -542,6 +560,14 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, int]:
     elif args.command == "save-implementation-contract":
         repo = _repo_arg(args.repo)
         result = save_contract(repo, args.issue, args.path)
+    elif args.command == "validate-implementation-contract-structure":
+        if not args.path.is_file():
+            raise ContractError("Implementation Contract path must name an existing regular file")
+        try:
+            raw = args.path.read_bytes()
+        except OSError as exc:
+            raise ContractError("could not read Implementation Contract path") from exc
+        result = validate_contract_structure(raw, args.issue)
     elif args.command == "publish-implementation-contract":
         repo = _repo_arg(args.repo)
         result = publish_contract(repo, args.issue, _gh(repo), args.source, args.supersede)

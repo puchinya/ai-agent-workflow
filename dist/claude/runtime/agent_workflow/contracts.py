@@ -28,6 +28,22 @@ OBVIOUS_SECRET = re.compile(
 )
 CHECKLIST_BEGIN = "<!-- AGENT_REVIEWER_CHECKLIST_V1 -->"
 CHECKLIST_END = "<!-- /AGENT_REVIEWER_CHECKLIST_V1 -->"
+IMPLEMENTATION_CONTRACT_SECTIONS = (
+    "1. Repository Baseline",
+    "2. Architecture Decisions",
+    "3. Exact Change Set",
+    "4. Implementation Outcomes",
+    "5. Required Runtime Semantics",
+    "6. Non-goals / Forbidden Changes",
+    "7. Concrete Tests",
+    "8. Verification",
+    "9. Reviewer Checklist",
+    "10. Completion Report",
+)
+_RESERVED_SECTION_NAMES = tuple(
+    re.sub(r"^\d+\.\s+", "", title) for title in IMPLEMENTATION_CONTRACT_SECTIONS
+)
+_AUTHORING_PLACEHOLDER = re.compile(r"\{\{[A-Z][A-Z0-9_]*\}\}")
 CHECKLIST_HEADING = re.compile(
     r"^(?:\d+[.)]?\s*)?Reviewer Checklist(?:\s*[（(][^()（）]*[)）])?$", re.I
 )
@@ -211,6 +227,79 @@ def _prepare_contract_input(data: bytes, issue: int) -> tuple[bytes, bool]:
     validate_payload(normalized, issue)
     validate_reviewer_checklist_authoring(normalized)
     return normalized, normalized != data
+
+
+def validate_contract_structure(data: bytes, issue: int) -> dict[str, Any]:
+    """Validate a new template-based contract without writing or contacting a host."""
+    normalized, was_normalized = _prepare_contract_input(data, issue)
+    raw_checklist = classify_reviewer_checklist_h2(data)
+    if len(raw_checklist.checklist_indexes) == 1:
+        checklist_index = raw_checklist.checklist_indexes[0]
+        checklist_heading = raw_checklist.headings[checklist_index]
+        checklist_end = (
+            raw_checklist.headings[checklist_index + 1].start
+            if checklist_index + 1 < len(raw_checklist.headings) else len(data)
+        )
+        checklist_lines = data[checklist_heading.end:checklist_end].decode("utf-8").splitlines()
+        begin_rows = [index for index, line in enumerate(checklist_lines) if line.strip() == CHECKLIST_BEGIN]
+        end_rows = [index for index, line in enumerate(checklist_lines) if line.strip() == CHECKLIST_END]
+        has_markers = bool(begin_rows or end_rows)
+        if has_markers and not (
+            len(begin_rows) == 1 and len(end_rows) == 1 and begin_rows[0] < end_rows[0]
+        ):
+            raise ContractError("Reviewer Checklist markers must occur as one canonical pair")
+
+    text = normalized.decode("utf-8", errors="strict")
+    if _AUTHORING_PLACEHOLDER.search(text):
+        raise ContractError("Implementation Contract contains an unresolved authoring placeholder")
+
+    headings = _contract_h2_headings(normalized)
+    reserved: dict[int, list[int]] = {index: [] for index in range(len(IMPLEMENTATION_CONTRACT_SECTIONS))}
+    for position, heading in enumerate(headings):
+        title = heading.title
+        for section_index, (required, name) in enumerate(
+            zip(IMPLEMENTATION_CONTRACT_SECTIONS, _RESERVED_SECTION_NAMES)
+        ):
+            if title == required:
+                reserved[section_index].append(position)
+                break
+            unnumbered = re.sub(r"^\d+[.)]?\s*", "", title).strip()
+            if (unnumbered == name
+                    or (section_index == 8 and CHECKLIST_HEADING.fullmatch(title))):
+                raise ContractError(
+                    f"Implementation Contract section heading must be exactly '{required}'"
+                )
+
+    for section_index, positions in reserved.items():
+        required = IMPLEMENTATION_CONTRACT_SECTIONS[section_index]
+        if len(positions) > 1:
+            raise ContractError(f"Implementation Contract section '{required}' is repeated")
+        if not positions:
+            raise ContractError(f"Implementation Contract is missing required section '{required}'")
+
+    expected_positions = [reserved[index][0] for index in range(len(IMPLEMENTATION_CONTRACT_SECTIONS))]
+    if expected_positions != sorted(expected_positions):
+        for section_index in range(len(expected_positions)):
+            if expected_positions[section_index] != sorted(expected_positions)[section_index]:
+                required = IMPLEMENTATION_CONTRACT_SECTIONS[section_index]
+                raise ContractError(f"Implementation Contract section '{required}' is out of order")
+
+    for section_index, position in enumerate(expected_positions):
+        heading = headings[position]
+        end = headings[position + 1].start if position + 1 < len(headings) else len(normalized)
+        section_body = normalized[heading.end:end].decode("utf-8", errors="strict")
+        if not section_body.strip():
+            required = IMPLEMENTATION_CONTRACT_SECTIONS[section_index]
+            raise ContractError(f"Implementation Contract section '{required}' is empty")
+
+    return {
+        "valid": True,
+        "issue": issue,
+        "normalized": was_normalized,
+        "section_count": len(headings),
+        "sha256": sha256(normalized),
+        "bytes": len(normalized),
+    }
 
 
 def contract_dir(repo: Path, issue: int) -> Path:

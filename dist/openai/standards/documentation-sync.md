@@ -2,11 +2,11 @@
 
 ## Purpose
 
-Keep durable requirements, design decisions, code, tests, and evidence aligned without automatic semantic rewrites.
+Keep durable requirements, design decisions, code, tests, and evidence aligned without automatic semantic rewrites. Completion is evaluated from the final aggregate result; artifact authoring chronology is not a requirement.
 
 ## Rules
 
-The authority sequence is `requirements -> specs -> design -> code/tests -> status/evidence`. Update the owning artifact first when its meaning changes. Link to owners instead of copying rules. This repository does not synchronize another repository, migrate existing consumer documents, or rewrite prose automatically.
+Requirements, specifications, design, code/tests, and status/evidence have distinct owners and must agree in the final result. The workflow does not require a particular order for creating or editing those artifacts. When a decision changes, ensure its owner and every affected dependent document or implementation reflect the approved final decision. Link to owners instead of copying rules. This repository does not synchronize another repository, migrate existing consumer documents, or rewrite prose automatically.
 
 New durable Issue work includes a structured `## Document impact` section:
 
