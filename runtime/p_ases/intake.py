@@ -46,8 +46,6 @@ class Submission:
     explicitly_submitted: bool
     intent: Intent
     state: str = "draft"
-    actor_id: str | None = None
-    authenticated_actor_id: str | None = None
     quoted_or_forwarded: bool = False
     issue_snapshot: dict[str, Any] | None = None
 
@@ -71,8 +69,6 @@ def draft_from_request(
     *,
     repository: str,
     issue_number: int,
-    actor_id: str | None,
-    authenticated_actor_id: str | None,
 ) -> DraftProposal:
     """Turn a natural-language request into a non-executable ADC draft."""
     if not isinstance(request, str) or not request.strip() or "\x00" in request:
@@ -122,8 +118,7 @@ def draft_from_request(
         raise IntakeError(f"could not create a safe ADC draft: {exc}") from exc
     submission = from_chat(
         content, repository=repository, issue_number=issue_number, explicitly_submitted=True,
-        intent=Intent.DRAFT_ONLY, state="draft", actor_id=actor_id,
-        authenticated_actor_id=authenticated_actor_id,
+        intent=Intent.DRAFT_ONLY, state="draft",
     )
     return DraftProposal(submission, (
         f"Confirm that this draft targets {repository} Issue #{issue_number}.",
@@ -140,15 +135,13 @@ def from_file(
     explicitly_submitted: bool,
     intent: Intent = Intent.EXECUTE,
     state: str = "draft",
-    actor_id: str | None = None,
-    authenticated_actor_id: str | None = None,
 ) -> Submission:
     try:
         content = Path(path).read_bytes()
     except OSError as exc:
         raise IntakeError(f"could not read submitted ADC file: {exc}") from exc
     return Submission(Source.FILE, repository, issue_number, content, explicitly_submitted,
-                      Intent(intent), state, actor_id, authenticated_actor_id)
+                      Intent(intent), state)
 
 
 def from_chat(
@@ -159,15 +152,12 @@ def from_chat(
     explicitly_submitted: bool,
     intent: Intent = Intent.EXECUTE,
     state: str = "draft",
-    actor_id: str | None,
-    authenticated_actor_id: str | None,
     quoted_or_forwarded: bool = False,
 ) -> Submission:
     if not isinstance(text, str):
         raise IntakeError("submitted chat ADC must be text")
     return Submission(Source.CHAT, repository, issue_number, text.encode("utf-8", errors="strict"),
-                      explicitly_submitted, Intent(intent), state, actor_id,
-                      authenticated_actor_id, quoted_or_forwarded)
+                      explicitly_submitted, Intent(intent), state, quoted_or_forwarded)
 
 
 def from_issue(github: GitHub, issue_number: int, *, explicitly_submitted: bool,
@@ -219,12 +209,6 @@ def decide(submission: Submission, *, expected_repository: str,
             "clarification required before dependent work: " + "; ".join(invariant_conflicts),
             submission,
         )
-    if submission.source is Source.CHAT:
-        if (not isinstance(submission.actor_id, str) or not submission.actor_id
-                or not isinstance(submission.authenticated_actor_id, str)
-                or not submission.authenticated_actor_id
-                or submission.actor_id != submission.authenticated_actor_id):
-            return IntakeResult(Decision.BLOCKED, "chat actor could not be verified as the current user", submission)
     if submission.source is Source.ISSUE:
         issue = submission.issue_snapshot
         repository_url = issue.get("repository_url") if isinstance(issue, dict) else None

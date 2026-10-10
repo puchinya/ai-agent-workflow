@@ -94,6 +94,10 @@ class FakeGitHub:
         self.issue_update_calls = 0
         self.extra_listed_comments: list[dict[str, object]] = []
         self.altered_readback: dict[int, str] = {}
+        self.comment_identity: dict[str, object] | None = {
+            "user": {"id": 101, "login": "octo"},
+            "author_association": "OWNER",
+        }
 
     def issue(self, number: int) -> dict[str, object]:
         assert number == 1
@@ -119,13 +123,14 @@ class FakeGitHub:
                 raise GitHubError("simulated pointer journal write failure")
         comment_id = self.next_comment_id
         self.next_comment_id += 1
-        self.comments[comment_id] = {
+        comment = {
             "id": comment_id,
             "body": body,
             "issue_url": "https://api.github.com/repos/octo/repo/issues/1",
-            "user": {"id": 101, "login": "octo"},
-            "author_association": "OWNER",
         }
+        if self.comment_identity is not None:
+            comment.update(copy.deepcopy(self.comment_identity))
+        self.comments[comment_id] = comment
         return copy.deepcopy(self.comments[comment_id])
 
     def issue_comment(self, number: int, comment_id: int) -> dict[str, object]:
@@ -354,29 +359,28 @@ class ADCPublicationTests(unittest.TestCase):
         self.assertEqual(self.github.comments[first.comment_id]["body"], self.payload.decode())
         self.assertEqual(verify_adc(self.github, 1).pointer.comment_id, second.comment_id)
 
-    def test_untrusted_malformed_marker_does_not_block_adc_publication(self):
+    def test_malformed_marker_fails_closed_without_publisher_identity(self):
         self.github.extra_listed_comments.append({
             "id": 1999,
             "body": "<!-- PASES_ADC_PUBLISH_V1\nmalformed third-party marker -->",
             "issue_url": "https://api.github.com/repos/octo/repo/issues/1",
-            "user": {"id": 909, "login": "outside"},
             "author_association": "NONE",
         })
-        pointer = publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
-        self.assertEqual(verify_adc(self.github, 1).pointer, pointer)
-
-    def test_malformed_marker_from_trusted_publisher_fails_closed(self):
-        self.github.extra_listed_comments.append({
-            "id": 1999,
-            "body": "<!-- PASES_ADC_PUBLISH_V1\nmalformed trusted marker -->",
-            "issue_url": "https://api.github.com/repos/octo/repo/issues/1",
-            "user": {"id": 102, "login": "collaborator"},
-            "author_association": "COLLABORATOR",
-        })
-        with self.assertRaisesRegex(ADCError, "malformed trusted ADC publication marker"):
+        with self.assertRaisesRegex(ADCError, "malformed ADC publication marker"):
             publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
 
-    def test_trusted_marker_with_oversized_numeric_field_fails_as_adc_error(self):
+    def test_malformed_marker_fails_closed_regardless_of_publisher_identity(self):
+        self.github.extra_listed_comments.append({
+            "id": 1999,
+            "body": "<!-- PASES_ADC_PUBLISH_V1\nmalformed marker -->",
+            "issue_url": "https://api.github.com/repos/octo/repo/issues/1",
+            "user": {"id": 102, "login": "outside"},
+            "author_association": "NONE",
+        })
+        with self.assertRaisesRegex(ADCError, "malformed ADC publication marker"):
+            publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
+
+    def test_marker_with_oversized_numeric_field_fails_as_adc_error(self):
         marker = (
             "<!-- PASES_ADC_PUBLISH_V1\n"
             f"Operation ID: {'a' * 64}\n"
@@ -389,22 +393,33 @@ class ADCPublicationTests(unittest.TestCase):
             "id": 1999,
             "body": marker,
             "issue_url": "https://api.github.com/repos/octo/repo/issues/1",
-            "user": {"id": 102, "login": "collaborator"},
-            "author_association": "COLLABORATOR",
+            "user": {"id": 102, "login": "outside"},
+            "author_association": "NONE",
         })
-        with self.assertRaisesRegex(ADCError, "malformed trusted ADC publication marker"):
+        with self.assertRaisesRegex(ADCError, "malformed ADC publication marker"):
             publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
 
-    def test_untrusted_pointer_record_is_ignored(self):
+    def test_malformed_pointer_record_fails_closed_without_publisher_identity(self):
         self.github.extra_listed_comments.append({
             "id": 1999,
             "body": "<!-- PASES_ADC_POINTER_V1\nmalformed third-party pointer -->",
             "issue_url": "https://api.github.com/repos/octo/repo/issues/1",
-            "user": {"id": 909, "login": "outside"},
             "author_association": "NONE",
         })
-        pointer = publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
-        self.assertEqual(verify_adc(self.github, 1).pointer, pointer)
+        with self.assertRaisesRegex(ADCError, "malformed ADC pointer record"):
+            publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
+
+    def test_publisher_identity_fields_are_not_required_or_authoritative(self):
+        for identity in (
+            None,
+            {"author_association": "NONE", "user": {"id": 909, "login": "outside"}},
+            {"author_association": "MEMBER", "user": {"id": 909, "login": "other"}},
+        ):
+            with self.subTest(identity=identity):
+                github = FakeGitHub()
+                github.comment_identity = identity
+                pointer = publish_adc(github, 1, self.payload, state="approved", explicitly_approved=True)
+                self.assertEqual(verify_adc(github, 1).pointer, pointer)
 
     def test_supersession_retry_reuses_unpointed_comment_after_pointer_journal_failure(self):
         first = publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
@@ -525,8 +540,7 @@ class IntakeTests(unittest.TestCase):
             )
         chat_submission = from_chat(
             self.payload.decode("utf-8"), repository="octo/repo", issue_number=1,
-            explicitly_submitted=True, state="approved", actor_id="user-1",
-            authenticated_actor_id="user-1",
+            explicitly_submitted=True, state="approved",
         )
         issue_submission, verified = from_issue(self.github, 1, explicitly_submitted=True)
         results = [
@@ -540,11 +554,11 @@ class IntakeTests(unittest.TestCase):
     def test_draft_and_review_only_requests_do_not_execute(self):
         draft = from_chat(
             self.payload.decode(), repository="octo/repo", issue_number=1, explicitly_submitted=True,
-            intent=Intent.DRAFT_ONLY, actor_id="user-1", authenticated_actor_id="user-1",
+            intent=Intent.DRAFT_ONLY,
         )
         review = from_chat(
             self.payload.decode(), repository="octo/repo", issue_number=1, explicitly_submitted=True,
-            intent=Intent.REVIEW_ONLY, state="approved", actor_id="user-1", authenticated_actor_id="user-1",
+            intent=Intent.REVIEW_ONLY, state="approved",
         )
         self.assertIs(decide(draft, expected_repository="octo/repo").decision, Decision.DRAFT)
         self.assertIs(decide(review, expected_repository="octo/repo").decision, Decision.REVIEW_ONLY)
@@ -552,7 +566,6 @@ class IntakeTests(unittest.TestCase):
     def test_direct_request_creates_a_complete_unapproved_draft(self):
         proposal = draft_from_request(
             "Add a configurable retry limit.", repository="octo/repo", issue_number=1,
-            actor_id="user-1", authenticated_actor_id="user-1",
         )
         draft = parse_adc(proposal.submission.content, "octo/repo", 1)
         self.assertEqual(draft.requirement_ids, ("REQ-01",))
@@ -562,7 +575,7 @@ class IntakeTests(unittest.TestCase):
     def test_repository_invariant_conflict_stops_execution_with_a_concrete_question(self):
         submission = from_chat(
             self.payload.decode(), repository="octo/repo", issue_number=1, explicitly_submitted=True,
-            state="approved", actor_id="user-1", authenticated_actor_id="user-1",
+            state="approved",
         )
         result = decide(
             submission, expected_repository="octo/repo", verified_adc=self.verified,
@@ -577,7 +590,7 @@ class IntakeTests(unittest.TestCase):
         )
         quoted = from_chat(
             self.payload.decode(), repository="octo/repo", issue_number=1, explicitly_submitted=True,
-            state="approved", actor_id="user-1", authenticated_actor_id="user-1", quoted_or_forwarded=True,
+            state="approved", quoted_or_forwarded=True,
         )
         wrong_repo = from_file(
             Path(__file__), repository="octo/other", issue_number=1, explicitly_submitted=True,
@@ -585,7 +598,7 @@ class IntakeTests(unittest.TestCase):
         )
         unapproved = from_chat(
             self.payload.decode(), repository="octo/repo", issue_number=1, explicitly_submitted=True,
-            state="draft", actor_id="user-1", authenticated_actor_id="user-1",
+            state="draft",
         )
         self.assertIs(decide(unsubmitted, expected_repository="octo/repo").decision, Decision.BLOCKED)
         self.assertIs(decide(quoted, expected_repository="octo/repo").decision, Decision.BLOCKED)
@@ -595,17 +608,18 @@ class IntakeTests(unittest.TestCase):
     def test_approved_source_needs_an_immutable_comment_readback_before_execution(self):
         approved = from_chat(
             self.payload.decode(), repository="octo/repo", issue_number=1, explicitly_submitted=True,
-            state="approved", actor_id="user-1", authenticated_actor_id="user-1",
+            state="approved",
         )
         result = decide(approved, expected_repository="octo/repo")
         self.assertIs(result.decision, Decision.NEEDS_VERIFICATION)
 
-    def test_chat_actor_must_match_the_authenticated_user(self):
+    def test_chat_intake_does_not_require_issuer_identity_fields(self):
         submission = from_chat(
             self.payload.decode(), repository="octo/repo", issue_number=1, explicitly_submitted=True,
-            state="approved", actor_id="quoted-user", authenticated_actor_id="current-user",
+            state="approved",
         )
-        self.assertIs(decide(submission, expected_repository="octo/repo").decision, Decision.BLOCKED)
+        result = decide(submission, expected_repository="octo/repo", verified_adc=self.verified)
+        self.assertIs(result.decision, Decision.EXECUTE)
 
     def test_closed_issue_cannot_start_execution(self):
         submission, _ = from_issue(self.github, 1, explicitly_submitted=True)
