@@ -347,8 +347,10 @@ def _replace_pointer(body: str, pointer: ADCPointer) -> str:
 def _check_issue(issue: Any, repository: str, issue_number: int) -> dict[str, Any]:
     expected_repo = _repo_name(repository)
     expected_url = f"https://api.github.com/repos/{expected_repo}"
+    repository_url = issue.get("repository_url") if isinstance(issue, dict) else None
     if (not isinstance(issue, dict) or type(issue.get("number")) is not int
-            or issue.get("number") != issue_number or issue.get("repository_url", "").lower() != expected_url
+            or issue.get("number") != issue_number or not isinstance(repository_url, str)
+            or repository_url.lower() != expected_url
             or issue.get("pull_request") is not None):
         raise ADCError("GitHub Issue identity does not match the selected repository and Issue")
     return issue
@@ -356,8 +358,10 @@ def _check_issue(issue: Any, repository: str, issue_number: int) -> dict[str, An
 
 def _check_comment(comment: Any, repository: str, issue_number: int, comment_id: int) -> dict[str, Any]:
     expected_issue_url = f"https://api.github.com/repos/{_repo_name(repository)}/issues/{issue_number}"
+    issue_url = comment.get("issue_url") if isinstance(comment, dict) else None
     if (not isinstance(comment, dict) or type(comment.get("id")) is not int
-            or comment.get("id") != comment_id or comment.get("issue_url", "").lower() != expected_issue_url):
+            or comment.get("id") != comment_id or not isinstance(issue_url, str)
+            or issue_url.lower() != expected_issue_url):
         raise ADCError("named ADC comment does not belong to the selected Issue")
     return comment
 
@@ -370,6 +374,7 @@ def _publication_operation_id(
     byte_length: int,
     state: str,
 ) -> str:
+    """Bind retries to the pointer they started from, so A→B→A is a new operation."""
     data = (
         f"{_repo_name(repository)}\n{issue_number}\n{predecessor_id}\n"
         f"{adc_sha256}\n{byte_length}\n{state}\n"

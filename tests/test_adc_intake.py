@@ -219,6 +219,8 @@ class ADCPublicationTests(unittest.TestCase):
         self.assertEqual(len(self.publication_marker_ids()), 3)
         marker_bodies = {self.github.comments[comment_id]["body"] for comment_id in self.publication_marker_ids()}
         self.assertEqual(len(marker_bodies), 3)
+        operation_ids = {body.splitlines()[1] for body in marker_bodies}
+        self.assertEqual(len(operation_ids), 3)
         self.assertEqual(verify_adc(self.github, 1).pointer.comment_id, second_a.comment_id)
 
     def test_publish_reads_back_comment_before_pointer_and_verifies(self):
