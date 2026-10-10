@@ -32,9 +32,9 @@ SECRET_VALUE = re.compile(
 POINTER_TITLE = "Agent Development Contract"
 POINTER_FIELDS = re.compile(
     r"^## Agent Development Contract\n"
-    r"Comment ID: ([1-9][0-9]*)\n"
+    r"Comment ID: ([1-9][0-9]{0,19})\n"
     r"SHA-256: ([0-9a-f]{64})\n"
-    r"Bytes: ([0-9]+)\n"
+    r"Bytes: ([0-9]{1,10})\n"
     r"State: (draft|approved)\n?$"
 )
 PUBLISH_TXN_PREFIX = "<!-- PASES_ADC_PUBLISH_V1\n"
@@ -42,9 +42,9 @@ PUBLISH_TXN_SENTINEL = "<!-- PASES_ADC_PUBLISH_V1"
 PUBLISH_TXN_FIELDS = re.compile(
     r"^<!-- PASES_ADC_PUBLISH_V1\n"
     r"Operation ID: ([0-9a-f]{64})\n"
-    r"Predecessor Comment ID: (none|[1-9][0-9]*)\n"
+    r"Predecessor Comment ID: (none|[1-9][0-9]{0,19})\n"
     r"ADC SHA-256: ([0-9a-f]{64})\n"
-    r"Bytes: ([0-9]+)\n"
+    r"Bytes: ([0-9]{1,10})\n"
     r"State: (draft|approved)\n"
     r"-->$"
 )
@@ -52,10 +52,10 @@ POINTER_RECORD_SENTINEL = "<!-- PASES_ADC_POINTER_V1"
 POINTER_RECORD_FIELDS = re.compile(
     r"^<!-- PASES_ADC_POINTER_V1\n"
     r"Operation ID: ([0-9a-f]{64})\n"
-    r"Predecessor Comment ID: (none|[1-9][0-9]*)\n"
-    r"ADC Comment ID: ([1-9][0-9]*)\n"
+    r"Predecessor Comment ID: (none|[1-9][0-9]{0,19})\n"
+    r"ADC Comment ID: ([1-9][0-9]{0,19})\n"
     r"SHA-256: ([0-9a-f]{64})\n"
-    r"Bytes: ([0-9]+)\n"
+    r"Bytes: ([0-9]{1,10})\n"
     r"State: (draft|approved)\n"
     r"-->$"
 )
@@ -439,7 +439,8 @@ def _latest_pointer_record(
             prior = operation_records.get(operation_id)
             if prior is not None and prior[:3] != (body, predecessor_id, pointer):
                 raise ADCError("trusted ADC pointer records conflict for one publication operation")
-            operation_records[operation_id] = (body, predecessor_id, pointer, comment_id)
+            if prior is None or comment_id > prior[3]:
+                operation_records[operation_id] = (body, predecessor_id, pointer, comment_id)
         for operation_id, (_body, predecessor_id, pointer, record_id) in operation_records.items():
             records.append((record_id, operation_id, predecessor_id, pointer))
         if records:

@@ -372,6 +372,25 @@ class ADCPublicationTests(unittest.TestCase):
         with self.assertRaisesRegex(ADCError, "malformed trusted ADC publication marker"):
             publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
 
+    def test_trusted_marker_with_oversized_numeric_field_fails_as_adc_error(self):
+        marker = (
+            "<!-- PASES_ADC_PUBLISH_V1\n"
+            f"Operation ID: {'a' * 64}\n"
+            "Predecessor Comment ID: none\n"
+            f"ADC SHA-256: {'b' * 64}\n"
+            f"Bytes: {'9' * 5000}\n"
+            "State: approved\n-->"
+        )
+        self.github.extra_listed_comments.append({
+            "id": 1999,
+            "body": marker,
+            "issue_url": "https://api.github.com/repos/octo/repo/issues/1",
+            "user": {"id": 102, "login": "collaborator"},
+            "author_association": "COLLABORATOR",
+        })
+        with self.assertRaisesRegex(ADCError, "malformed trusted ADC publication marker"):
+            publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
+
     def test_untrusted_pointer_record_is_ignored(self):
         self.github.extra_listed_comments.append({
             "id": 1999,
