@@ -187,9 +187,44 @@ class ADCPublicationTests(unittest.TestCase):
         self.github = FakeGitHub()
         self.payload = adc_bytes()
 
+    def adc_comment_ids(self):
+        return {
+            comment_id for comment_id, comment in self.github.comments.items()
+            if isinstance(comment.get("body"), str)
+            and comment["body"].startswith("# Agent Development Contract")
+        }
+
+    def publication_marker_ids(self):
+        return {
+            comment_id for comment_id, comment in self.github.comments.items()
+            if isinstance(comment.get("body"), str)
+            and comment["body"].startswith("<!-- PASES_ADC_PUBLISH_V1\n")
+        }
+
+    def test_supersession_does_not_reuse_a_historical_adc_after_a_to_b_to_a(self):
+        first_a = publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
+        payload_b = self.payload.replace(
+            b"Accept the explicit supported input paths.",
+            b"Accept the explicitly supported review input paths.",
+        )
+        published_b = publish_adc(
+            self.github, 1, payload_b, state="approved", explicitly_approved=True, supersede=True,
+        )
+        second_a = publish_adc(
+            self.github, 1, self.payload, state="approved", explicitly_approved=True, supersede=True,
+        )
+
+        self.assertEqual(len({first_a.comment_id, published_b.comment_id, second_a.comment_id}), 3)
+        self.assertEqual(len(self.adc_comment_ids()), 3)
+        self.assertEqual(len(self.publication_marker_ids()), 3)
+        marker_bodies = {self.github.comments[comment_id]["body"] for comment_id in self.publication_marker_ids()}
+        self.assertEqual(len(marker_bodies), 3)
+        self.assertEqual(verify_adc(self.github, 1).pointer.comment_id, second_a.comment_id)
+
     def test_publish_reads_back_comment_before_pointer_and_verifies(self):
         pointer = publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
-        self.assertEqual(pointer.comment_id, 2001)
+        self.assertEqual(pointer.comment_id, 2002)
+        self.assertEqual(len(self.adc_comment_ids()), 1)
         self.assertIn("# Parent issue\nKeep this text.\n", self.github.issue_data["body"])
         verified = verify_adc(self.github, 1)
         self.assertEqual(verified.contract.content, self.payload)
@@ -218,11 +253,13 @@ class ADCPublicationTests(unittest.TestCase):
         self.github.fail_update = True
         with self.assertRaisesRegex(ADCError, "pointer write failure"):
             publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
-        self.assertEqual(len(self.github.comments), 1)
+        self.assertEqual(len(self.adc_comment_ids()), 1)
+        self.assertEqual(len(self.github.comments), 2)  # transaction marker plus ADC comment
         self.github.fail_update = False
         pointer = publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
-        self.assertEqual(len(self.github.comments), 1)
-        self.assertEqual(pointer.comment_id, 2001)
+        self.assertEqual(len(self.adc_comment_ids()), 1)
+        self.assertEqual(len(self.github.comments), 2)
+        self.assertEqual(pointer.comment_id, 2002)
 
     def test_comment_from_another_issue_cannot_satisfy_the_pointer(self):
         self.github.wrong_comment_issue = True
@@ -250,15 +287,42 @@ class ADCPublicationTests(unittest.TestCase):
             publish_adc(self.github, 1, updated_payload, state="approved",
                         explicitly_approved=True, supersede=True)
         orphaned_id = self.github.next_comment_id - 1
-        self.assertEqual(len(self.github.comments), 2)
+        self.assertEqual(len(self.adc_comment_ids()), 2)
+        self.assertEqual(len(self.publication_marker_ids()), 2)
+        self.assertEqual(len(self.github.comments), 4)
         self.assertEqual(verify_adc(self.github, 1).pointer, first)
 
         self.github.fail_update = False
         retried = publish_adc(self.github, 1, updated_payload, state="approved",
                               explicitly_approved=True, supersede=True)
-        self.assertEqual(len(self.github.comments), 2)
+        self.assertEqual(len(self.adc_comment_ids()), 2)
+        self.assertEqual(len(self.publication_marker_ids()), 2)
+        self.assertEqual(len(self.github.comments), 4)
         self.assertEqual(retried.comment_id, orphaned_id)
         self.assertEqual(verify_adc(self.github, 1).contract.content, updated_payload)
+
+    def test_different_publish_cannot_claim_an_unresolved_operation_candidate(self):
+        publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
+        payload_b = self.payload.replace(b"REQ-01", b"REQ-02")
+        payload_c = self.payload.replace(b"REQ-01", b"REQ-03")
+        self.github.fail_update = True
+        with self.assertRaisesRegex(ADCError, "pointer write failure"):
+            publish_adc(self.github, 1, payload_b, state="approved",
+                        explicitly_approved=True, supersede=True)
+
+        self.github.fail_update = False
+        with self.assertRaisesRegex(ADCError, "another ADC publication is unresolved"):
+            publish_adc(self.github, 1, payload_c, state="approved",
+                        explicitly_approved=True, supersede=True)
+        self.assertEqual(len(self.publication_marker_ids()), 2)
+        self.assertEqual(len(self.adc_comment_ids()), 2)
+
+        retried = publish_adc(self.github, 1, payload_b, state="approved",
+                              explicitly_approved=True, supersede=True)
+        self.assertEqual(len(self.publication_marker_ids()), 2)
+        self.assertEqual(len(self.adc_comment_ids()), 2)
+        self.assertEqual(verify_adc(self.github, 1).contract.content, payload_b)
+        self.assertGreater(retried.comment_id, max(self.publication_marker_ids()))
 
     def test_supersession_retry_fails_closed_for_duplicate_unpointed_comments(self):
         publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
@@ -275,7 +339,7 @@ class ADCPublicationTests(unittest.TestCase):
         with self.assertRaisesRegex(ADCError, "multiple identical unpointed"):
             publish_adc(self.github, 1, updated_payload, state="approved",
                         explicitly_approved=True, supersede=True)
-        self.assertEqual(len(self.github.comments), 2)
+        self.assertEqual(len(self.adc_comment_ids()), 2)
 
     def test_supersession_retry_rejects_candidate_owned_by_another_issue(self):
         publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
@@ -287,16 +351,22 @@ class ADCPublicationTests(unittest.TestCase):
         with self.assertRaisesRegex(ADCError, "does not belong to the selected Issue"):
             publish_adc(self.github, 1, self.payload, state="approved",
                         explicitly_approved=True, supersede=True)
-        self.assertEqual(len(self.github.comments), 1)
+        self.assertEqual(len(self.adc_comment_ids()), 1)
 
     def test_supersession_retry_rejects_changed_readback_for_candidate(self):
         publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
-        candidate_id = self.github.create_issue_comment(1, self.payload.decode())["id"]
-        self.github.altered_readback[candidate_id] = self.payload.decode() + "tampered"
-        with self.assertRaisesRegex(ADCError, "readback does not match"):
-            publish_adc(self.github, 1, self.payload, state="approved",
+        updated_payload = self.payload.replace(b"REQ-01", b"REQ-02")
+        self.github.fail_update = True
+        with self.assertRaisesRegex(ADCError, "pointer write failure"):
+            publish_adc(self.github, 1, updated_payload, state="approved",
                         explicitly_approved=True, supersede=True)
-        self.assertEqual(len(self.github.comments), 2)
+        candidate_id = self.github.next_comment_id - 1
+        self.github.altered_readback[candidate_id] = updated_payload.decode() + "tampered"
+        self.github.fail_update = False
+        with self.assertRaisesRegex(ADCError, "readback does not match"):
+            publish_adc(self.github, 1, updated_payload, state="approved",
+                        explicitly_approved=True, supersede=True)
+        self.assertEqual(len(self.adc_comment_ids()), 2)
 
     def test_restore_writes_the_exact_verified_payload(self):
         publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)

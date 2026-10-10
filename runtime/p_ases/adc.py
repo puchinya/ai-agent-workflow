@@ -37,6 +37,16 @@ POINTER_FIELDS = re.compile(
     r"Bytes: ([0-9]+)\n"
     r"State: (draft|approved)\n?$"
 )
+PUBLISH_TXN_PREFIX = "<!-- PASES_ADC_PUBLISH_V1\n"
+PUBLISH_TXN_FIELDS = re.compile(
+    r"^<!-- PASES_ADC_PUBLISH_V1\n"
+    r"Operation ID: ([0-9a-f]{64})\n"
+    r"Predecessor Comment ID: (none|[1-9][0-9]*)\n"
+    r"ADC SHA-256: ([0-9a-f]{64})\n"
+    r"Bytes: ([0-9]+)\n"
+    r"State: (draft|approved)\n"
+    r"-->$"
+)
 REQUIRED_SECTIONS = {
     "issue", "scope", "change_kind", "requirements", "architecture_decisions",
     "artifact_impact", "exact_changes", "invariants", "non_goals",
@@ -352,14 +362,99 @@ def _check_comment(comment: Any, repository: str, issue_number: int, comment_id:
     return comment
 
 
+def _publication_operation_id(
+    repository: str,
+    issue_number: int,
+    predecessor_id: str,
+    adc_sha256: str,
+    byte_length: int,
+    state: str,
+) -> str:
+    data = (
+        f"{_repo_name(repository)}\n{issue_number}\n{predecessor_id}\n"
+        f"{adc_sha256}\n{byte_length}\n{state}\n"
+    ).encode("ascii")
+    return hashlib.sha256(data).hexdigest()
+
+
+def _publication_transaction(
+    github: GitHub,
+    issue_number: int,
+    contract: ADC,
+    *,
+    state: str,
+    current_pointer: ADCPointer | None,
+) -> tuple[str, int]:
+    """Find or write a durable marker that identifies this exact publish attempt."""
+    predecessor_id = "none" if current_pointer is None else str(current_pointer.comment_id)
+    operation_id = _publication_operation_id(
+        github.repo, issue_number, predecessor_id, contract.sha256, contract.byte_length, state,
+    )
+    marker_body = (
+        "<!-- PASES_ADC_PUBLISH_V1\n"
+        f"Operation ID: {operation_id}\n"
+        f"Predecessor Comment ID: {predecessor_id}\n"
+        f"ADC SHA-256: {contract.sha256}\n"
+        f"Bytes: {contract.byte_length}\n"
+        f"State: {state}\n"
+        "-->"
+    )
+    try:
+        listed_comments = github.issue_comments(issue_number)
+        same_operation: list[dict[str, Any]] = []
+        for listed in listed_comments:
+            if not isinstance(listed, dict) or not isinstance(listed.get("body"), str):
+                continue
+            if not listed["body"].startswith(PUBLISH_TXN_PREFIX):
+                continue
+            match = PUBLISH_TXN_FIELDS.fullmatch(listed["body"])
+            if match is None:
+                raise ADCError("malformed ADC publication marker; refusing to publish")
+            marker_operation_id, marker_predecessor, marker_sha, marker_bytes, marker_state = match.groups()
+            computed_id = _publication_operation_id(
+                github.repo, issue_number, marker_predecessor, marker_sha, int(marker_bytes), marker_state,
+            )
+            if marker_operation_id != computed_id:
+                raise ADCError("ADC publication marker identity does not match its fields")
+            if marker_operation_id == operation_id:
+                same_operation.append(listed)
+            elif marker_predecessor == predecessor_id:
+                raise ADCError(
+                    "another ADC publication is unresolved for this pointer; resume it before starting a different publish"
+                )
+        if len(same_operation) > 1:
+            raise ADCError("multiple ADC publication markers exist for this operation; refusing recovery")
+        if same_operation:
+            marker = same_operation[0]
+            marker_id = marker.get("id")
+            if type(marker_id) is not int or marker_id < 1:
+                raise ADCError("ADC publication marker has an invalid Comment ID")
+            if marker["body"] != marker_body:
+                raise ADCError("ADC publication marker does not match the requested operation")
+        else:
+            created = github.create_issue_comment(issue_number, marker_body)
+            marker_id = created.get("id") if isinstance(created, dict) else None
+            if type(marker_id) is not int or marker_id < 1:
+                raise ADCError("ADC publication marker is missing a valid Comment ID")
+        readback = _check_comment(
+            github.issue_comment(issue_number, marker_id), github.repo, issue_number, marker_id,
+        )
+        if readback.get("body") != marker_body:
+            raise ADCError("ADC publication marker readback does not match the requested operation")
+        return operation_id, marker_id
+    except GitHubError as exc:
+        raise ADCError(str(exc)) from exc
+
+
 def _find_reusable_comment(
     github: GitHub,
     issue_number: int,
     contract: ADC,
     *,
     current_pointer: ADCPointer | None,
+    transaction_marker_id: int,
 ) -> int | None:
-    """Find one exact, unpointed ADC comment that can finish a retried publish."""
+    """Find only a matching ADC created after this exact operation's marker."""
     matches: list[int] = []
     for listed in github.issue_comments(issue_number):
         if not isinstance(listed, dict) or not isinstance(listed.get("body"), str):
@@ -370,6 +465,10 @@ def _find_reusable_comment(
         comment_id = listed.get("id")
         if type(comment_id) is not int or comment_id < 1:
             raise ADCError("matching unpointed ADC comment has an invalid Comment ID")
+        # A permanent marker is written before this publication's ADC comment.
+        # Older exact matches are completed historical publications, not retry artifacts.
+        if comment_id <= transaction_marker_id:
+            continue
         if current_pointer is not None and comment_id == current_pointer.comment_id:
             continue
         _check_comment(listed, github.repo, issue_number, comment_id)
@@ -391,7 +490,7 @@ def publish_adc(
     explicitly_approved: bool = False,
     supersede: bool = False,
 ) -> ADCPointer:
-    """Publish exact ADC bytes, read them back by comment ID, then update the pointer."""
+    """Publish exact ADC bytes with a hidden immutable transaction marker for safe retries."""
     if state not in {"draft", "approved"}:
         raise ADCError("ADC state must be draft or approved")
     if type(supersede) is not bool or type(explicitly_approved) is not bool:
@@ -413,8 +512,15 @@ def publish_adc(
         raise ADCError("Issue already has an ADC; use explicit supersession to publish another immutable comment")
     try:
         body_text = data.decode("utf-8", errors="strict")
+        _operation_id, transaction_marker_id = _publication_transaction(
+            github, issue_number, contract, state=state, current_pointer=existing_pointer,
+        )
+        after_marker = _check_issue(github.issue(issue_number), github.repo, issue_number)
+        if after_marker.get("state") != "open" or after_marker.get("body", "") != old_body:
+            raise ADCError("Issue identity, state, or ADC pointer changed during publication")
         comment_id = _find_reusable_comment(
             github, issue_number, contract, current_pointer=existing_pointer,
+            transaction_marker_id=transaction_marker_id,
         )
         if comment_id is None:
             created = github.create_issue_comment(issue_number, body_text)

@@ -116,7 +116,9 @@ class FakeGitHub:
         return copy.deepcopy(self.comments[comment_id])
 
     def issue_comments(self, number: int) -> list[dict[str, object]]:
-        return [copy.deepcopy(comment) for comment in self.comments.values()]
+        suffix = f"/issues/{number}"
+        return [copy.deepcopy(comment) for comment in self.comments.values()
+                if comment.get("issue_url", "").endswith(suffix)]
 
     def update_issue(self, number: int, body: str) -> dict[str, object]:
         self.records[number]["body"] = body
@@ -243,11 +245,11 @@ class IssueGraphTests(unittest.TestCase):
         with self.assertRaisesRegex(IssueGraphError, "native Issue relation"):
             split_issue(github, 1, parent_pointer.sha256, ("REQ-01", "REQ-02"), children)
         self.assertEqual(github.create_issue_calls, 2)
-        self.assertEqual(len(github.comments), 3)
+        self.assertEqual(len(github.comments), 6)
         retry = split_issue(github, 1, parent_pointer.sha256, ("REQ-01", "REQ-02"), children)
         self.assertEqual([item.key for item in retry], ["core", "docs"])
         self.assertEqual(github.create_issue_calls, 2)
-        self.assertEqual(len(github.comments), 3)
+        self.assertEqual(len(github.comments), 6)
 
     def test_cyclic_split_is_rejected_before_any_child_or_comment_is_created(self):
         github = FakeGitHub()
@@ -264,7 +266,7 @@ class IssueGraphTests(unittest.TestCase):
         with self.assertRaisesRegex(IssueGraphError, "cycle"):
             split_issue(github, 1, parent_pointer.sha256, ("REQ-01", "REQ-02"), children)
         self.assertEqual(github.create_issue_calls, 0)
-        self.assertEqual(len(github.comments), 1)
+        self.assertEqual(len(github.comments), 2)
 
     def test_idempotency_key_detects_conflicting_or_duplicate_existing_children(self):
         marker_issue = {
