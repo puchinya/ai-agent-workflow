@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 from typing import Any
 
-from .adc import ADCError, VerifiedADC, parse_adc, verify_adc
+from .adc import ADC, ADCPointer, ADCError, VerifiedADC, parse_adc, verify_adc
 from .github import GitHub
 
 
@@ -192,7 +192,9 @@ def decide(submission: Submission, *, expected_repository: str,
     if not isinstance(submission, Submission):
         raise IntakeError("submission must be an Intake Submission")
     if (not isinstance(submission.source, Source) or not isinstance(submission.intent, Intent)
-            or submission.state not in {"draft", "approved"}):
+            or not isinstance(submission.state, str) or submission.state not in {"draft", "approved"}
+            or type(submission.explicitly_submitted) is not bool
+            or type(submission.quoted_or_forwarded) is not bool):
         raise IntakeError("submission source, intent, or state is invalid")
     if (not isinstance(expected_repository, str)
             or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", expected_repository)):
@@ -218,13 +220,16 @@ def decide(submission: Submission, *, expected_repository: str,
             submission,
         )
     if submission.source is Source.CHAT:
-        if (not submission.actor_id or not submission.authenticated_actor_id
+        if (not isinstance(submission.actor_id, str) or not submission.actor_id
+                or not isinstance(submission.authenticated_actor_id, str)
+                or not submission.authenticated_actor_id
                 or submission.actor_id != submission.authenticated_actor_id):
             return IntakeResult(Decision.BLOCKED, "chat actor could not be verified as the current user", submission)
     if submission.source is Source.ISSUE:
         issue = submission.issue_snapshot
         repository_url = issue.get("repository_url") if isinstance(issue, dict) else None
-        if (not isinstance(issue, dict) or issue.get("number") != submission.issue_number
+        if (not isinstance(issue, dict) or type(issue.get("number")) is not int
+                or issue.get("number") != submission.issue_number
                 or not isinstance(repository_url, str)
                 or repository_url.lower() != f"https://api.github.com/repos/{expected}"):
             return IntakeResult(Decision.BLOCKED, "Issue identity does not match the selected repository and Issue", submission)
@@ -244,11 +249,16 @@ def decide(submission: Submission, *, expected_repository: str,
             "the approved ADC has no verified immutable Issue comment pointer",
             submission,
         )
+    if (not isinstance(verified_adc, VerifiedADC)
+            or not isinstance(verified_adc.contract, ADC)
+            or not isinstance(verified_adc.pointer, ADCPointer)):
+        return IntakeResult(Decision.BLOCKED, "ADC verification record is invalid", submission)
     try:
         parsed = parse_adc(submission.content, expected, submission.issue_number)
     except ADCError as exc:
         return IntakeResult(Decision.BLOCKED, f"submitted ADC failed validation: {exc}", submission)
-    if (verified_adc.pointer.state != "approved"
+    if (type(verified_adc.pointer.comment_id) is not int or verified_adc.pointer.comment_id < 1
+            or verified_adc.pointer.state != "approved"
             or verified_adc.contract.repository != expected
             or verified_adc.contract.issue_number != submission.issue_number
             or verified_adc.contract.content != submission.content
