@@ -366,12 +366,12 @@ class PhaseTests(unittest.TestCase):
 
 class ExecutionBindingTests(unittest.TestCase):
     def test_binding_is_exact_and_round_trips(self):
-        binding = ExecutionBinding(
-            repository="octo/repo", issue_number=12, adc_comment_id=123,
-            adc_sha256="a" * 64, base_ref="main", base_sha="b" * 40,
-            work_directory="/workspace/repo", initial_head_sha="b" * 40,
-        )
         with tempfile.TemporaryDirectory() as temporary:
+            binding = ExecutionBinding(
+                repository="octo/repo", issue_number=12, adc_comment_id=123,
+                adc_sha256="a" * 64, base_ref="main", base_sha="b" * 40,
+                work_directory=str(Path(temporary) / "repo"), initial_head_sha="b" * 40,
+            )
             path = Path(temporary) / ".p-ases" / "binding.json"
             write_binding(path, binding)
             self.assertEqual(read_binding(path), binding)
