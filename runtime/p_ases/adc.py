@@ -352,6 +352,36 @@ def _check_comment(comment: Any, repository: str, issue_number: int, comment_id:
     return comment
 
 
+def _find_reusable_comment(
+    github: GitHub,
+    issue_number: int,
+    contract: ADC,
+    *,
+    current_pointer: ADCPointer | None,
+) -> int | None:
+    """Find one exact, unpointed ADC comment that can finish a retried publish."""
+    matches: list[int] = []
+    for listed in github.issue_comments(issue_number):
+        if not isinstance(listed, dict) or not isinstance(listed.get("body"), str):
+            continue
+        listed_bytes = listed["body"].encode("utf-8", errors="strict")
+        if listed_bytes != contract.content:
+            continue
+        comment_id = listed.get("id")
+        if type(comment_id) is not int or comment_id < 1:
+            raise ADCError("matching unpointed ADC comment has an invalid Comment ID")
+        if current_pointer is not None and comment_id == current_pointer.comment_id:
+            continue
+        _check_comment(listed, github.repo, issue_number, comment_id)
+        digest = hashlib.sha256(listed_bytes).hexdigest()
+        if digest != contract.sha256 or len(listed_bytes) != contract.byte_length:
+            raise ADCError("matching unpointed ADC comment does not match the exact submitted bytes")
+        matches.append(comment_id)
+    if len(matches) > 1:
+        raise ADCError("multiple identical unpointed ADC comments exist; refusing ambiguous recovery")
+    return matches[0] if matches else None
+
+
 def publish_adc(
     github: GitHub,
     issue_number: int,
@@ -383,17 +413,9 @@ def publish_adc(
         raise ADCError("Issue already has an ADC; use explicit supersession to publish another immutable comment")
     try:
         body_text = data.decode("utf-8", errors="strict")
-        comment_id = None
-        if existing_pointer is None:
-            prior_comments = github.issue_comments(issue_number)
-            matching = [comment for comment in prior_comments
-                        if isinstance(comment, dict) and comment.get("body") == body_text]
-            if len(matching) > 1:
-                raise ADCError("multiple identical unpointed ADC comments exist; refusing ambiguous recovery")
-            if matching:
-                comment_id = matching[0].get("id")
-                if type(comment_id) is not int or comment_id < 1:
-                    raise ADCError("matching unpointed ADC comment has an invalid Comment ID")
+        comment_id = _find_reusable_comment(
+            github, issue_number, contract, current_pointer=existing_pointer,
+        )
         if comment_id is None:
             created = github.create_issue_comment(issue_number, body_text)
             comment_id = created.get("id") if isinstance(created, dict) else None

@@ -25,6 +25,11 @@ class CLIError(RuntimeError):
     pass
 
 
+CLI_ADVANCE_TARGETS = tuple(
+    phase.value for phase in Phase if phase not in {Phase.USER_REVIEW, Phase.CLOSED}
+)
+
+
 def _json(value: Any) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2))
 
@@ -71,7 +76,9 @@ def _parser() -> argparse.ArgumentParser:
     restore.add_argument("destination", type=Path)
     restore.add_argument("--repo", help="repository owner/name; defaults to origin")
 
-    issue = namespaces.add_parser("issue", help="validate or decompose Issue graphs")
+    issue = namespaces.add_parser(
+        "issue", help="validate Issue graphs and apply foundational phase labels"
+    )
     issue_commands = issue.add_subparsers(dest="verb", required=True)
     validate_plan = issue_commands.add_parser("validate-split")
     validate_plan.add_argument("plan", type=Path)
@@ -80,9 +87,17 @@ def _parser() -> argparse.ArgumentParser:
     split.add_argument("plan", type=Path)
     split.add_argument("--repo", help="repository owner/name; defaults to origin")
     split.add_argument("--dry-run", action="store_true")
-    advance_issue = issue_commands.add_parser("advance")
+    advance_issue = issue_commands.add_parser(
+        "advance",
+        description=(
+            "Apply foundational phase-label transitions through integration. This command cannot "
+            "certify Review Readiness, User Review, merge, or GitHub Issue closure. Those evidence "
+            "and readback steps are delivered by Issues #30 and #31; do not replace them with "
+            "caller-supplied pass flags."
+        ),
+    )
     advance_issue.add_argument("issue", type=_positive_number)
-    advance_issue.add_argument("target", choices=tuple(phase.value for phase in Phase))
+    advance_issue.add_argument("target", choices=CLI_ADVANCE_TARGETS)
     advance_issue.add_argument("--repo", help="repository owner/name; defaults to origin")
     advance_issue.add_argument("--kind", choices=tuple(kind.value for kind in IssueKind), required=True)
     advance_issue.add_argument("--skip-phase", action="append", default=[], metavar="PHASE=REASON")
@@ -92,8 +107,10 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        root = _repo_root(getattr(args, "repo_root", None))
-        repository = args.repo or discover_repository(root)
+        if args.repo:
+            repository = args.repo
+        else:
+            repository = discover_repository(_repo_root(None))
         if args.namespace == "adc":
             if args.verb == "validate":
                 contract = parse_adc(args.source.read_bytes(), repository, args.issue)
