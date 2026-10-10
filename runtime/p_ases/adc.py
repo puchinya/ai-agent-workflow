@@ -38,6 +38,7 @@ POINTER_FIELDS = re.compile(
     r"State: (draft|approved)\n?$"
 )
 PUBLISH_TXN_PREFIX = "<!-- PASES_ADC_PUBLISH_V1\n"
+PUBLISH_TXN_SENTINEL = "<!-- PASES_ADC_PUBLISH_V1"
 PUBLISH_TXN_FIELDS = re.compile(
     r"^<!-- PASES_ADC_PUBLISH_V1\n"
     r"Operation ID: ([0-9a-f]{64})\n"
@@ -47,6 +48,18 @@ PUBLISH_TXN_FIELDS = re.compile(
     r"State: (draft|approved)\n"
     r"-->$"
 )
+POINTER_RECORD_SENTINEL = "<!-- PASES_ADC_POINTER_V1"
+POINTER_RECORD_FIELDS = re.compile(
+    r"^<!-- PASES_ADC_POINTER_V1\n"
+    r"Operation ID: ([0-9a-f]{64})\n"
+    r"Predecessor Comment ID: (none|[1-9][0-9]*)\n"
+    r"ADC Comment ID: ([1-9][0-9]*)\n"
+    r"SHA-256: ([0-9a-f]{64})\n"
+    r"Bytes: ([0-9]+)\n"
+    r"State: (draft|approved)\n"
+    r"-->$"
+)
+TRUSTED_PUBLISHER_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 REQUIRED_SECTIONS = {
     "issue", "scope", "change_kind", "requirements", "architecture_decisions",
     "artifact_impact", "exact_changes", "invariants", "non_goals",
@@ -366,6 +379,98 @@ def _check_comment(comment: Any, repository: str, issue_number: int, comment_id:
     return comment
 
 
+def _claims_trusted_publisher_association(comment: Any) -> bool:
+    return (isinstance(comment, dict)
+            and comment.get("author_association") in TRUSTED_PUBLISHER_ASSOCIATIONS)
+
+
+def _is_trusted_publisher_comment(comment: Any) -> bool:
+    """Trust GitHub-authenticated repository owners, members, and collaborators as publishers."""
+    return (_claims_trusted_publisher_association(comment)
+            and isinstance(comment.get("user"), dict)
+            and type(comment["user"].get("id")) is int
+            and comment["user"]["id"] > 0)
+
+
+def _require_trusted_publisher_comment(
+    comment: Any, repository: str, issue_number: int, comment_id: int,
+) -> dict[str, Any]:
+    if not _is_trusted_publisher_comment(comment):
+        raise ADCError("ADC publication comment was not issued by a trusted repository publisher")
+    return _check_comment(comment, repository, issue_number, comment_id)
+
+
+def _latest_pointer_record(
+    github: GitHub,
+    issue_number: int,
+    *,
+    issue_body: str,
+) -> tuple[ADCPointer | None, str | None, int | None]:
+    """Read the append-only pointer journal; fall back to the legacy Issue-body pointer."""
+    try:
+        records: list[tuple[int, str, str, ADCPointer]] = []
+        operation_records: dict[str, tuple[str, str, ADCPointer, int]] = {}
+        for listed in github.issue_comments(issue_number):
+            body = listed.get("body") if isinstance(listed, dict) else None
+            if not isinstance(body, str) or not body.startswith(POINTER_RECORD_SENTINEL):
+                continue
+            # Ignore comments from ordinary issue participants. GitHub supplies author and
+            # author_association independently of the comment body, so body text cannot claim trust.
+            if not _claims_trusted_publisher_association(listed):
+                continue
+            if not _is_trusted_publisher_comment(listed):
+                raise ADCError("trusted ADC pointer record has malformed publisher identity")
+            comment_id = listed.get("id")
+            if type(comment_id) is not int or comment_id < 1:
+                raise ADCError("trusted ADC pointer record has an invalid Comment ID")
+            _check_comment(listed, github.repo, issue_number, comment_id)
+            match = POINTER_RECORD_FIELDS.fullmatch(body)
+            if match is None:
+                raise ADCError("malformed trusted ADC pointer record; refusing to select a pointer")
+            (operation_id, predecessor_id, adc_comment_id_text, digest, byte_length_text, state) = match.groups()
+            adc_comment_id = int(adc_comment_id_text)
+            byte_length = int(byte_length_text)
+            computed_id = _publication_operation_id(
+                github.repo, issue_number, predecessor_id, digest, byte_length, state,
+            )
+            if operation_id != computed_id or adc_comment_id >= comment_id:
+                raise ADCError("trusted ADC pointer record identity or comment order is invalid")
+            pointer = ADCPointer(adc_comment_id, digest, byte_length, state)
+            prior = operation_records.get(operation_id)
+            if prior is not None and prior[:3] != (body, predecessor_id, pointer):
+                raise ADCError("trusted ADC pointer records conflict for one publication operation")
+            operation_records[operation_id] = (body, predecessor_id, pointer, comment_id)
+        for operation_id, (_body, predecessor_id, pointer, record_id) in operation_records.items():
+            records.append((record_id, operation_id, predecessor_id, pointer))
+        if records:
+            ordered = sorted(records)
+            for previous, current in zip(ordered, ordered[1:]):
+                if current[2] != str(previous[3].comment_id):
+                    raise ADCError(
+                        "trusted ADC pointer journal contains concurrent publications from the same predecessor"
+                    )
+            record_id, operation_id, _predecessor_id, pointer = ordered[-1]
+            return pointer, operation_id, record_id
+    except GitHubError as exc:
+        raise ADCError(str(exc)) from exc
+    return parse_pointer(issue_body), None, None
+
+
+def _pointer_record_body(
+    operation_id: str, predecessor_id: str, pointer: ADCPointer,
+) -> str:
+    return (
+        "<!-- PASES_ADC_POINTER_V1\n"
+        f"Operation ID: {operation_id}\n"
+        f"Predecessor Comment ID: {predecessor_id}\n"
+        f"ADC Comment ID: {pointer.comment_id}\n"
+        f"SHA-256: {pointer.sha256}\n"
+        f"Bytes: {pointer.byte_length}\n"
+        f"State: {pointer.state}\n"
+        "-->"
+    )
+
+
 def _publication_operation_id(
     repository: str,
     issue_number: int,
@@ -410,11 +515,20 @@ def _publication_transaction(
         for listed in listed_comments:
             if not isinstance(listed, dict) or not isinstance(listed.get("body"), str):
                 continue
-            if not listed["body"].startswith(PUBLISH_TXN_PREFIX):
+            if not listed["body"].startswith(PUBLISH_TXN_SENTINEL):
                 continue
+            # Untrusted issue participants cannot reserve operation IDs or block publication.
+            if not _claims_trusted_publisher_association(listed):
+                continue
+            if not _is_trusted_publisher_comment(listed):
+                raise ADCError("trusted ADC publication marker has malformed publisher identity")
+            listed_id = listed.get("id")
+            if type(listed_id) is not int or listed_id < 1:
+                raise ADCError("trusted ADC publication marker has an invalid Comment ID")
+            _check_comment(listed, github.repo, issue_number, listed_id)
             match = PUBLISH_TXN_FIELDS.fullmatch(listed["body"])
             if match is None:
-                raise ADCError("malformed ADC publication marker; refusing to publish")
+                raise ADCError("malformed trusted ADC publication marker; refusing to publish")
             marker_operation_id, marker_predecessor, marker_sha, marker_bytes, marker_state = match.groups()
             computed_id = _publication_operation_id(
                 github.repo, issue_number, marker_predecessor, marker_sha, int(marker_bytes), marker_state,
@@ -441,9 +555,11 @@ def _publication_transaction(
             marker_id = created.get("id") if isinstance(created, dict) else None
             if type(marker_id) is not int or marker_id < 1:
                 raise ADCError("ADC publication marker is missing a valid Comment ID")
+            _require_trusted_publisher_comment(created, github.repo, issue_number, marker_id)
         readback = _check_comment(
             github.issue_comment(issue_number, marker_id), github.repo, issue_number, marker_id,
         )
+        _require_trusted_publisher_comment(readback, github.repo, issue_number, marker_id)
         if readback.get("body") != marker_body:
             raise ADCError("ADC publication marker readback does not match the requested operation")
         return operation_id, marker_id
@@ -477,6 +593,10 @@ def _find_reusable_comment(
         if current_pointer is not None and comment_id == current_pointer.comment_id:
             continue
         _check_comment(listed, github.repo, issue_number, comment_id)
+        if _claims_trusted_publisher_association(listed) and not _is_trusted_publisher_comment(listed):
+            raise ADCError("trusted ADC comment has malformed publisher identity")
+        if not _is_trusted_publisher_comment(listed):
+            continue
         digest = hashlib.sha256(listed_bytes).hexdigest()
         if digest != contract.sha256 or len(listed_bytes) != contract.byte_length:
             raise ADCError("matching unpointed ADC comment does not match the exact submitted bytes")
@@ -495,7 +615,7 @@ def publish_adc(
     explicitly_approved: bool = False,
     supersede: bool = False,
 ) -> ADCPointer:
-    """Publish exact ADC bytes with a hidden immutable transaction marker for safe retries."""
+    """Publish exact ADC bytes and commit an append-only, trusted pointer record."""
     if state not in {"draft", "approved"}:
         raise ADCError("ADC state must be draft or approved")
     if type(supersede) is not bool or type(explicitly_approved) is not bool:
@@ -512,17 +632,36 @@ def publish_adc(
     if before.get("body") is not None and not isinstance(before.get("body"), str):
         raise ADCError("GitHub Issue body is not text")
     old_body = before.get("body") or ""
-    existing_pointer = parse_pointer(old_body)
-    if existing_pointer is not None and not supersede:
-        raise ADCError("Issue already has an ADC; use explicit supersession to publish another immutable comment")
+    existing_pointer, _existing_operation_id, _existing_record_id = _latest_pointer_record(
+        github, issue_number, issue_body=old_body,
+    )
+    current_verified: VerifiedADC | None = None
+    if existing_pointer is not None:
+        current_verified = verify_adc(github, issue_number)
+        if current_verified.pointer != existing_pointer:
+            raise ADCError("current ADC pointer changed while it was being verified")
+        if (existing_pointer.sha256 == contract.sha256
+                and existing_pointer.byte_length == contract.byte_length
+                and existing_pointer.state == state):
+            # This also makes a retry after the pointer record was created idempotent.
+            if current_verified.contract.content != contract.content:
+                raise ADCError("current ADC comment does not match the requested exact bytes")
+            return current_verified.pointer
+        if not supersede:
+            raise ADCError("Issue already has an ADC; use explicit supersession to publish another immutable comment")
     try:
         body_text = data.decode("utf-8", errors="strict")
-        _operation_id, transaction_marker_id = _publication_transaction(
+        operation_id, transaction_marker_id = _publication_transaction(
             github, issue_number, contract, state=state, current_pointer=existing_pointer,
         )
         after_marker = _check_issue(github.issue(issue_number), github.repo, issue_number)
         if after_marker.get("state") != "open" or after_marker.get("body", "") != old_body:
             raise ADCError("Issue identity, state, or ADC pointer changed during publication")
+        marker_pointer, _marker_operation_id, _marker_record_id = _latest_pointer_record(
+            github, issue_number, issue_body=after_marker.get("body") or "",
+        )
+        if marker_pointer != existing_pointer:
+            raise ADCError("ADC pointer journal advanced during publication")
         comment_id = _find_reusable_comment(
             github, issue_number, contract, current_pointer=existing_pointer,
             transaction_marker_id=transaction_marker_id,
@@ -532,7 +671,9 @@ def publish_adc(
             comment_id = created.get("id") if isinstance(created, dict) else None
         if type(comment_id) is not int or comment_id < 1:
             raise ADCError("created ADC comment is missing a valid Comment ID")
-        named = _check_comment(github.issue_comment(issue_number, comment_id), github.repo, issue_number, comment_id)
+        named = _require_trusted_publisher_comment(
+            github.issue_comment(issue_number, comment_id), github.repo, issue_number, comment_id,
+        )
         if not isinstance(named.get("body"), str):
             raise ADCError("named ADC comment has no text body")
         readback = named["body"].encode("utf-8", errors="strict")
@@ -544,13 +685,62 @@ def publish_adc(
         if after_comment.get("state") != "open" or after_comment.get("body", "") != old_body:
             raise ADCError("Issue identity, state, or ADC pointer changed during publication")
         pointer = ADCPointer(comment_id, digest, len(readback), state)
-        new_body = _replace_pointer(old_body, pointer)
-        updated = _check_issue(github.update_issue(issue_number, new_body), github.repo, issue_number)
-        if updated.get("body") != new_body or updated.get("state") != "open":
-            raise ADCError("updated Issue did not preserve the verified ADC pointer")
+        predecessor_id = "none" if existing_pointer is None else str(existing_pointer.comment_id)
+        record_body = _pointer_record_body(operation_id, predecessor_id, pointer)
+        # Pointer publication is append-only. GitHub does not support conditional PATCH on
+        # Issues, so changing the body after a GET would risk replacing another writer's edit.
+        # The trusted comment journal is the source of truth; its comment IDs define ordering.
+        latest_before_commit, _latest_operation_id, _latest_record_id = _latest_pointer_record(
+            github, issue_number, issue_body=after_comment.get("body") or "",
+        )
+        if latest_before_commit != existing_pointer:
+            raise ADCError("ADC pointer journal advanced during publication; refusing a stale commit")
+        committed: list[tuple[int, str]] = []
+        for listed in github.issue_comments(issue_number):
+            listed_body = listed.get("body") if isinstance(listed, dict) else None
+            if not isinstance(listed_body, str) or not listed_body.startswith(POINTER_RECORD_SENTINEL):
+                continue
+            if not _claims_trusted_publisher_association(listed):
+                continue
+            if not _is_trusted_publisher_comment(listed):
+                raise ADCError("trusted ADC pointer record has malformed publisher identity")
+            listed_id = listed.get("id")
+            if type(listed_id) is not int or listed_id < 1:
+                raise ADCError("trusted ADC pointer record has an invalid Comment ID")
+            _check_comment(listed, github.repo, issue_number, listed_id)
+            match = POINTER_RECORD_FIELDS.fullmatch(listed_body)
+            if match is None:
+                raise ADCError("malformed trusted ADC pointer record; refusing to publish")
+            if match.group(1) == operation_id:
+                committed.append((listed_id, listed_body))
+        if len(committed) > 1 and len({body for _comment_id, body in committed}) != 1:
+            raise ADCError("conflicting trusted pointer records exist for this publication operation")
+        if committed:
+            record_id, existing_record_body = max(committed)
+            if existing_record_body != record_body:
+                raise ADCError("trusted ADC pointer record does not match the requested publication")
+        else:
+            created_record = github.create_issue_comment(issue_number, record_body)
+            record_id = created_record.get("id") if isinstance(created_record, dict) else None
+            if type(record_id) is not int or record_id <= comment_id:
+                raise ADCError("created ADC pointer record is missing a valid later Comment ID")
+            _require_trusted_publisher_comment(
+                created_record, github.repo, issue_number, record_id,
+            )
+        named_record = _require_trusted_publisher_comment(
+            github.issue_comment(issue_number, record_id), github.repo, issue_number, record_id,
+        )
+        if named_record.get("body") != record_body:
+            raise ADCError("ADC pointer record readback does not match the requested publication")
         final = _check_issue(github.issue(issue_number), github.repo, issue_number)
-        if final.get("body") != new_body or parse_pointer(final["body"]) != pointer:
-            raise ADCError("ADC pointer readback did not match the published comment")
+        if final.get("state") != "open":
+            raise ADCError("Issue closed during ADC publication")
+        final_pointer, final_operation_id, final_record_id = _latest_pointer_record(
+            github, issue_number, issue_body=final.get("body") or "",
+        )
+        if (final_pointer != pointer or final_operation_id != operation_id
+                or final_record_id is None or final_record_id < record_id):
+            raise ADCError("ADC pointer journal readback changed during publication")
         return pointer
     except GitHubError as exc:
         raise ADCError(str(exc)) from exc
@@ -559,11 +749,16 @@ def publish_adc(
 def verify_adc(github: GitHub, issue_number: int) -> VerifiedADC:
     try:
         issue = _check_issue(github.issue(issue_number), github.repo, issue_number)
-        pointer = parse_pointer(issue.get("body") or "")
+        pointer, operation_id, _record_id = _latest_pointer_record(
+            github, issue_number, issue_body=issue.get("body") or "",
+        )
         if pointer is None:
             raise ADCError("Issue has no Agent Development Contract pointer")
-        comment = _check_comment(
-            github.issue_comment(issue_number, pointer.comment_id), github.repo, issue_number, pointer.comment_id
+        named = github.issue_comment(issue_number, pointer.comment_id)
+        comment = (
+            _require_trusted_publisher_comment(named, github.repo, issue_number, pointer.comment_id)
+            if operation_id is not None
+            else _check_comment(named, github.repo, issue_number, pointer.comment_id)
         )
     except GitHubError as exc:
         raise ADCError(str(exc)) from exc

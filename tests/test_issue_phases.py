@@ -108,6 +108,8 @@ class FakeGitHub:
             "id": comment_id,
             "body": body,
             "issue_url": f"https://api.github.com/repos/octo/repo/issues/{number}",
+            "user": {"id": 101, "login": "octo"},
+            "author_association": "OWNER",
         }
         self.comments[comment_id] = comment
         return copy.deepcopy(comment)
@@ -245,11 +247,11 @@ class IssueGraphTests(unittest.TestCase):
         with self.assertRaisesRegex(IssueGraphError, "native Issue relation"):
             split_issue(github, 1, parent_pointer.sha256, ("REQ-01", "REQ-02"), children)
         self.assertEqual(github.create_issue_calls, 2)
-        self.assertEqual(len(github.comments), 6)
+        self.assertEqual(len(github.comments), 9)
         retry = split_issue(github, 1, parent_pointer.sha256, ("REQ-01", "REQ-02"), children)
         self.assertEqual([item.key for item in retry], ["core", "docs"])
         self.assertEqual(github.create_issue_calls, 2)
-        self.assertEqual(len(github.comments), 6)
+        self.assertEqual(len(github.comments), 9)
 
     def test_cyclic_split_is_rejected_before_any_child_or_comment_is_created(self):
         github = FakeGitHub()
@@ -266,7 +268,7 @@ class IssueGraphTests(unittest.TestCase):
         with self.assertRaisesRegex(IssueGraphError, "cycle"):
             split_issue(github, 1, parent_pointer.sha256, ("REQ-01", "REQ-02"), children)
         self.assertEqual(github.create_issue_calls, 0)
-        self.assertEqual(len(github.comments), 2)
+        self.assertEqual(len(github.comments), 3)
 
     def test_idempotency_key_detects_conflicting_or_duplicate_existing_children(self):
         marker_issue = {
