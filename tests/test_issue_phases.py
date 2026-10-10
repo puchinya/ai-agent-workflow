@@ -380,7 +380,7 @@ class ExecutionBindingTests(unittest.TestCase):
             changed = ExecutionBinding(
                 repository="octo/repo", issue_number=12, adc_comment_id=123,
                 adc_sha256="a" * 64, base_ref="release", base_sha="c" * 40,
-                work_directory="/workspace/repo", initial_head_sha="c" * 40,
+                work_directory=str(Path(temporary) / "repo"), initial_head_sha="c" * 40,
             )
             with self.assertRaisesRegex(ExecutionError, "frozen and cannot be replaced"):
                 write_binding(path, changed)
