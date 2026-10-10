@@ -417,6 +417,14 @@ def _latest_pointer_record(
             records.append((record_id, operation_id, predecessor_id, pointer))
         if records:
             ordered = sorted(records)
+            legacy_pointer = parse_pointer(issue_body)
+            expected_first_predecessor = (
+                "none" if legacy_pointer is None else str(legacy_pointer.comment_id)
+            )
+            if ordered[0][2] != expected_first_predecessor:
+                raise ADCError(
+                    "first ADC pointer journal record does not continue the Issue body pointer"
+                )
             for previous, current in zip(ordered, ordered[1:]):
                 if current[2] != str(previous[3].comment_id):
                     raise ADCError(

@@ -337,7 +337,7 @@ def _child_issue_body(parent_issue: int, parent_sha: str, child: ChildPlan) -> s
         f"- dependencies: {dependencies}\n"
         f"- child_adc_sha256: `{child.adc_sha256}`\n\n"
         f"## Summary\n\n{summary}\n\n## Acceptance\n\n{acceptance}\n\n"
-        f"## ADC Publication\n\nThe authenticated append-only ADC pointer record follows comment readback."
+        f"## ADC Publication\n\nThe append-only ADC pointer record follows comment readback."
     )
 
 

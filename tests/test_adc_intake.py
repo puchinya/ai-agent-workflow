@@ -233,6 +233,83 @@ class ADCPublicationTests(unittest.TestCase):
             and comment["body"].startswith("<!-- PASES_ADC_POINTER_V1\n")
         }
 
+    def set_legacy_pointer(self, pointer):
+        self.github.issue_data["body"] = (
+            "# Parent issue\n\n"
+            "## Agent Development Contract\n"
+            f"Comment ID: {pointer.comment_id}\n"
+            f"SHA-256: {pointer.sha256}\n"
+            f"Bytes: {pointer.byte_length}\n"
+            f"State: {pointer.state}\n"
+        )
+
+    def remove_pointer_journal(self):
+        self.github.comments = {
+            comment_id: comment
+            for comment_id, comment in self.github.comments.items()
+            if not (isinstance(comment.get("body"), str)
+                    and comment["body"].startswith("<!-- PASES_ADC_POINTER_V1\n"))
+        }
+
+    def append_test_pointer_record(self, payload, predecessor_id):
+        adc_comment = self.github.create_issue_comment(1, payload.decode("utf-8"))
+        comment_id = adc_comment["id"]
+        digest = hashlib.sha256(payload).hexdigest()
+        byte_length = len(payload)
+        operation_id = hashlib.sha256(
+            f"octo/repo\n1\n{predecessor_id}\n{digest}\n{byte_length}\napproved\n".encode()
+        ).hexdigest()
+        record_body = (
+            "<!-- PASES_ADC_POINTER_V1\n"
+            f"Operation ID: {operation_id}\n"
+            f"Predecessor Comment ID: {predecessor_id}\n"
+            f"ADC Comment ID: {comment_id}\n"
+            f"SHA-256: {digest}\n"
+            f"Bytes: {byte_length}\n"
+            "State: approved\n-->\n\n"
+            f"ADC pointer: [comment #{comment_id}](https://github.com/octo/repo/issues/1#issuecomment-{comment_id}) · "
+            f"SHA-256 `{digest}` · {byte_length} bytes · state `approved`."
+        )
+        self.github.create_issue_comment(1, record_body)
+        return comment_id
+
+    def test_first_journal_record_continues_the_legacy_issue_body_pointer(self):
+        legacy = publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
+        self.remove_pointer_journal()
+        self.set_legacy_pointer(legacy)
+        next_payload = self.payload.replace(b"REQ-01", b"REQ-02")
+        next_comment_id = self.append_test_pointer_record(next_payload, str(legacy.comment_id))
+
+        verified = verify_adc(self.github, 1)
+
+        self.assertEqual(verified.pointer.comment_id, next_comment_id)
+        self.assertEqual(verified.contract.content, next_payload)
+
+    def test_first_journal_record_rejects_a_wrong_legacy_pointer_predecessor(self):
+        legacy = publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
+        self.remove_pointer_journal()
+        self.set_legacy_pointer(legacy)
+        next_payload = self.payload.replace(b"REQ-01", b"REQ-02")
+        base_comments = copy.deepcopy(self.github.comments)
+
+        for predecessor in ("none", "9999"):
+            with self.subTest(predecessor=predecessor):
+                self.github.comments = copy.deepcopy(base_comments)
+                self.append_test_pointer_record(next_payload, predecessor)
+                with self.assertRaisesRegex(ADCError, "first ADC pointer journal record"):
+                    verify_adc(self.github, 1)
+
+    def test_first_journal_record_without_legacy_pointer_must_start_at_none(self):
+        next_payload = self.payload.replace(b"REQ-01", b"REQ-02")
+        comment_id = self.append_test_pointer_record(next_payload, "none")
+        self.assertEqual(verify_adc(self.github, 1).pointer.comment_id, comment_id)
+
+        github = FakeGitHub()
+        self.github = github
+        self.append_test_pointer_record(next_payload, "9999")
+        with self.assertRaisesRegex(ADCError, "first ADC pointer journal record"):
+            verify_adc(self.github, 1)
+
     def test_supersession_does_not_reuse_a_historical_adc_after_a_to_b_to_a(self):
         first_a = publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
         payload_b = self.payload.replace(
