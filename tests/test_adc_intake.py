@@ -256,6 +256,8 @@ class ADCPublicationTests(unittest.TestCase):
         self.assertEqual(len(self.adc_comment_ids()), 1)
         self.assertEqual(self.github.issue_data["body"], "# Parent issue\nKeep this text.\n")
         self.assertEqual(self.github.issue_update_calls, 0)
+        record_body = self.github.comments[next(iter(self.pointer_record_ids()))]["body"]
+        self.assertIn("[comment #2002](https://github.com/octo/repo/issues/1#issuecomment-2002)", record_body)
         verified = verify_adc(self.github, 1)
         self.assertEqual(verified.contract.content, self.payload)
         self.assertEqual(verified.pointer, pointer)
@@ -311,7 +313,9 @@ class ADCPublicationTests(unittest.TestCase):
             f"ADC Comment ID: {candidate_id}\n"
             f"SHA-256: {candidate_sha}\n"
             f"Bytes: {len(candidate_payload)}\n"
-            "State: approved\n-->"
+            "State: approved\n-->\n\n"
+            f"ADC pointer: [comment #{candidate_id}](https://github.com/octo/repo/issues/1#issuecomment-{candidate_id}) · "
+            f"SHA-256 `{candidate_sha}` · {len(candidate_payload)} bytes · state `approved`."
         )
         payload_c = self.payload.replace(b"REQ-01", b"REQ-03")
 

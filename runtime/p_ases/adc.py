@@ -424,7 +424,7 @@ def _latest_pointer_record(
             if type(comment_id) is not int or comment_id < 1:
                 raise ADCError("trusted ADC pointer record has an invalid Comment ID")
             _check_comment(listed, github.repo, issue_number, comment_id)
-            match = POINTER_RECORD_FIELDS.fullmatch(body)
+            match = _parse_pointer_record_body(body, github.repo, issue_number)
             if match is None:
                 raise ADCError("malformed trusted ADC pointer record; refusing to select a pointer")
             (operation_id, predecessor_id, adc_comment_id_text, digest, byte_length_text, state) = match.groups()
@@ -458,9 +458,13 @@ def _latest_pointer_record(
 
 
 def _pointer_record_body(
-    operation_id: str, predecessor_id: str, pointer: ADCPointer,
+    operation_id: str,
+    predecessor_id: str,
+    pointer: ADCPointer,
+    repository: str,
+    issue_number: int,
 ) -> str:
-    return (
+    fields = (
         "<!-- PASES_ADC_POINTER_V1\n"
         f"Operation ID: {operation_id}\n"
         f"Predecessor Comment ID: {predecessor_id}\n"
@@ -470,6 +474,30 @@ def _pointer_record_body(
         f"State: {pointer.state}\n"
         "-->"
     )
+    comment_url = (
+        f"https://github.com/{_repo_name(repository)}/issues/{issue_number}"
+        f"#issuecomment-{pointer.comment_id}"
+    )
+    summary = (
+        f"ADC pointer: [comment #{pointer.comment_id}]({comment_url}) · "
+        f"SHA-256 `{pointer.sha256}` · {pointer.byte_length} bytes · state `{pointer.state}`."
+    )
+    return fields + "\n\n" + summary
+
+
+def _parse_pointer_record_body(body: str, repository: str, issue_number: int) -> re.Match[str] | None:
+    parts = body.split("\n\n", 1)
+    if len(parts) != 2:
+        return None
+    match = POINTER_RECORD_FIELDS.fullmatch(parts[0])
+    if match is None:
+        return None
+    _operation_id, _predecessor_id, adc_comment_id_text, digest, byte_length_text, state = match.groups()
+    pointer = ADCPointer(int(adc_comment_id_text), digest, int(byte_length_text), state)
+    expected = _pointer_record_body(
+        _operation_id, _predecessor_id, pointer, repository, issue_number,
+    ).split("\n\n", 1)[1]
+    return match if parts[1] == expected else None
 
 
 def _publication_operation_id(
@@ -687,7 +715,9 @@ def publish_adc(
             raise ADCError("Issue identity, state, or ADC pointer changed during publication")
         pointer = ADCPointer(comment_id, digest, len(readback), state)
         predecessor_id = "none" if existing_pointer is None else str(existing_pointer.comment_id)
-        record_body = _pointer_record_body(operation_id, predecessor_id, pointer)
+        record_body = _pointer_record_body(
+            operation_id, predecessor_id, pointer, github.repo, issue_number,
+        )
         # Pointer publication is append-only. GitHub does not support conditional PATCH on
         # Issues, so changing the body after a GET would risk replacing another writer's edit.
         # The trusted comment journal is the source of truth; its comment IDs define ordering.
@@ -709,7 +739,7 @@ def publish_adc(
             if type(listed_id) is not int or listed_id < 1:
                 raise ADCError("trusted ADC pointer record has an invalid Comment ID")
             _check_comment(listed, github.repo, issue_number, listed_id)
-            match = POINTER_RECORD_FIELDS.fullmatch(listed_body)
+            match = _parse_pointer_record_body(listed_body, github.repo, issue_number)
             if match is None:
                 raise ADCError("malformed trusted ADC pointer record; refusing to publish")
             if match.group(1) == operation_id:
