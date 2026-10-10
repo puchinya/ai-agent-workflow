@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 5147)
-Total output lines: 418
-
 from __future__ import annotations
 
 import copy
@@ -235,7 +232,15 @@ class ADCPublicationTests(unittest.TestCase):
     def test_supersession_adds_a_new_comment_and_preserves_old_comment(self):
         first = publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
         with self.assertRaisesRegex(ADCError, "explicit supersession"):
-            publish_adc…147 tokens truncated…ish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
+            publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
+        second = publish_adc(self.github, 1, self.payload, state="approved",
+                             explicitly_approved=True, supersede=True)
+        self.assertNotEqual(first.comment_id, second.comment_id)
+        self.assertEqual(self.github.comments[first.comment_id]["body"], self.payload.decode())
+        self.assertEqual(verify_adc(self.github, 1).pointer.comment_id, second.comment_id)
+
+    def test_supersession_retry_reuses_unpointed_comment_after_pointer_patch_failure(self):
+        first = publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
         updated_payload = self.payload.replace(
             b"Accept the explicit supported input paths.",
             b"Accept the explicitly confirmed supported input paths.",
