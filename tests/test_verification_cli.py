@@ -111,8 +111,8 @@ class VerificationCLITests(unittest.TestCase):
                 trace_path = plan_path.with_suffix(".trace.json")
                 trace = json.loads(trace_path.read_text(encoding="utf-8"))
                 trace["oracles"][0]["expected_behavior"] = "tampered after Plan freeze"
-                trace_path.write_text(json.dumps(trace, sort_keys=True, separators=(",", ":")) + "\n",
-                                      encoding="utf-8")
+                # Keep the deliberate file bytes identical across Windows' text newline translation.
+                trace_path.write_bytes((json.dumps(trace, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8"))
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
                     code = cli.main(["verification", "validate", "29", "83", "b" * 40,

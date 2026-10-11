@@ -240,9 +240,10 @@ def _load_plan(root: Path, repository: str, issue_number: int, plan_path: Path, 
     if (not isinstance(raw, dict) or set(raw) != {"oracles", "plan_sha256", "schema", "tests", "trace_sha256"}
             or raw.get("schema") != "PASES_VERIFICATION_TRACE_V1" or raw.get("plan_sha256") != plan.sha256
             or raw.get("trace_sha256") != plan.oracle_test_trace_sha256
-            or not isinstance(raw.get("oracles"), list) or not isinstance(raw.get("tests"), list)
-            or _canonical(raw) + b"\n" != trace_bytes):
+            or not isinstance(raw.get("oracles"), list) or not isinstance(raw.get("tests"), list)):
         raise PlanError("frozen Oracle/Test trace does not match the Verification Plan")
+    if _canonical(raw) + b"\n" != trace_bytes:
+        raise PlanError("frozen Oracle/Test trace bytes changed or became noncanonical after Plan creation")
     oracles = tuple(OracleDefinition.from_dict(item) for item in raw["oracles"])
     tests = tuple(TestDefinition.from_dict(item) for item in raw["tests"])
     if _trace_digest(oracles, tests) != plan.oracle_test_trace_sha256:
