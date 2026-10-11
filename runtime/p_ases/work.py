@@ -110,6 +110,20 @@ def ensure_pull_request(repository_root: Path, github: GitHub, *, repository: st
     if remote_base != binding.base_sha:
         raise WorkError("remote base drifted from the immutable ExecutionBinding base")
     binding_history = read_pr_binding_history(root, issue_number)
+    if binding_history:
+        history_identity = binding_history[0][1]
+        prior_head: str | None = None
+        for _path, item in binding_history:
+            if not _same_pr_binding_identity(history_identity, item):
+                raise WorkError("immutable PRBinding history changes PR, base, Issue, or ADC identity")
+            if prior_head is not None:
+                try:
+                    descends = is_ancestor(root, prior_head, item.pr_head_sha40)
+                except GitError as exc:
+                    raise WorkError(f"could not verify immutable PRBinding HEAD history: {exc}") from exc
+                if not descends:
+                    raise WorkError("immutable PRBinding HEAD history is not a forward-only chain")
+            prior_head = item.pr_head_sha40
     stored_binding = binding_history[-1][1] if binding_history else None
     try:
         candidates = github.pull_requests_for_refs(base_ref=base_ref, head_ref=branch_ref)
