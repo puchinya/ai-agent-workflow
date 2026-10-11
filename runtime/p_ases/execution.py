@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .path_safety import path_has_symlink
+
 
 class ExecutionError(ValueError):
     pass
@@ -19,6 +21,11 @@ class ExecutionError(ValueError):
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
+
+def _reject_symlink_path(path: Path) -> None:
+    if path_has_symlink(path):
+        raise ExecutionError("execution binding path must not traverse a symbolic link")
 
 
 @dataclass(frozen=True)
@@ -67,9 +74,9 @@ def binding_digest(binding: ExecutionBinding) -> str:
 def write_binding(path: Path, binding: ExecutionBinding) -> None:
     binding.validate()
     destination = Path(path)
+    _reject_symlink_path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.is_symlink():
-        raise ExecutionError("execution binding path must not be a symbolic link")
+    _reject_symlink_path(destination)
     data = (json.dumps(binding.__dict__, sort_keys=True, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     descriptor, name = tempfile.mkstemp(prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent)
     temporary = Path(name)
@@ -102,8 +109,10 @@ def write_binding(path: Path, binding: ExecutionBinding) -> None:
 
 
 def read_binding(path: Path) -> ExecutionBinding:
+    location = Path(path)
+    _reject_symlink_path(location)
     try:
-        data: Any = json.loads(Path(path).read_text(encoding="utf-8"))
+        data: Any = json.loads(location.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ExecutionError(f"execution binding is missing or invalid: {exc}") from exc
     expected = {

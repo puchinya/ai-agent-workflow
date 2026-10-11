@@ -1,4 +1,5 @@
 .agent-state/
+.p_ases/
 __pycache__/
 *.py[cod]
 .venv/
