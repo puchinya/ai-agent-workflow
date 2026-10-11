@@ -86,10 +86,28 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def _read_json(path: Path, label: str) -> Any:
+def _path_components_without_symlinks(path: Path, root: Path | None = None) -> bool:
+    location = Path(os.path.abspath(path))
+    if root is not None:
+        anchor = Path(os.path.abspath(root))
+        if anchor.is_symlink():
+            return False
+        try:
+            relative = location.relative_to(anchor)
+        except ValueError:
+            return not location.is_symlink() and not location.parent.is_symlink()
+        candidates = [anchor]
+        current = anchor
+        for part in relative.parts:
+            current = current / part
+            candidates.append(current)
+        return not any(candidate.is_symlink() for candidate in candidates)
+    return not location.is_symlink() and not location.parent.is_symlink()
+
+
+def _read_json(path: Path, label: str, *, root: Path | None = None) -> Any:
     location = Path(path)
-    absolute = Path(os.path.abspath(location))
-    if any(candidate.is_symlink() for candidate in (absolute, *absolute.parents)) or not location.is_file():
+    if not _path_components_without_symlinks(location, root) or not location.is_file():
         raise CLIError(f"{label} must be a regular non-symlink file")
     try:
         raw = location.read_bytes()
@@ -102,19 +120,13 @@ def _canonical(value: Any) -> bytes:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
-def _write_immutable(path: Path, data: bytes) -> str:
+def _write_immutable(path: Path, data: bytes, *, root: Path | None = None) -> str:
     destination = Path(path)
-    absolute = Path(os.path.abspath(destination))
-    if any(candidate.is_symlink() for candidate in (absolute, *absolute.parents)):
+    if not _path_components_without_symlinks(destination, root):
         raise CLIError("immutable artifact path must not traverse a symbolic link")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    if any(candidate.is_symlink() for candidate in (absolute, *absolute.parents)):
+    if not _path_components_without_symlinks(destination, root):
         raise CLIError("immutable artifact path must not traverse a symbolic link")
-    parent = destination.parent
-    while parent != parent.parent:
-        if parent.is_symlink():
-            raise CLIError("immutable artifact directory must not contain symbolic links")
-        parent = parent.parent
     descriptor, name = tempfile.mkstemp(prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent)
     temporary = Path(name)
     try:
@@ -214,7 +226,7 @@ def _trace_digest(oracles: tuple[OracleDefinition, ...], tests: tuple[TestDefini
 def _load_plan(root: Path, repository: str, issue_number: int, plan_path: Path, verified_adc: Any
                ) -> tuple[VerificationPlan, tuple[str, ...], tuple[OracleDefinition, ...], tuple[TestDefinition, ...]]:
     try:
-        plan = read_plan(_safe_file_bytes(Path(plan_path), "frozen Verification Plan"))
+        plan = read_plan(_safe_file_bytes(Path(plan_path), "frozen Verification Plan", root=root))
     except (OSError, PlanError) as exc:
         raise PlanError(f"frozen Verification Plan is missing or invalid: {exc}") from exc
     pointer = verified_adc.pointer
@@ -223,8 +235,8 @@ def _load_plan(root: Path, repository: str, issue_number: int, plan_path: Path, 
         raise PlanError("frozen Plan belongs to a different repository, Issue, or current approved ADC")
     source_digests = verify_plan_sources(root, plan)
     trace_path = _trace_path(root, plan)
-    trace_bytes = _safe_file_bytes(trace_path, "frozen Oracle/Test trace")
-    raw = _read_json(trace_path, "frozen Oracle/Test trace")
+    trace_bytes = _safe_file_bytes(trace_path, "frozen Oracle/Test trace", root=root)
+    raw = _read_json(trace_path, "frozen Oracle/Test trace", root=root)
     if (not isinstance(raw, dict) or set(raw) != {"oracles", "plan_sha256", "schema", "tests", "trace_sha256"}
             or raw.get("schema") != "PASES_VERIFICATION_TRACE_V1" or raw.get("plan_sha256") != plan.sha256
             or raw.get("trace_sha256") != plan.oracle_test_trace_sha256
@@ -241,9 +253,8 @@ def _load_plan(root: Path, repository: str, issue_number: int, plan_path: Path, 
     return plan, required, oracles, tests
 
 
-def _safe_file_bytes(path: Path, label: str) -> bytes:
-    absolute = Path(os.path.abspath(path))
-    if any(candidate.is_symlink() for candidate in (absolute, *absolute.parents)) or not path.is_file():
+def _safe_file_bytes(path: Path, label: str, *, root: Path | None = None) -> bytes:
+    if not _path_components_without_symlinks(path, root) or not path.is_file():
         raise CLIError(f"{label} must be a regular non-symlink file")
     return path.read_bytes()
 
@@ -317,7 +328,7 @@ def _verification_plan(args: argparse.Namespace, repository: str, root: Path, gi
     verified_adc = verify_adc(github, args.issue)
     if verified_adc.pointer.state != "approved":
         raise CLIError("Verification Plan requires the current approved ADC")
-    value = _read_json(args.input, "Verification Plan input")
+    value = _read_json(args.input, "Verification Plan input", root=root)
     if not isinstance(value, dict) or set(value) != {"entries", "oracles", "sources", "tests"}:
         raise CLIError("Plan input must contain exactly sources, entries, oracles, and tests")
     if any(not isinstance(value[key], list) for key in ("sources", "entries", "oracles", "tests")):
@@ -344,8 +355,8 @@ def _verification_plan(args: argparse.Namespace, repository: str, root: Path, gi
     validate_plan_tests(plan, tests, source_rows)
     plan_path = _plans_root(root, args.issue) / f"{plan.sha256}.json"
     trace_path = _trace_path(root, plan)
-    _write_immutable(plan_path, plan.to_bytes())
-    _write_immutable(trace_path, _trace_payload(plan, oracles, tests))
+    _write_immutable(plan_path, plan.to_bytes(), root=root)
+    _write_immutable(trace_path, _trace_payload(plan, oracles, tests), root=root)
     _json({"status": "READY_FOR_EVIDENCE", "issue": args.issue, "adc_comment_id": plan.adc_comment_id,
            "adc_sha256": plan.adc_sha256, "plan_sha256": plan.sha256,
            "plan_path": str(plan_path), "required_req_ids": list(required),
@@ -358,7 +369,7 @@ def _verification_collect(args: argparse.Namespace, repository: str, root: Path,
     verified_adc = verify_adc(github, args.issue)
     plan, _required, _oracles, _tests = _load_plan(root, repository, args.issue, args.plan, verified_adc)
     subject = _subject(repository, args.issue, args.pr, args.head, verified_adc, plan)
-    value = _read_json(args.observation, "external execution observation")
+    value = _read_json(args.observation, "external execution observation", root=root)
     expected = {
         "command", "entry_key", "environment", "evidence_type", "exit_status", "manual_procedure",
         "observed_at", "outcome", "output_sha256", "runner_source",
@@ -393,7 +404,7 @@ def _calculate_verification(args: argparse.Namespace, repository: str, root: Pat
     subject = _subject(repository, args.issue, args.pr, args.head, verified_adc, plan)
     records = read_evidence_set(root / ".p_ases" / "evidence", subject)
     try:
-        config_value = _read_json(root / ".agent" / "project.json", "project Required Check configuration")
+        config_value = _read_json(root / ".agent" / "project.json", "project Required Check configuration", root=root)
         policy = RequiredCheckPolicy.from_project_config(config_value)
         check_runs = github.check_runs_for_ref(args.head)
         forked = required_check_fork_status(policy, check_runs, subject=subject, expected_repository=repository)
@@ -477,7 +488,7 @@ def _acceptance_template(args: argparse.Namespace, repository: str, root: Path, 
         "subject": subject.as_dict(),
     }
     data = _canonical(template) + b"\n"
-    _write_immutable(args.output, data)
+    _write_immutable(args.output, data, root=root)
     _json({"status": "PREPARED", "subject": subject.as_dict(), "subject_sha256": subject.sha256,
            "artifact_type": args.artifact_type, "policy_version": ACCEPTANCE_POLICY_VERSION,
            "evidence_refs": [str(args.output)], "reasons": []})
@@ -597,7 +608,7 @@ def _calculate_acceptance(args: argparse.Namespace, repository: str, root: Path,
 
 
 def _acceptance_validate(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
-    template = _read_json(args.observations, "Acceptance input")
+    template = _read_json(args.observations, "Acceptance input", root=root)
     result, evidence_refs = _calculate_acceptance(args, repository, root, github, template)
     path = acceptance_result_path(root / ".p_ases" / "acceptance", result)
     write_acceptance_result(path, result)

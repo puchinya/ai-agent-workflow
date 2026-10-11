@@ -10,7 +10,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Iterable
 
 
@@ -49,7 +49,9 @@ DEFAULT_TRACE_SHA256 = hashlib.sha256(_canonical_bytes({
 
 
 def _absolute_executable(value: str) -> bool:
-    return Path(value).is_absolute() or PureWindowsPath(value).is_absolute()
+    # Plans can declare commands for a different target OS than the host that
+    # validates the Plan. Accept either native absolute-path syntax.
+    return PurePosixPath(value).is_absolute() or PureWindowsPath(value).is_absolute()
 
 
 @dataclass(frozen=True)
