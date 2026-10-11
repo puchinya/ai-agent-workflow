@@ -9,6 +9,7 @@ import os
 import re
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
@@ -19,6 +20,13 @@ from .execution import ExecutionError, binding_digest, read_binding
 from .checkpoint import CheckpointError, PRBinding, read_pr_binding
 from .context import WorkContext
 from .profile import ProfileError, load_profile
+from .gate_policy import (
+    BOOTSTRAP_ISSUES, BOOTSTRAP_POLICY, BootstrapResult, BootstrapSubject,
+    GatePolicyError, choose_gate_for_new_issue, current_checkout_subject,
+    evaluate_bootstrap, parse_independent_review_comment, parse_self_review_comment,
+    pin_gate_selection, publish_immutable_record, read_bootstrap_evidence, read_review_comment,
+    run_local_bootstrap_checks,
+)
 from .work import (
     WorkError, bind_work, ensure_branch, ensure_pull_request, execution_binding_path,
     pr_binding_path, recover_work,
@@ -1062,6 +1070,164 @@ def _read_audit_references(root: Path, audit: SelfAudit | IndependentReview) -> 
     return tuple(references)
 
 
+def _delivery_gate_policy(args: argparse.Namespace, repository: str, github: GitHub) -> int:
+    selected_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    try:
+        issue = github.issue(args.issue)
+        if issue.get("state") != "open" or issue.get("pull_request") is not None:
+            raise GatePolicyError("gate policy selection requires an open Issue")
+        selection = choose_gate_for_new_issue(github, repository, args.issue, selected_at)
+        if selection is None:
+            _json({"status": "UNDETERMINED", "repository": repository, "issue": args.issue,
+                   "policy": None, "reasons": ["no valid post-activation gate selection is available; activation may be absent/invalid or this Issue may predate activation"]})
+            return 2
+        comment_id, _body = pin_gate_selection(github, selection)
+        if selection.policy_version == BOOTSTRAP_POLICY:
+            status = "BOOTSTRAP_BLOCKED"
+            reason = "Bootstrap quality checks have not been evaluated for this exact PR subject"
+        else:
+            status = "PASES_GATE_REQUIRED"
+            reason = "normal P-ASES Review Readiness is required for work started after activation"
+        _json({"status": status, "repository": repository, "issue": args.issue,
+               "policy": selection.policy_version, "gate_selection_comment_id": comment_id,
+               "reasons": [reason]})
+        return 2 if status == "BOOTSTRAP_BLOCKED" else 0
+    except (GatePolicyError, GitHubError) as exc:
+        _json({"status": "UNDETERMINED", "repository": repository, "issue": args.issue,
+               "policy": None, "reasons": [str(exc)]})
+        return 2
+
+
+def _delivery_bootstrap_check(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
+    reasons: list[str] = []
+    try:
+        verified_adc = verify_adc(github, args.issue)
+        if verified_adc.pointer.state != "approved":
+            raise GatePolicyError("current child ADC is not approved")
+        pr = github.pull_request(args.pr)
+        base, head = pr.get("base"), pr.get("head")
+        if not isinstance(base, dict) or not isinstance(head, dict):
+            raise GatePolicyError("current PR base/head readback is incomplete")
+        base_sha, head_sha = base.get("sha"), head.get("sha")
+        if not isinstance(base.get("ref"), str) or not isinstance(base_sha, str):
+            raise GatePolicyError("current PR base ref/SHA readback is incomplete")
+        if not isinstance(head.get("ref"), str) or not isinstance(head_sha, str):
+            raise GatePolicyError("current PR head ref/SHA readback is incomplete")
+        subject = BootstrapSubject(repository, args.issue, args.pr, verified_adc.pointer.comment_id,
+                                  verified_adc.pointer.sha256, base["ref"], base_sha,
+                                  head["ref"], head_sha).validate()
+        selection = choose_gate_for_new_issue(
+            github, repository, args.issue, datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        if selection is None or selection.policy_version != BOOTSTRAP_POLICY:
+            raise GatePolicyError("Issue does not resolve to the fixed Bootstrap policy")
+        gate_comment_id, _ = pin_gate_selection(github, selection)
+    except (ADCError, GatePolicyError, GitHubError, KeyError, TypeError) as exc:
+        _json({"status": "BOOTSTRAP_BLOCKED", "subject": None,
+               "reasons": [f"current ADC/PR/gate selection readback failed: {exc}"],
+               "evidence_refs": []})
+        return 2
+
+    try:
+        current_checkout_subject(root, subject)
+        local_checks = run_local_bootstrap_checks(root)
+    except (GatePolicyError, OSError) as exc:
+        local_checks = ()
+        reasons.append(f"local exact-head verification failed: {exc}")
+
+    self_review = None
+    if args.self_review_comment is not None:
+        try:
+            comment = read_review_comment(github, args.issue, args.self_review_comment,
+                                          "PASES_BOOTSTRAP_SELF_REVIEW_V1")
+            self_review = parse_self_review_comment(comment.get("body"), args.self_review_comment)
+        except GatePolicyError as exc:
+            reasons.append(str(exc))
+    independent_review = None
+    if args.independent_review_comment is not None:
+        try:
+            comment = read_review_comment(github, args.issue, args.independent_review_comment,
+                                          "PASES_BOOTSTRAP_INDEPENDENT_REVIEW_V1")
+            independent_review = parse_independent_review_comment(comment.get("body"),
+                                                                  args.independent_review_comment)
+        except GatePolicyError as exc:
+            reasons.append(str(exc))
+
+    try:
+        profile = load_profile(root)
+        check_runs = github.check_runs_for_ref(subject.head_sha40)
+        workflow_runs = github.workflow_runs_for_ref(subject.head_sha40)
+        response_repository = repository
+    except (ProfileError, GitHubError) as exc:
+        reasons.append(f"current-head CI/profile readback failed: {exc}")
+        check_runs, workflow_runs = [], []
+        try:
+            profile = load_profile(root)
+        except ProfileError:
+            profile = None
+    required_names = tuple(name for name, _app_id in profile.required_checks) if profile else ()
+    checklist_body = verified_adc.contract.section("reviewer_checklist")
+    checklist_lines = [line for line in checklist_body.splitlines() if line.strip()]
+    checklist_ids = tuple(f"CHECKLIST-{index:03d}" for index, _line in enumerate(checklist_lines, 1))
+    unverified_hosts = tuple(args.unverified_host)
+    result = evaluate_bootstrap(
+        subject, pr=pr, response_repository=repository, workflow_runs=workflow_runs, check_runs=check_runs,
+        required_check_names=required_names, local_checks=local_checks,
+        adc_requirement_ids=verified_adc.contract.requirement_ids, adc_checklist_ids=checklist_ids,
+        self_review=self_review, independent_review=independent_review, unverified_hosts=unverified_hosts)
+    if reasons:
+        result = BootstrapResult("BOOTSTRAP_BLOCKED", subject, tuple(dict.fromkeys(result.reasons + tuple(reasons))),
+                                 result.local_checks, result.required_jobs, result.workflow_run_id,
+                                 result.workflow_status, result.workflow_conclusion,
+                                 result.self_review_comment_id, result.independent_review_comment_id,
+                                 result.unverified_hosts).validate()
+
+    # Re-read the immutable ADC and current PR after local commands and GitHub evidence collection.
+    snapshot_stable = True
+    try:
+        final_adc = verify_adc(github, args.issue)
+        final_pr = github.pull_request(args.pr)
+        final_base, final_head = final_pr.get("base"), final_pr.get("head")
+        final_subject = (final_base.get("ref"), final_base.get("sha"), final_head.get("ref"), final_head.get("sha"))
+        expected_subject = (subject.base_ref, subject.base_sha40, subject.head_ref, subject.head_sha40)
+        if (final_adc.pointer != verified_adc.pointer or final_pr.get("state") != pr.get("state")
+                or final_pr.get("draft") != pr.get("draft") or final_subject != expected_subject
+                or final_pr.get("body") != pr.get("body")):
+            raise GatePolicyError("ADC or PR identity changed during Bootstrap verification; evidence is stale")
+    except (ADCError, GatePolicyError, GitHubError, AttributeError) as exc:
+        snapshot_stable = False
+        result = BootstrapResult("BOOTSTRAP_BLOCKED", subject,
+                                 tuple(dict.fromkeys(result.reasons + (str(exc),))), result.local_checks,
+                                 result.required_jobs, result.workflow_run_id, result.workflow_status,
+                                 result.workflow_conclusion, result.self_review_comment_id,
+                                 result.independent_review_comment_id, result.unverified_hosts).validate()
+
+    evidence_comment_id = None
+    if snapshot_stable:
+        try:
+            evidence_comment_id, _body = publish_immutable_record(
+                github, args.issue, "PASES_BOOTSTRAP_REVIEW_V1", result.payload())
+            evidence_readback = read_bootstrap_evidence(github, args.issue, evidence_comment_id)
+            if evidence_readback != result.payload():
+                raise GatePolicyError("Bootstrap evidence payload readback does not match the current result")
+            final_adc = verify_adc(github, args.issue)
+            final_pr = github.pull_request(args.pr)
+            if (final_adc.pointer != verified_adc.pointer or final_pr.get("state") != "open"
+                    or final_pr.get("draft") is not False or final_pr.get("head", {}).get("sha") != subject.head_sha40):
+                raise GatePolicyError("PR or ADC changed after Bootstrap evidence publication; current result is stale")
+        except (ADCError, GatePolicyError, GitHubError, AttributeError) as exc:
+            reasons = tuple(dict.fromkeys(result.reasons + (str(exc),)))
+            _json({"status": "BOOTSTRAP_BLOCKED", "subject": subject.as_dict(), "reasons": list(reasons),
+                   "gate_selection_comment_id": gate_comment_id, "evidence_comment_id": evidence_comment_id,
+                   "evidence_refs": ([f"Issue #{args.issue} comment {evidence_comment_id}"]
+                                     if evidence_comment_id else [])})
+            return 2
+    _json({"status": result.status, "subject": subject.as_dict(), "reasons": list(result.reasons),
+           "gate_selection_comment_id": gate_comment_id, "evidence_comment_id": evidence_comment_id,
+           "evidence_sha256": result.sha256 if evidence_comment_id else None,
+           "evidence_refs": ([f"Issue #{args.issue} comment {evidence_comment_id}"] if evidence_comment_id else [])})
+    return 0 if result.status == "BOOTSTRAP_REVIEW_READY" else 2
+
+
 def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
     blockers: list[str] = []
     published_refs: list[str] = []
@@ -1469,6 +1635,20 @@ def _parser() -> argparse.ArgumentParser:
     readiness.add_argument("independent_review", type=Path)
     readiness.add_argument("--repo", help="repository owner/name; defaults to origin")
     readiness.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
+    gate_policy = delivery_commands.add_parser("gate-policy", help="pin or read the versioned gate for an Issue")
+    gate_policy.add_argument("issue", type=_positive_number)
+    gate_policy.add_argument("--repo", help="repository owner/name; defaults to origin")
+    bootstrap = delivery_commands.add_parser("bootstrap-check", help="evaluate the separate migration Bootstrap gate")
+    bootstrap.add_argument("issue", type=_positive_number)
+    bootstrap.add_argument("pr", type=_positive_number)
+    bootstrap.add_argument("--self-review-comment", type=_positive_number,
+                           help="exact Issue comment containing PASES_BOOTSTRAP_SELF_REVIEW_V1")
+    bootstrap.add_argument("--independent-review-comment", type=_positive_number,
+                           help="exact Issue comment containing PASES_BOOTSTRAP_INDEPENDENT_REVIEW_V1")
+    bootstrap.add_argument("--unverified-host", action="append", default=[],
+                           help="host/environment not verified; use 'none' when no host remains unverified")
+    bootstrap.add_argument("--repo", help="repository owner/name; defaults to origin")
+    bootstrap.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
     return parser
 
 
@@ -1489,6 +1669,10 @@ def main(argv: list[str] | None = None) -> int:
                 if args.verb == "self":
                     return _audit_self(args, repository, root, github)
                 return _audit_independent(args, repository, root, github)
+            if args.verb == "gate-policy":
+                return _delivery_gate_policy(args, repository, github)
+            if args.verb == "bootstrap-check":
+                return _delivery_bootstrap_check(args, repository, root, github)
             if args.verb == "readiness":
                 return _delivery_readiness(args, repository, root, github)
             raise CLIError("unknown Delivery command")

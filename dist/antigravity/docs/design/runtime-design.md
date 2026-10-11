@@ -67,6 +67,10 @@ The implementation Skill resolves the selected base ref and exact SHA before eva
 
 `gh api` receives argument arrays. Large body values travel through JSON temporary files, not command arguments. The environment owns authentication. Git commands use argv arrays. Default hook output is suppressed; diagnostic capture is removed on all handled paths and credential-redacted before a bounded failure tail is emitted. Issue identifiers, repository owner/name, remote refs, expected SHAs, returned comment/PR associations, hashes, and lengths are checked before success. Atomic writes preserve previous verified data on ordinary failures.
 
+## Migration gate policy
+
+`gate_policy.py` owns fixed-cohort routing, `PASES_GATE_SELECTION_V1`, Bootstrap subjects/reviews/results, append-only Bootstrap evidence, and activation validation. It is not called by `delivery.evaluate_readiness` or phase advancement. `cli.py` runs `delivery gate-policy` and `delivery bootstrap-check`; the latter executes the repository's fixed bounded local verification set and reads the exact current PR, ADC, Actions workflow run, and Check Runs through `github.py`. Review artifacts are separately published Issue comments bound to the exact Bootstrap subject. Activation is read-only until all child merges, closed Issues, parent integration evidence, and a distinct explicit approval comment can be verified; no implementation command transitions an Issue or merges a PR.
+
 ## Alternatives considered
 
 - One monolithic `agent_tool.py` would couple profile, GitHub, and review logic. Focused modules make fake transports and focused tests possible.

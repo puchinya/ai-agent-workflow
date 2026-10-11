@@ -103,3 +103,11 @@ The approved Issue contract is the authority for routine work through a review-r
 ## Verification strategy
 
 Unit tests exercise module boundaries with injected Git/GitHub results. Package tests compare complete generated trees byte-for-byte, validate each host independently, and prove that modifying a generated file is detected by `--check`. The CI trust boundary is specified in the [Distribution specification](../specs/distribution-spec.md).
+
+## Migration gate routing
+
+`runtime/p_ases/gate_policy.py` owns a versioned gate decision alongside, not inside, `delivery.evaluate_readiness`. The fixed Issue-number cohort selects `bootstrap-legacy-v1`. A `PASES_GATE_SELECTION_V1` Issue comment pins the selection. Other Issues require a unique, exact-readback `PASES_ACTIVATION_V1` plus an explicit earlier `PASES_ACTIVATION_APPROVAL_V1`; without them routing is `UNDETERMINED` and stops.
+
+`delivery bootstrap-check` reads the current approved ADC and PR, runs the bounded local verification commands, reads current-head Check Runs and the Actions workflow run through `github.py`, and consumes separately published self-review and independent-review comments. It writes a `PASES_BOOTSTRAP_REVIEW_V1` comment only when every Bootstrap gate passes, after re-reading the PR and ADC. Failed or stale inputs return machine-readable `BOOTSTRAP_BLOCKED`; normal readiness, phase advancement, User Review, merge, and close paths are untouched.
+
+The activation reader validates the fixed six-child set, each merged PR and closed Issue, a separate integration-evidence record covering docs/tests/16 Skills/distribution, and a distinct immutable approval comment. The activation record binds those PR merge SHAs and the integration digest. Policy readers reject duplicates, stale subjects, mismatched byte/digest values, forks, and non-current PR heads. No activation record is issued during child implementation.

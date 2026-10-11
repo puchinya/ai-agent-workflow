@@ -166,6 +166,57 @@ class GitHub:
                 return items
             page += 1
 
+    def workflow_runs_for_ref(self, head_sha40: str, *, workflow_path: str = ".github/workflows/ci.yml") -> list[dict[str, Any]]:
+        """Read all pull_request workflow runs for an exact SHA and workflow path."""
+        if not isinstance(head_sha40, str) or not re.fullmatch(r"[0-9a-f]{40}", head_sha40):
+            raise GitHubError("workflow run ref must be a full lowercase commit SHA")
+        if (not isinstance(workflow_path, str) or not workflow_path.startswith(".github/workflows/")
+                or any(char in workflow_path for char in "\x00\r\n?#")):
+            raise GitHubError("workflow path is invalid")
+        from urllib.parse import quote, urlencode
+        workflow_id = workflow_path.rsplit("/", 1)[-1]
+        encoded_path = quote(workflow_id, safe="._-")
+        query = urlencode({"head_sha": head_sha40, "event": "pull_request", "per_page": 100})
+        endpoint = f"{self.prefix}/actions/workflows/{encoded_path}/runs?{query}"
+        items: list[dict[str, Any]] = []
+        page = 1
+        total_count: int | None = None
+        while True:
+            result = self.request("GET", f"{endpoint}&page={page}")
+            if not isinstance(result, dict):
+                raise GitHubError(f"GitHub workflow runs page {page} must be an object")
+            count, runs = result.get("total_count"), result.get("workflow_runs")
+            if (type(count) is not int or count < 0 or not isinstance(runs, list)
+                    or any(not isinstance(run, dict) for run in runs)):
+                raise GitHubError(f"GitHub workflow runs page {page} has an invalid response shape")
+            if total_count is None:
+                total_count = count
+            elif total_count != count:
+                raise GitHubError("GitHub workflow runs total_count changed during pagination")
+            for run in runs:
+                head_repo = run.get("head_repository")
+                if (type(run.get("id")) is not int or run["id"] < 1
+                        or type(run.get("run_number")) is not int or run["run_number"] < 1
+                        or type(run.get("run_attempt")) is not int or run["run_attempt"] < 1
+                        or run.get("path") != workflow_path or run.get("head_sha") != head_sha40
+                        or run.get("event") != "pull_request"
+                        or not isinstance(run.get("status"), str)
+                        or (run.get("conclusion") is not None and not isinstance(run.get("conclusion"), str))
+                        or not isinstance(run.get("head_branch"), str) or not run["head_branch"]
+                        or not isinstance(head_repo, dict)
+                        or not isinstance(head_repo.get("full_name"), str)
+                        or not isinstance(run.get("pull_requests"), list)):
+                    raise GitHubError(f"GitHub workflow run page {page} contains incomplete identity data")
+            items.extend(runs)
+            if len(runs) < 100:
+                if len(items) != total_count:
+                    raise GitHubError("GitHub workflow run pagination count does not match total_count")
+                ids = [run["id"] for run in items]
+                if len(ids) != len(set(ids)):
+                    raise GitHubError("GitHub workflow run pagination contains duplicate IDs")
+                return items
+            page += 1
+
     def issues(self) -> list[dict[str, Any]]:
         return self._paginate(f"{self.prefix}/issues?state=all")
 
