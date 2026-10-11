@@ -7,6 +7,7 @@ import re
 import subprocess
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlencode
 
 
 class GitHubError(RuntimeError):
@@ -85,9 +86,45 @@ class GitHub:
             raise GitHubError("GitHub Issue response must be an object")
         return result
 
+    def repository_metadata(self) -> dict[str, Any]:
+        result = self.request("GET", self.prefix)
+        if not isinstance(result, dict) or not isinstance(result.get("default_branch"), str):
+            raise GitHubError("GitHub repository metadata has no default branch")
+        return result
+
     def issue_comments(self, number: int) -> list[dict[str, Any]]:
         number = _positive_int(number, "Issue number")
         return self._paginate(f"{self.prefix}/issues/{number}/comments")
+
+    def pull_requests_for_refs(self, *, base_ref: str, head_ref: str) -> list[dict[str, Any]]:
+        """Read all PRs matching exact same-repository head/base refs, including closed ones."""
+        if (not isinstance(base_ref, str) or not base_ref or any(c in base_ref for c in "\x00\r\n")
+                or not isinstance(head_ref, str) or not head_ref or any(c in head_ref for c in "\x00\r\n")):
+            raise GitHubError("PR search requires non-empty base and head refs")
+        owner, _name = self.repo.split("/", 1)
+        query = urlencode({"state": "all", "base": base_ref, "head": f"{owner}:{head_ref}"})
+        return self._paginate(f"{self.prefix}/pulls?{query}")
+
+    def pull_request(self, number: int) -> dict[str, Any]:
+        number = _positive_int(number, "PR number")
+        result = self.request("GET", f"{self.prefix}/pulls/{number}")
+        if not isinstance(result, dict) or result.get("number") != number:
+            raise GitHubError("GitHub PR readback is missing or has a mismatched number")
+        return result
+
+    def create_pull_request(self, *, title: str, body: str, head_ref: str, base_ref: str) -> dict[str, Any]:
+        if not isinstance(title, str) or not title.strip() or any(c in title for c in "\x00\r\n"):
+            raise GitHubError("new PR title must be a non-empty single line")
+        if not isinstance(body, str) or not isinstance(head_ref, str) or not isinstance(base_ref, str):
+            raise GitHubError("new PR body and refs must be text")
+        owner, _name = self.repo.split("/", 1)
+        result = self.request("POST", f"{self.prefix}/pulls", {
+            "title": title, "body": body, "head": f"{owner}:{head_ref}", "base": base_ref,
+            "draft": False,
+        })
+        if not isinstance(result, dict) or type(result.get("number")) is not int or result["number"] < 1:
+            raise GitHubError("created PR response is missing a valid number")
+        return result
 
     def check_runs_for_ref(self, head_sha40: str) -> list[dict[str, Any]]:
         """Read every Check Run for an exact commit SHA; never fall back to statuses."""

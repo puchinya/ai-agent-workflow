@@ -70,6 +70,18 @@ class CheckpointSchemaTests(unittest.TestCase):
         with self.assertRaises(CheckpointError):
             replace(self.checkpoint(), artifact_digests=(("z", "a" * 64), ("a", "b" * 64))).validate()
 
+    def test_checkpoint_storage_rejects_symlinked_pases_root(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            actual = base / "actual"
+            actual.mkdir()
+            workspace = base / "workspace"
+            workspace.mkdir()
+            (workspace / ".p_ases").symlink_to(actual, target_is_directory=True)
+            path = checkpoint_path(workspace, 30, 1)
+            with self.assertRaises(CheckpointError):
+                write_checkpoint(path, self.checkpoint())
+
 
 if __name__ == "__main__":
     unittest.main()

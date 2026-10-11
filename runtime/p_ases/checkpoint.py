@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .path_safety import path_has_symlink
+
 
 class CheckpointError(ValueError):
     pass
@@ -20,7 +22,7 @@ SHA40 = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 REF_INVALID = set("\x00\r\n ~^:?*[\\")
-STAGES = {"base", "branch", "bind", "recover", "verification", "audit"}
+STAGES = {"base", "branch", "bind", "recover", "pr", "verification", "audit", "readiness"}
 
 
 def _canonical(value: Any) -> bytes:
@@ -37,6 +39,11 @@ def _digest(value: Any, label: str, pattern: re.Pattern[str] = SHA256) -> str:
     if not isinstance(value, str) or not pattern.fullmatch(value):
         raise CheckpointError(f"{label} has an invalid digest")
     return value
+
+
+def _reject_symlink_path(path: Path, label: str) -> None:
+    if path_has_symlink(path):
+        raise CheckpointError(f"{label} must not traverse a symbolic link")
 
 
 def validate_ref(value: Any) -> str:
@@ -163,8 +170,7 @@ def checkpoint_path(work_directory: Path, issue_number: int, step: int) -> Path:
 
 def read_pr_binding(path: Path) -> PRBinding:
     location = Path(path)
-    if location.is_symlink():
-        raise CheckpointError("PRBinding path must not be a symbolic link")
+    _reject_symlink_path(location, "PRBinding path")
     try:
         raw = location.read_bytes()
         value = json.loads(raw.decode("utf-8", errors="strict"))
@@ -191,14 +197,9 @@ def write_pr_binding(path: Path, binding: PRBinding) -> str:
     """Create the PRBinding once; conflicting retries never replace it."""
     binding.validate()
     destination = Path(path)
+    _reject_symlink_path(destination, "PRBinding path")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.is_symlink():
-        raise CheckpointError("PRBinding path must not be a symbolic link")
-    parent = destination.parent
-    while parent != parent.parent:
-        if parent.is_symlink():
-            raise CheckpointError("PRBinding directory path must not contain a symbolic link")
-        parent = parent.parent
+    _reject_symlink_path(destination, "PRBinding path")
     data = binding.to_bytes()
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent)
     temporary = Path(temporary_name)
@@ -230,8 +231,7 @@ def write_pr_binding(path: Path, binding: PRBinding) -> str:
 
 def read_checkpoint(path: Path) -> WorkCheckpoint:
     location = Path(path)
-    if location.is_symlink():
-        raise CheckpointError("Checkpoint path must not be a symbolic link")
+    _reject_symlink_path(location, "Checkpoint path")
     try:
         raw = location.read_bytes()
         value = json.loads(raw.decode("utf-8", errors="strict"))
@@ -264,14 +264,9 @@ def write_checkpoint(path: Path, checkpoint: WorkCheckpoint) -> str:
     """Persist one immutable step; identical retries reuse it, changed bytes conflict."""
     checkpoint.validate()
     destination = Path(path)
+    _reject_symlink_path(destination, "Checkpoint path")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.is_symlink():
-        raise CheckpointError("Checkpoint path must not be a symbolic link")
-    parent = destination.parent
-    while parent != parent.parent:
-        if parent.is_symlink():
-            raise CheckpointError("Checkpoint directory path must not contain a symbolic link")
-        parent = parent.parent
+    _reject_symlink_path(destination, "Checkpoint path")
     data = checkpoint.to_bytes()
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent)
     temporary = Path(temporary_name)
