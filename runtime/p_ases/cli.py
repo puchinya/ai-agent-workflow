@@ -788,7 +788,7 @@ def _pr_ensure(args: argparse.Namespace, repository: str, root: Path, github: Gi
     _issue, verified = _approved_issue_adc(github, args.issue, repository)
     binding_path = execution_binding_path(root, args.issue)
     binding = read_binding(binding_path)
-    body = _safe_file_bytes(args.body_file, "PR body file").decode("utf-8", errors="strict")
+    body = _safe_file_bytes(args.body_file, "PR body file", root=root).decode("utf-8", errors="strict")
     result = ensure_pull_request(
         root, github, repository=repository, issue_number=args.issue, binding=binding,
         branch_ref=args.branch_ref, base_ref=args.base_ref, title=args.title, body=body,
@@ -859,7 +859,7 @@ def _verified_file_evidence(root: Path, reference: Any) -> tuple[str, str]:
 
 def _audit_self(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
     verified, subject, required, checklist_labels = _audit_subject(args, repository, root, github)
-    value = _read_json(args.input, "self-audit input")
+    value = _read_json(args.input, "self-audit input", root=root)
     if (not isinstance(value, dict) or set(value) != {"items", "schema", "subject"}
             or value.get("schema") != "PASES_SELF_AUDIT_INPUT_V1"
             or VerificationSubject.from_dict(value.get("subject")) != subject
@@ -886,7 +886,7 @@ def _audit_self(args: argparse.Namespace, repository: str, root: Path, github: G
 
 def _audit_independent(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
     _verified, subject, _required, _checklist_labels = _audit_subject(args, repository, root, github)
-    value = _read_json(args.input, "independent-review context artifact")
+    value = _read_json(args.input, "independent-review context artifact", root=root)
     expected = {"context_id", "findings", "provenance", "reviewed_head_sha40", "schema",
                 "session_description", "subject", "verdict"}
     if (not isinstance(value, dict) or set(value) != expected
@@ -908,10 +908,10 @@ def _audit_independent(args: argparse.Namespace, repository: str, root: Path, gi
         findings.append(ReviewFinding(row["finding_id"], row["severity"], row["resolved"],
                                       row["description"], evidence_ref).validate())
     findings.sort(key=lambda item: item.finding_id)
-    raw = args.input.read_bytes()
+    raw = _safe_file_bytes(args.input, "independent-review context artifact", root=root)
     context_dir = root / ".p_ases" / "audits" / str(args.issue) / subject.sha256
     context_path = context_dir / f"review-context-{hashlib.sha256(raw).hexdigest()}.json"
-    _write_immutable(context_path, raw)
+    _write_immutable(context_path, raw, root=root)
     context_ref = str(context_path.relative_to(root))
     review = IndependentReview(
         subject=subject, reviewer_context_id=value["context_id"],
@@ -968,7 +968,7 @@ def _read_audit_references(root: Path, audit: SelfAudit | IndependentReview) -> 
                 raise CLIError("independent-review context reference is not a canonical workspace-relative path")
             path = root / ref
             try:
-                raw = _safe_file_bytes(path, "independent-review context artifact")
+                raw = _safe_file_bytes(path, "independent-review context artifact", root=root)
             except (CLIError, OSError) as exc:
                 raise CLIError(f"independent-review context artifact cannot be read back: {exc}") from exc
             if hashlib.sha256(raw).hexdigest() != audit.context_artifact_sha256:
@@ -1124,6 +1124,12 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
 
     if subject is not None and verified_adc is not None:
         try:
+            final_issue = github.issue(args.issue)
+            if final_issue.get("number") != args.issue or final_issue.get("state") != "open":
+                blockers.append("Issue changed from open before Review Readiness persistence")
+        except GitHubError as exc:
+            blockers.append(f"Issue final readback failed before Readiness persistence: {exc}")
+        try:
             last_adc = verify_adc(github, args.issue)
             if last_adc.pointer != verified_adc.pointer:
                 blockers.append("ADC pointer changed before Review Readiness persistence")
@@ -1163,6 +1169,31 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
             except (AcceptanceError, ADCError, PlanError, OracleTraceError, EvidenceError,
                     VerificationError, GitHubError, CLIError, OSError) as exc:
                 blockers.append(f"#29 final Acceptance readback failed: {exc}")
+        if binding is not None:
+            try:
+                final_binding = read_binding(binding_path)
+                final_pr_binding = read_pr_binding(pr_binding_path(root, args.issue))
+                if final_binding != binding or final_pr_binding != pr_binding:
+                    blockers.append("immutable ExecutionBinding or PRBinding changed before Readiness persistence")
+            except (ExecutionError, CheckpointError, OSError) as exc:
+                blockers.append(f"work binding final readback failed before Readiness persistence: {exc}")
+        if self_audit is not None:
+            try:
+                final_audit = read_self_audit(args.self_audit)
+                final_audit.validate(required_item_ids)
+                if final_audit != self_audit:
+                    blockers.append("self-audit changed before Readiness persistence")
+                _read_audit_references(root, final_audit)
+            except (AuditError, CLIError, OSError) as exc:
+                blockers.append(f"self-audit final readback failed before Readiness persistence: {exc}")
+        if independent_review is not None:
+            try:
+                final_review = read_independent_review(args.independent_review)
+                if final_review != independent_review:
+                    blockers.append("independent review changed before Readiness persistence")
+                _read_audit_references(root, final_review)
+            except (AuditError, CLIError, OSError) as exc:
+                blockers.append(f"independent-review final readback failed before Readiness persistence: {exc}")
 
     if subject is None:
         _json({"status": "BLOCKED", "subject": None, "subject_sha256": None,
