@@ -11,7 +11,7 @@ sys.path.insert(0, str(ROOT / "runtime"))
 from p_ases.execution import binding_digest
 from p_ases.git import head_sha40, run_git
 from p_ases.github import GitHubError
-from p_ases.work import WorkError, bind_work, ensure_pull_request
+from p_ases.work import WorkError, bind_work, ensure_pull_request, read_pr_binding_history
 
 
 BODY = "Review implementation and evidence.\n\nCloses #30\n"
@@ -97,6 +97,41 @@ class PREnsureTests(unittest.TestCase):
             self.assertEqual(github.create_count, 1)
             self.assertEqual(retry.binding, result.binding)
             self.assertEqual(retry.checkpoint_sha256, result.checkpoint_sha256)
+
+    def test_new_pr_head_creates_a_new_immutable_binding_version(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo, base, binding = self._bound_repo(root)
+            github = FakeGitHub(repo, base)
+            first = ensure_pull_request(repo, github, repository="owner/repo", issue_number=30,
+                                        binding=binding, branch_ref="pases/work", base_ref="main",
+                                        title="Issue #30 work", body=BODY)
+            history = read_pr_binding_history(repo, 30)
+            self.assertEqual(len(history), 1)
+            first_path, first_binding = history[0]
+            first_bytes = first_path.read_bytes()
+
+            (repo / "follow-up.txt").write_text("follow-up fix\n", encoding="utf-8")
+            run_git(repo, "add", "follow-up.txt")
+            run_git(repo, "commit", "--quiet", "-m", "follow-up fix")
+            run_git(repo, "push", "--quiet", "origin", "pases/work")
+            github.pull = github._pull(body=BODY, head_ref="pases/work", base_ref="main")
+
+            updated = ensure_pull_request(repo, github, repository="owner/repo", issue_number=30,
+                                          binding=binding, branch_ref="pases/work", base_ref="main",
+                                          title="Issue #30 work", body=BODY)
+            history = read_pr_binding_history(repo, 30)
+            self.assertEqual([item[1].pr_head_sha40 for item in history],
+                             [first_binding.pr_head_sha40, head_sha40(repo)])
+            self.assertEqual(first_path.read_bytes(), first_bytes)
+            self.assertNotEqual(updated.binding, first.binding)
+            self.assertEqual(history[1][0].name, "pr-binding-000002.json")
+
+            retry = ensure_pull_request(repo, github, repository="owner/repo", issue_number=30,
+                                        binding=binding, branch_ref="pases/work", base_ref="main",
+                                        title="Issue #30 work", body=BODY)
+            self.assertEqual(retry.binding, updated.binding)
+            self.assertEqual(retry.checkpoint_sha256, updated.checkpoint_sha256)
 
     def test_draft_closed_mismatched_and_duplicate_candidates_are_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:

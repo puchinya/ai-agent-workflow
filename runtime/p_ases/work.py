@@ -109,9 +109,8 @@ def ensure_pull_request(repository_root: Path, github: GitHub, *, repository: st
         raise WorkError("remote branch HEAD differs from the exact local worktree HEAD")
     if remote_base != binding.base_sha:
         raise WorkError("remote base drifted from the immutable ExecutionBinding base")
-    state_path = pr_binding_path(root, issue_number)
-    _reject_symlink_path(state_path, "PRBinding path")
-    stored_binding = read_pr_binding(state_path) if state_path.exists() else None
+    binding_history = read_pr_binding_history(root, issue_number)
+    stored_binding = binding_history[-1][1] if binding_history else None
     try:
         candidates = github.pull_requests_for_refs(base_ref=base_ref, head_ref=branch_ref)
     except GitHubError as exc:
@@ -166,9 +165,14 @@ def ensure_pull_request(repository_root: Path, github: GitHub, *, repository: st
     pr_binding = PRBinding(repository, issue_number, binding.adc_comment_id, binding.adc_sha256,
                            binding.base_sha, branch_ref, pr_number, local_head).validate()
     if stored_binding is not None and stored_binding != pr_binding:
-        raise WorkError("existing immutable PRBinding conflicts with the current PR identity")
-    if stored_binding is None:
-        write_pr_binding(state_path, pr_binding)
+        if not _same_pr_binding_identity(stored_binding, pr_binding):
+            raise WorkError("existing immutable PRBinding history conflicts with the current PR identity")
+        if not is_ancestor(root, stored_binding.pr_head_sha40, local_head):
+            raise WorkError("new PRBinding HEAD does not descend from the latest immutable PRBinding")
+        version = len(binding_history) + 1
+        write_pr_binding(_pr_binding_version_path(root, issue_number, version), pr_binding)
+    elif stored_binding is None:
+        write_pr_binding(_pr_binding_version_path(root, issue_number, 1), pr_binding)
     checkpoint_file, checkpoint = _save_checkpoint(
         root, issue_number, binding, local_head, True, "pr",
         tuple(sorted((("execution-binding", binding_digest(binding)), ("pr-binding", pr_binding.sha256)))),
@@ -186,7 +190,54 @@ def execution_binding_path(work_directory: Path, issue_number: int) -> Path:
 
 
 def pr_binding_path(work_directory: Path, issue_number: int) -> Path:
-    return execution_binding_path(work_directory, issue_number).with_name("pr-binding.json")
+    history = read_pr_binding_history(work_directory, issue_number)
+    if history:
+        return history[-1][0]
+    return execution_binding_path(work_directory, issue_number).with_name("pr-binding-000001.json")
+
+
+def _pr_binding_version_path(work_directory: Path, issue_number: int, version: int) -> Path:
+    if type(version) is not int or version < 1:
+        raise WorkError("PRBinding version must be a positive integer")
+    return execution_binding_path(work_directory, issue_number).with_name(f"pr-binding-{version:06d}.json")
+
+
+def _same_pr_binding_identity(left: PRBinding, right: PRBinding) -> bool:
+    return (left.repository == right.repository and left.issue_number == right.issue_number
+            and left.adc_comment_id == right.adc_comment_id and left.adc_sha256 == right.adc_sha256
+            and left.base_sha40 == right.base_sha40 and left.branch_ref == right.branch_ref
+            and left.pr_number == right.pr_number)
+
+
+def read_pr_binding_history(work_directory: Path, issue_number: int) -> list[tuple[Path, PRBinding]]:
+    """Read a contiguous immutable PRBinding history, accepting the old single-file name."""
+    directory = execution_binding_path(work_directory, issue_number).parent
+    _reject_symlink_path(directory, "PRBinding history directory")
+    if not directory.exists():
+        return []
+    if not directory.is_dir():
+        raise WorkError("PRBinding history path is not a directory")
+    legacy = directory / "pr-binding.json"
+    numbered: dict[int, Path] = {}
+    for path in directory.glob("pr-binding-*.json"):
+        if path.is_symlink():
+            raise WorkError("PRBinding history must not contain symbolic links")
+        match = re.fullmatch(r"pr-binding-([0-9]{6})\.json", path.name)
+        if not match:
+            raise WorkError("PRBinding history contains an unexpected filename")
+        version = int(match.group(1))
+        if version < 1 or version in numbered:
+            raise WorkError("PRBinding history has an invalid or duplicate version")
+        numbered[version] = path
+    if legacy.is_symlink():
+        raise WorkError("PRBinding history must not contain symbolic links")
+    offset = 1 if legacy.exists() else 0
+    expected = list(range(1 + offset, 1 + offset + len(numbered)))
+    if sorted(numbered) != expected:
+        raise WorkError("PRBinding versions must be contiguous and monotonic")
+    rows = [(legacy, read_pr_binding(legacy))] if legacy.exists() else []
+    rows.extend((numbered[version], read_pr_binding(numbered[version])) for version in sorted(numbered))
+    return rows
 
 
 def _checkpoint_files(work_directory: Path, issue_number: int) -> list[Path]:
