@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -13,6 +15,7 @@ from p_ases.gate_policy import (
     parse_independent_review_comment, parse_self_review_comment, publish_immutable_record, read_review_comment,
     read_bootstrap_adc, read_bootstrap_evidence, select_gate,
     pin_gate_selection, read_activation_record, _require_repository_owner_actor,
+    _validate_activation_candidate,
 )
 
 
@@ -50,6 +53,71 @@ def minimal_adc_bytes():
             "## Verification Obligations\nVerify SHA-256.\n\n"
             "## Reviewer Checklist\n- [ ] Exact bytes are read back.\n\n"
             "## Completion Gates\nReturn a typed result.\n").encode("utf-8")
+
+
+def canonical(value):
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def activation_fixture(*, approval_author="octo", merged_by="octo", open_child=None):
+    child_prs = tuple((issue, issue + 6, f"{issue:040x}") for issue in range(27, 33))
+    expected_child_prs = [{"issue_number": issue, "pr_number": pr, "merge_sha40": sha}
+                          for issue, pr, sha in child_prs]
+    integration = {
+        "documentation_pass": True, "distribution_pass": True,
+        "evidence_refs": ["https://github.com/octo/repo/actions/runs/1"],
+        "integration_commit_sha40": "b" * 40, "repository": REPO,
+        "schema": "PASES_INTEGRATION_EVIDENCE_V1", "skills_count": 16,
+        "status": "PASS", "tests_pass": True, "child_prs": expected_child_prs,
+    }
+    integration_sha = hashlib.sha256(canonical(integration).encode()).hexdigest()
+    approval = {
+        "approved": True, "activation_commit_sha40": "b" * 40,
+        "child_issue_numbers": list(range(27, 33)), "child_prs": expected_child_prs,
+        "integration_evidence_sha256": integration_sha, "repository": REPO,
+        "schema": "PASES_ACTIVATION_APPROVAL_V1",
+    }
+    record = ActivationRecord(
+        REPO, tuple(range(27, 33)), child_prs, tuple(range(27, 33)), integration_sha,
+        300, "p-ases-v1", "b" * 40, 301, "2026-10-11T01:30:00Z",
+    )
+    comments = {
+        300: {"id": 300, "issue_url": f"https://api.github.com/repos/{REPO}/issues/26",
+              "created_at": "2026-10-11T00:00:00Z",
+              "body": f"<!-- PASES_INTEGRATION_EVIDENCE_V1\n{canonical(integration)}\n-->"},
+        301: {"id": 301, "issue_url": f"https://api.github.com/repos/{REPO}/issues/26",
+              "created_at": "2026-10-11T01:00:00Z", "user": {"login": approval_author},
+              "body": f"<!-- PASES_ACTIVATION_APPROVAL_V1\n{canonical(approval)}\n-->"},
+    }
+    prs = {}
+    for issue, pr_number, merge_sha in child_prs:
+        pair = {
+            27: ("main", "pases/adc-core"), 28: ("pases/adc-core", "pases/issue-28"),
+            29: ("pases/adc-core", "pases/verification"),
+            30: ("pases/verification", "pases/work-readiness"),
+            31: ("pases/work-readiness", "pases/issue-31"),
+            32: ("pases/work-readiness", "pases/issue-32"),
+        }[issue]
+        prs[pr_number] = {
+            "number": pr_number, "state": "closed", "merged": True,
+            "merge_commit_sha": merge_sha, "merged_by": {"login": merged_by},
+            "base": {"ref": pair[0], "repo": {"full_name": REPO}},
+            "head": {"ref": pair[1], "repo": {"full_name": REPO}},
+            "body": f"Closes #{issue}\n",
+        }
+
+    class ActivationGitHub(FakeGitHub):
+        def issue_comment(self, issue_number, comment_id):
+            return comments[comment_id]
+
+        def issue(self, issue_number):
+            state = "open" if issue_number == open_child else "closed"
+            return {"number": issue_number, "state": state}
+
+        def pull_request(self, pr_number):
+            return prs[pr_number]
+
+    return ActivationGitHub(), record
 
 
 def pr_readback(**overrides):
@@ -289,6 +357,24 @@ class BootstrapPolicyTests(unittest.TestCase):
             _require_repository_owner_actor({"login": "automation-bot"}, REPO, "Activation approval")
         with self.assertRaises(GatePolicyError):
             _require_repository_owner_actor(None, REPO, "child PR merge")
+
+    def test_activation_readback_requires_owner_approval_and_owner_merges(self):
+        github, record = activation_fixture(approval_author="automation-bot")
+        with self.assertRaisesRegex(GatePolicyError, "Activation approval must be explicitly performed"):
+            _validate_activation_candidate(github, record)
+
+        github, record = activation_fixture(merged_by="automation-bot")
+        with self.assertRaisesRegex(GatePolicyError, "child PR #33 merge must be explicitly performed"):
+            _validate_activation_candidate(github, record)
+
+    def test_activation_refuses_open_child_and_undefined_branch_pair(self):
+        github, record = activation_fixture(open_child=27)
+        with self.assertRaisesRegex(GatePolicyError, "child Issue #27 is not closed"):
+            _validate_activation_candidate(github, record)
+
+        github, record = activation_fixture()
+        with self.assertRaisesRegex(GatePolicyError, "child PR #34 has no matching approved base/head branch contract"):
+            _validate_activation_candidate(github, record)
 
     def test_gate_selection_refuses_comment_readback_from_another_issue(self):
         class MisboundCommentGitHub(FakeGitHub):
