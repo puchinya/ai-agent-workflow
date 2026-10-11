@@ -11,10 +11,11 @@ import hashlib
 import json
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
+from urllib.parse import unquote, urlparse
 
 from .adc import ADC, ADCPointer, ADCError, parse_adc, verify_adc
 from .git import GitError, run_git
@@ -75,12 +76,14 @@ SHA256 = re.compile(r"^[0-9a-f]{64}$")
 BOOTSTRAP_PARENT = 26
 BOOTSTRAP_ISSUES = frozenset(range(27, 33))
 BOOTSTRAP_COHORT = frozenset({BOOTSTRAP_PARENT, *BOOTSTRAP_ISSUES})
+BOOTSTRAP_REPOSITORY = "puchinya/ai-agent-workflow"
 BOOTSTRAP_POLICY = "bootstrap-legacy-v1"
 PASES_POLICY = "p-ases-v1"
 RESULTS = {"BOOTSTRAP_REVIEW_READY", "BOOTSTRAP_BLOCKED", "PASES_GATE_REQUIRED", "UNDETERMINED"}
 REQUIRED_LOCAL_CHECKS = ("compileall", "unittest", "dist-build-check", "dist-validation", "diff-check")
 BOOTSTRAP_REQUIRED_JOBS = ("pull-request-metadata",)
 BOOTSTRAP_POLICY_FILES = ("gate_policy.py", "cli.py", "github.py", "adc.py", "git.py", "process.py", "profile.py")
+INDEPENDENCE_ASSURANCE = "reviewer-attested; the host/session identity is not cryptographically verified"
 EXPECTED_BRANCH_PAIRS = {
     27: ("main", "pases/adc-core"),
     29: ("pases/adc-core", "pases/verification"),
@@ -165,6 +168,8 @@ class BootstrapSubject:
         _sha(self.head_sha40, "Bootstrap PR HEAD", SHA40)
         if self.issue_number not in BOOTSTRAP_ISSUES:
             raise GatePolicyError("Issue is outside the fixed Bootstrap cohort")
+        if self.repository.casefold() != BOOTSTRAP_REPOSITORY.casefold():
+            raise GatePolicyError("Bootstrap subject repository is outside the fixed cohort repository")
         return self
 
     def as_dict(self) -> dict[str, Any]:
@@ -249,6 +254,8 @@ class GateSelection:
         _positive(self.issue_number, "Gate selection Issue number")
         _parse_time(self.selected_at, "Gate selection")
         if self.issue_number in BOOTSTRAP_COHORT:
+            if self.repository.casefold() != BOOTSTRAP_REPOSITORY.casefold():
+                raise GatePolicyError("fixed Bootstrap cohort is limited to its approved repository")
             if self.policy_version != BOOTSTRAP_POLICY or self.activation_comment_id is not None or self.activation_sha256 is not None:
                 raise GatePolicyError("fixed Bootstrap cohort must remain pinned to bootstrap-legacy-v1")
         elif self.policy_version == PASES_POLICY:
@@ -282,6 +289,8 @@ def select_gate(repository: str, issue_number: int, *, selected_at: str,
                 issue_created_at: str | None = None) -> GateSelection | None:
     """Return the pinned policy or None when the Issue's policy is undetermined."""
     if issue_number in BOOTSTRAP_COHORT:
+        if not isinstance(repository, str) or repository.casefold() != BOOTSTRAP_REPOSITORY.casefold():
+            raise GatePolicyError("fixed Bootstrap cohort is limited to its approved repository")
         return GateSelection(repository, issue_number, BOOTSTRAP_POLICY, selected_at).validate()
     if activation is None or activation_comment_id is None or activation_sha256 is None:
         return None
@@ -398,11 +407,45 @@ class ReviewItem:
 
 
 @dataclass(frozen=True)
+class VerifiedReviewEvidence:
+    item_id: str
+    reference: str
+    evidence_kind: str
+    sha256: str
+    head_sha40: str
+
+    def validate(self, subject: BootstrapSubject) -> "VerifiedReviewEvidence":
+        subject.validate()
+        _text(self.item_id, "Review evidence item ID")
+        _text(self.reference, "Review evidence reference")
+        if self.evidence_kind not in {"git-blob", "workflow-run", "pull-request", "issue-comment"}:
+            raise GatePolicyError("Review evidence artifact kind is unsupported")
+        _sha(self.sha256, "Review evidence artifact digest")
+        _sha(self.head_sha40, "Review evidence subject HEAD", SHA40)
+        if self.head_sha40 != subject.head_sha40:
+            raise GatePolicyError("Review evidence artifact is not bound to the current PR HEAD")
+        return self
+
+    def as_dict(self) -> dict[str, str]:
+        return {"evidence_kind": self.evidence_kind, "head_sha40": self.head_sha40,
+                "item_id": self.item_id, "reference": self.reference, "sha256": self.sha256}
+
+    @classmethod
+    def from_dict(cls, value: Any, subject: BootstrapSubject) -> "VerifiedReviewEvidence":
+        expected = {"evidence_kind", "head_sha40", "item_id", "reference", "sha256"}
+        if not isinstance(value, dict) or set(value) != expected:
+            raise GatePolicyError("Verified review evidence record is malformed")
+        return cls(value["item_id"], value["reference"], value["evidence_kind"],
+                   value["sha256"], value["head_sha40"]).validate(subject)
+
+
+@dataclass(frozen=True)
 class BootstrapSelfReview:
     subject: BootstrapSubject
     context_id: str
     items: tuple[ReviewItem, ...]
     comment_id: int
+    verified_evidence: tuple[VerifiedReviewEvidence, ...] = ()
 
     def validate(self, required_ids: Iterable[str]) -> "BootstrapSelfReview":
         self.subject.validate()
@@ -420,6 +463,18 @@ class BootstrapSelfReview:
             raise GatePolicyError("Self-review must cover every ADC requirement and checklist item exactly")
         if any(item.status != "PASS" for item in self.items):
             raise GatePolicyError("Self-review has a non-PASS requirement or checklist item")
+        if type(self.verified_evidence) is not tuple:
+            raise GatePolicyError("Self-review verified evidence must be a tuple")
+        verified: set[tuple[str, str]] = set()
+        for artifact in self.verified_evidence:
+            artifact.validate(self.subject)
+            pair = (artifact.item_id, artifact.reference)
+            if pair in verified:
+                raise GatePolicyError("Self-review has duplicate verified evidence references")
+            verified.add(pair)
+        required_evidence = {(item.item_id, ref) for item in self.items for ref in item.evidence_refs}
+        if not required_evidence or not required_evidence.issubset(verified):
+            raise GatePolicyError("Self-review references include artifacts that were not read back")
         return self
 
     def payload(self) -> dict[str, Any]:
@@ -459,9 +514,13 @@ class BootstrapIndependentReview:
     implementation_context_id: str
     context_artifact_ref: str
     context_artifact_sha256: str
+    separate_context_confirmed: bool
     findings: tuple[ReviewFinding, ...]
     verdict: str
     comment_id: int
+    context_artifact_verified: bool = False
+    context_artifact_comment_id: int | None = None
+    verified_evidence: tuple[VerifiedReviewEvidence, ...] = ()
 
     def validate(self) -> "BootstrapIndependentReview":
         self.subject.validate()
@@ -469,6 +528,11 @@ class BootstrapIndependentReview:
             raise GatePolicyError("Independent review must come from a separate context")
         _text(self.context_artifact_ref, "Independent review context artifact")
         _sha(self.context_artifact_sha256, "Independent review context artifact digest")
+        if type(self.separate_context_confirmed) is not bool or not self.separate_context_confirmed:
+            raise GatePolicyError("Independent review requires explicit separate-context execution confirmation")
+        if self.context_artifact_verified is not True:
+            raise GatePolicyError("Independent review context artifact has not been read back and verified")
+        _positive(self.context_artifact_comment_id, "Independent context artifact Comment ID")
         _positive(self.comment_id, "Independent review Comment ID")
         if self.verdict not in {"PASS", "CONCERNS", "FAIL"}:
             raise GatePolicyError("Independent review verdict is invalid")
@@ -478,6 +542,14 @@ class BootstrapIndependentReview:
             finding.validate()
         if len({finding.finding_id for finding in self.findings}) != len(self.findings):
             raise GatePolicyError("Independent review has duplicate finding IDs")
+        if type(self.verified_evidence) is not tuple:
+            raise GatePolicyError("Independent-review verified evidence must be a tuple")
+        for artifact in self.verified_evidence:
+            artifact.validate(self.subject)
+        required_evidence = {finding.evidence_ref for finding in self.findings}
+        verified_refs = {artifact.reference for artifact in self.verified_evidence}
+        if required_evidence and not required_evidence.issubset(verified_refs):
+            raise GatePolicyError("Independent-review findings contain evidence refs that were not read back")
         unresolved_ab = [finding for finding in self.findings if finding.severity in {"A", "B"} and not finding.resolved]
         if unresolved_ab or self.verdict != "PASS":
             raise GatePolicyError("Independent review is not PASS or has unresolved A/B findings")
@@ -491,6 +563,7 @@ class BootstrapIndependentReview:
                               "severity": item.severity} for item in self.findings],
                 "implementation_context_id": self.implementation_context_id,
                 "reviewer_context_id": self.reviewer_context_id, "schema": "PASES_BOOTSTRAP_INDEPENDENT_REVIEW_V1",
+                "separate_context_confirmed": self.separate_context_confirmed,
                 "subject": self.subject.as_dict(), "verdict": self.verdict}
 
     @property
@@ -500,6 +573,41 @@ class BootstrapIndependentReview:
     def comment_body(self) -> str:
         value = {**self.payload(), "review_sha256": self.sha256}
         return f"<!-- PASES_BOOTSTRAP_INDEPENDENT_REVIEW_V1\n{_canonical(value).decode('utf-8')}\n-->"
+
+
+@dataclass(frozen=True)
+class BootstrapReviewContextArtifact:
+    subject: BootstrapSubject
+    reviewer_context_id: str
+    separate_context_confirmed: bool
+    report: str
+    comment_id: int
+
+    def validate(self, *, expected_subject: BootstrapSubject,
+                 expected_reviewer_context_id: str) -> "BootstrapReviewContextArtifact":
+        self.subject.validate()
+        if self.subject != expected_subject:
+            raise GatePolicyError("Independent context artifact belongs to a different Bootstrap subject")
+        if _text(self.reviewer_context_id, "Reviewer context ID") != expected_reviewer_context_id:
+            raise GatePolicyError("Independent context artifact reviewer ID differs from its review record")
+        if self.separate_context_confirmed is not True:
+            raise GatePolicyError("Independent context artifact does not confirm a separate review execution")
+        _text(self.report, "Independent context artifact report")
+        _positive(self.comment_id, "Independent context artifact Comment ID")
+        return self
+
+    def payload(self) -> dict[str, Any]:
+        return {"report": self.report, "reviewer_context_id": self.reviewer_context_id,
+                "schema": "PASES_BOOTSTRAP_INDEPENDENT_CONTEXT_V1",
+                "separate_context_confirmed": self.separate_context_confirmed,
+                "subject": self.subject.as_dict()}
+
+    def comment_body(self) -> str:
+        return f"<!-- PASES_BOOTSTRAP_INDEPENDENT_CONTEXT_V1\n{_canonical(self.payload()).decode('utf-8')}\n-->"
+
+    @property
+    def sha256(self) -> str:
+        return hashlib.sha256(self.comment_body().encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -543,6 +651,10 @@ class BootstrapResult:
     independent_review_comment_id: int | None
     unverified_hosts: tuple[str, ...]
     bootstrap_policy_sha256: str | None = None
+    verified_review_evidence: tuple[VerifiedReviewEvidence, ...] = ()
+    independent_context_artifact_comment_id: int | None = None
+    independent_context_artifact_sha256: str | None = None
+    separate_context_confirmed: bool = False
 
     def validate(self) -> "BootstrapResult":
         if self.status not in {"BOOTSTRAP_REVIEW_READY", "BOOTSTRAP_BLOCKED"}:
@@ -571,6 +683,19 @@ class BootstrapResult:
             _positive(self.independent_review_comment_id, "Independent-review Comment ID")
         if self.bootstrap_policy_sha256 is not None:
             _sha(self.bootstrap_policy_sha256, "Bootstrap policy digest")
+        if type(self.verified_review_evidence) is not tuple:
+            raise GatePolicyError("Bootstrap verified review evidence is invalid")
+        for artifact in self.verified_review_evidence:
+            artifact.validate(self.subject)
+        if self.independent_context_artifact_comment_id is not None:
+            _positive(self.independent_context_artifact_comment_id, "Independent context artifact Comment ID")
+        if self.independent_context_artifact_sha256 is not None:
+            _sha(self.independent_context_artifact_sha256, "Independent context artifact digest")
+        if type(self.separate_context_confirmed) is not bool:
+            raise GatePolicyError("Independent context confirmation flag is invalid")
+        if ((self.independent_context_artifact_comment_id is None)
+                != (self.independent_context_artifact_sha256 is None)):
+            raise GatePolicyError("Independent context artifact ID and digest must be paired")
         if (type(self.unverified_hosts) is not tuple or not self.unverified_hosts
                 or any(not isinstance(host, str) or not host.strip() for host in self.unverified_hosts)):
             raise GatePolicyError("Unverified host disclosure is invalid")
@@ -584,7 +709,9 @@ class BootstrapResult:
                 or self.workflow_run_id is None
                 or self.workflow_status != "completed" or self.workflow_conclusion != "success"
                 or self.self_review_comment_id is None or self.independent_review_comment_id is None
-                or self.bootstrap_policy_sha256 is None):
+                or self.bootstrap_policy_sha256 is None or not self.verified_review_evidence
+                or self.independent_context_artifact_comment_id is None
+                or self.independent_context_artifact_sha256 is None or not self.separate_context_confirmed):
             raise GatePolicyError("Bootstrap REVIEW_READY record is missing successful evidence")
         if (self.status == "BOOTSTRAP_REVIEW_READY") != (not self.reasons):
             raise GatePolicyError("Bootstrap status and reasons disagree")
@@ -605,6 +732,11 @@ class BootstrapResult:
                 "status": self.status, "subject": self.subject.as_dict(), "unverified_hosts": list(self.unverified_hosts),
                 "ordinary_pases_readiness": "NOT_EVALUATED",
                 "bootstrap_policy_sha256": self.bootstrap_policy_sha256,
+                "verified_review_evidence": [row.as_dict() for row in self.verified_review_evidence],
+                "independent_context_artifact_comment_id": self.independent_context_artifact_comment_id,
+                "independent_context_artifact_sha256": self.independent_context_artifact_sha256,
+                "separate_context_confirmed": self.separate_context_confirmed,
+                "independence_assurance": INDEPENDENCE_ASSURANCE,
                 "workflow_conclusion": self.workflow_conclusion, "workflow_run_id": self.workflow_run_id,
                 "workflow_status": self.workflow_status}
 
@@ -615,10 +747,19 @@ class BootstrapResult:
                     "self_review_comment_id", "status", "subject", "unverified_hosts", "workflow_conclusion",
                     "workflow_run_id", "workflow_status"}
         expected_with_policy = expected | {"bootstrap_policy_sha256"}
-        if (not isinstance(value, dict) or frozenset(value) not in {frozenset(expected), frozenset(expected_with_policy)}
+        evidence_fields = {"verified_review_evidence", "independent_context_artifact_comment_id",
+                           "independent_context_artifact_sha256", "separate_context_confirmed",
+                           "independence_assurance"}
+        accepted_shapes = {frozenset(expected), frozenset(expected_with_policy),
+                           frozenset(expected | evidence_fields),
+                           frozenset(expected_with_policy | evidence_fields)}
+        if (not isinstance(value, dict) or frozenset(value) not in accepted_shapes
                 or value.get("schema") != "PASES_BOOTSTRAP_REVIEW_V1"
                 or value.get("ordinary_pases_readiness") != "NOT_EVALUATED"):
             raise GatePolicyError("Bootstrap result has unknown schema or fields")
+        has_evidence_fields = evidence_fields.issubset(value)
+        if has_evidence_fields and value.get("independence_assurance") != INDEPENDENCE_ASSURANCE:
+            raise GatePolicyError("Bootstrap independence assurance is missing or changed")
         if (value.get("can_request_final_user_review") is not (value.get("status") == "BOOTSTRAP_REVIEW_READY")
                 or not isinstance(value.get("reasons"), list)
                 or not isinstance(value.get("local_checks"), list)
@@ -637,11 +778,21 @@ class BootstrapResult:
             if not isinstance(item, dict) or set(item) != {"check_run_id", "conclusion", "name", "status"}:
                 raise GatePolicyError("Bootstrap required job record is malformed")
             jobs.append((item["name"], item["check_run_id"], item["status"], item["conclusion"]))
+        verified: list[VerifiedReviewEvidence] = []
+        if has_evidence_fields:
+            if (not isinstance(value["verified_review_evidence"], list)
+                    or type(value["separate_context_confirmed"]) is not bool):
+                raise GatePolicyError("Bootstrap review artifact evidence fields are malformed")
+            verified = [VerifiedReviewEvidence.from_dict(row, BootstrapSubject.from_dict(value["subject"]))
+                        for row in value["verified_review_evidence"]]
         result = cls(value["status"], BootstrapSubject.from_dict(value["subject"]), tuple(value["reasons"]),
                      tuple(checks), tuple(jobs), value["workflow_run_id"], value["workflow_status"],
                      value["workflow_conclusion"], value["self_review_comment_id"],
                      value["independent_review_comment_id"], tuple(value["unverified_hosts"]),
-                     value.get("bootstrap_policy_sha256"))
+                     value.get("bootstrap_policy_sha256"), tuple(verified),
+                     value.get("independent_context_artifact_comment_id"),
+                     value.get("independent_context_artifact_sha256"),
+                     value.get("separate_context_confirmed", False))
         return result.validate()
 
     @property
@@ -816,11 +967,25 @@ def evaluate_bootstrap(subject: BootstrapSubject, *, pr: dict[str, Any], respons
             or any(not isinstance(host, str) or not host.strip() for host in unverified_hosts)):
         reasons.append("unverified-host disclosure is invalid")
     status = "BOOTSTRAP_REVIEW_READY" if not reasons else "BOOTSTRAP_BLOCKED"
+    candidate_evidence = tuple(
+        (self_review.verified_evidence if self_review is not None else ())
+        + (independent_review.verified_evidence if independent_review is not None else ())
+    )
+    verified_evidence = tuple(
+        artifact for artifact in candidate_evidence
+        if isinstance(artifact, VerifiedReviewEvidence) and artifact.head_sha40 == subject.head_sha40
+    )
+    context_verified = (independent_review is not None and independent_review.context_artifact_verified is True
+                        and independent_review.context_artifact_comment_id is not None
+                        and independent_review.separate_context_confirmed is True)
     return BootstrapResult(status, subject, tuple(dict.fromkeys(reasons)), local_checks, tuple(job_results),
                            workflow_run_id, workflow_status, workflow_conclusion,
                            self_review.comment_id if self_review else None,
                            independent_review.comment_id if independent_review else None,
-                           unverified_hosts, bootstrap_policy_sha256).validate()
+                           unverified_hosts, bootstrap_policy_sha256, verified_evidence,
+                           (independent_review.context_artifact_comment_id if context_verified else None),
+                           (independent_review.context_artifact_sha256 if context_verified else None),
+                           context_verified).validate()
 
 
 def _decode_record_comment(body: Any, sentinel: str) -> dict[str, Any]:
@@ -861,7 +1026,7 @@ def parse_self_review_comment(body: Any, comment_id: int) -> BootstrapSelfReview
 def parse_independent_review_comment(body: Any, comment_id: int) -> BootstrapIndependentReview:
     value = _decode_record_comment(body, "PASES_BOOTSTRAP_INDEPENDENT_REVIEW_V1")
     expected = {"context_artifact_ref", "context_artifact_sha256", "findings", "implementation_context_id",
-                "review_sha256", "reviewer_context_id", "schema", "subject", "verdict"}
+                "review_sha256", "reviewer_context_id", "schema", "separate_context_confirmed", "subject", "verdict"}
     if set(value) != expected or value.get("schema") != "PASES_BOOTSTRAP_INDEPENDENT_REVIEW_V1":
         raise GatePolicyError("Bootstrap independent-review record has unknown fields")
     digest = value["review_sha256"]
@@ -880,8 +1045,19 @@ def parse_independent_review_comment(body: Any, comment_id: int) -> BootstrapInd
     return BootstrapIndependentReview(BootstrapSubject.from_dict(value["subject"]),
                                       value["reviewer_context_id"], value["implementation_context_id"],
                                       value["context_artifact_ref"], value["context_artifact_sha256"],
-                                      tuple(findings), value["verdict"],
+                                      value["separate_context_confirmed"], tuple(findings), value["verdict"],
                                       _positive(comment_id, "Independent-review Comment ID"))
+
+
+def parse_independent_context_artifact(body: Any, comment_id: int) -> BootstrapReviewContextArtifact:
+    value = _decode_record_comment(body, "PASES_BOOTSTRAP_INDEPENDENT_CONTEXT_V1")
+    expected = {"report", "reviewer_context_id", "schema", "separate_context_confirmed", "subject"}
+    if set(value) != expected or value.get("schema") != "PASES_BOOTSTRAP_INDEPENDENT_CONTEXT_V1":
+        raise GatePolicyError("Independent context artifact has unknown fields")
+    return BootstrapReviewContextArtifact(
+        BootstrapSubject.from_dict(value["subject"]), value["reviewer_context_id"],
+        value["separate_context_confirmed"], value["report"],
+        _positive(comment_id, "Independent context artifact Comment ID"))
 
 
 def read_review_comment(github: GitHub, issue_number: int, comment_id: int, sentinel: str) -> dict[str, Any]:
@@ -893,10 +1069,140 @@ def read_review_comment(github: GitHub, issue_number: int, comment_id: int, sent
         raise GatePolicyError("review comment readback ID does not match the requested ID")
     issue_url = comment.get("issue_url")
     expected_suffix = f"/repos/{github.repo}/issues/{issue_number}"
-    if not isinstance(issue_url, str) or not issue_url.endswith(expected_suffix):
+    if not isinstance(issue_url, str) or not issue_url.casefold().endswith(expected_suffix.casefold()):
         raise GatePolicyError("review evidence comment belongs to a different Issue")
     _decode_record_comment(comment.get("body"), sentinel)
     return comment
+
+
+def _github_reference_parts(reference: str, subject: BootstrapSubject) -> tuple[list[str], str]:
+    try:
+        parsed = urlparse(reference)
+        port = parsed.port
+    except (TypeError, ValueError) as exc:
+        raise GatePolicyError("review evidence reference is not a valid GitHub URL") from exc
+    if (parsed.scheme != "https" or parsed.netloc.casefold() != "github.com" or parsed.query
+            or parsed.username is not None or parsed.password is not None or port is not None):
+        raise GatePolicyError("review evidence must use a canonical HTTPS GitHub reference")
+    parts = [unquote(part) for part in parsed.path.split("/") if part]
+    if (len(parts) < 2 or f"{parts[0]}/{parts[1]}".casefold() != subject.repository.casefold()
+            or any(part in {".", ".."} or "\x00" in part for part in parts)):
+        raise GatePolicyError("review evidence reference repository/path is invalid")
+    return parts[2:], parsed.fragment
+
+
+def _issue_comment_artifact(github: GitHub, subject: BootstrapSubject, reference: str,
+                            *, exclude_comment_id: int | None = None) -> tuple[int, str]:
+    suffix, fragment = _github_reference_parts(reference, subject)
+    match = re.fullmatch(r"issuecomment-([1-9][0-9]{0,19})", fragment)
+    if (len(suffix) != 2 or suffix[0] != "issues" or suffix[1] != str(subject.issue_number)
+            or match is None):
+        raise GatePolicyError("review Issue evidence must reference a comment on the exact subject Issue")
+    comment_id = int(match.group(1))
+    if comment_id == exclude_comment_id:
+        raise GatePolicyError("review evidence cannot cite its own review comment as its artifact")
+    try:
+        comment = github.issue_comment(subject.issue_number, comment_id)
+    except GitHubError as exc:
+        raise GatePolicyError("review Issue comment artifact could not be read back") from exc
+    issue_url = comment.get("issue_url")
+    expected_suffix = f"/repos/{subject.repository}/issues/{subject.issue_number}"
+    if (comment.get("id") != comment_id or not isinstance(comment.get("body"), str)
+            or not isinstance(issue_url, str) or not issue_url.casefold().endswith(expected_suffix.casefold())):
+        raise GatePolicyError("review Issue comment artifact identity/readback is invalid")
+    if subject.head_sha40 not in comment["body"]:
+        raise GatePolicyError("review Issue comment artifact does not identify the current PR HEAD")
+    return comment_id, hashlib.sha256(comment["body"].encode("utf-8")).hexdigest()
+
+
+def verify_bootstrap_review_evidence(github: GitHub, subject: BootstrapSubject, *,
+                                     self_review: BootstrapSelfReview | None,
+                                     independent_review: BootstrapIndependentReview | None,
+                                     pr: dict[str, Any], workflow_runs: list[dict[str, Any]]) -> tuple[VerifiedReviewEvidence, ...]:
+    """Read every review citation and bind its digest to the exact Bootstrap HEAD."""
+    subject.validate()
+    rows: list[VerifiedReviewEvidence] = []
+    sources: list[tuple[str, ReviewItem | ReviewFinding, int | None]] = []
+    if self_review is not None:
+        sources.extend((item.item_id, item, self_review.comment_id) for item in self_review.items)
+    if independent_review is not None:
+        sources.extend((finding.finding_id, finding, independent_review.comment_id)
+                       for finding in independent_review.findings)
+    for item_id, item, review_comment_id in sources:
+        refs = item.evidence_refs if isinstance(item, ReviewItem) else (item.evidence_ref,)
+        for reference in refs:
+            suffix, fragment = _github_reference_parts(reference, subject)
+            kind: str
+            digest: str
+            if len(suffix) >= 3 and suffix[0] == "blob":
+                ref_sha = suffix[1]
+                path = "/".join(suffix[2:])
+                if ref_sha != subject.head_sha40:
+                    raise GatePolicyError("review source citation is not pinned to the current PR HEAD")
+                try:
+                    content = github.content_at_ref(path, ref_sha)
+                except GitHubError as exc:
+                    raise GatePolicyError("review source artifact could not be read at the current PR HEAD") from exc
+                digest, kind = hashlib.sha256(content).hexdigest(), "git-blob"
+            elif len(suffix) == 3 and suffix[0] == "actions" and suffix[1] == "runs" and not fragment:
+                if not re.fullmatch(r"[1-9][0-9]*", suffix[2]):
+                    raise GatePolicyError("review Actions evidence run ID is invalid")
+                run_id = int(suffix[2])
+                matches = [run for run in workflow_runs if isinstance(run, dict) and run.get("id") == run_id]
+                if len(matches) != 1:
+                    raise GatePolicyError("review Actions evidence run is absent or ambiguous")
+                run = matches[0]
+                head_repo = run.get("head_repository")
+                prs = run.get("pull_requests")
+                if (run.get("head_sha") != subject.head_sha40 or run.get("status") != "completed"
+                        or run.get("conclusion") != "success" or run.get("event") != "pull_request"
+                        or run.get("path") != ".github/workflows/ci.yml"
+                        or run.get("head_branch") != subject.head_ref
+                        or not isinstance(head_repo, dict)
+                        or str(head_repo.get("full_name", "")).casefold() != subject.repository.casefold()
+                        or not isinstance(prs, list)
+                        or not any(isinstance(row, dict) and row.get("number") == subject.pr_number for row in prs)):
+                    raise GatePolicyError("review Actions evidence run is not successful for the exact subject")
+                digest, kind = hashlib.sha256(_canonical(run)).hexdigest(), "workflow-run"
+            elif len(suffix) in {2, 3} and suffix[0] == "pull" and not fragment:
+                if suffix[1] != str(subject.pr_number) or (len(suffix) == 3 and suffix[2] != "files"):
+                    raise GatePolicyError("review PR evidence does not identify the current PR")
+                snapshot = {key: pr.get(key) for key in ("number", "state", "draft", "body", "base", "head")}
+                base, head = snapshot.get("base"), snapshot.get("head")
+                if (snapshot.get("number") != subject.pr_number or not isinstance(base, dict)
+                        or not isinstance(head, dict) or head.get("sha") != subject.head_sha40
+                        or (base.get("ref"), base.get("sha"), head.get("ref"))
+                        != (subject.base_ref, subject.base_sha40, subject.head_ref)):
+                    raise GatePolicyError("review PR evidence readback is mismatched")
+                digest, kind = hashlib.sha256(_canonical(snapshot)).hexdigest(), "pull-request"
+            elif len(suffix) == 2 and suffix[0] == "issues":
+                _comment_id, digest = _issue_comment_artifact(
+                    github, subject, reference, exclude_comment_id=review_comment_id)
+                kind = "issue-comment"
+            else:
+                raise GatePolicyError("review evidence reference must identify a pinned source, current PR, CI run, or Issue comment")
+            rows.append(VerifiedReviewEvidence(item_id, reference, kind, digest, subject.head_sha40).validate(subject))
+    return tuple(rows)
+
+
+def verify_independent_context_artifact(github: GitHub, subject: BootstrapSubject,
+                                        review: BootstrapIndependentReview) -> BootstrapIndependentReview:
+    """Read the separate review artifact; confirmation is an explicit reviewer attestation, not host proof."""
+    if review.subject != subject:
+        raise GatePolicyError("Independent context artifact is for a different Bootstrap subject")
+    comment_id, actual_digest = _issue_comment_artifact(
+        github, subject, review.context_artifact_ref, exclude_comment_id=review.comment_id)
+    if actual_digest != review.context_artifact_sha256:
+        raise GatePolicyError("Independent context artifact content digest does not match its review record")
+    try:
+        comment = github.issue_comment(subject.issue_number, comment_id)
+    except GitHubError as exc:
+        raise GatePolicyError("Independent context artifact readback failed") from exc
+    artifact = parse_independent_context_artifact(comment.get("body"), comment_id)
+    artifact.validate(expected_subject=subject, expected_reviewer_context_id=review.reviewer_context_id)
+    if review.separate_context_confirmed is not True:
+        raise GatePolicyError("Independent review must explicitly confirm separate-context execution")
+    return replace(review, context_artifact_verified=True, context_artifact_comment_id=comment_id)
 
 
 def read_bootstrap_evidence(github: GitHub, issue_number: int, comment_id: int) -> dict[str, Any]:
@@ -1234,7 +1540,7 @@ def current_checkout_subject(root: Path, subject: BootstrapSubject) -> None:
     try:
         head = run_git(root, "rev-parse", "HEAD")
         branch = run_git(root, "symbolic-ref", "--short", "HEAD")
-        status = run_git(root, "status", "--porcelain")
+        status = run_git(root, "status", "--porcelain=v1", "--untracked-files=all")
     except GitError as exc:
         raise GatePolicyError(f"local Git readback failed: {exc}") from exc
     if head != subject.head_sha40:
@@ -1243,3 +1549,11 @@ def current_checkout_subject(root: Path, subject: BootstrapSubject) -> None:
         raise GatePolicyError("local checkout branch differs from current PR head branch")
     if status:
         raise GatePolicyError("local checkout is not clean; Bootstrap checks would include uncommitted changes")
+
+
+def run_local_bootstrap_checks_bound(root: Path, subject: BootstrapSubject) -> tuple[LocalCheck, ...]:
+    """Run checks only while the exact target branch remains a clean checkout."""
+    current_checkout_subject(root, subject)
+    results = run_local_bootstrap_checks(root)
+    current_checkout_subject(root, subject)
+    return results

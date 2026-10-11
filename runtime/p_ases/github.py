@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import re
 import subprocess
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 
 class GitHubError(RuntimeError):
@@ -242,6 +244,30 @@ class GitHub:
         if not isinstance(result, dict):
             raise GitHubError("GitHub Issue comment response must be an object")
         return result
+
+    def content_at_ref(self, path: str, ref: str) -> bytes:
+        """Read one regular repository file at an exact commit and verify its Git blob ID."""
+        if (not isinstance(path, str) or not path or path.startswith("/")
+                or any(part in {"", ".", ".."} for part in path.split("/"))
+                or any(char in path for char in "\\\x00\r\n?#:")):
+            raise GitHubError("evidence content path is invalid")
+        if not isinstance(ref, str) or not re.fullmatch(r"[0-9a-f]{40}", ref):
+            raise GitHubError("evidence content ref must be a full commit SHA")
+        endpoint = f"{self.prefix}/contents/{quote(path, safe='/')}?ref={ref}"
+        result = self.request("GET", endpoint)
+        if (not isinstance(result, dict) or result.get("path") != path or result.get("type") != "file"
+                or result.get("encoding") != "base64" or not isinstance(result.get("content"), str)
+                or not isinstance(result.get("sha"), str) or not re.fullmatch(r"[0-9a-f]{40}", result["sha"])):
+            raise GitHubError("evidence content readback is incomplete or not a regular file")
+        try:
+            encoded = re.sub(r"\s+", "", result["content"])
+            content = base64.b64decode(encoded, validate=True)
+        except (ValueError, base64.binascii.Error) as exc:
+            raise GitHubError("evidence content encoding is invalid") from exc
+        git_blob_sha = hashlib.sha1(b"blob " + str(len(content)).encode("ascii") + b"\x00" + content).hexdigest()
+        if git_blob_sha != result["sha"]:
+            raise GitHubError("evidence content does not match its Git blob ID")
+        return content
 
     def pull_request(self, number: int) -> dict[str, Any]:
         """Read the current Pull Request resource, including base/head repository identities."""

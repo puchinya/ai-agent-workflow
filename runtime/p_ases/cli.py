@@ -9,6 +9,7 @@ import os
 import re
 import sys
 import tempfile
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 from typing import Any
@@ -25,7 +26,7 @@ from .gate_policy import (
     GatePolicyError, bootstrap_policy_digest, choose_gate_for_new_issue, current_checkout_subject,
     evaluate_bootstrap, parse_independent_review_comment, parse_self_review_comment,
     pin_gate_selection, publish_immutable_record, read_bootstrap_adc, read_bootstrap_evidence, read_review_comment,
-    run_local_bootstrap_checks,
+    run_local_bootstrap_checks_bound, verify_bootstrap_review_evidence, verify_independent_context_artifact,
 )
 from .work import (
     WorkError, bind_work, ensure_branch, ensure_pull_request, execution_binding_path,
@@ -1129,8 +1130,7 @@ def _delivery_bootstrap_check(args: argparse.Namespace, repository: str, root: P
         reasons.append(f"current child ADC approval state is {bootstrap_adc.pointer.state}; explicit approved state is required")
 
     try:
-        current_checkout_subject(root, subject)
-        local_checks = run_local_bootstrap_checks(root)
+        local_checks = run_local_bootstrap_checks_bound(root, subject)
     except (GatePolicyError, OSError) as exc:
         local_checks = ()
         reasons.append(f"local exact-head verification failed: {exc}")
@@ -1165,6 +1165,30 @@ def _delivery_bootstrap_check(args: argparse.Namespace, repository: str, root: P
             profile = load_profile(root)
         except ProfileError:
             profile = None
+
+    verified_review_evidence = ()
+    try:
+        if independent_review is not None:
+            independent_review = verify_independent_context_artifact(github, subject, independent_review)
+        verified_review_evidence = verify_bootstrap_review_evidence(
+            github, subject, self_review=self_review, independent_review=independent_review,
+            pr=pr, workflow_runs=workflow_runs)
+        if self_review is not None:
+            self_refs = {(item.item_id, ref) for item in self_review.items for ref in item.evidence_refs}
+            self_review = replace(self_review, verified_evidence=tuple(
+                item for item in verified_review_evidence if (item.item_id, item.reference) in self_refs))
+        if independent_review is not None:
+            finding_refs = {(item.finding_id, item.evidence_ref) for item in independent_review.findings}
+            independent_review = replace(independent_review, verified_evidence=tuple(
+                item for item in verified_review_evidence if (item.item_id, item.reference) in finding_refs))
+    except (GatePolicyError, GitHubError) as exc:
+        reasons.append(f"Bootstrap review artifact readback failed: {exc}")
+
+    # Recheck after local and GitHub verification; a checkout change invalidates every result.
+    try:
+        current_checkout_subject(root, subject)
+    except GatePolicyError as exc:
+        reasons.append(f"local checkout changed during Bootstrap verification: {exc}")
     required_names = tuple(name for name, _app_id in profile.required_checks) if profile else ()
     checklist_body = bootstrap_adc.contract.section("reviewer_checklist")
     checklist_lines = [line for line in checklist_body.splitlines() if line.strip()]
@@ -1182,15 +1206,13 @@ def _delivery_bootstrap_check(args: argparse.Namespace, repository: str, root: P
         self_review=self_review, independent_review=independent_review, unverified_hosts=unverified_hosts,
         bootstrap_policy_sha256=policy_sha256)
     if reasons:
-        result = BootstrapResult("BOOTSTRAP_BLOCKED", subject, tuple(dict.fromkeys(result.reasons + tuple(reasons))),
-                                 result.local_checks, result.required_jobs, result.workflow_run_id,
-                                 result.workflow_status, result.workflow_conclusion,
-                                 result.self_review_comment_id, result.independent_review_comment_id,
-                                 result.unverified_hosts, result.bootstrap_policy_sha256).validate()
+        result = replace(result, status="BOOTSTRAP_BLOCKED",
+                         reasons=tuple(dict.fromkeys(result.reasons + tuple(reasons)))).validate()
 
     # Re-read the immutable ADC and current PR after local commands and GitHub evidence collection.
     snapshot_stable = True
     try:
+        current_checkout_subject(root, subject)
         final_adc = read_bootstrap_adc(github, args.issue)
         final_pr = github.pull_request(args.pr)
         final_base, final_head = final_pr.get("base"), final_pr.get("head")
@@ -1202,16 +1224,14 @@ def _delivery_bootstrap_check(args: argparse.Namespace, repository: str, root: P
             raise GatePolicyError("ADC or PR identity changed during Bootstrap verification; evidence is stale")
     except (ADCError, GatePolicyError, GitHubError, AttributeError) as exc:
         snapshot_stable = False
-        result = BootstrapResult("BOOTSTRAP_BLOCKED", subject,
-                                 tuple(dict.fromkeys(result.reasons + (str(exc),))), result.local_checks,
-                                 result.required_jobs, result.workflow_run_id, result.workflow_status,
-                                 result.workflow_conclusion, result.self_review_comment_id,
-                                 result.independent_review_comment_id, result.unverified_hosts,
-                                 result.bootstrap_policy_sha256).validate()
+        result = replace(result, status="BOOTSTRAP_BLOCKED",
+                         reasons=tuple(dict.fromkeys(result.reasons + (str(exc),)))).validate()
 
     evidence_comment_id = None
     if snapshot_stable:
         try:
+            # Last local read immediately before publishing any READY record.
+            current_checkout_subject(root, subject)
             evidence_comment_id, _body = publish_immutable_record(
                 github, args.issue, "PASES_BOOTSTRAP_REVIEW_V1", result.payload())
             evidence_readback = read_bootstrap_evidence(github, args.issue, evidence_comment_id)
@@ -1222,6 +1242,18 @@ def _delivery_bootstrap_check(args: argparse.Namespace, repository: str, root: P
             if (final_adc.pointer != bootstrap_adc.pointer or final_pr.get("state") != "open"
                     or final_pr.get("draft") is not False or final_pr.get("head", {}).get("sha") != subject.head_sha40):
                 raise GatePolicyError("PR or ADC changed after Bootstrap evidence publication; current result is stale")
+            try:
+                current_checkout_subject(root, subject)
+            except GatePolicyError as checkout_exc:
+                # Append a newer BLOCKED observation if the checkout changed during publication.
+                result = replace(result, status="BOOTSTRAP_BLOCKED",
+                                 reasons=tuple(dict.fromkeys(result.reasons + (
+                                     f"local checkout changed during evidence publication: {checkout_exc}",)))).validate()
+                evidence_comment_id, _body = publish_immutable_record(
+                    github, args.issue, "PASES_BOOTSTRAP_REVIEW_V1", result.payload())
+                evidence_readback = read_bootstrap_evidence(github, args.issue, evidence_comment_id)
+                if evidence_readback != result.payload():
+                    raise GatePolicyError("post-publication blocked evidence readback does not match")
         except (ADCError, GatePolicyError, GitHubError, AttributeError) as exc:
             reasons = tuple(dict.fromkeys(result.reasons + (str(exc),)))
             _json({"status": "BOOTSTRAP_BLOCKED", "subject": subject.as_dict(), "reasons": list(reasons),
@@ -1652,7 +1684,7 @@ def _parser() -> argparse.ArgumentParser:
     bootstrap.add_argument("--self-review-comment", type=_positive_number,
                            help="exact Issue comment containing PASES_BOOTSTRAP_SELF_REVIEW_V1")
     bootstrap.add_argument("--independent-review-comment", type=_positive_number,
-                           help="exact Issue comment containing PASES_BOOTSTRAP_INDEPENDENT_REVIEW_V1")
+                           help="exact Issue comment containing PASES_BOOTSTRAP_INDEPENDENT_REVIEW_V1 and a separately read-back context artifact")
     bootstrap.add_argument("--unverified-host", action="append", default=[],
                            help="host/environment not verified; use 'none' when no host remains unverified")
     bootstrap.add_argument("--repo", help="repository owner/name; defaults to origin")

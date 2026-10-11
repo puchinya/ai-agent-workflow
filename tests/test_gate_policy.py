@@ -3,23 +3,29 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
+import unittest.mock
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases.gate_policy import (
-    ActivationRecord, BootstrapIndependentReview, BootstrapSelfReview, BootstrapSubject,
+    ActivationRecord, BootstrapIndependentReview, BootstrapReviewContextArtifact,
+    BootstrapSelfReview, BootstrapSubject, VerifiedReviewEvidence,
     GatePolicyError, LocalCheck, ReviewFinding, ReviewItem, evaluate_bootstrap,
     parse_independent_review_comment, parse_self_review_comment, publish_immutable_record, read_review_comment,
     read_bootstrap_adc, read_bootstrap_evidence, select_gate,
     pin_gate_selection, read_activation_record, _require_repository_owner_actor,
     _validate_activation_candidate, bootstrap_policy_digest, BootstrapResult,
+    verify_bootstrap_review_evidence, verify_independent_context_artifact,
+    run_local_bootstrap_checks_bound,
 )
+from p_ases.github import GitHubError
 
 
-REPO = "octo/repo"
+REPO = "puchinya/ai-agent-workflow"
 HEAD = "a" * 40
 BASE = "b" * 40
 ADC = "c" * 64
@@ -40,7 +46,7 @@ def local_checks():
 
 def minimal_adc_bytes():
     return ("# Agent Development Contract — test\n\n"
-            "Repository: octo/repo\nIssue: 27\nChild key: adc-core\n\n"
+            f"Repository: {REPO}\nIssue: 27\nChild key: adc-core\n\n"
             "## Issue\nA test child issue.\n\n"
             "## Scope\nValidate the legacy Bootstrap pointer.\n\n"
             "## Change Kind\nTesting only.\n\n"
@@ -59,7 +65,7 @@ def canonical(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-def activation_fixture(*, approval_author="octo", merged_by="octo", open_child=None):
+def activation_fixture(*, approval_author="puchinya", merged_by="puchinya", open_child=None):
     child_prs = tuple((issue, issue + 6, f"{issue:040x}") for issue in range(27, 33))
     expected_child_prs = [{"issue_number": issue, "pr_number": pr, "merge_sha40": sha}
                           for issue, pr, sha in child_prs]
@@ -148,20 +154,32 @@ def check_runs(names=("test-a", "test-b", "pull-request-metadata")):
             for index, name in enumerate(names)]
 
 
-def self_review(subj=None, items=None):
+def self_review(subj=None, items=None, verified=True):
     subj = subj or subject()
     rows = items or (
-        ReviewItem("CHECKLIST-001", "PASS", ("https://github.com/octo/repo/pull/33/files",)),
-        ReviewItem("CHECKLIST-002", "PASS", ("https://github.com/octo/repo/pull/33/files",)),
-        ReviewItem("REQ-08", "PASS", ("https://github.com/octo/repo/pull/33/files",)),
+        ReviewItem("CHECKLIST-001", "PASS", (f"https://github.com/{REPO}/blob/{subj.head_sha40}/runtime/p_ases/cli.py",
+                                              f"https://github.com/{REPO}/actions/runs/500")),
+        ReviewItem("CHECKLIST-002", "PASS", (f"https://github.com/{REPO}/blob/{subj.head_sha40}/runtime/p_ases/gate_policy.py",
+                                              f"https://github.com/{REPO}/actions/runs/500")),
+        ReviewItem("REQ-08", "PASS", (f"https://github.com/{REPO}/pull/33/files",)),
     )
-    return BootstrapSelfReview(subj, "implementation-context", tuple(rows), 200)
+    evidence = tuple(VerifiedReviewEvidence(item.item_id, ref,
+                                            "workflow-run" if "/actions/runs/" in ref else
+                                            "pull-request" if "/pull/" in ref else "git-blob",
+                                            "d" * 64, subj.head_sha40)
+                     for item in rows for ref in item.evidence_refs)
+    return BootstrapSelfReview(subj, "implementation-context", tuple(rows), 200,
+                               evidence if verified else ())
 
 
 def independent_review(subj=None, context="review-context", findings=(), verdict="PASS"):
+    subj = subj or subject()
+    artifact = BootstrapReviewContextArtifact(subj, context, True,
+                                             "Independent review executed in a separate context", 202)
+    digest = hashlib.sha256(artifact.comment_body().encode("utf-8")).hexdigest()
     return BootstrapIndependentReview(subj or subject(), context, "implementation-context",
-                                      "https://github.com/octo/repo/issues/27#issuecomment-201",
-                                      "e" * 64, tuple(findings), verdict, 201)
+                                      f"https://github.com/{REPO}/issues/{subj.issue_number}#issuecomment-202",
+                                      digest, True, tuple(findings), verdict, 201, True, 202)
 
 
 def evaluate(**overrides):
@@ -184,6 +202,19 @@ class BootstrapPolicyTests(unittest.TestCase):
         self.assertIsNone(select_gate(REPO, 33, selected_at="2026-10-11T00:00:00Z"))
         with self.assertRaises(GatePolicyError):
             subject(issue_number=33).validate()
+
+    def test_fixed_bootstrap_cohort_is_bound_to_repository_identity_case_insensitively(self):
+        upper = "PUCHINYA/AI-AGENT-WORKFLOW"
+        self.assertEqual(select_gate(upper, 27, selected_at="2026-10-11T00:00:00Z").policy_version,
+                         "bootstrap-legacy-v1")
+        self.assertEqual(subject(repository=upper).validate().repository, upper)
+        with self.assertRaisesRegex(GatePolicyError, "approved repository"):
+            select_gate("another-owner/another-repo", 27, selected_at="2026-10-11T00:00:00Z")
+        with self.assertRaisesRegex(GatePolicyError, "approved repository"):
+            type(select_gate(REPO, 27, selected_at="2026-10-11T00:00:00Z"))(
+                "another-owner/another-repo", 27, "bootstrap-legacy-v1", "2026-10-11T00:00:00Z").validate()
+        with self.assertRaisesRegex(GatePolicyError, "fixed cohort repository"):
+            subject(repository="another-owner/another-repo").validate()
 
     def test_activation_selects_normal_gate_only_for_work_started_after_activation(self):
         activation = ActivationRecord(
@@ -211,6 +242,9 @@ class BootstrapPolicyTests(unittest.TestCase):
         self.assertEqual(result.workflow_run_id, 500)
         self.assertEqual(result.payload()["schema"], "PASES_BOOTSTRAP_REVIEW_V1")
         self.assertIn("unverified_hosts", result.payload())
+        self.assertTrue(result.payload()["verified_review_evidence"])
+        self.assertEqual(result.payload()["independent_context_artifact_comment_id"], 202)
+        self.assertIn("not cryptographically verified", result.payload()["independence_assurance"])
 
     def test_bootstrap_policy_digest_is_a_full_sha256(self):
         self.assertRegex(bootstrap_policy_digest(), r"^[0-9a-f]{64}$")
@@ -282,6 +316,8 @@ class BootstrapPolicyTests(unittest.TestCase):
         wrong_subject = self_review(subj=subject(head_sha40="f" * 40))
         self.assertEqual(evaluate(self_review=wrong_subject).status, "BOOTSTRAP_BLOCKED")
         self.assertEqual(evaluate(self_review=None).status, "BOOTSTRAP_BLOCKED")
+        unverified = replace(self_review(), verified_evidence=())
+        self.assertEqual(evaluate(self_review=unverified).status, "BOOTSTRAP_BLOCKED")
 
     def test_independent_review_requires_distinct_context_and_zero_unresolved_ab(self):
         same_context = independent_review(context="implementation-context")
@@ -290,15 +326,28 @@ class BootstrapPolicyTests(unittest.TestCase):
         unresolved = independent_review(findings=(finding,), verdict="CONCERNS")
         self.assertEqual(evaluate(independent_review=unresolved).status, "BOOTSTRAP_BLOCKED")
         self.assertEqual(evaluate(independent_review=None).status, "BOOTSTRAP_BLOCKED")
+        unverified_context = replace(independent_review(), context_artifact_verified=False,
+                                     context_artifact_comment_id=None)
+        self.assertEqual(evaluate(independent_review=unverified_context).status, "BOOTSTRAP_BLOCKED")
+        unconfirmed = replace(independent_review(), separate_context_confirmed=False)
+        self.assertEqual(evaluate(independent_review=unconfirmed).status, "BOOTSTRAP_BLOCKED")
 
     def test_review_comment_payloads_are_canonical_and_digest_bound(self):
         self_body = self_review().comment_body()
         parsed_self = parse_self_review_comment(self_body, 200)
+        self.assertEqual(parsed_self.verified_evidence, ())
+        with self.assertRaisesRegex(GatePolicyError, "not read back"):
+            parsed_self.validate(("CHECKLIST-001", "CHECKLIST-002", "REQ-08"))
+        parsed_self = replace(parsed_self, verified_evidence=self_review().verified_evidence)
         parsed_self.validate(("CHECKLIST-001", "CHECKLIST-002", "REQ-08"))
         with self.assertRaises(GatePolicyError):
             parse_self_review_comment(self_body + " ", 200)
         independent = independent_review()
         parsed_independent = parse_independent_review_comment(independent.comment_body(), 201)
+        with self.assertRaisesRegex(GatePolicyError, "has not been read back"):
+            parsed_independent.validate()
+        parsed_independent = replace(parsed_independent, context_artifact_verified=True,
+                                     context_artifact_comment_id=202)
         parsed_independent.validate()
         with self.assertRaises(GatePolicyError):
             parse_self_review_comment("<!-- PASES_BOOTSTRAP_SELF_REVIEW_V1\n[]\n-->", 202)
@@ -363,7 +412,7 @@ class BootstrapPolicyTests(unittest.TestCase):
         self.assertIsNone(read_activation_record(FakeGitHub(), REPO))
 
     def test_activation_requires_repository_owner_for_explicit_approval_and_merges(self):
-        _require_repository_owner_actor({"login": "octo"}, REPO, "Activation approval")
+        _require_repository_owner_actor({"login": "puchinya"}, REPO, "Activation approval")
         with self.assertRaises(GatePolicyError):
             _require_repository_owner_actor({"login": "automation-bot"}, REPO, "Activation approval")
         with self.assertRaises(GatePolicyError):
@@ -421,6 +470,110 @@ class FakeGitHub:
 
     def issue_comment(self, issue_number, comment_id):
         return next(row for row in self.rows if row["id"] == comment_id)
+
+
+class ReviewArtifactGitHub(FakeGitHub):
+    def __init__(self):
+        super().__init__()
+        self.contents = {
+            (HEAD, "runtime/p_ases/cli.py"): b"cli artifact at exact head",
+            (HEAD, "runtime/p_ases/gate_policy.py"): b"gate artifact at exact head",
+        }
+
+    def content_at_ref(self, path, ref):
+        try:
+            return self.contents[(ref, path)]
+        except KeyError as exc:
+            raise GitHubError("not found") from exc
+
+
+class ReviewEvidenceVerificationTests(unittest.TestCase):
+    def _context(self, review):
+        artifact = BootstrapReviewContextArtifact(review.subject, review.reviewer_context_id, True,
+                                                 "Independent review executed in a separate context", 202)
+        return {"id": 202, "body": artifact.comment_body(),
+                "issue_url": f"https://api.github.com/repos/{REPO}/issues/{review.subject.issue_number}"}
+
+    def test_current_source_ci_and_pr_refs_are_read_back_and_head_bound(self):
+        github = ReviewArtifactGitHub()
+        raw_self = self_review(verified=False)
+        raw_independent = independent_review()
+        github.rows.append(self._context(raw_independent))
+        verified_independent = verify_independent_context_artifact(github, subject(), raw_independent)
+        evidence = verify_bootstrap_review_evidence(
+            github, subject(), self_review=raw_self, independent_review=verified_independent,
+            pr=pr_readback(), workflow_runs=[workflow_run()])
+        self.assertEqual(len(evidence), sum(len(item.evidence_refs) for item in raw_self.items))
+        verified_self = replace(raw_self, verified_evidence=evidence)
+        self.assertEqual(evaluate(self_review=verified_self, independent_review=verified_independent).status,
+                         "BOOTSTRAP_REVIEW_READY")
+        self.assertEqual({row.evidence_kind for row in evidence}, {"git-blob", "workflow-run", "pull-request"})
+
+    def test_missing_or_wrong_head_source_refs_cannot_be_used(self):
+        github = ReviewArtifactGitHub()
+        missing = self_review(verified=False, items=(ReviewItem(
+            "REQ-08", "PASS", (f"https://github.com/{REPO}/blob/{HEAD}/missing.md",)),))
+        with self.assertRaisesRegex(GatePolicyError, "could not be read"):
+            verify_bootstrap_review_evidence(github, subject(), self_review=missing,
+                                             independent_review=None, pr=pr_readback(),
+                                             workflow_runs=[workflow_run()])
+        stale_ref = f"https://github.com/{REPO}/blob/{'f' * 40}/runtime/p_ases/cli.py"
+        stale = self_review(verified=False, items=(ReviewItem("REQ-08", "PASS", (stale_ref,)),))
+        with self.assertRaisesRegex(GatePolicyError, "not pinned"):
+            verify_bootstrap_review_evidence(github, subject(), self_review=stale,
+                                             independent_review=None, pr=pr_readback(),
+                                             workflow_runs=[workflow_run()])
+
+    def test_independent_context_requires_existing_exact_subject_digest_and_attestation(self):
+        github = ReviewArtifactGitHub()
+        review = independent_review()
+        github.rows.append(self._context(review))
+        verified = verify_independent_context_artifact(github, subject(), review)
+        self.assertTrue(verified.context_artifact_verified)
+        self.assertEqual(verified.context_artifact_comment_id, 202)
+        altered = replace(review, context_artifact_sha256="e" * 64)
+        with self.assertRaisesRegex(GatePolicyError, "digest does not match"):
+            verify_independent_context_artifact(github, subject(), altered)
+        unconfirmed_artifact = BootstrapReviewContextArtifact(subject(), review.reviewer_context_id, False,
+                                                             "Separate session not confirmed", 202)
+        github.rows[0]["body"] = unconfirmed_artifact.comment_body()
+        altered = replace(review, context_artifact_sha256=hashlib.sha256(
+            github.rows[0]["body"].encode("utf-8")).hexdigest())
+        with self.assertRaisesRegex(GatePolicyError, "does not confirm"):
+            verify_independent_context_artifact(github, subject(), altered)
+
+
+class CheckoutRecheckTests(unittest.TestCase):
+    def test_checkout_mutations_during_local_checks_block(self):
+        mutations = (
+            ("tracked", {"status": " M runtime/p_ases/cli.py"}),
+            ("staged", {"status": "M  runtime/p_ases/cli.py"}),
+            ("untracked", {"status": "?? scratch.tmp"}),
+            ("head", {"head": "f" * 40}),
+            ("branch", {"branch": "other-branch"}),
+        )
+        for label, update in mutations:
+            with self.subTest(label=label):
+                state = {"head": HEAD, "branch": "pases/adc-core", "status": ""}
+
+                def git_stub(_root, *args):
+                    if args[0] == "rev-parse":
+                        return state["head"]
+                    if args[0] == "symbolic-ref":
+                        return state["branch"]
+                    if args[0] == "status":
+                        return state["status"]
+                    raise AssertionError(args)
+
+                def process_stub(_root):
+                    state.update(update)
+                    return local_checks()
+
+                with unittest.mock.patch("p_ases.gate_policy.run_git", side_effect=git_stub), \
+                        unittest.mock.patch("p_ases.gate_policy.run_local_bootstrap_checks",
+                                            side_effect=process_stub):
+                    with self.assertRaisesRegex(GatePolicyError, "HEAD|branch|not clean"):
+                        run_local_bootstrap_checks_bound(Path("/fake/repo"), subject())
 
 
 class ImmutableBootstrapRecordTests(unittest.TestCase):
