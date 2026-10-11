@@ -44,6 +44,29 @@ LEGACY_ADC_COMMENT = re.compile(r"(?m)^- child_adc_comment_id: `?([1-9][0-9]{0,1
 LEGACY_ADC_SHA = re.compile(r"(?m)^- child_adc_sha256: `?([0-9a-f]{64})`?[ \t]*$")
 LEGACY_ADC_URL = re.compile(r"(?m)^- child_adc_comment_url: (https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[1-9][0-9]*#issuecomment-[1-9][0-9]*)[ \t]*$")
 LEGACY_CHILD_KEY = re.compile(r"(?m)^- child_key: `?([A-Za-z0-9][A-Za-z0-9._-]{0,63})`?[ \t]*$")
+ADC_CHILD_KEY = re.compile(r"^Child key:[ \t]*`?([A-Za-z0-9][A-Za-z0-9._-]{0,63})`?[ \t]*$")
+
+
+def _adc_declared_child_key(content: bytes) -> str | None:
+    text = content.decode("utf-8", errors="strict")
+    fence: tuple[str, int] | None = None
+    matches: list[str] = []
+    for line in text.splitlines():
+        if fence is not None:
+            marker, length = fence
+            if re.match(rf"^ {{0,3}}{re.escape(marker)}{{{length},}}[ \t]*$", line):
+                fence = None
+            continue
+        fence_match = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+        if fence_match and (fence_match.group(1)[0] == "~" or "`" not in fence_match.group(2)):
+            fence = (fence_match.group(1)[0], len(fence_match.group(1)))
+            continue
+        if re.match(r"^ {0,3}##[ \t]+", line):
+            break
+        match = ADC_CHILD_KEY.fullmatch(line)
+        if match:
+            matches.append(match.group(1))
+    return matches[0] if len(matches) == 1 else None
 
 
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -180,7 +203,7 @@ def _read_legacy_bootstrap_adc(github: GitHub, issue_number: int) -> BootstrapAD
         if hashlib.sha256(content).hexdigest() != digest:
             raise GatePolicyError("legacy child ADC SHA-256 does not match its named comment")
         contract = parse_adc(content, github.repo, issue_number)
-        if contract.child_key != child_keys[0]:
+        if _adc_declared_child_key(content) != child_keys[0]:
             raise GatePolicyError("legacy child ADC key differs from the Issue's child_key")
         final_issue = github.issue(issue_number)
         if final_issue.get("body") != body:

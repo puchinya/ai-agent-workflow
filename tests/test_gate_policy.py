@@ -237,7 +237,7 @@ class BootstrapPolicyTests(unittest.TestCase):
             read_review_comment(github, 28, 200, "PASES_BOOTSTRAP_SELF_REVIEW_V1")
 
     def test_legacy_child_adc_is_read_back_without_inventing_approval(self):
-        content = minimal_adc_bytes()
+        content = minimal_adc_bytes().replace(b"Child key: adc-core", b"Child key: `adc-core`")
         digest = __import__("hashlib").sha256(content).hexdigest()
         comment_id = 500
         issue_body = ("Child of #26.\n\n- child_key: `adc-core`\n"
