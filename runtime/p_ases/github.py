@@ -89,6 +89,46 @@ class GitHub:
         number = _positive_int(number, "Issue number")
         return self._paginate(f"{self.prefix}/issues/{number}/comments")
 
+    def check_runs_for_ref(self, head_sha40: str) -> list[dict[str, Any]]:
+        """Read every Check Run for an exact commit SHA; never fall back to statuses."""
+        if not isinstance(head_sha40, str) or not re.fullmatch(r"[0-9a-f]{40}", head_sha40):
+            raise GitHubError("Check Runs ref must be a full lowercase commit SHA")
+        items: list[dict[str, Any]] = []
+        page = 1
+        total_count: int | None = None
+        while True:
+            result = self.request(
+                "GET",
+                f"{self.prefix}/commits/{head_sha40}/check-runs?filter=all&page={page}&per_page=100",
+            )
+            if not isinstance(result, dict):
+                raise GitHubError(f"GitHub Check Runs page {page} must be an object")
+            count = result.get("total_count")
+            runs = result.get("check_runs")
+            if (type(count) is not int or count < 0 or not isinstance(runs, list)
+                    or any(not isinstance(run, dict) for run in runs)):
+                raise GitHubError(f"GitHub Check Runs page {page} has an invalid response shape")
+            if total_count is None:
+                total_count = count
+            elif total_count != count:
+                raise GitHubError("GitHub Check Runs total_count changed during pagination")
+            for run in runs:
+                app = run.get("app")
+                if (type(run.get("id")) is not int or run["id"] < 1
+                        or not isinstance(run.get("name"), str) or not run["name"]
+                        or run.get("head_sha") != head_sha40
+                        or not isinstance(app, dict) or type(app.get("id")) is not int or app["id"] < 1):
+                    raise GitHubError(f"GitHub Check Runs page {page} contains incomplete identity/provenance")
+            items.extend(runs)
+            if len(runs) < 100:
+                if len(items) != total_count:
+                    raise GitHubError("GitHub Check Runs pagination count does not match total_count")
+                ids = [run["id"] for run in items]
+                if len(ids) != len(set(ids)):
+                    raise GitHubError("GitHub Check Runs pagination contains duplicate run IDs")
+                return items
+            page += 1
+
     def issues(self) -> list[dict[str, Any]]:
         return self._paginate(f"{self.prefix}/issues?state=all")
 
@@ -113,6 +153,14 @@ class GitHub:
         result = self.request("GET", f"{self.prefix}/issues/comments/{comment_id}")
         if not isinstance(result, dict):
             raise GitHubError("GitHub Issue comment response must be an object")
+        return result
+
+    def pull_request(self, number: int) -> dict[str, Any]:
+        """Read the current Pull Request resource, including base/head repository identities."""
+        number = _positive_int(number, "Pull Request number")
+        result = self.request("GET", f"{self.prefix}/pulls/{number}")
+        if not isinstance(result, dict) or result.get("number") != number:
+            raise GitHubError("GitHub Pull Request response is missing or has a mismatched number")
         return result
 
     def create_issue_comment(self, number: int, body: str) -> dict[str, Any]:
