@@ -52,6 +52,8 @@ class GitHubCheckRunTests(unittest.TestCase):
             FakeGitHub(()).pull_request(0)
         with self.assertRaises(GitHubError):
             FakeGitHub(([],)).pull_request(54)
+        with self.assertRaises(GitHubError):
+            FakeGitHub(({"number": 53},)).pull_request(54)
 
     def test_check_runs_paginates_all_pages_and_selects_check_runs_array(self):
         first = [check_run(i, f"job-{i}") for i in range(1, 101)]

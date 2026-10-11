@@ -196,8 +196,8 @@ class GitHub:
         """Read the current Pull Request resource, including base/head repository identities."""
         number = _positive_int(number, "Pull Request number")
         result = self.request("GET", f"{self.prefix}/pulls/{number}")
-        if not isinstance(result, dict):
-            raise GitHubError("GitHub Pull Request response must be an object")
+        if not isinstance(result, dict) or result.get("number") != number:
+            raise GitHubError("GitHub Pull Request response is missing or has a mismatched number")
         return result
 
     def create_issue_comment(self, number: int, body: str) -> dict[str, Any]:
