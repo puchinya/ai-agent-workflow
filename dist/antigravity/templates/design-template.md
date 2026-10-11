@@ -1,21 +1,3 @@
-<!-- agent-doc-type: design -->
-<!-- agent-doc-schema: 2 -->
-# <Design title>
+# Legacy Design Template
 
-- Status: Draft
-- Owning Issue: <link>
-- Related specification: <link>
-
-## Context and goals
-
-## Requirements traceability
-
-## Architecture
-
-## Data flow and ownership
-
-## Failure handling
-
-## Alternatives considered
-
-## Verification strategy
+Use the canonical [technical design template](technical-design-template.md) for new P-ASES design decisions. This legacy filename remains a navigation pointer for existing package consumers.

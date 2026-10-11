@@ -1,21 +1,3 @@
-<!-- agent-doc-type: specification -->
-<!-- agent-doc-schema: 2 -->
-# <Specification title>
+# Legacy Specification Template
 
-- Status: Draft
-- Owning Issue: <link>
-- Related design: <link>
-
-## Purpose
-
-## Scope
-
-## Normative requirements
-
-## Observable behavior
-
-## Error and boundary behavior
-
-## Security and privacy
-
-## Verification strategy
+Use the canonical [product specification template](product-spec-template.md) for new P-ASES requirements. This legacy filename remains a navigation pointer for existing package consumers.
