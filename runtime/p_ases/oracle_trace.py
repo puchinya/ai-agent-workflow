@@ -21,6 +21,53 @@ INDEPENDENT_SOURCE_KINDS = {
 
 
 @dataclass(frozen=True)
+class TestDefinition:
+    """A named test case sourced from a frozen test specification."""
+
+    test_id: str
+    req_id: str
+    target: str
+    source_ref: str
+    source_sha256: str
+    derived_from_implementation: bool = False
+
+    def validate(self) -> "TestDefinition":
+        from .verification_plan import TEST_ID
+
+        if not isinstance(self.test_id, str) or not TEST_ID.fullmatch(self.test_id):
+            raise OracleTraceError("Test ID must use the stable TEST-* form")
+        if not isinstance(self.req_id, str) or not REQ_ID.fullmatch(self.req_id):
+            raise OracleTraceError("Test requirement must use a stable REQ-N identifier")
+        for value, label in ((self.target, "Test target"), (self.source_ref, "Test source reference")):
+            if not isinstance(value, str) or not value.strip() or "\x00" in value:
+                raise OracleTraceError(f"{label} must be non-empty text")
+        if (not isinstance(self.source_sha256, str) or len(self.source_sha256) != 64
+                or any(char not in "0123456789abcdef" for char in self.source_sha256)):
+            raise OracleTraceError("Test source SHA-256 is invalid")
+        if type(self.derived_from_implementation) is not bool or self.derived_from_implementation:
+            raise OracleTraceError("Test expectations must not be derived from the implementation under test")
+        return self
+
+    def as_dict(self) -> dict[str, object]:
+        self.validate()
+        return {
+            "derived_from_implementation": self.derived_from_implementation,
+            "req_id": self.req_id,
+            "source_ref": self.source_ref,
+            "source_sha256": self.source_sha256,
+            "target": self.target,
+            "test_id": self.test_id,
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> "TestDefinition":
+        expected = {"derived_from_implementation", "req_id", "source_ref", "source_sha256", "target", "test_id"}
+        if not isinstance(value, dict) or set(value) != expected:
+            raise OracleTraceError("Test definition has unknown or missing fields")
+        return cls(**value).validate()
+
+
+@dataclass(frozen=True)
 class OracleDefinition:
     oracle_id: str
     source_kind: str
@@ -54,6 +101,33 @@ class OracleDefinition:
         if len(set(self.req_ids)) != len(self.req_ids):
             raise OracleTraceError("Oracle requirement references must be unique")
         return self
+
+    def as_dict(self) -> dict[str, object]:
+        self.validate()
+        return {
+            "derived_from_implementation": self.derived_from_implementation,
+            "expected_behavior": self.expected_behavior,
+            "oracle_id": self.oracle_id,
+            "req_ids": list(self.req_ids),
+            "source_kind": self.source_kind,
+            "source_ref": self.source_ref,
+            "source_sha256": self.source_sha256,
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> "OracleDefinition":
+        expected = {
+            "derived_from_implementation", "expected_behavior", "oracle_id", "req_ids",
+            "source_kind", "source_ref", "source_sha256",
+        }
+        if not isinstance(value, dict) or set(value) != expected or not isinstance(value.get("req_ids"), list):
+            raise OracleTraceError("Oracle definition has unknown or missing fields")
+        return cls(
+            oracle_id=value["oracle_id"], source_kind=value["source_kind"],
+            source_ref=value["source_ref"], source_sha256=value["source_sha256"],
+            expected_behavior=value["expected_behavior"], req_ids=tuple(value["req_ids"]),
+            derived_from_implementation=value["derived_from_implementation"],
+        ).validate()
 
 
 @dataclass(frozen=True)
@@ -127,8 +201,43 @@ def validate_plan_oracles(plan: VerificationPlan, required_req_ids: Iterable[str
     except PlanError as exc:
         raise OracleTraceError(str(exc)) from exc
     trace = trace_requirements(required_req_ids, plan.entries, oracles)
-    frozen = {(kind, digest) for kind, _name, digest in plan.source_digests}
+    frozen = set(plan.source_digests)
     for oracle_id, digest in trace.oracle_digests:
-        if ("oracle", digest) not in frozen:
+        oracle = oracles[oracle_id]
+        if ("oracle", oracle.source_ref, digest) not in frozen:
             raise OracleTraceError(f"Oracle {oracle_id} source digest is not frozen in the Plan")
     return trace
+
+
+def validate_plan_tests(
+    plan: VerificationPlan,
+    tests: Iterable[TestDefinition],
+    source_digests: Iterable[tuple[str, str, str]] | None = None,
+) -> tuple[TestDefinition, ...]:
+    """Require every Plan test mapping to exist in the frozen test specification."""
+    plan.validate()
+    rows = tuple(tests)
+    if not rows:
+        raise OracleTraceError("frozen Test definitions are required")
+    for row in rows:
+        if not isinstance(row, TestDefinition):
+            raise OracleTraceError("Test mapping has an invalid type")
+        row.validate()
+    keys = [(row.req_id, row.test_id, row.target) for row in rows]
+    if len(keys) != len(set(keys)):
+        raise OracleTraceError("Test definitions contain duplicate REQ/Test/target mappings")
+    plan_keys = {(entry.req_id, entry.test_id, entry.target) for entry in plan.entries}
+    test_keys = set(keys)
+    if plan_keys != test_keys:
+        missing, extra = sorted(plan_keys - test_keys), sorted(test_keys - plan_keys)
+        details = []
+        if missing:
+            details.append("missing tests " + ", ".join("/".join(item) for item in missing))
+        if extra:
+            details.append("unexpected tests " + ", ".join("/".join(item) for item in extra))
+        raise OracleTraceError("Plan/Test specification mapping mismatch: " + "; ".join(details))
+    frozen = set(source_digests if source_digests is not None else plan.source_digests)
+    for row in rows:
+        if ("test_specification", row.source_ref, row.source_sha256) not in frozen:
+            raise OracleTraceError(f"Test {row.test_id} source is not frozen in the Plan")
+    return tuple(sorted(rows, key=lambda row: (row.req_id, row.test_id, row.target)))

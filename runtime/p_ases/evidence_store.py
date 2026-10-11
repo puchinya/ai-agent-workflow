@@ -38,6 +38,13 @@ def _sha(value: Any, label: str, pattern: re.Pattern[str] = SHA256) -> None:
         raise EvidenceError(f"{label} has an invalid digest")
 
 
+def _reject_symlink_path(path: Path, label: str) -> None:
+    location = Path(os.path.abspath(path))
+    for candidate in (location, *location.parents):
+        if candidate.is_symlink():
+            raise EvidenceError(f"{label} must not traverse a symbolic link")
+
+
 @dataclass(frozen=True)
 class VerificationSubject:
     repository: str
@@ -175,8 +182,7 @@ class EvidenceRecord:
 
 def read_evidence(path: Path) -> EvidenceRecord:
     location = Path(path)
-    if location.is_symlink():
-        raise EvidenceError("Evidence path must not be a symbolic link")
+    _reject_symlink_path(location, "Evidence path")
     try:
         raw = location.read_bytes()
         value = json.loads(raw.decode("utf-8", errors="strict"))
@@ -207,9 +213,9 @@ def write_evidence(path: Path, record: EvidenceRecord) -> str:
     """Create an immutable record; identical retries are idempotent, collisions fail."""
     record.validate()
     destination = Path(path)
+    _reject_symlink_path(destination, "Evidence path")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.is_symlink():
-        raise EvidenceError("Evidence path must not be a symbolic link")
+    _reject_symlink_path(destination, "Evidence path")
     # A symlinked parent could redirect a durable record outside the workspace.
     parent = destination.parent
     while parent != parent.parent:
@@ -244,3 +250,43 @@ def write_evidence(path: Path, record: EvidenceRecord) -> str:
     if readback != record:
         raise EvidenceError("Evidence record readback changed")
     return record.evidence_sha256
+
+
+def evidence_path(root: Path, record: EvidenceRecord) -> Path:
+    """Return the immutable path for one observation identity.
+
+    The identity deliberately excludes the outcome and output digest. A retry
+    that changes bytes under the same subject/entry/type/time is therefore a
+    conflict instead of a second, silently preferred observation.
+    """
+    record.validate()
+    identity = {
+        "entry_key": record.entry_key,
+        "evidence_type": record.evidence_type,
+        "observed_at": record.observed_at,
+        "subject_sha256": record.subject.sha256,
+    }
+    identity_sha = hashlib.sha256(_canonical(identity)).hexdigest()
+    return Path(root) / str(record.subject.issue_number) / record.subject.sha256 / f"{identity_sha}.json"
+
+
+def read_evidence_set(root: Path, subject: VerificationSubject) -> tuple[EvidenceRecord, ...]:
+    """Read the append-only evidence history for one exact subject."""
+    subject.validate()
+    directory = Path(root) / str(subject.issue_number) / subject.sha256
+    _reject_symlink_path(directory, "Evidence history path")
+    if not directory.exists():
+        return ()
+    if not directory.is_dir():
+        raise EvidenceError("Evidence history path must be a directory")
+    records: list[EvidenceRecord] = []
+    for path in sorted(directory.iterdir(), key=lambda item: item.name):
+        if path.is_symlink():
+            raise EvidenceError("Evidence history must not contain symbolic links")
+        if not path.is_file() or path.suffix != ".json":
+            raise EvidenceError("Evidence history contains an unexpected filesystem entry")
+        record = read_evidence(path)
+        if record.subject != subject:
+            raise EvidenceError("Evidence history contains a record for a different exact subject")
+        records.append(record)
+    return tuple(records)

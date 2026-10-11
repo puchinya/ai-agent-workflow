@@ -43,6 +43,11 @@ def _canonical_bytes(value: Any) -> bytes:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
+DEFAULT_TRACE_SHA256 = hashlib.sha256(_canonical_bytes({
+    "oracles": [], "schema": "PASES_VERIFICATION_TRACE_V1", "tests": [],
+})).hexdigest()
+
+
 def _absolute_executable(value: str) -> bool:
     return Path(value).is_absolute() or PureWindowsPath(value).is_absolute()
 
@@ -126,6 +131,7 @@ class VerificationPlan:
     adc_sha256: str
     source_digests: tuple[tuple[str, str, str], ...]
     entries: tuple[PlanEntry, ...]
+    oracle_test_trace_sha256: str = DEFAULT_TRACE_SHA256
 
     def validate(self) -> "VerificationPlan":
         if not isinstance(self.repository, str) or not REPOSITORY.fullmatch(self.repository):
@@ -135,6 +141,7 @@ class VerificationPlan:
         if type(self.adc_comment_id) is not int or self.adc_comment_id < 1:
             raise PlanError("Plan ADC Comment ID must be positive")
         _sha(self.adc_sha256, "Plan ADC SHA-256")
+        _sha(self.oracle_test_trace_sha256, "Plan Oracle/Test trace SHA-256")
         if type(self.source_digests) is not tuple or not self.source_digests:
             raise PlanError("Plan must freeze source document digests")
         names: list[str] = []
@@ -176,6 +183,7 @@ class VerificationPlan:
             "adc_sha256": self.adc_sha256,
             "entries": [entry.as_dict() for entry in self.entries],
             "issue_number": self.issue_number,
+            "oracle_test_trace_sha256": self.oracle_test_trace_sha256,
             "repository": self.repository,
             "schema": "PASES_VERIFICATION_PLAN_V1",
             "source_digests": [
@@ -206,11 +214,12 @@ def entry_ref(entry: PlanEntry) -> str:
 def create_plan(
     *, repository: str, issue_number: int, adc_comment_id: int, adc_sha256: str,
     source_digests: Iterable[tuple[str, str, str]], entries: Iterable[PlanEntry],
-    required_req_ids: Iterable[str],
+    required_req_ids: Iterable[str], oracle_test_trace_sha256: str = DEFAULT_TRACE_SHA256,
 ) -> VerificationPlan:
     rows = tuple(sorted(entries, key=entry_key))
     sources = tuple(sorted(source_digests))
-    plan = VerificationPlan(repository, issue_number, adc_comment_id, adc_sha256, sources, rows).validate()
+    plan = VerificationPlan(repository, issue_number, adc_comment_id, adc_sha256, sources, rows,
+                            oracle_test_trace_sha256).validate()
     validate_plan_coverage(plan, required_req_ids)
     return plan
 
@@ -241,7 +250,8 @@ def read_plan(data: bytes) -> VerificationPlan:
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise PlanError("Plan file is not valid UTF-8 JSON") from exc
     expected = {
-        "adc_comment_id", "adc_sha256", "entries", "issue_number", "plan_sha256", "repository",
+        "adc_comment_id", "adc_sha256", "entries", "issue_number", "oracle_test_trace_sha256",
+        "plan_sha256", "repository",
         "schema", "source_digests",
     }
     if not isinstance(value, dict) or set(value) != expected or value.get("schema") != "PASES_VERIFICATION_PLAN_V1":
@@ -258,9 +268,41 @@ def read_plan(data: bytes) -> VerificationPlan:
         repository=value["repository"], issue_number=value["issue_number"],
         adc_comment_id=value["adc_comment_id"], adc_sha256=value["adc_sha256"],
         source_digests=tuple(sources), entries=entries,
+        oracle_test_trace_sha256=value["oracle_test_trace_sha256"],
     ).validate()
     if value["plan_sha256"] != plan.sha256:
         raise PlanError("Plan digest does not match its canonical content")
     if plan.to_bytes() != data:
         raise PlanError("Plan file is not in canonical byte form")
     return plan
+
+
+def verify_plan_sources(repository_root: Path, plan: VerificationPlan) -> tuple[tuple[str, str, str], ...]:
+    """Re-read every frozen source without following symlinks or leaving the checkout."""
+    plan.validate()
+    root = Path(repository_root)
+    if not root.is_absolute() or root.is_symlink() or not root.is_dir():
+        raise PlanError("repository root must be an absolute, non-symlink directory")
+    actual: list[tuple[str, str, str]] = []
+    for kind, name, expected_sha in plan.source_digests:
+        relative = PureWindowsPath(name)
+        posix = Path(name)
+        if (relative.is_absolute() or posix.is_absolute() or "\\" in name
+                or any(part in {"", ".", ".."} for part in name.split("/"))):
+            raise PlanError(f"Plan source path is not a canonical repository-relative path: {name}")
+        path = root
+        for part in name.split("/"):
+            path = path / part
+            if path.is_symlink():
+                raise PlanError(f"Plan source path must not traverse a symbolic link: {name}")
+        if not path.is_file():
+            raise PlanError(f"frozen Plan source is missing: {name}")
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            raise PlanError(f"frozen Plan source is unreadable: {name}") from exc
+        digest = hashlib.sha256(data).hexdigest()
+        if digest != expected_sha:
+            raise PlanError(f"frozen Plan source changed: {name}")
+        actual.append((kind, name, digest))
+    return tuple(sorted(actual))
