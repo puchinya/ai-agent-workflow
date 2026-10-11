@@ -38,9 +38,16 @@ def _sha(value: Any, label: str, pattern: re.Pattern[str] = SHA256) -> None:
         raise EvidenceError(f"{label} has an invalid digest")
 
 
-def _reject_symlink_path(path: Path, label: str) -> None:
+def _reject_symlink_path(path: Path, label: str, *, parent_count: int) -> None:
     location = Path(os.path.abspath(path))
-    for candidate in (location, *location.parents):
+    candidates = [location]
+    parent = location
+    for _ in range(parent_count):
+        if parent == parent.parent:
+            break
+        parent = parent.parent
+        candidates.append(parent)
+    for candidate in candidates:
         if candidate.is_symlink():
             raise EvidenceError(f"{label} must not traverse a symbolic link")
 
@@ -182,7 +189,7 @@ class EvidenceRecord:
 
 def read_evidence(path: Path) -> EvidenceRecord:
     location = Path(path)
-    _reject_symlink_path(location, "Evidence path")
+    _reject_symlink_path(location, "Evidence path", parent_count=3)
     try:
         raw = location.read_bytes()
         value = json.loads(raw.decode("utf-8", errors="strict"))
@@ -213,15 +220,9 @@ def write_evidence(path: Path, record: EvidenceRecord) -> str:
     """Create an immutable record; identical retries are idempotent, collisions fail."""
     record.validate()
     destination = Path(path)
-    _reject_symlink_path(destination, "Evidence path")
+    _reject_symlink_path(destination, "Evidence path", parent_count=3)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    _reject_symlink_path(destination, "Evidence path")
-    # A symlinked parent could redirect a durable record outside the workspace.
-    parent = destination.parent
-    while parent != parent.parent:
-        if parent.is_symlink():
-            raise EvidenceError("Evidence directory path must not contain a symbolic link")
-        parent = parent.parent
+    _reject_symlink_path(destination, "Evidence path", parent_count=3)
     data = record.to_bytes()
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent)
     temporary = Path(temporary_name)
@@ -274,7 +275,7 @@ def read_evidence_set(root: Path, subject: VerificationSubject) -> tuple[Evidenc
     """Read the append-only evidence history for one exact subject."""
     subject.validate()
     directory = Path(root) / str(subject.issue_number) / subject.sha256
-    _reject_symlink_path(directory, "Evidence history path")
+    _reject_symlink_path(directory, "Evidence history path", parent_count=2)
     if not directory.exists():
         return ()
     if not directory.is_dir():

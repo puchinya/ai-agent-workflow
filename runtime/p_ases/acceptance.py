@@ -33,9 +33,16 @@ SHA40 = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
-def _reject_symlink_path(path: Path, label: str) -> None:
+def _reject_symlink_path(path: Path, label: str, *, parent_count: int = 3) -> None:
     location = Path(os.path.abspath(path))
-    for candidate in (location, *location.parents):
+    candidates = [location]
+    parent = location
+    for _ in range(parent_count):
+        if parent == parent.parent:
+            break
+        parent = parent.parent
+        candidates.append(parent)
+    for candidate in candidates:
         if candidate.is_symlink():
             raise AcceptanceError(f"{label} must not traverse a symbolic link")
 
@@ -338,7 +345,7 @@ def evaluate_acceptance(
 
 def acceptance_result_path(root: Path, result: AcceptanceResult) -> Path:
     result.validate()
-    return Path(root) / str(result.subject.issue_number) / result.subject.sha256 / f"{result.sha256}.json"
+    return Path(root).absolute() / str(result.subject.issue_number) / result.subject.sha256 / f"{result.sha256}.json"
 
 
 def read_acceptance_result(path: Path) -> AcceptanceResult:
@@ -358,11 +365,6 @@ def write_acceptance_result(path: Path, result: AcceptanceResult) -> str:
     _reject_symlink_path(destination, "Acceptance result path")
     destination.parent.mkdir(parents=True, exist_ok=True)
     _reject_symlink_path(destination, "Acceptance result path")
-    parent = destination.parent
-    while parent != parent.parent:
-        if parent.is_symlink():
-            raise AcceptanceError("Acceptance result directory path must not contain a symbolic link")
-        parent = parent.parent
     raw = result.to_bytes()
     descriptor, name = tempfile.mkstemp(prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent)
     temporary = Path(name)

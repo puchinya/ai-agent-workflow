@@ -331,14 +331,25 @@ def build_verification_result(
 
 def verification_result_path(root: Path, result: VerificationResult) -> Path:
     result.validate()
-    return Path(root) / str(result.subject.issue_number) / result.subject.sha256 / f"{result.sha256}.json"
+    return Path(root).absolute() / str(result.subject.issue_number) / result.subject.sha256 / f"{result.sha256}.json"
+
+
+def _reject_result_symlink(path: Path) -> None:
+    location = Path(os.path.abspath(path))
+    candidates = [location]
+    parent = location
+    for _ in range(3):
+        if parent == parent.parent:
+            break
+        parent = parent.parent
+        candidates.append(parent)
+    if any(candidate.is_symlink() for candidate in candidates):
+        raise VerificationError("Verification result path must not traverse a symbolic link")
 
 
 def read_verification_result(path: Path) -> VerificationResult:
     location = Path(path)
-    absolute = Path(os.path.abspath(location))
-    if any(candidate.is_symlink() for candidate in (absolute, *absolute.parents)):
-        raise VerificationError("Verification result path must not traverse a symbolic link")
+    _reject_result_symlink(location)
     try:
         raw = location.read_bytes()
     except OSError as exc:
@@ -350,17 +361,9 @@ def write_verification_result(path: Path, result: VerificationResult) -> str:
     """Create-only, atomic final-result persistence with digest readback."""
     result.validate()
     destination = Path(path)
-    absolute = Path(os.path.abspath(destination))
-    if any(candidate.is_symlink() for candidate in (absolute, *absolute.parents)):
-        raise VerificationError("Verification result path must not traverse a symbolic link")
+    _reject_result_symlink(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    if any(candidate.is_symlink() for candidate in (absolute, *absolute.parents)):
-        raise VerificationError("Verification result path must not traverse a symbolic link")
-    parent = destination.parent
-    while parent != parent.parent:
-        if parent.is_symlink():
-            raise VerificationError("Verification result directory path must not contain a symbolic link")
-        parent = parent.parent
+    _reject_result_symlink(destination)
     raw = result.to_bytes()
     descriptor, name = tempfile.mkstemp(prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent)
     temporary = Path(name)
