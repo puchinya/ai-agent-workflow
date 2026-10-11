@@ -30,7 +30,8 @@ def setup(*, draft=False, fork=False, stale=False, unresolved=False):
     subject = VerificationSubject("octo/repo", 30, 55, 123, ADC_SHA, PLAN_SHA, "e" * 40)
     binding = ExecutionBinding(
         repository="octo/repo", issue_number=30, adc_comment_id=123, adc_sha256=ADC_SHA,
-        base_ref="main", base_sha=BASE, work_directory="/tmp/pases-30", initial_head_sha=BASE,
+        base_ref="main", base_sha=BASE, work_directory=str(Path(tempfile.gettempdir()) / "pases-30"),
+        initial_head_sha=BASE,
     ).validate()
     context = WorkContext(binding, subject.pr_head_sha40, "pases/work-readiness", True,
                           binding_digest(binding)).validate()
