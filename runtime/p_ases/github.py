@@ -89,6 +89,36 @@ class GitHub:
         number = _positive_int(number, "Issue number")
         return self._paginate(f"{self.prefix}/issues/{number}/comments")
 
+    def check_runs_for_ref(self, head_sha40: str) -> list[dict[str, Any]]:
+        """Read every Check Run for an exact commit SHA; never fall back to statuses."""
+        if not isinstance(head_sha40, str) or not re.fullmatch(r"[0-9a-f]{40}", head_sha40):
+            raise GitHubError("Check Runs ref must be a full lowercase commit SHA")
+        items: list[dict[str, Any]] = []
+        page = 1
+        total_count: int | None = None
+        while True:
+            result = self.request(
+                "GET",
+                f"{self.prefix}/commits/{head_sha40}/check-runs?filter=all&page={page}&per_page=100",
+            )
+            if not isinstance(result, dict):
+                raise GitHubError(f"GitHub Check Runs page {page} must be an object")
+            count = result.get("total_count")
+            runs = result.get("check_runs")
+            if (type(count) is not int or count < 0 or not isinstance(runs, list)
+                    or any(not isinstance(run, dict) for run in runs)):
+                raise GitHubError(f"GitHub Check Runs page {page} has an invalid response shape")
+            if total_count is None:
+                total_count = count
+            elif total_count != count:
+                raise GitHubError("GitHub Check Runs total_count changed during pagination")
+            items.extend(runs)
+            if len(runs) < 100:
+                if len(items) < total_count:
+                    raise GitHubError("GitHub Check Runs pagination ended before total_count")
+                return items
+            page += 1
+
     def issues(self) -> list[dict[str, Any]]:
         return self._paginate(f"{self.prefix}/issues?state=all")
 
