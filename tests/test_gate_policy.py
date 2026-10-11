@@ -100,7 +100,7 @@ def activation_fixture(*, approval_author="puchinya", merged_by="puchinya", open
     for issue, pr_number, merge_sha in child_prs:
         pair = {
             27: ("main", "pases/adc-core"), 28: ("pases/adc-core", "pases/issue-28"),
-            29: ("pases/adc-core", "pases/verification"),
+            29: ("main", "pases/verification"),
             30: ("pases/verification", "pases/work-readiness"),
             31: ("pases/work-readiness", "pases/issue-31"),
             32: ("pases/work-readiness", "pases/issue-32"),
@@ -285,6 +285,48 @@ class BootstrapPolicyTests(unittest.TestCase):
             with self.subTest(row=row):
                 self.assertEqual(evaluate(pr=row).status, "BOOTSTRAP_BLOCKED")
         self.assertEqual(evaluate(response_repository="fork/repo").status, "BOOTSTRAP_BLOCKED")
+
+    def test_pr29_uses_main_only_after_parent_merge_and_unconfigured_pairs_fail_closed(self):
+        verification_subject = replace(
+            subject(), issue_number=29, pr_number=34, base_ref="main",
+            head_ref="pases/verification")
+        verification_pr = pr_readback(
+            number=34,
+            base={"ref": "main", "sha": BASE, "repo": {"full_name": REPO}},
+            head={"ref": "pases/verification", "sha": HEAD, "repo": {"full_name": REPO}},
+            body="Closes #29\n")
+        verification_run = workflow_run(
+            head_branch="pases/verification", pull_requests=[{"number": 34}])
+        self.assertEqual(evaluate(subject=verification_subject, pr=verification_pr,
+                                  workflow_runs=[verification_run]).status,
+                         "BOOTSTRAP_TECHNICAL_READY")
+
+        obsolete_subject = replace(verification_subject, base_ref="pases/adc-core")
+        obsolete_pr = dict(verification_pr)
+        obsolete_pr["base"] = {"ref": "pases/adc-core", "sha": BASE,
+                                "repo": {"full_name": REPO}}
+        self.assertEqual(evaluate(subject=obsolete_subject, pr=obsolete_pr,
+                                  workflow_runs=[verification_run]).status,
+                         "BOOTSTRAP_BLOCKED")
+
+        for issue_number in (28, 31, 32):
+            with self.subTest(issue_number=issue_number):
+                undocumented_subject = replace(
+                    verification_subject, issue_number=issue_number,
+                    pr_number=issue_number + 10, base_ref="unapproved-base",
+                    head_ref="unapproved-head")
+                undocumented_pr = pr_readback(
+                    number=issue_number + 10,
+                    base={"ref": "unapproved-base", "sha": BASE, "repo": {"full_name": REPO}},
+                    head={"ref": "unapproved-head", "sha": HEAD, "repo": {"full_name": REPO}},
+                    body=f"Closes #{issue_number}\n")
+                undocumented_run = workflow_run(
+                    head_branch="unapproved-head", pull_requests=[{"number": issue_number + 10}])
+                result = evaluate(subject=undocumented_subject, pr=undocumented_pr,
+                                  workflow_runs=[undocumented_run])
+                self.assertEqual(result.status, "BOOTSTRAP_BLOCKED")
+                self.assertIn("approved Bootstrap base/head branch pair is not defined for this child Issue",
+                              result.reasons)
 
     def test_stale_pr_head_and_changed_base_snapshot_block(self):
         stale = pr_readback(head={"ref": "pases/adc-core", "sha": "f" * 40, "repo": {"full_name": REPO}})
