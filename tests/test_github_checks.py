@@ -12,6 +12,23 @@ from p_ases.github import GitHub, GitHubError
 HEAD = "a" * 40
 
 
+def check_run(identifier, name):
+    repository = {"url": "https://api.github.com/repos/octo/repo"}
+    return {
+        "id": identifier,
+        "name": name,
+        "head_sha": HEAD,
+        "app": {"id": 789},
+        "status": "completed",
+        "conclusion": "success",
+        "pull_requests": [{
+            "number": 54,
+            "base": {"repo": repository, "sha": "c" * 40},
+            "head": {"repo": repository, "sha": HEAD},
+        }],
+    }
+
+
 class FakeGitHub(GitHub):
     def __init__(self, responses):
         super().__init__("octo/repo")
@@ -25,8 +42,8 @@ class FakeGitHub(GitHub):
 
 class GitHubCheckRunTests(unittest.TestCase):
     def test_check_runs_paginates_all_pages_and_selects_check_runs_array(self):
-        first = [{"id": i, "name": f"job-{i}", "head_sha": HEAD} for i in range(1, 101)]
-        second = [{"id": 101, "name": "job-last", "head_sha": HEAD}]
+        first = [check_run(i, f"job-{i}") for i in range(1, 101)]
+        second = [check_run(101, "job-last")]
         github = FakeGitHub(({"total_count": 101, "check_runs": first},
                              {"total_count": 101, "check_runs": second}))
         runs = github.check_runs_for_ref(HEAD)
@@ -45,6 +62,38 @@ class GitHubCheckRunTests(unittest.TestCase):
 
     def test_check_runs_rejects_legacy_array_response(self):
         github = FakeGitHub(([],))
+        with self.assertRaises(GitHubError):
+            github.check_runs_for_ref(HEAD)
+
+    def test_check_runs_rejects_missing_app_or_wrong_head_identity(self):
+        incomplete = check_run(1, "job")
+        incomplete.pop("app")
+        github = FakeGitHub(({"total_count": 1, "check_runs": [incomplete]},))
+        with self.assertRaises(GitHubError):
+            github.check_runs_for_ref(HEAD)
+
+    def test_check_runs_rejects_duplicate_ids_and_page_count_drift(self):
+        duplicate = check_run(1, "job")
+        github = FakeGitHub(({"total_count": 2, "check_runs": [duplicate]},
+                             {"total_count": 2, "check_runs": [duplicate]}))
+        with self.assertRaises(GitHubError):
+            github.check_runs_for_ref(HEAD)
+        full = [check_run(i, f"job-{i}") for i in range(1, 101)]
+        changed = FakeGitHub(({"total_count": 101, "check_runs": full},
+                              {"total_count": 102, "check_runs": [check_run(101, "job-last")] }))
+        with self.assertRaises(GitHubError):
+            changed.check_runs_for_ref(HEAD)
+
+    def test_check_runs_api_errors_fail_closed(self):
+        class FailedGitHub(FakeGitHub):
+            def request(self, method, endpoint, payload=None):
+                raise GitHubError("HTTP 503")
+
+        with self.assertRaisesRegex(GitHubError, "503"):
+            FailedGitHub(()).check_runs_for_ref(HEAD)
+        wrong_head = check_run(1, "job")
+        wrong_head["head_sha"] = "b" * 40
+        github = FakeGitHub(({"total_count": 1, "check_runs": [wrong_head]},))
         with self.assertRaises(GitHubError):
             github.check_runs_for_ref(HEAD)
 

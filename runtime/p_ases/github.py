@@ -112,10 +112,20 @@ class GitHub:
                 total_count = count
             elif total_count != count:
                 raise GitHubError("GitHub Check Runs total_count changed during pagination")
+            for run in runs:
+                app = run.get("app")
+                if (type(run.get("id")) is not int or run["id"] < 1
+                        or not isinstance(run.get("name"), str) or not run["name"]
+                        or run.get("head_sha") != head_sha40
+                        or not isinstance(app, dict) or type(app.get("id")) is not int or app["id"] < 1):
+                    raise GitHubError(f"GitHub Check Runs page {page} contains incomplete identity/provenance")
             items.extend(runs)
             if len(runs) < 100:
-                if len(items) < total_count:
-                    raise GitHubError("GitHub Check Runs pagination ended before total_count")
+                if len(items) != total_count:
+                    raise GitHubError("GitHub Check Runs pagination count does not match total_count")
+                ids = [run["id"] for run in items]
+                if len(ids) != len(set(ids)):
+                    raise GitHubError("GitHub Check Runs pagination contains duplicate run IDs")
                 return items
             page += 1
 

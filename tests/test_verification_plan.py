@@ -13,8 +13,10 @@ from p_ases.acceptance import AcceptanceObservation, evaluate_acceptance
 from p_ases.evidence_store import EvidenceError, EvidenceRecord, VerificationSubject, read_evidence, write_evidence
 from p_ases.oracle_trace import OracleDefinition, OracleTraceError, trace_requirements, validate_plan_oracles
 from p_ases.verification import (
-    GateResult, RequiredCheckPolicy, VerificationError, evaluate_evidence,
-    evaluate_required_checks, verify_final,
+    GateResult, RequiredCheckPolicy, VerificationError, VerificationResult,
+    build_verification_result, evaluate_evidence, evaluate_required_checks,
+    read_verification_result, required_check_fork_status, verify_final,
+    write_verification_result,
 )
 from p_ases.verification_plan import (
     PlanEntry, PlanError, VerificationPlan, create_plan, entry_ref, read_plan,
@@ -27,7 +29,7 @@ HEAD = "b" * 40
 PLAN_INPUTS = (
     ("specification", "spec.md", "c" * 64),
     ("test_specification", "test.md", "d" * 64),
-    ("oracle", "oracle.md", "e" * 64),
+    ("oracle", "docs/specs/core.md", "e" * 64),
 )
 
 
@@ -59,6 +61,16 @@ def oracle(*, derived=False, reqs=("REQ-01",)):
 def subject(p=None, *, head=HEAD):
     current = p or plan()
     return VerificationSubject("octo/repo", 29, 54, 123, ADC_SHA, current.sha256, head).validate()
+
+
+def pr_association(number=54, *, base_repo="octo/repo", head_repo="octo/repo", head=HEAD):
+    base_owner, base_name = base_repo.split("/")
+    head_owner, head_name = head_repo.split("/")
+    return [{
+        "number": number,
+        "base": {"repo": {"url": f"https://api.github.com/repos/{base_owner}/{base_name}"}, "sha": "c" * 40},
+        "head": {"repo": {"url": f"https://api.github.com/repos/{head_owner}/{head_name}"}, "sha": head},
+    }]
 
 
 def evidence(p=None, *, outcome="PASS", evidence_type="result", head=HEAD, observed_at="2026-10-11T00:00:00Z"):
@@ -157,13 +169,32 @@ class VerificationPlanTests(unittest.TestCase):
         current = subject(p)
         policy = RequiredCheckPolicy((("test (ubuntu, 3.14)", 789),))
         run = {"id": 1, "name": policy.checks[0][0], "head_sha": HEAD, "status": "completed",
-               "conclusion": "success", "app": {"id": 789}}
+               "conclusion": "success", "app": {"id": 789}, "pull_requests": pr_association()}
+        self.assertFalse(required_check_fork_status(policy, (run,), subject=current, expected_repository="octo/repo"))
         passed = evaluate_required_checks(policy, (run,), subject=current, expected_repository="octo/repo",
                                           response_repository="octo/repo", head_sha40=HEAD, is_fork=False)
         self.assertEqual(passed.status, "PASS")
+        newer_success = evaluate_required_checks(
+            policy, (dict(run, id=2),), subject=current, expected_repository="octo/repo",
+            response_repository="octo/repo", head_sha40=HEAD, is_fork=False,
+        )
+        self.assertEqual(newer_success.status, "PASS")
+        self.assertNotEqual(passed.sha256, newer_success.sha256)
         failed_rerun = dict(run, id=2, conclusion="skipped")
         rejected = evaluate_required_checks(policy, (run, failed_rerun), subject=current, expected_repository="octo/repo",
                                            response_repository="octo/repo", head_sha40=HEAD, is_fork=False)
+        self.assertEqual(rejected.status, "BLOCKED")
+
+        wrong_app_latest = dict(run, id=3, app={"id": 999})
+        rejected = evaluate_required_checks(policy, (run, wrong_app_latest), subject=current,
+                                            expected_repository="octo/repo", response_repository="octo/repo",
+                                            head_sha40=HEAD, is_fork=False)
+        self.assertEqual(rejected.status, "BLOCKED")
+
+        forked = dict(run, pull_requests=pr_association(head_repo="someone/fork"))
+        self.assertTrue(required_check_fork_status(policy, (forked,), subject=current, expected_repository="octo/repo"))
+        rejected = evaluate_required_checks(policy, (forked,), subject=current, expected_repository="octo/repo",
+                                            response_repository="octo/repo", head_sha40=HEAD, is_fork=True)
         self.assertEqual(rejected.status, "BLOCKED")
         wrong_app = dict(run, app={"id": 999})
         rejected = evaluate_required_checks(policy, (wrong_app,), subject=current, expected_repository="octo/repo",
@@ -182,6 +213,30 @@ class VerificationPlanTests(unittest.TestCase):
         passing = GateResult("PASS", (), current)
         self.assertEqual(verify_final(p, current, (evidence(p),), passing).status, "PASS")
         self.assertEqual(verify_final(p, current, (evidence(p),), GateResult("PASS", ())).status, "BLOCKED")
+
+    def test_final_verification_result_binds_required_check_policy_and_round_trips(self):
+        p = plan()
+        current = subject(p)
+        checks = RequiredCheckPolicy((("test (ubuntu, 3.14)", 789),))
+        passing = GateResult("PASS", (), current)
+        result = build_verification_result(p, current, (evidence(p),), passing, checks)
+        self.assertIsInstance(result, VerificationResult)
+        self.assertEqual(result.status, "PASS")
+        self.assertEqual(VerificationResult.from_bytes(result.to_bytes()), result)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "verification.json"
+            self.assertEqual(write_verification_result(path, result), result.sha256)
+            self.assertEqual(read_verification_result(path), result)
+        changed_policy = RequiredCheckPolicy((("test (ubuntu, 3.14)", 790),))
+        self.assertNotEqual(checks.sha256, changed_policy.sha256)
+
+    def test_required_check_config_requires_explicit_trusted_app_id(self):
+        with self.assertRaises(VerificationError):
+            RequiredCheckPolicy.from_project_config({"branch": {"required_checks": [{"name": "ci"}]}})
+        policy = RequiredCheckPolicy.from_project_config({
+            "branch": {"required_checks": [{"name": "ci", "trusted_app_id": 789}]},
+        })
+        self.assertEqual(policy.checks, (("ci", 789),))
 
     def test_artifact_acceptance_requires_its_specific_independent_observations(self):
         p = plan()
