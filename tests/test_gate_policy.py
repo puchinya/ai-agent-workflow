@@ -15,7 +15,7 @@ from p_ases.gate_policy import (
     parse_independent_review_comment, parse_self_review_comment, publish_immutable_record, read_review_comment,
     read_bootstrap_adc, read_bootstrap_evidence, select_gate,
     pin_gate_selection, read_activation_record, _require_repository_owner_actor,
-    _validate_activation_candidate,
+    _validate_activation_candidate, bootstrap_policy_digest, BootstrapResult,
 )
 
 
@@ -169,7 +169,8 @@ def evaluate(**overrides):
                   workflow_runs=[workflow_run()], check_runs=check_runs(),
                   required_check_names=("test-a", "test-b"), local_checks=local_checks(),
                   adc_requirement_ids=("REQ-08",), adc_checklist_ids=("CHECKLIST-001", "CHECKLIST-002"),
-                  self_review=self_review(), independent_review=independent_review(), unverified_hosts=("none",))
+                  self_review=self_review(), independent_review=independent_review(), unverified_hosts=("none",),
+                  bootstrap_policy_sha256="f" * 64)
     values.update(overrides)
     return evaluate_bootstrap(**values)
 
@@ -210,6 +211,16 @@ class BootstrapPolicyTests(unittest.TestCase):
         self.assertEqual(result.workflow_run_id, 500)
         self.assertEqual(result.payload()["schema"], "PASES_BOOTSTRAP_REVIEW_V1")
         self.assertIn("unverified_hosts", result.payload())
+
+    def test_bootstrap_policy_digest_is_a_full_sha256(self):
+        self.assertRegex(bootstrap_policy_digest(), r"^[0-9a-f]{64}$")
+
+    def test_historical_blocked_v1_result_without_policy_digest_remains_readable(self):
+        old_payload = evaluate(independent_review=None).payload()
+        del old_payload["bootstrap_policy_sha256"]
+        historical = BootstrapResult.from_payload(old_payload)
+        self.assertEqual(historical.status, "BOOTSTRAP_BLOCKED")
+        self.assertIsNone(historical.bootstrap_policy_sha256)
 
     def test_pr_state_repo_fork_branch_and_closes_must_match(self):
         cases = (
@@ -438,6 +449,15 @@ class ImmutableBootstrapRecordTests(unittest.TestCase):
         self.assertEqual(read_bootstrap_evidence(github, 27, second_id), second)
         self.assertIn('"attempt":2', second_body)
         self.assertIn(f'"previous_comment_id":{first_id}', second_body)
+
+    def test_policy_source_digest_change_appends_new_bootstrap_attempt(self):
+        github = FakeGitHub()
+        first = evaluate(bootstrap_policy_sha256="f" * 64).payload()
+        first_id, _ = publish_immutable_record(github, 27, "PASES_BOOTSTRAP_REVIEW_V1", first)
+        updated_policy = evaluate(bootstrap_policy_sha256="e" * 64).payload()
+        second_id, _ = publish_immutable_record(github, 27, "PASES_BOOTSTRAP_REVIEW_V1", updated_policy)
+        self.assertNotEqual(first_id, second_id)
+        self.assertEqual(read_bootstrap_evidence(github, 27, second_id), updated_policy)
 
 
 if __name__ == "__main__":

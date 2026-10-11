@@ -22,7 +22,7 @@ from .context import WorkContext
 from .profile import ProfileError, load_profile
 from .gate_policy import (
     BOOTSTRAP_ISSUES, BOOTSTRAP_POLICY, BootstrapResult, BootstrapSubject,
-    GatePolicyError, choose_gate_for_new_issue, current_checkout_subject,
+    GatePolicyError, bootstrap_policy_digest, choose_gate_for_new_issue, current_checkout_subject,
     evaluate_bootstrap, parse_independent_review_comment, parse_self_review_comment,
     pin_gate_selection, publish_immutable_record, read_bootstrap_adc, read_bootstrap_evidence, read_review_comment,
     run_local_bootstrap_checks,
@@ -1170,17 +1170,23 @@ def _delivery_bootstrap_check(args: argparse.Namespace, repository: str, root: P
     checklist_lines = [line for line in checklist_body.splitlines() if line.strip()]
     checklist_ids = tuple(f"CHECKLIST-{index:03d}" for index, _line in enumerate(checklist_lines, 1))
     unverified_hosts = tuple(args.unverified_host)
+    try:
+        policy_sha256 = bootstrap_policy_digest()
+    except GatePolicyError as exc:
+        policy_sha256 = None
+        reasons.append(f"Bootstrap policy fingerprint failed: {exc}")
     result = evaluate_bootstrap(
         subject, pr=pr, response_repository=repository, workflow_runs=workflow_runs, check_runs=check_runs,
         required_check_names=required_names, local_checks=local_checks,
         adc_requirement_ids=bootstrap_adc.contract.requirement_ids, adc_checklist_ids=checklist_ids,
-        self_review=self_review, independent_review=independent_review, unverified_hosts=unverified_hosts)
+        self_review=self_review, independent_review=independent_review, unverified_hosts=unverified_hosts,
+        bootstrap_policy_sha256=policy_sha256)
     if reasons:
         result = BootstrapResult("BOOTSTRAP_BLOCKED", subject, tuple(dict.fromkeys(result.reasons + tuple(reasons))),
                                  result.local_checks, result.required_jobs, result.workflow_run_id,
                                  result.workflow_status, result.workflow_conclusion,
                                  result.self_review_comment_id, result.independent_review_comment_id,
-                                 result.unverified_hosts).validate()
+                                 result.unverified_hosts, result.bootstrap_policy_sha256).validate()
 
     # Re-read the immutable ADC and current PR after local commands and GitHub evidence collection.
     snapshot_stable = True
@@ -1200,7 +1206,8 @@ def _delivery_bootstrap_check(args: argparse.Namespace, repository: str, root: P
                                  tuple(dict.fromkeys(result.reasons + (str(exc),))), result.local_checks,
                                  result.required_jobs, result.workflow_run_id, result.workflow_status,
                                  result.workflow_conclusion, result.self_review_comment_id,
-                                 result.independent_review_comment_id, result.unverified_hosts).validate()
+                                 result.independent_review_comment_id, result.unverified_hosts,
+                                 result.bootstrap_policy_sha256).validate()
 
     evidence_comment_id = None
     if snapshot_stable:

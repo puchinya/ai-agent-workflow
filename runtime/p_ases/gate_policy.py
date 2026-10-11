@@ -80,6 +80,7 @@ PASES_POLICY = "p-ases-v1"
 RESULTS = {"BOOTSTRAP_REVIEW_READY", "BOOTSTRAP_BLOCKED", "PASES_GATE_REQUIRED", "UNDETERMINED"}
 REQUIRED_LOCAL_CHECKS = ("compileall", "unittest", "dist-build-check", "dist-validation", "diff-check")
 BOOTSTRAP_REQUIRED_JOBS = ("pull-request-metadata",)
+BOOTSTRAP_POLICY_FILES = ("gate_policy.py", "cli.py", "github.py", "adc.py", "git.py", "process.py", "profile.py")
 EXPECTED_BRANCH_PAIRS = {
     27: ("main", "pases/adc-core"),
     29: ("pases/adc-core", "pases/verification"),
@@ -91,6 +92,22 @@ _CLOSES_ANY = re.compile(r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#([
 
 def _canonical(value: Any) -> bytes:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def bootstrap_policy_digest() -> str:
+    """Fingerprint the Bootstrap evaluator and the runtime adapters it trusts."""
+    root = Path(__file__).resolve().parent
+    rows = []
+    for name in BOOTSTRAP_POLICY_FILES:
+        path = root / name
+        if path.is_symlink() or not path.is_file():
+            raise GatePolicyError(f"Bootstrap policy source is missing or unsafe: {name}")
+        try:
+            content = path.read_bytes()
+        except OSError as exc:
+            raise GatePolicyError(f"could not read Bootstrap policy source {name}") from exc
+        rows.append({"path": name, "sha256": hashlib.sha256(content).hexdigest()})
+    return hashlib.sha256(_canonical({"files": rows, "schema": "PASES_BOOTSTRAP_POLICY_FINGERPRINT_V1"})).hexdigest()
 
 
 def _text(value: Any, label: str) -> str:
@@ -525,6 +542,7 @@ class BootstrapResult:
     self_review_comment_id: int | None
     independent_review_comment_id: int | None
     unverified_hosts: tuple[str, ...]
+    bootstrap_policy_sha256: str | None = None
 
     def validate(self) -> "BootstrapResult":
         if self.status not in {"BOOTSTRAP_REVIEW_READY", "BOOTSTRAP_BLOCKED"}:
@@ -551,6 +569,8 @@ class BootstrapResult:
             _positive(self.self_review_comment_id, "Self-review Comment ID")
         if self.independent_review_comment_id is not None:
             _positive(self.independent_review_comment_id, "Independent-review Comment ID")
+        if self.bootstrap_policy_sha256 is not None:
+            _sha(self.bootstrap_policy_sha256, "Bootstrap policy digest")
         if (type(self.unverified_hosts) is not tuple or not self.unverified_hosts
                 or any(not isinstance(host, str) or not host.strip() for host in self.unverified_hosts)):
             raise GatePolicyError("Unverified host disclosure is invalid")
@@ -563,7 +583,8 @@ class BootstrapResult:
                        for _name, _run_id, status, conclusion in self.required_jobs)
                 or self.workflow_run_id is None
                 or self.workflow_status != "completed" or self.workflow_conclusion != "success"
-                or self.self_review_comment_id is None or self.independent_review_comment_id is None):
+                or self.self_review_comment_id is None or self.independent_review_comment_id is None
+                or self.bootstrap_policy_sha256 is None):
             raise GatePolicyError("Bootstrap REVIEW_READY record is missing successful evidence")
         if (self.status == "BOOTSTRAP_REVIEW_READY") != (not self.reasons):
             raise GatePolicyError("Bootstrap status and reasons disagree")
@@ -583,6 +604,7 @@ class BootstrapResult:
                 "can_request_final_user_review": self.status == "BOOTSTRAP_REVIEW_READY",
                 "status": self.status, "subject": self.subject.as_dict(), "unverified_hosts": list(self.unverified_hosts),
                 "ordinary_pases_readiness": "NOT_EVALUATED",
+                "bootstrap_policy_sha256": self.bootstrap_policy_sha256,
                 "workflow_conclusion": self.workflow_conclusion, "workflow_run_id": self.workflow_run_id,
                 "workflow_status": self.workflow_status}
 
@@ -592,7 +614,8 @@ class BootstrapResult:
                     "ordinary_pases_readiness", "reasons", "required_jobs", "schema",
                     "self_review_comment_id", "status", "subject", "unverified_hosts", "workflow_conclusion",
                     "workflow_run_id", "workflow_status"}
-        if (not isinstance(value, dict) or set(value) != expected
+        expected_with_policy = expected | {"bootstrap_policy_sha256"}
+        if (not isinstance(value, dict) or frozenset(value) not in {frozenset(expected), frozenset(expected_with_policy)}
                 or value.get("schema") != "PASES_BOOTSTRAP_REVIEW_V1"
                 or value.get("ordinary_pases_readiness") != "NOT_EVALUATED"):
             raise GatePolicyError("Bootstrap result has unknown schema or fields")
@@ -617,7 +640,8 @@ class BootstrapResult:
         result = cls(value["status"], BootstrapSubject.from_dict(value["subject"]), tuple(value["reasons"]),
                      tuple(checks), tuple(jobs), value["workflow_run_id"], value["workflow_status"],
                      value["workflow_conclusion"], value["self_review_comment_id"],
-                     value["independent_review_comment_id"], tuple(value["unverified_hosts"]))
+                     value["independent_review_comment_id"], tuple(value["unverified_hosts"]),
+                     value.get("bootstrap_policy_sha256"))
         return result.validate()
 
     @property
@@ -707,10 +731,18 @@ def evaluate_bootstrap(subject: BootstrapSubject, *, pr: dict[str, Any], respons
                        adc_requirement_ids: Iterable[str], adc_checklist_ids: Iterable[str],
                        self_review: BootstrapSelfReview | None,
                        independent_review: BootstrapIndependentReview | None,
-                       unverified_hosts: tuple[str, ...] = ()) -> BootstrapResult:
+                       unverified_hosts: tuple[str, ...] = (),
+                       bootstrap_policy_sha256: str | None = None) -> BootstrapResult:
     """Evaluate Bootstrap inputs without changing the normal delivery gate."""
     subject.validate()
     reasons = _pr_reasons(subject, pr, response_repository)
+    if bootstrap_policy_sha256 is None:
+        reasons.append("Bootstrap evaluator/adapter source digest is unavailable")
+    else:
+        try:
+            _sha(bootstrap_policy_sha256, "Bootstrap policy digest")
+        except GatePolicyError as exc:
+            reasons.append(str(exc))
     latest_runs = [run for run in workflow_runs if isinstance(run, dict)
                    and run.get("path") == ".github/workflows/ci.yml"
                    and run.get("head_sha") == subject.head_sha40
@@ -788,7 +820,7 @@ def evaluate_bootstrap(subject: BootstrapSubject, *, pr: dict[str, Any], respons
                            workflow_run_id, workflow_status, workflow_conclusion,
                            self_review.comment_id if self_review else None,
                            independent_review.comment_id if independent_review else None,
-                           unverified_hosts).validate()
+                           unverified_hosts, bootstrap_policy_sha256).validate()
 
 
 def _decode_record_comment(body: Any, sentinel: str) -> dict[str, Any]:
