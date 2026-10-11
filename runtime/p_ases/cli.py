@@ -54,6 +54,11 @@ CLI_ADVANCE_TARGETS = tuple(
     phase.value for phase in Phase if phase not in {Phase.USER_REVIEW, Phase.CLOSED}
 )
 
+# The approved stacked-PR contract for this repository's Verification issue.
+ISSUE_PR_REFS = {29: ("pases/adc-core", "pases/verification")}
+PR_CLOSING_REF = re.compile(r"(?i)\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)\s+#([1-9][0-9]*)\b")
+OWN_PR_CLOSING_LINE = re.compile(r"(?im)^Closes #([1-9][0-9]*)\s*$")
+
 
 def _json(value: Any) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2))
@@ -269,6 +274,63 @@ def _subject(repository: str, issue_number: int, pr_number: int, head_sha40: str
                                 pointer.sha256, plan.sha256, head_sha40).validate()
 
 
+def _readback_current_pr(github: GitHub, subject: VerificationSubject) -> dict[str, Any]:
+    """Fail closed unless GitHub's current PR is the exact open same-repository subject."""
+    try:
+        row = github.pull_request(subject.pr_number)
+    except GitHubError as exc:
+        raise CLIError(f"current GitHub PR readback failed: {exc}") from exc
+    base = row.get("base") if isinstance(row, dict) else None
+    head = row.get("head") if isinstance(row, dict) else None
+    base_repo = base.get("repo") if isinstance(base, dict) else None
+    head_repo = head.get("repo") if isinstance(head, dict) else None
+    base_name = base_repo.get("full_name") if isinstance(base_repo, dict) else None
+    head_name = head_repo.get("full_name") if isinstance(head_repo, dict) else None
+    base_ref = base.get("ref") if isinstance(base, dict) else None
+    head_ref = head.get("ref") if isinstance(head, dict) else None
+    base_sha = base.get("sha") if isinstance(base, dict) else None
+    head_sha = head.get("sha") if isinstance(head, dict) else None
+    body = row.get("body") if isinstance(row, dict) else None
+    if (not isinstance(row, dict) or row.get("number") != subject.pr_number
+            or row.get("state") != "open" or row.get("draft") is not False
+            or not isinstance(base_ref, str) or not base_ref.strip()
+            or not isinstance(head_ref, str) or not head_ref.strip()
+            or not isinstance(base_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", base_sha)
+            or not isinstance(head_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", head_sha)
+            or not isinstance(base_name, str) or base_name.casefold() != subject.repository.casefold()
+            or not isinstance(head_name, str) or head_name.casefold() != subject.repository.casefold()):
+        raise CLIError("current PR is closed, draft, forked, cross-repository, or has incomplete base/head identity")
+    if head_sha != subject.pr_head_sha40:
+        raise CLIError("Verification subject HEAD differs from the current GitHub PR HEAD")
+    expected_refs = ISSUE_PR_REFS.get(subject.issue_number)
+    if expected_refs is not None and (base_ref, head_ref) != expected_refs:
+        raise CLIError("current PR base/head branches do not match the approved Issue branch contract")
+    if not isinstance(body, str):
+        raise CLIError("current PR body is missing; Issue closing association cannot be verified")
+    closing_refs = [int(value) for value in PR_CLOSING_REF.findall(body)]
+    own_lines = [int(value) for value in OWN_PR_CLOSING_LINE.findall(body)]
+    if closing_refs != [subject.issue_number] or own_lines != [subject.issue_number]:
+        raise CLIError(f"current PR body must contain only one standalone Closes #{subject.issue_number} association")
+    return {
+        "number": subject.pr_number,
+        "state": "open",
+        "draft": False,
+        "repository": subject.repository.casefold(),
+        "base_ref": base_ref,
+        "base_sha": base_sha,
+        "head_ref": head_ref,
+        "head_sha": head_sha,
+        "body": body,
+    }
+
+
+def _require_same_pr_readback(github: GitHub, subject: VerificationSubject,
+                              initial: dict[str, Any]) -> None:
+    current = _readback_current_pr(github, subject)
+    if current != initial:
+        raise CLIError("GitHub PR identity/base/head changed during Verification; result is stale")
+
+
 def _result_comment(kind: str, value: dict[str, Any]) -> str:
     payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     marker = "PASES_VERIFICATION_RESULT_V1" if kind == "verification" else "PASES_ACCEPTANCE_RESULT_V1"
@@ -370,6 +432,7 @@ def _verification_collect(args: argparse.Namespace, repository: str, root: Path,
     verified_adc = verify_adc(github, args.issue)
     plan, _required, _oracles, _tests = _load_plan(root, repository, args.issue, args.plan, verified_adc)
     subject = _subject(repository, args.issue, args.pr, args.head, verified_adc, plan)
+    pr_readback = _readback_current_pr(github, subject)
     value = _read_json(args.observation, "external execution observation", root=root)
     expected = {
         "command", "entry_key", "environment", "evidence_type", "exit_status", "manual_procedure",
@@ -393,6 +456,7 @@ def _verification_collect(args: argparse.Namespace, repository: str, root: Path,
     readback = read_evidence(path)
     if readback != record:
         raise CLIError("Evidence readback changed")
+    _require_same_pr_readback(github, subject, pr_readback)
     _json({"status": "EVIDENCE_RECORDED", "subject": subject.as_dict(), "subject_sha256": subject.sha256,
            "outcome": record.outcome, "evidence_sha256": digest, "evidence_refs": [str(path)], "reasons": []})
     return 0 if record.outcome == "PASS" else 2
@@ -403,6 +467,7 @@ def _calculate_verification(args: argparse.Namespace, repository: str, root: Pat
     verified_adc = verify_adc(github, args.issue)
     plan, _required, _oracles, _tests = _load_plan(root, repository, args.issue, args.plan, verified_adc)
     subject = _subject(repository, args.issue, args.pr, args.head, verified_adc, plan)
+    pr_readback = _readback_current_pr(github, subject)
     records = read_evidence_set(root / ".p_ases" / "evidence", subject)
     try:
         config_value = _read_json(root / ".agent" / "project.json", "project Required Check configuration", root=root)
@@ -422,6 +487,7 @@ def _calculate_verification(args: argparse.Namespace, repository: str, root: Pat
     # Detect source edits that raced the GitHub read before freezing the result.
     verify_plan_sources(root, plan)
     result = build_verification_result(plan, subject, records, check_result, policy)
+    _require_same_pr_readback(github, subject, pr_readback)
     evidence_root = root / ".p_ases" / "evidence"
     evidence_refs = [str(evidence_path(evidence_root, record)) for record in records]
     return result, evidence_refs
@@ -433,9 +499,12 @@ def _verification_gate(args: argparse.Namespace, repository: str, root: Path, gi
     subject = result.subject
     result_path = verification_result_path(root / ".p_ases" / "verification", result)
     if persist:
+        _readback_current_pr(github, subject)
         write_verification_result(result_path, result)
         body = _result_comment("verification", result.as_json())
+        pr_before_publish = _readback_current_pr(github, subject)
         comment_id = _publish_once(github, args.issue, body)
+        _require_same_pr_readback(github, subject, pr_before_publish)
         evidence_refs.extend((str(result_path), f"issue-comment:{comment_id}"))
     output = result.as_json()
     output["evidence_refs"] = evidence_refs
@@ -455,9 +524,11 @@ def _verification_published(args: argparse.Namespace, repository: str, root: Pat
     if current != result:
         raise CLIError("Verification result is stale relative to current ADC, Plan, Evidence, Check policy, or Check Runs")
     body = _result_comment("verification", result.as_json())
+    pr_before_readback = _readback_current_pr(github, result.subject)
     comment_id = _exact_published(github, args.issue, body)
     if comment_id is None:
         return _blocked_result(("exact Verification result comment is not present on the Issue",), result.subject)
+    _require_same_pr_readback(github, result.subject, pr_before_readback)
     _json({"status": "PUBLISHED", "subject": result.subject.as_dict(), "subject_sha256": result.subject.sha256,
            "result_sha256": result.sha256, "comment_id": comment_id,
            "evidence_refs": [str(args.result), f"issue-comment:{comment_id}"], "reasons": []})
@@ -468,6 +539,7 @@ def _acceptance_template(args: argparse.Namespace, repository: str, root: Path, 
     verified_adc = verify_adc(github, args.issue)
     plan, _required, _oracles, _tests = _load_plan(root, repository, args.issue, args.plan, verified_adc)
     subject = _subject(repository, args.issue, args.pr, args.head, verified_adc, plan)
+    pr_readback = _readback_current_pr(github, subject)
     required_kinds = {
         "spec_change": ("acceptance_criteria",),
         "design_change": ("acceptance_criteria",),
@@ -490,6 +562,7 @@ def _acceptance_template(args: argparse.Namespace, repository: str, root: Path, 
     }
     data = _canonical(template) + b"\n"
     _write_immutable(args.output, data, root=root)
+    _require_same_pr_readback(github, subject, pr_readback)
     _json({"status": "PREPARED", "subject": subject.as_dict(), "subject_sha256": subject.sha256,
            "artifact_type": args.artifact_type, "policy_version": ACCEPTANCE_POLICY_VERSION,
            "evidence_refs": [str(args.output)], "reasons": []})
@@ -555,6 +628,7 @@ def _calculate_acceptance(args: argparse.Namespace, repository: str, root: Path,
     verified_adc = verify_adc(github, args.issue)
     plan, required, oracles, _tests = _load_plan(root, repository, args.issue, args.plan, verified_adc)
     subject = _subject(repository, args.issue, args.pr, args.head, verified_adc, plan)
+    pr_readback = _readback_current_pr(github, subject)
     expected = {"artifact_type", "baseline_sha40", "observations", "policy_version", "required_observation_kinds", "schema", "subject"}
     if not isinstance(template, dict) or set(template) != expected or template.get("schema") != "PASES_ACCEPTANCE_INPUT_V1":
         raise CLIError("Acceptance input has unknown/missing fields or schema")
@@ -604,6 +678,7 @@ def _calculate_acceptance(args: argparse.Namespace, repository: str, root: Path,
         baseline_sha40=template["baseline_sha40"],
         verification_result_sha256=current_verification.sha256,
     )
+    _require_same_pr_readback(github, subject, pr_readback)
     refs = [str(evidence_path(evidence_root, evidence_by_digest[row.evidence_sha256])) for row in observations]
     return result, refs
 
@@ -611,8 +686,10 @@ def _calculate_acceptance(args: argparse.Namespace, repository: str, root: Path,
 def _acceptance_validate(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
     template = _read_json(args.observations, "Acceptance input", root=root)
     result, evidence_refs = _calculate_acceptance(args, repository, root, github, template)
+    _readback_current_pr(github, result.subject)
     path = acceptance_result_path(root / ".p_ases" / "acceptance", result)
     write_acceptance_result(path, result)
+    _readback_current_pr(github, result.subject)
     output = result.as_json()
     output["evidence_refs"] = [str(path), str(args.observations), str(args.verification), *evidence_refs]
     output["reasons"] = list(result.reasons)
@@ -624,6 +701,7 @@ def _acceptance_recompute_saved(args: argparse.Namespace, repository: str, root:
                                 result: AcceptanceResult) -> AcceptanceResult:
     if result.subject.repository != repository or result.subject.issue_number != args.issue:
         raise CLIError("Acceptance result belongs to a different repository or Issue")
+    _readback_current_pr(github, result.subject)
     plan_path = _plans_root(root, args.issue) / f"{result.subject.plan_sha256}.json"
     recompute_args = argparse.Namespace(
         issue=result.subject.issue_number, pr=result.subject.pr_number, head=result.subject.pr_head_sha40,
@@ -652,7 +730,9 @@ def _acceptance_publish(args: argparse.Namespace, repository: str, root: Path, g
     result = read_acceptance_result(args.result)
     _acceptance_recompute_saved(args, repository, root, github, result)
     body = _result_comment("acceptance", result.as_json())
+    pr_before_publish = _readback_current_pr(github, result.subject)
     comment_id = _publish_once(github, args.issue, body)
+    _require_same_pr_readback(github, result.subject, pr_before_publish)
     _json({"status": "PUBLISHED", "subject": result.subject.as_dict(), "subject_sha256": result.subject.sha256,
            "result_sha256": result.sha256, "comment_id": comment_id,
            "evidence_refs": [str(args.result), f"issue-comment:{comment_id}"], "reasons": []})
@@ -663,9 +743,11 @@ def _acceptance_verify(args: argparse.Namespace, repository: str, root: Path, gi
     result = read_acceptance_result(args.result)
     _acceptance_recompute_saved(args, repository, root, github, result)
     body = _result_comment("acceptance", result.as_json())
+    pr_before_readback = _readback_current_pr(github, result.subject)
     comment_id = _exact_published(github, args.issue, body)
     if comment_id is None:
         return _blocked_result(("exact Acceptance result comment is not present on the Issue",), result.subject)
+    _require_same_pr_readback(github, result.subject, pr_before_readback)
     _json({"status": "PUBLISHED", "subject": result.subject.as_dict(), "subject_sha256": result.subject.sha256,
            "result_sha256": result.sha256, "comment_id": comment_id,
            "evidence_refs": [str(args.result), f"issue-comment:{comment_id}"], "reasons": []})

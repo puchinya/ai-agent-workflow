@@ -155,6 +155,14 @@ class GitHub:
             raise GitHubError("GitHub Issue comment response must be an object")
         return result
 
+    def pull_request(self, number: int) -> dict[str, Any]:
+        """Read the current Pull Request resource, including base/head repository identities."""
+        number = _positive_int(number, "Pull Request number")
+        result = self.request("GET", f"{self.prefix}/pulls/{number}")
+        if not isinstance(result, dict):
+            raise GitHubError("GitHub Pull Request response must be an object")
+        return result
+
     def create_issue_comment(self, number: int, body: str) -> dict[str, Any]:
         number = _positive_int(number, "Issue number")
         if not isinstance(body, str):
