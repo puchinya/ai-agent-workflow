@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from .adc import ADC, ADCPointer, ADCError, parse_adc, verify_adc
 from .git import GitError, run_git
 from .github import GitHub, GitHubError
 from .process import ProcessError, run_process
@@ -23,6 +24,26 @@ from .process import ProcessError, run_process
 
 class GatePolicyError(ValueError):
     pass
+
+
+@dataclass(frozen=True)
+class BootstrapADC:
+    contract: ADC
+    pointer: ADCPointer
+
+    def validate(self) -> "BootstrapADC":
+        if (self.pointer.comment_id < 1 or not SHA256.fullmatch(self.pointer.sha256)
+                or self.pointer.byte_length < 1 or self.pointer.state not in {"approved", "draft", "unverified"}
+                or self.contract.sha256 != self.pointer.sha256
+                or self.contract.byte_length != self.pointer.byte_length):
+            raise GatePolicyError("Bootstrap ADC readback does not match its exact pointer")
+        return self
+
+
+LEGACY_ADC_COMMENT = re.compile(r"(?m)^- child_adc_comment_id: `?([1-9][0-9]{0,19})`?[ \t]*$")
+LEGACY_ADC_SHA = re.compile(r"(?m)^- child_adc_sha256: `?([0-9a-f]{64})`?[ \t]*$")
+LEGACY_ADC_URL = re.compile(r"(?m)^- child_adc_comment_url: (https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[1-9][0-9]*#issuecomment-[1-9][0-9]*)[ \t]*$")
+LEGACY_CHILD_KEY = re.compile(r"(?m)^- child_key: `?([A-Za-z0-9][A-Za-z0-9._-]{0,63})`?[ \t]*$")
 
 
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -121,6 +142,56 @@ class BootstrapSubject:
         if not isinstance(value, dict) or set(value) != expected:
             raise GatePolicyError("Bootstrap subject has unknown or missing fields")
         return cls(**value).validate()
+
+
+def read_bootstrap_adc(github: GitHub, issue_number: int) -> BootstrapADC:
+    """Read an approved P-ASES ADC, or exact legacy bytes without inventing approval."""
+    try:
+        verified = verify_adc(github, issue_number)
+    except ADCError as exc:
+        if str(exc) != "Issue has no Agent Development Contract pointer":
+            raise GatePolicyError(f"current ADC readback failed: {exc}") from exc
+        return _read_legacy_bootstrap_adc(github, issue_number)
+    return BootstrapADC(verified.contract, verified.pointer).validate()
+
+
+def _read_legacy_bootstrap_adc(github: GitHub, issue_number: int) -> BootstrapADC:
+    try:
+        issue = github.issue(issue_number)
+        if (issue.get("number") != issue_number or issue.get("state") != "open"
+                or issue.get("pull_request") is not None or not isinstance(issue.get("body"), str)):
+            raise GatePolicyError("legacy ADC source Issue identity/state is invalid")
+        body = issue["body"]
+        comment_ids = LEGACY_ADC_COMMENT.findall(body)
+        digests = LEGACY_ADC_SHA.findall(body)
+        urls = LEGACY_ADC_URL.findall(body)
+        child_keys = LEGACY_CHILD_KEY.findall(body)
+        if (len(comment_ids) != 1 or len(digests) != 1 or len(urls) != 1
+                or len(child_keys) != 1):
+            raise GatePolicyError("legacy child ADC pointer is missing, duplicated, or incomplete")
+        comment_id, digest, comment_url = int(comment_ids[0]), digests[0], urls[0]
+        expected_url = f"https://github.com/{github.repo}/issues/{issue_number}#issuecomment-{comment_id}"
+        if comment_url.casefold() != expected_url.casefold():
+            raise GatePolicyError("legacy child ADC URL does not match the selected Issue and Comment ID")
+        named = _issue_comment_readback(github, issue_number, comment_id)
+        if not isinstance(named.get("body"), str):
+            raise GatePolicyError("legacy child ADC comment has no exact text body")
+        content = named["body"].encode("utf-8", errors="strict")
+        if hashlib.sha256(content).hexdigest() != digest:
+            raise GatePolicyError("legacy child ADC SHA-256 does not match its named comment")
+        contract = parse_adc(content, github.repo, issue_number)
+        if contract.child_key != child_keys[0]:
+            raise GatePolicyError("legacy child ADC key differs from the Issue's child_key")
+        final_issue = github.issue(issue_number)
+        if final_issue.get("body") != body:
+            raise GatePolicyError("legacy child ADC pointer changed during readback")
+        # The legacy issue marker has no approval-state field. Keep that fact explicit.
+        pointer = ADCPointer(comment_id, digest, len(content), "unverified")
+        return BootstrapADC(contract, pointer).validate()
+    except GitHubError as exc:
+        raise GatePolicyError(f"legacy ADC GitHub readback failed: {exc}") from exc
+    except ADCError as exc:
+        raise GatePolicyError(f"legacy ADC validation failed: {exc}") from exc
 
 
 @dataclass(frozen=True)

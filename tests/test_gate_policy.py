@@ -11,7 +11,7 @@ from p_ases.gate_policy import (
     ActivationRecord, BootstrapIndependentReview, BootstrapSelfReview, BootstrapSubject,
     GatePolicyError, LocalCheck, ReviewFinding, ReviewItem, evaluate_bootstrap,
     parse_independent_review_comment, parse_self_review_comment, publish_immutable_record, read_review_comment,
-    read_bootstrap_evidence, select_gate,
+    read_bootstrap_adc, read_bootstrap_evidence, select_gate,
     pin_gate_selection, read_activation_record, _require_repository_owner_actor,
 )
 
@@ -33,6 +33,23 @@ def subject(**overrides):
 def local_checks():
     names = ("compileall", "unittest", "dist-build-check", "dist-validation", "diff-check")
     return tuple(LocalCheck(name, ("python", name), "completed", 0, "d" * 64, False) for name in names)
+
+
+def minimal_adc_bytes():
+    return ("# Agent Development Contract — test\n\n"
+            "Repository: octo/repo\nIssue: 27\nChild key: adc-core\n\n"
+            "## Issue\nA test child issue.\n\n"
+            "## Scope\nValidate the legacy Bootstrap pointer.\n\n"
+            "## Change Kind\nTesting only.\n\n"
+            "## Requirements\n- REQ-01: Read exact ADC bytes.\n\n"
+            "## Architecture Decisions\nNo architecture changes.\n\n"
+            "## Artifact Impact\nNo artifacts.\n\n"
+            "## Exact Changes\nRead the immutable comment.\n\n"
+            "## Invariants\nPreserve exact bytes.\n\n"
+            "## Non-goals\nDo not infer approval.\n\n"
+            "## Verification Obligations\nVerify SHA-256.\n\n"
+            "## Reviewer Checklist\n- [ ] Exact bytes are read back.\n\n"
+            "## Completion Gates\nReturn a typed result.\n").encode("utf-8")
 
 
 def pr_readback(**overrides):
@@ -218,6 +235,39 @@ class BootstrapPolicyTests(unittest.TestCase):
         self.assertEqual(parse_self_review_comment(found["body"], 200).subject, subject())
         with self.assertRaises(GatePolicyError):
             read_review_comment(github, 28, 200, "PASES_BOOTSTRAP_SELF_REVIEW_V1")
+
+    def test_legacy_child_adc_is_read_back_without_inventing_approval(self):
+        content = minimal_adc_bytes()
+        digest = __import__("hashlib").sha256(content).hexdigest()
+        comment_id = 500
+        issue_body = ("Child of #26.\n\n- child_key: `adc-core`\n"
+                      f"- child_adc_comment_id: {comment_id}\n"
+                      f"- child_adc_sha256: `{digest}`\n"
+                      f"- child_adc_comment_url: https://github.com/{REPO}/issues/27#issuecomment-{comment_id}\n")
+
+        class LegacyGitHub(FakeGitHub):
+            def issue(self, issue_number):
+                return {"number": issue_number, "state": "open", "body": issue_body,
+                        "repository_url": f"https://api.github.com/repos/{REPO}",
+                        "url": f"https://api.github.com/repos/{REPO}/issues/{issue_number}",
+                        "html_url": f"https://github.com/{REPO}/issues/{issue_number}"}
+
+            def issue_comments(self, issue_number):
+                return [{"id": comment_id, "body": content.decode("utf-8"),
+                         "issue_url": f"https://api.github.com/repos/{REPO}/issues/{issue_number}"}]
+
+            def issue_comment(self, issue_number, requested_id):
+                return {"id": requested_id, "body": content.decode("utf-8"),
+                        "issue_url": f"https://api.github.com/repos/{REPO}/issues/{issue_number}"}
+
+        result = read_bootstrap_adc(LegacyGitHub(), 27)
+        self.assertEqual(result.pointer.comment_id, comment_id)
+        self.assertEqual(result.pointer.sha256, digest)
+        self.assertEqual(result.pointer.state, "unverified")
+        self.assertEqual(result.contract.requirement_ids, ("REQ-01",))
+
+        with self.assertRaises(GatePolicyError):
+            read_bootstrap_adc(LegacyGitHub(), 28)
 
     def test_activation_requires_exact_child_set_and_user_approval_reference(self):
         record = ActivationRecord(

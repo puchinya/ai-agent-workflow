@@ -24,7 +24,7 @@ from .gate_policy import (
     BOOTSTRAP_ISSUES, BOOTSTRAP_POLICY, BootstrapResult, BootstrapSubject,
     GatePolicyError, choose_gate_for_new_issue, current_checkout_subject,
     evaluate_bootstrap, parse_independent_review_comment, parse_self_review_comment,
-    pin_gate_selection, publish_immutable_record, read_bootstrap_evidence, read_review_comment,
+    pin_gate_selection, publish_immutable_record, read_bootstrap_adc, read_bootstrap_evidence, read_review_comment,
     run_local_bootstrap_checks,
 )
 from .work import (
@@ -1101,9 +1101,7 @@ def _delivery_gate_policy(args: argparse.Namespace, repository: str, github: Git
 def _delivery_bootstrap_check(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
     reasons: list[str] = []
     try:
-        verified_adc = verify_adc(github, args.issue)
-        if verified_adc.pointer.state != "approved":
-            raise GatePolicyError("current child ADC is not approved")
+        bootstrap_adc = read_bootstrap_adc(github, args.issue)
         pr = github.pull_request(args.pr)
         base, head = pr.get("base"), pr.get("head")
         if not isinstance(base, dict) or not isinstance(head, dict):
@@ -1113,8 +1111,8 @@ def _delivery_bootstrap_check(args: argparse.Namespace, repository: str, root: P
             raise GatePolicyError("current PR base ref/SHA readback is incomplete")
         if not isinstance(head.get("ref"), str) or not isinstance(head_sha, str):
             raise GatePolicyError("current PR head ref/SHA readback is incomplete")
-        subject = BootstrapSubject(repository, args.issue, args.pr, verified_adc.pointer.comment_id,
-                                  verified_adc.pointer.sha256, base["ref"], base_sha,
+        subject = BootstrapSubject(repository, args.issue, args.pr, bootstrap_adc.pointer.comment_id,
+                                  bootstrap_adc.pointer.sha256, base["ref"], base_sha,
                                   head["ref"], head_sha).validate()
         selection = choose_gate_for_new_issue(
             github, repository, args.issue, datetime.now(timezone.utc).isoformat(timespec="seconds"))
@@ -1126,6 +1124,9 @@ def _delivery_bootstrap_check(args: argparse.Namespace, repository: str, root: P
                "reasons": [f"current ADC/PR/gate selection readback failed: {exc}"],
                "evidence_refs": []})
         return 2
+
+    if bootstrap_adc.pointer.state != "approved":
+        reasons.append(f"current child ADC approval state is {bootstrap_adc.pointer.state}; explicit approved state is required")
 
     try:
         current_checkout_subject(root, subject)
@@ -1165,14 +1166,14 @@ def _delivery_bootstrap_check(args: argparse.Namespace, repository: str, root: P
         except ProfileError:
             profile = None
     required_names = tuple(name for name, _app_id in profile.required_checks) if profile else ()
-    checklist_body = verified_adc.contract.section("reviewer_checklist")
+    checklist_body = bootstrap_adc.contract.section("reviewer_checklist")
     checklist_lines = [line for line in checklist_body.splitlines() if line.strip()]
     checklist_ids = tuple(f"CHECKLIST-{index:03d}" for index, _line in enumerate(checklist_lines, 1))
     unverified_hosts = tuple(args.unverified_host)
     result = evaluate_bootstrap(
         subject, pr=pr, response_repository=repository, workflow_runs=workflow_runs, check_runs=check_runs,
         required_check_names=required_names, local_checks=local_checks,
-        adc_requirement_ids=verified_adc.contract.requirement_ids, adc_checklist_ids=checklist_ids,
+        adc_requirement_ids=bootstrap_adc.contract.requirement_ids, adc_checklist_ids=checklist_ids,
         self_review=self_review, independent_review=independent_review, unverified_hosts=unverified_hosts)
     if reasons:
         result = BootstrapResult("BOOTSTRAP_BLOCKED", subject, tuple(dict.fromkeys(result.reasons + tuple(reasons))),
@@ -1184,12 +1185,12 @@ def _delivery_bootstrap_check(args: argparse.Namespace, repository: str, root: P
     # Re-read the immutable ADC and current PR after local commands and GitHub evidence collection.
     snapshot_stable = True
     try:
-        final_adc = verify_adc(github, args.issue)
+        final_adc = read_bootstrap_adc(github, args.issue)
         final_pr = github.pull_request(args.pr)
         final_base, final_head = final_pr.get("base"), final_pr.get("head")
         final_subject = (final_base.get("ref"), final_base.get("sha"), final_head.get("ref"), final_head.get("sha"))
         expected_subject = (subject.base_ref, subject.base_sha40, subject.head_ref, subject.head_sha40)
-        if (final_adc.pointer != verified_adc.pointer or final_pr.get("state") != pr.get("state")
+        if (final_adc.pointer != bootstrap_adc.pointer or final_pr.get("state") != pr.get("state")
                 or final_pr.get("draft") != pr.get("draft") or final_subject != expected_subject
                 or final_pr.get("body") != pr.get("body")):
             raise GatePolicyError("ADC or PR identity changed during Bootstrap verification; evidence is stale")
@@ -1209,9 +1210,9 @@ def _delivery_bootstrap_check(args: argparse.Namespace, repository: str, root: P
             evidence_readback = read_bootstrap_evidence(github, args.issue, evidence_comment_id)
             if evidence_readback != result.payload():
                 raise GatePolicyError("Bootstrap evidence payload readback does not match the current result")
-            final_adc = verify_adc(github, args.issue)
+            final_adc = read_bootstrap_adc(github, args.issue)
             final_pr = github.pull_request(args.pr)
-            if (final_adc.pointer != verified_adc.pointer or final_pr.get("state") != "open"
+            if (final_adc.pointer != bootstrap_adc.pointer or final_pr.get("state") != "open"
                     or final_pr.get("draft") is not False or final_pr.get("head", {}).get("sha") != subject.head_sha40):
                 raise GatePolicyError("PR or ADC changed after Bootstrap evidence publication; current result is stale")
         except (ADCError, GatePolicyError, GitHubError, AttributeError) as exc:
