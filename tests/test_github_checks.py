@@ -41,6 +41,18 @@ class FakeGitHub(GitHub):
 
 
 class GitHubCheckRunTests(unittest.TestCase):
+    def test_pull_request_readback_uses_exact_numbered_api_resource(self):
+        row = {"number": 54, "state": "open", "draft": False}
+        github = FakeGitHub((row,))
+        self.assertEqual(github.pull_request(54), row)
+        self.assertEqual(github.calls, [("GET", "repos/octo/repo/pulls/54", None)])
+
+    def test_pull_request_readback_rejects_bad_number_and_non_object(self):
+        with self.assertRaises(GitHubError):
+            FakeGitHub(()).pull_request(0)
+        with self.assertRaises(GitHubError):
+            FakeGitHub(([],)).pull_request(54)
+
     def test_check_runs_paginates_all_pages_and_selects_check_runs_array(self):
         first = [check_run(i, f"job-{i}") for i in range(1, 101)]
         second = [check_run(101, "job-last")]
