@@ -143,6 +143,20 @@ class VerificationSecurityTests(unittest.TestCase):
             with self.assertRaises(EvidenceError):
                 read_evidence_set(link, record.subject)
 
+    def test_evidence_writer_rejects_a_symlinked_pases_root(self):
+        plan, _entry, _oracle, _test = make_plan()
+        record = make_evidence(plan)
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            target = base / "target"
+            target.mkdir()
+            workspace = base / "workspace"
+            workspace.mkdir()
+            (workspace / ".p_ases").symlink_to(target, target_is_directory=True)
+            path = evidence_path(workspace / ".p_ases" / "evidence", record)
+            with self.assertRaises(EvidenceError):
+                write_evidence(path, record)
+
     def test_required_check_accepts_only_trusted_current_successful_check_run(self):
         plan, _entry, _oracle, _test = make_plan()
         subject = make_subject(plan)

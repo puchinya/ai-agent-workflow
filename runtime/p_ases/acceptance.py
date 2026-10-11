@@ -37,11 +37,14 @@ def _reject_symlink_path(path: Path, label: str, *, parent_count: int = 3) -> No
     location = Path(os.path.abspath(path))
     candidates = [location]
     parent = location
-    for _ in range(parent_count):
+    has_pases_anchor = ".p_ases" in location.parts
+    for _ in range(parent_count + len(location.parts) if has_pases_anchor else parent_count):
         if parent == parent.parent:
             break
         parent = parent.parent
         candidates.append(parent)
+        if has_pases_anchor and parent.name == ".p_ases":
+            break
     for candidate in candidates:
         if candidate.is_symlink():
             raise AcceptanceError(f"{label} must not traverse a symbolic link")

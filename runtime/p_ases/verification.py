@@ -338,11 +338,14 @@ def _reject_result_symlink(path: Path) -> None:
     location = Path(os.path.abspath(path))
     candidates = [location]
     parent = location
-    for _ in range(3):
+    has_pases_anchor = ".p_ases" in location.parts
+    for _ in range(3 + len(location.parts) if has_pases_anchor else 3):
         if parent == parent.parent:
             break
         parent = parent.parent
         candidates.append(parent)
+        if has_pases_anchor and parent.name == ".p_ases":
+            break
     if any(candidate.is_symlink() for candidate in candidates):
         raise VerificationError("Verification result path must not traverse a symbolic link")
 
