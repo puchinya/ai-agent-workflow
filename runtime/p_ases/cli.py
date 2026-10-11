@@ -22,11 +22,13 @@ from .checkpoint import CheckpointError, PRBinding, read_pr_binding
 from .context import WorkContext
 from .profile import ProfileError, load_profile
 from .gate_policy import (
-    BOOTSTRAP_ISSUES, BOOTSTRAP_POLICY, BootstrapResult, BootstrapSubject,
+    BOOTSTRAP_ISSUES, BOOTSTRAP_POLICY, BootstrapResult, BootstrapSubject, GateSelection,
     GatePolicyError, bootstrap_policy_digest, choose_gate_for_new_issue, current_checkout_subject,
     evaluate_bootstrap, parse_independent_review_comment, parse_self_review_comment,
-    pin_gate_selection, publish_immutable_record, read_bootstrap_adc, read_bootstrap_evidence, read_review_comment,
+    pin_gate_selection, publish_immutable_record, read_bootstrap_adc, read_bootstrap_evidence,
+    read_gate_selection, read_latest_bootstrap_evidence, read_review_comment,
     run_local_bootstrap_checks_bound, verify_bootstrap_review_evidence, verify_independent_context_artifact,
+    validate_bootstrap_pr_identity,
 )
 from .work import (
     WorkError, bind_work, ensure_branch, ensure_pull_request, execution_binding_path,
@@ -1099,6 +1101,84 @@ def _delivery_gate_policy(args: argparse.Namespace, repository: str, github: Git
         return 2
 
 
+def _bootstrap_pr_identity(pr: dict[str, Any]) -> tuple[Any, ...]:
+    """Return all PR fields that identify the Bootstrap subject and Issue association."""
+    def repo_identity(value: Any) -> tuple[Any, Any]:
+        if not isinstance(value, dict):
+            return None, None
+        full_name = value.get("full_name")
+        return (full_name.casefold() if isinstance(full_name, str) else None,
+                value.get("id") if type(value.get("id")) is int else None)
+
+    base, head = pr.get("base"), pr.get("head")
+    base = base if isinstance(base, dict) else {}
+    head = head if isinstance(head, dict) else {}
+    return (pr.get("number"), pr.get("state"), pr.get("draft"),
+            repo_identity(base.get("repo")), base.get("ref"), base.get("sha"),
+            repo_identity(head.get("repo")), head.get("ref"), head.get("sha"),
+            pr.get("body"))
+
+
+def _verify_live_bootstrap_subject(github: GitHub, issue_number: int, pr_number: int,
+                                   repository: str, root: Path, subject: BootstrapSubject,
+                                   initial_adc: Any, initial_pr: dict[str, Any],
+                                   gate_comment_id: int, gate_selection: GateSelection,
+                                   gate_selection_body: str) -> None:
+    """Re-read the complete PR/ADC/gate identity and require it to match the initial snapshot."""
+    current_checkout_subject(root, subject)
+    current_adc = read_bootstrap_adc(github, issue_number)
+    if current_adc.pointer != initial_adc.pointer:
+        raise GatePolicyError("current ADC pointer changed during Bootstrap verification")
+    current_pr = github.pull_request(pr_number)
+    validate_bootstrap_pr_identity(subject, current_pr, repository)
+    if _bootstrap_pr_identity(current_pr) != _bootstrap_pr_identity(initial_pr):
+        raise GatePolicyError("current PR identity or Issue-closing body changed during Bootstrap verification")
+    current_selection = choose_gate_for_new_issue(
+        github, repository, issue_number, datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    if (current_selection is None or current_selection.issue_number != issue_number
+            or current_selection.repository.casefold() != repository.casefold()
+            or current_selection.policy_version != gate_selection.policy_version):
+        raise GatePolicyError("current fixed gate selection changed during Bootstrap verification")
+    current_gate_id, pinned_selection, current_gate_body = read_gate_selection(github, issue_number)
+    if (current_gate_id != gate_comment_id or pinned_selection.payload() != gate_selection.payload()
+            or current_gate_body != gate_selection_body):
+        raise GatePolicyError("pinned gate selection identity changed during Bootstrap verification")
+
+
+def _publish_bootstrap_observation(github: GitHub, issue_number: int,
+                                   result: BootstrapResult) -> int:
+    """Publish and verify that this exact append-only observation is the latest one."""
+    expected = result.payload()
+    last_error: Exception | None = None
+    for _attempt in range(2):
+        try:
+            comment_id, _body = publish_immutable_record(
+                github, issue_number, "PASES_BOOTSTRAP_REVIEW_V1", expected)
+            if read_bootstrap_evidence(github, issue_number, comment_id) != expected:
+                raise GatePolicyError("Bootstrap evidence payload readback does not match the current result")
+        except (GatePolicyError, GitHubError) as exc:
+            last_error = exc
+        else:
+            last_error = None
+        try:
+            latest = read_latest_bootstrap_evidence(github, issue_number)
+            if latest is not None and latest[1] == expected:
+                return latest[0]
+            last_error = GatePolicyError("published Bootstrap result is not the latest append-only observation")
+        except (GatePolicyError, GitHubError) as exc:
+            last_error = exc
+    detail = f": {last_error}" if last_error is not None else ""
+    raise GatePolicyError(f"Bootstrap evidence publish/readback did not become current{detail}")
+
+
+def _append_blocked_bootstrap_observation(github: GitHub, issue_number: int,
+                                          result: BootstrapResult,
+                                          reasons: tuple[str, ...]) -> tuple[BootstrapResult, int]:
+    blocked = replace(result, status="BOOTSTRAP_BLOCKED",
+                      reasons=tuple(dict.fromkeys(result.reasons + reasons))).validate()
+    return blocked, _publish_bootstrap_observation(github, issue_number, blocked)
+
+
 def _delivery_bootstrap_check(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
     reasons: list[str] = []
     try:
@@ -1119,7 +1199,13 @@ def _delivery_bootstrap_check(args: argparse.Namespace, repository: str, root: P
             github, repository, args.issue, datetime.now(timezone.utc).isoformat(timespec="seconds"))
         if selection is None or selection.policy_version != BOOTSTRAP_POLICY:
             raise GatePolicyError("Issue does not resolve to the fixed Bootstrap policy")
-        gate_comment_id, _ = pin_gate_selection(github, selection)
+        gate_comment_id, gate_selection_body = pin_gate_selection(github, selection)
+        read_gate_id, gate_selection, read_gate_body = read_gate_selection(github, args.issue)
+        if (read_gate_id != gate_comment_id or read_gate_body != gate_selection_body
+                or gate_selection.issue_number != args.issue
+                or gate_selection.repository.casefold() != repository.casefold()
+                or gate_selection.policy_version != BOOTSTRAP_POLICY):
+            raise GatePolicyError("pinned gate selection does not match the current Bootstrap subject")
     except (ADCError, GatePolicyError, GitHubError, KeyError, TypeError) as exc:
         _json({"status": "BOOTSTRAP_BLOCKED", "subject": None,
                "reasons": [f"current ADC/PR/gate selection readback failed: {exc}"],
@@ -1209,19 +1295,12 @@ def _delivery_bootstrap_check(args: argparse.Namespace, repository: str, root: P
         result = replace(result, status="BOOTSTRAP_BLOCKED",
                          reasons=tuple(dict.fromkeys(result.reasons + tuple(reasons)))).validate()
 
-    # Re-read the immutable ADC and current PR after local commands and GitHub evidence collection.
+    # Re-read the complete immutable ADC, PR, and fixed gate selection before publishing.
     snapshot_stable = True
     try:
-        current_checkout_subject(root, subject)
-        final_adc = read_bootstrap_adc(github, args.issue)
-        final_pr = github.pull_request(args.pr)
-        final_base, final_head = final_pr.get("base"), final_pr.get("head")
-        final_subject = (final_base.get("ref"), final_base.get("sha"), final_head.get("ref"), final_head.get("sha"))
-        expected_subject = (subject.base_ref, subject.base_sha40, subject.head_ref, subject.head_sha40)
-        if (final_adc.pointer != bootstrap_adc.pointer or final_pr.get("state") != pr.get("state")
-                or final_pr.get("draft") != pr.get("draft") or final_subject != expected_subject
-                or final_pr.get("body") != pr.get("body")):
-            raise GatePolicyError("ADC or PR identity changed during Bootstrap verification; evidence is stale")
+        _verify_live_bootstrap_subject(
+            github, args.issue, args.pr, repository, root, subject, bootstrap_adc, pr,
+            gate_comment_id, gate_selection, gate_selection_body)
     except (ADCError, GatePolicyError, GitHubError, AttributeError) as exc:
         snapshot_stable = False
         result = replace(result, status="BOOTSTRAP_BLOCKED",
@@ -1230,30 +1309,24 @@ def _delivery_bootstrap_check(args: argparse.Namespace, repository: str, root: P
     evidence_comment_id = None
     if snapshot_stable:
         try:
-            # Last local read immediately before publishing any READY record.
+            # This final clean-checkout read is immediately before publication.
             current_checkout_subject(root, subject)
-            evidence_comment_id, _body = publish_immutable_record(
-                github, args.issue, "PASES_BOOTSTRAP_REVIEW_V1", result.payload())
-            evidence_readback = read_bootstrap_evidence(github, args.issue, evidence_comment_id)
-            if evidence_readback != result.payload():
-                raise GatePolicyError("Bootstrap evidence payload readback does not match the current result")
-            final_adc = read_bootstrap_adc(github, args.issue)
-            final_pr = github.pull_request(args.pr)
-            if (final_adc.pointer != bootstrap_adc.pointer or final_pr.get("state") != "open"
-                    or final_pr.get("draft") is not False or final_pr.get("head", {}).get("sha") != subject.head_sha40):
-                raise GatePolicyError("PR or ADC changed after Bootstrap evidence publication; current result is stale")
+            evidence_comment_id = _publish_bootstrap_observation(github, args.issue, result)
+            post_publish_failures: list[str] = []
+            try:
+                _verify_live_bootstrap_subject(
+                    github, args.issue, args.pr, repository, root, subject, bootstrap_adc, pr,
+                    gate_comment_id, gate_selection, gate_selection_body)
+            except (ADCError, GatePolicyError, GitHubError, AttributeError) as exc:
+                post_publish_failures.append(f"PR/ADC/gate selection changed during evidence publication: {exc}")
             try:
                 current_checkout_subject(root, subject)
-            except GatePolicyError as checkout_exc:
-                # Append a newer BLOCKED observation if the checkout changed during publication.
-                result = replace(result, status="BOOTSTRAP_BLOCKED",
-                                 reasons=tuple(dict.fromkeys(result.reasons + (
-                                     f"local checkout changed during evidence publication: {checkout_exc}",)))).validate()
-                evidence_comment_id, _body = publish_immutable_record(
-                    github, args.issue, "PASES_BOOTSTRAP_REVIEW_V1", result.payload())
-                evidence_readback = read_bootstrap_evidence(github, args.issue, evidence_comment_id)
-                if evidence_readback != result.payload():
-                    raise GatePolicyError("post-publication blocked evidence readback does not match")
+            except GatePolicyError as exc:
+                post_publish_failures.append(f"local checkout changed during evidence publication: {exc}")
+            if post_publish_failures:
+                # A published READY must not remain the latest observation after any subject drift.
+                result, evidence_comment_id = _append_blocked_bootstrap_observation(
+                    github, args.issue, result, tuple(post_publish_failures))
         except (ADCError, GatePolicyError, GitHubError, AttributeError) as exc:
             reasons = tuple(dict.fromkeys(result.reasons + (str(exc),)))
             _json({"status": "BOOTSTRAP_BLOCKED", "subject": subject.as_dict(), "reasons": list(reasons),

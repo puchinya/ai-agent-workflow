@@ -847,6 +847,15 @@ def _pr_reasons(subject: BootstrapSubject, pr: dict[str, Any], response_reposito
     return reasons
 
 
+def validate_bootstrap_pr_identity(subject: BootstrapSubject, pr: dict[str, Any],
+                                   response_repository: str) -> None:
+    """Fail closed unless a PR readback satisfies every bound Bootstrap identity field."""
+    subject.validate()
+    reasons = _pr_reasons(subject, pr, response_repository)
+    if reasons:
+        raise GatePolicyError("; ".join(reasons))
+
+
 def _latest_check_results(check_runs: list[dict[str, Any]], required_names: Iterable[str], head_sha40: str) -> tuple[list[tuple[str, int, str, str]], list[str]]:
     reasons: list[str] = []
     results: list[tuple[str, int, str, str]] = []
@@ -1244,6 +1253,45 @@ def read_bootstrap_evidence(github: GitHub, issue_number: int, comment_id: int) 
         return selected
     except GitHubError as exc:
         raise GatePolicyError(f"Bootstrap evidence readback failed: {exc}") from exc
+
+
+def read_latest_bootstrap_evidence(github: GitHub, issue_number: int) -> tuple[int, dict[str, Any]] | None:
+    """Read the latest append-only Bootstrap observation after an ambiguous publish result."""
+    try:
+        comments = github.issue_comments(issue_number)
+    except GitHubError as exc:
+        raise GatePolicyError(f"latest Bootstrap evidence lookup failed: {exc}") from exc
+    rows = [row for row in comments if isinstance(row, dict) and isinstance(row.get("body"), str)
+            and row["body"].startswith("<!-- PASES_BOOTSTRAP_REVIEW_V1\n")]
+    if not rows:
+        return None
+    comment_id = max(_positive(row.get("id"), "Bootstrap evidence Comment ID") for row in rows)
+    return comment_id, read_bootstrap_evidence(github, issue_number, comment_id)
+
+
+def read_gate_selection(github: GitHub, issue_number: int) -> tuple[int, GateSelection, str]:
+    """Read the unique immutable gate selection without creating or repairing it."""
+    try:
+        comments = github.issue_comments(issue_number)
+    except GitHubError as exc:
+        raise GatePolicyError(f"gate selection readback failed: {exc}") from exc
+    rows = [row for row in comments if isinstance(row, dict) and isinstance(row.get("body"), str)
+            and row["body"].startswith("<!-- PASES_GATE_SELECTION_V1\n")]
+    if len(rows) != 1:
+        raise GatePolicyError("gate selection record is missing or duplicated")
+    selection = GateSelection.from_payload(
+        _decode_record_comment(rows[0]["body"], "PASES_GATE_SELECTION_V1"))
+    if (selection.issue_number != issue_number
+            or selection.repository.casefold() != github.repo.casefold()):
+        raise GatePolicyError("gate selection repository or Issue identity is mismatched")
+    comment_id = _positive(rows[0].get("id"), "Gate selection Comment ID")
+    try:
+        named = _issue_comment_readback(github, issue_number, comment_id)
+    except GitHubError as exc:
+        raise GatePolicyError(f"gate selection exact-body readback failed: {exc}") from exc
+    if named.get("body") != rows[0]["body"]:
+        raise GatePolicyError("gate selection exact-body readback failed")
+    return comment_id, selection, rows[0]["body"]
 
 
 def pin_gate_selection(github: GitHub, selection: GateSelection) -> tuple[int, str]:

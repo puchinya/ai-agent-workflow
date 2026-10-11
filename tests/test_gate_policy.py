@@ -17,7 +17,8 @@ from p_ases.gate_policy import (
     GatePolicyError, LocalCheck, ReviewFinding, ReviewItem, evaluate_bootstrap,
     parse_independent_review_comment, parse_self_review_comment, publish_immutable_record, read_review_comment,
     read_bootstrap_adc, read_bootstrap_evidence, select_gate,
-    pin_gate_selection, read_activation_record, _require_repository_owner_actor,
+    pin_gate_selection, read_gate_selection, read_latest_bootstrap_evidence,
+    read_activation_record, _require_repository_owner_actor,
     _validate_activation_candidate, bootstrap_policy_digest, BootstrapResult,
     verify_bootstrap_review_evidence, verify_independent_context_artifact,
     run_local_bootstrap_checks_bound,
@@ -581,6 +582,10 @@ class ImmutableBootstrapRecordTests(unittest.TestCase):
         github = FakeGitHub()
         first = select_gate(REPO, 27, selected_at="2026-10-11T00:00:00Z")
         first_id, _ = pin_gate_selection(github, first)
+        read_id, read_selection, read_body = read_gate_selection(github, 27)
+        self.assertEqual(read_id, first_id)
+        self.assertEqual(read_selection.payload(), first.payload())
+        self.assertTrue(read_body.startswith("<!-- PASES_GATE_SELECTION_V1\n"))
         retry = select_gate(REPO, 27, selected_at="2026-10-11T01:00:00Z")
         retry_id, _ = pin_gate_selection(github, retry)
         self.assertEqual(first_id, retry_id)
@@ -602,6 +607,7 @@ class ImmutableBootstrapRecordTests(unittest.TestCase):
         self.assertEqual(read_bootstrap_evidence(github, 27, second_id), second)
         self.assertIn('"attempt":2', second_body)
         self.assertIn(f'"previous_comment_id":{first_id}', second_body)
+        self.assertEqual(read_latest_bootstrap_evidence(github, 27), (second_id, second))
 
     def test_policy_source_digest_change_appends_new_bootstrap_attempt(self):
         github = FakeGitHub()
