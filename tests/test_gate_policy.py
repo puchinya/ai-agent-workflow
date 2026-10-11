@@ -237,21 +237,35 @@ class BootstrapPolicyTests(unittest.TestCase):
         self.assertEqual(select_gate(REPO, 27, selected_at="2026-10-11T00:00:01Z", activation=activation).policy_version,
                          "bootstrap-legacy-v1")
 
-    def test_valid_current_subject_can_be_bootstrap_review_ready(self):
+    def test_valid_current_subject_can_be_bootstrap_technical_ready_without_review(self):
         result = evaluate()
-        self.assertEqual(result.status, "BOOTSTRAP_REVIEW_READY")
+        self.assertEqual(result.status, "BOOTSTRAP_TECHNICAL_READY")
         self.assertEqual(result.workflow_run_id, 500)
         self.assertEqual(result.payload()["schema"], "PASES_BOOTSTRAP_REVIEW_V1")
         self.assertIn("unverified_hosts", result.payload())
-        self.assertTrue(result.payload()["verified_review_evidence"])
-        self.assertEqual(result.payload()["independent_context_artifact_comment_id"], 202)
-        self.assertIn("not cryptographically verified", result.payload()["independence_assurance"])
+        self.assertEqual(result.review_mode, "WAIVED_BOOTSTRAP")
+        self.assertEqual(result.payload()["verified_review_evidence"], [])
+        self.assertIsNone(result.payload()["self_review_comment_id"])
+        self.assertIsNone(result.payload()["independent_review_comment_id"])
+        self.assertIsNone(result.payload()["independent_context_artifact_comment_id"])
+        self.assertFalse(result.payload()["separate_context_confirmed"])
+        self.assertEqual(result.payload()["independence_assurance"], "NOT_APPLICABLE_REVIEW_WAIVED")
+        self.assertFalse(result.payload()["can_request_final_user_review"])
 
     def test_bootstrap_policy_digest_is_a_full_sha256(self):
         self.assertRegex(bootstrap_policy_digest(), r"^[0-9a-f]{64}$")
 
     def test_historical_blocked_v1_result_without_policy_digest_remains_readable(self):
         old_payload = evaluate(independent_review=None).payload()
+        old_payload.pop("review_mode")
+        old_payload.pop("independence_assurance")
+        old_payload.pop("verified_review_evidence")
+        old_payload.pop("independent_context_artifact_comment_id")
+        old_payload.pop("independent_context_artifact_sha256")
+        old_payload.pop("separate_context_confirmed")
+        old_payload["status"] = "BOOTSTRAP_BLOCKED"
+        old_payload["can_request_final_user_review"] = False
+        old_payload["reasons"] = ["historical evidence was incomplete"]
         del old_payload["bootstrap_policy_sha256"]
         historical = BootstrapResult.from_payload(old_payload)
         self.assertEqual(historical.status, "BOOTSTRAP_BLOCKED")
@@ -311,27 +325,56 @@ class BootstrapPolicyTests(unittest.TestCase):
         self.assertEqual(evaluate(local_checks=tuple(failed)).status, "BOOTSTRAP_BLOCKED")
         self.assertEqual(evaluate(local_checks=()).status, "BOOTSTRAP_BLOCKED")
 
-    def test_self_review_must_cover_every_adc_requirement_and_checklist(self):
+    def test_review_inputs_are_ignored_by_technical_bootstrap_readiness(self):
         incomplete = self_review(items=(ReviewItem("REQ-08", "PASS", ("evidence",)),))
-        self.assertEqual(evaluate(self_review=incomplete).status, "BOOTSTRAP_BLOCKED")
+        self.assertEqual(evaluate(self_review=incomplete).status, "BOOTSTRAP_TECHNICAL_READY")
         wrong_subject = self_review(subj=subject(head_sha40="f" * 40))
-        self.assertEqual(evaluate(self_review=wrong_subject).status, "BOOTSTRAP_BLOCKED")
-        self.assertEqual(evaluate(self_review=None).status, "BOOTSTRAP_BLOCKED")
+        self.assertEqual(evaluate(self_review=wrong_subject).status, "BOOTSTRAP_TECHNICAL_READY")
+        self.assertEqual(evaluate(self_review=None).status, "BOOTSTRAP_TECHNICAL_READY")
+        self.assertEqual(evaluate(self_review=object()).status, "BOOTSTRAP_TECHNICAL_READY")
         unverified = replace(self_review(), verified_evidence=())
-        self.assertEqual(evaluate(self_review=unverified).status, "BOOTSTRAP_BLOCKED")
+        self.assertEqual(evaluate(self_review=unverified).status, "BOOTSTRAP_TECHNICAL_READY")
 
-    def test_independent_review_requires_distinct_context_and_zero_unresolved_ab(self):
+    def test_independent_review_inputs_are_ignored_by_technical_bootstrap_readiness(self):
         same_context = independent_review(context="implementation-context")
-        self.assertEqual(evaluate(independent_review=same_context).status, "BOOTSTRAP_BLOCKED")
+        self.assertEqual(evaluate(independent_review=same_context).status, "BOOTSTRAP_TECHNICAL_READY")
         finding = ReviewFinding("A-01", "A", False, "blocking issue", "https://github.com/octo/repo/pull/33")
         unresolved = independent_review(findings=(finding,), verdict="CONCERNS")
-        self.assertEqual(evaluate(independent_review=unresolved).status, "BOOTSTRAP_BLOCKED")
-        self.assertEqual(evaluate(independent_review=None).status, "BOOTSTRAP_BLOCKED")
+        self.assertEqual(evaluate(independent_review=unresolved).status, "BOOTSTRAP_TECHNICAL_READY")
+        self.assertEqual(evaluate(independent_review=None).status, "BOOTSTRAP_TECHNICAL_READY")
+        self.assertEqual(evaluate(independent_review=object()).status, "BOOTSTRAP_TECHNICAL_READY")
         unverified_context = replace(independent_review(), context_artifact_verified=False,
                                      context_artifact_comment_id=None)
-        self.assertEqual(evaluate(independent_review=unverified_context).status, "BOOTSTRAP_BLOCKED")
+        self.assertEqual(evaluate(independent_review=unverified_context).status, "BOOTSTRAP_TECHNICAL_READY")
         unconfirmed = replace(independent_review(), separate_context_confirmed=False)
-        self.assertEqual(evaluate(independent_review=unconfirmed).status, "BOOTSTRAP_BLOCKED")
+        self.assertEqual(evaluate(independent_review=unconfirmed).status, "BOOTSTRAP_TECHNICAL_READY")
+
+    def test_bootstrap_waiver_cannot_expand_to_another_repository_or_issue(self):
+        with self.assertRaisesRegex(GatePolicyError, "fixed cohort"):
+            evaluate(subject=subject(repository="fork/repo"))
+        with self.assertRaisesRegex(GatePolicyError, "fixed Bootstrap cohort"):
+            evaluate(subject=subject(issue_number=33))
+
+    def test_technical_bootstrap_payload_is_strict_and_does_not_claim_review(self):
+        payload = evaluate().payload()
+        self.assertEqual(BootstrapResult.from_payload(payload).payload(), payload)
+        for mutation in (
+                {"review_mode": None},
+                {"status": "BOOTSTRAP_REVIEW_READY"},
+                {"can_request_final_user_review": True},
+                {"self_review_comment_id": 200},
+                {"verified_review_evidence": [{"fake": "review"}]},
+                {"separate_context_confirmed": True},
+                {"independence_assurance": "reviewer-attested"},
+        ):
+            changed = dict(payload)
+            changed.update(mutation)
+            with self.subTest(mutation=mutation), self.assertRaises(GatePolicyError):
+                BootstrapResult.from_payload(changed)
+        missing_mode = dict(payload)
+        del missing_mode["review_mode"]
+        with self.assertRaises(GatePolicyError):
+            BootstrapResult.from_payload(missing_mode)
 
     def test_review_comment_payloads_are_canonical_and_digest_bound(self):
         self_body = self_review().comment_body()
@@ -507,7 +550,7 @@ class ReviewEvidenceVerificationTests(unittest.TestCase):
         self.assertEqual(len(evidence), sum(len(item.evidence_refs) for item in raw_self.items))
         verified_self = replace(raw_self, verified_evidence=evidence)
         self.assertEqual(evaluate(self_review=verified_self, independent_review=verified_independent).status,
-                         "BOOTSTRAP_REVIEW_READY")
+                         "BOOTSTRAP_TECHNICAL_READY")
         self.assertEqual({row.evidence_kind for row in evidence}, {"git-blob", "workflow-run", "pull-request"})
 
     def test_missing_or_wrong_head_source_refs_cannot_be_used(self):
@@ -596,18 +639,44 @@ class ImmutableBootstrapRecordTests(unittest.TestCase):
 
     def test_exact_retry_reuses_comment_and_changed_observation_appends_linked_record(self):
         github = FakeGitHub()
-        first = evaluate(independent_review=None).payload()
+        first = evaluate().payload()
         first_id, _ = publish_immutable_record(github, 27, "PASES_BOOTSTRAP_REVIEW_V1", first)
         self.assertEqual(read_bootstrap_evidence(github, 27, first_id), first)
         retry_id, _ = publish_immutable_record(github, 27, "PASES_BOOTSTRAP_REVIEW_V1", first)
         self.assertEqual(first_id, retry_id)
-        second = evaluate().payload()
+        second = evaluate(bootstrap_policy_sha256="e" * 64).payload()
         second_id, second_body = publish_immutable_record(github, 27, "PASES_BOOTSTRAP_REVIEW_V1", second)
         self.assertNotEqual(first_id, second_id)
         self.assertEqual(read_bootstrap_evidence(github, 27, second_id), second)
         self.assertIn('"attempt":2', second_body)
         self.assertIn(f'"previous_comment_id":{first_id}', second_body)
         self.assertEqual(read_latest_bootstrap_evidence(github, 27), (second_id, second))
+
+    def test_historical_review_ready_payload_remains_exact_when_new_technical_attempt_is_appended(self):
+        github = FakeGitHub()
+        historical = evaluate().payload()
+        historical.pop("review_mode")
+        historical["status"] = "BOOTSTRAP_REVIEW_READY"
+        historical["can_request_final_user_review"] = True
+        historical["self_review_comment_id"] = 200
+        historical["independent_review_comment_id"] = 201
+        historical["verified_review_evidence"] = [VerifiedReviewEvidence(
+            "REQ-08", "https://github.com/puchinya/ai-agent-workflow/pull/33/files",
+            "pull-request", "a" * 64, HEAD).as_dict()]
+        historical["independent_context_artifact_comment_id"] = 202
+        historical["independent_context_artifact_sha256"] = "a" * 64
+        historical["separate_context_confirmed"] = True
+        historical["independence_assurance"] = (
+            "reviewer-attested; the host/session identity is not cryptographically verified")
+        # Keep a schema-valid old record; its exact payload bytes remain in history.
+        BootstrapResult.from_payload(historical)
+        old_id, _ = publish_immutable_record(github, 27, "PASES_BOOTSTRAP_REVIEW_V1", historical)
+        current = evaluate().payload()
+        new_id, _ = publish_immutable_record(github, 27, "PASES_BOOTSTRAP_REVIEW_V1", current)
+        self.assertGreater(new_id, old_id)
+        self.assertEqual(read_bootstrap_evidence(github, 27, old_id), historical)
+        self.assertEqual(read_bootstrap_evidence(github, 27, new_id), current)
+        self.assertFalse(current["can_request_final_user_review"])
 
     def test_policy_source_digest_change_appends_new_bootstrap_attempt(self):
         github = FakeGitHub()

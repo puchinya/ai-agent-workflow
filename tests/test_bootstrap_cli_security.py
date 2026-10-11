@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import sys
 import unittest
+from contextlib import redirect_stdout
 from copy import deepcopy
+from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -17,6 +19,13 @@ from p_ases.gate_policy import GatePolicyError, GateSelection
 
 
 class BootstrapCLISecurityTests(unittest.TestCase):
+    def test_legacy_review_cli_options_are_documented_as_ignored(self):
+        output = StringIO()
+        with redirect_stdout(output), self.assertRaises(SystemExit) as raised:
+            cli._parser().parse_args(["delivery", "bootstrap-check", "--help"])
+        self.assertEqual(raised.exception.code, 0)
+        self.assertIn("accepted and ignored", output.getvalue())
+
     def _run_post_publish_scenario(self, *, mutate_pr=None, gate_reads=None, adc_reads=None,
                                    ambiguous_first_publish=False):
         github = Mock()
@@ -28,8 +37,8 @@ class BootstrapCLISecurityTests(unittest.TestCase):
             pointer=SimpleNamespace(comment_id=100, sha256=fixtures.ADC, state="approved"),
             contract=SimpleNamespace(requirement_ids=("REQ-08",), section=lambda _name: "- [ ] one"),
         )
-        args = SimpleNamespace(issue=27, pr=33, self_review_comment=None,
-                               independent_review_comment=None, unverified_host=("none",))
+        args = SimpleNamespace(issue=27, pr=33, self_review_comment=999999,
+                               independent_review_comment=999998, unverified_host=("none",))
         selection = GateSelection(fixtures.REPO, 27, "bootstrap-legacy-v1", "2026-10-11T00:00:00Z")
         gate_reads = gate_reads or [(900, selection, "selection")] * 3
         observations = []
@@ -53,8 +62,8 @@ class BootstrapCLISecurityTests(unittest.TestCase):
                 patch("p_ases.cli.read_gate_selection", side_effect=gate_reads), \
                 patch("p_ases.cli.run_local_bootstrap_checks_bound", return_value=fixtures.local_checks()), \
                 patch("p_ases.cli.current_checkout_subject"), \
-                patch("p_ases.cli.verify_bootstrap_review_evidence",
-                      return_value=fixtures.self_review().verified_evidence), \
+                patch("p_ases.gate_policy.read_review_comment") as read_review, \
+                patch("p_ases.gate_policy.verify_bootstrap_review_evidence") as verify_review, \
                 patch("p_ases.cli.load_profile", return_value=SimpleNamespace(required_checks=(
                     ("test-a", 789), ("test-b", 789)))), \
                 patch("p_ases.cli.bootstrap_policy_digest", return_value="f" * 64), \
@@ -66,6 +75,8 @@ class BootstrapCLISecurityTests(unittest.TestCase):
                       side_effect=lambda *_args: (comment_ids[-1], observations[-1])), \
                 patch("p_ases.cli._json", side_effect=lambda value: output.update(value)):
             exit_code = cli._delivery_bootstrap_check(args, fixtures.REPO, Path("/fake/repo"), github)
+        read_review.assert_not_called()
+        verify_review.assert_not_called()
         return exit_code, output, observations, comment_ids
 
     def test_cli_bootstrap_route_rejects_same_number_in_another_repository(self):
@@ -123,13 +134,6 @@ class BootstrapCLISecurityTests(unittest.TestCase):
                         patch("p_ases.cli.read_gate_selection", return_value=(900, selection, "selection")), \
                         patch("p_ases.cli.run_local_bootstrap_checks_bound", return_value=fixtures.local_checks()), \
                         patch("p_ases.cli.current_checkout_subject", side_effect=checkout_stub), \
-                        patch("p_ases.cli.read_review_comment", return_value={"body": "review"}), \
-                        patch("p_ases.cli.parse_self_review_comment", return_value=fixtures.self_review()), \
-                        patch("p_ases.cli.parse_independent_review_comment", return_value=fixtures.independent_review()), \
-                        patch("p_ases.cli.verify_independent_context_artifact",
-                              side_effect=lambda _gh, _subject, review: review), \
-                        patch("p_ases.cli.verify_bootstrap_review_evidence",
-                              return_value=fixtures.self_review().verified_evidence), \
                         patch("p_ases.cli.load_profile", return_value=SimpleNamespace(required_checks=(
                             ("test-a", 789), ("test-b", 789)))), \
                         patch("p_ases.cli.bootstrap_policy_digest", return_value="f" * 64), \
@@ -169,7 +173,7 @@ class BootstrapCLISecurityTests(unittest.TestCase):
                 self.assertEqual(exit_code, 2)
                 self.assertEqual(output.get("status"), "BOOTSTRAP_BLOCKED")
                 self.assertEqual([row["status"] for row in observations],
-                                 ["BOOTSTRAP_REVIEW_READY", "BOOTSTRAP_BLOCKED"])
+                                 ["BOOTSTRAP_TECHNICAL_READY", "BOOTSTRAP_BLOCKED"])
                 self.assertEqual(output.get("evidence_comment_id"), comment_ids[-1])
                 self.assertTrue(any("changed during evidence publication" in reason
                                     for reason in observations[-1]["reasons"]))
@@ -184,7 +188,7 @@ class BootstrapCLISecurityTests(unittest.TestCase):
             gate_reads=gate_reads)
         self.assertEqual(exit_code, 2)
         self.assertEqual([row["status"] for row in observations],
-                         ["BOOTSTRAP_REVIEW_READY", "BOOTSTRAP_BLOCKED"])
+                         ["BOOTSTRAP_TECHNICAL_READY", "BOOTSTRAP_BLOCKED"])
         self.assertEqual(output.get("evidence_comment_id"), comment_ids[-1])
         self.assertTrue(any("pinned gate selection identity changed" in reason
                             for reason in observations[-1]["reasons"]))
@@ -195,7 +199,7 @@ class BootstrapCLISecurityTests(unittest.TestCase):
             ambiguous_first_publish=True)
         self.assertEqual(exit_code, 2)
         self.assertEqual([row["status"] for row in observations],
-                         ["BOOTSTRAP_REVIEW_READY", "BOOTSTRAP_BLOCKED"])
+                         ["BOOTSTRAP_TECHNICAL_READY", "BOOTSTRAP_BLOCKED"])
         self.assertEqual(output.get("evidence_comment_id"), comment_ids[-1])
 
     def test_post_publish_adc_pointer_change_appends_latest_blocked_observation(self):
@@ -211,15 +215,15 @@ class BootstrapCLISecurityTests(unittest.TestCase):
             adc_reads=[original_adc, original_adc, changed_adc])
         self.assertEqual(exit_code, 2)
         self.assertEqual([row["status"] for row in observations],
-                         ["BOOTSTRAP_REVIEW_READY", "BOOTSTRAP_BLOCKED"])
+                         ["BOOTSTRAP_TECHNICAL_READY", "BOOTSTRAP_BLOCKED"])
         self.assertEqual(output.get("evidence_comment_id"), comment_ids[-1])
         self.assertTrue(any("ADC pointer changed" in reason for reason in observations[-1]["reasons"]))
 
     def test_unchanged_post_publish_subject_keeps_ready_as_latest(self):
         exit_code, output, observations, _comment_ids = self._run_post_publish_scenario()
         self.assertEqual(exit_code, 0)
-        self.assertEqual(output.get("status"), "BOOTSTRAP_REVIEW_READY")
-        self.assertEqual([row["status"] for row in observations], ["BOOTSTRAP_REVIEW_READY"])
+        self.assertEqual(output.get("status"), "BOOTSTRAP_TECHNICAL_READY")
+        self.assertEqual([row["status"] for row in observations], ["BOOTSTRAP_TECHNICAL_READY"])
 
 
 if __name__ == "__main__":

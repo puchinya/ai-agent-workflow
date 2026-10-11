@@ -79,11 +79,14 @@ BOOTSTRAP_COHORT = frozenset({BOOTSTRAP_PARENT, *BOOTSTRAP_ISSUES})
 BOOTSTRAP_REPOSITORY = "puchinya/ai-agent-workflow"
 BOOTSTRAP_POLICY = "bootstrap-legacy-v1"
 PASES_POLICY = "p-ases-v1"
-RESULTS = {"BOOTSTRAP_REVIEW_READY", "BOOTSTRAP_BLOCKED", "PASES_GATE_REQUIRED", "UNDETERMINED"}
+RESULTS = {"BOOTSTRAP_TECHNICAL_READY", "BOOTSTRAP_REVIEW_READY", "BOOTSTRAP_BLOCKED",
+           "PASES_GATE_REQUIRED", "UNDETERMINED"}
 REQUIRED_LOCAL_CHECKS = ("compileall", "unittest", "dist-build-check", "dist-validation", "diff-check")
 BOOTSTRAP_REQUIRED_JOBS = ("pull-request-metadata",)
 BOOTSTRAP_POLICY_FILES = ("gate_policy.py", "cli.py", "github.py", "adc.py", "git.py", "process.py", "profile.py")
 INDEPENDENCE_ASSURANCE = "reviewer-attested; the host/session identity is not cryptographically verified"
+WAIVED_REVIEW_MODE = "WAIVED_BOOTSTRAP"
+WAIVED_INDEPENDENCE_ASSURANCE = "NOT_APPLICABLE_REVIEW_WAIVED"
 EXPECTED_BRANCH_PAIRS = {
     27: ("main", "pases/adc-core"),
     29: ("pases/adc-core", "pases/verification"),
@@ -655,10 +658,17 @@ class BootstrapResult:
     independent_context_artifact_comment_id: int | None = None
     independent_context_artifact_sha256: str | None = None
     separate_context_confirmed: bool = False
+    review_mode: str | None = None
 
     def validate(self) -> "BootstrapResult":
-        if self.status not in {"BOOTSTRAP_REVIEW_READY", "BOOTSTRAP_BLOCKED"}:
-            raise GatePolicyError("Bootstrap result status is invalid")
+        legacy = self.review_mode is None
+        ready_status = "BOOTSTRAP_REVIEW_READY" if legacy else "BOOTSTRAP_TECHNICAL_READY"
+        if legacy:
+            if self.status not in {"BOOTSTRAP_REVIEW_READY", "BOOTSTRAP_BLOCKED"}:
+                raise GatePolicyError("historical Bootstrap result status is invalid")
+        elif self.review_mode != WAIVED_REVIEW_MODE or self.status not in {
+                "BOOTSTRAP_TECHNICAL_READY", "BOOTSTRAP_BLOCKED"}:
+            raise GatePolicyError("technical Bootstrap review mode or status is invalid")
         self.subject.validate()
         if type(self.reasons) is not tuple or any(not isinstance(reason, str) or not reason for reason in self.reasons):
             raise GatePolicyError("Bootstrap result reasons are invalid")
@@ -696,10 +706,18 @@ class BootstrapResult:
         if ((self.independent_context_artifact_comment_id is None)
                 != (self.independent_context_artifact_sha256 is None)):
             raise GatePolicyError("Independent context artifact ID and digest must be paired")
+        if not legacy and (
+                self.self_review_comment_id is not None
+                or self.independent_review_comment_id is not None
+                or self.verified_review_evidence
+                or self.independent_context_artifact_comment_id is not None
+                or self.independent_context_artifact_sha256 is not None
+                or self.separate_context_confirmed is not False):
+            raise GatePolicyError("waived Bootstrap results cannot claim review evidence")
         if (type(self.unverified_hosts) is not tuple or not self.unverified_hosts
                 or any(not isinstance(host, str) or not host.strip() for host in self.unverified_hosts)):
             raise GatePolicyError("Unverified host disclosure is invalid")
-        if self.status == "BOOTSTRAP_REVIEW_READY" and (
+        if self.status == ready_status and (
                 tuple(check.name for check in self.local_checks) != REQUIRED_LOCAL_CHECKS
                 or any(check.status != "completed" or check.exit_status != 0 or check.output_truncated
                        for check in self.local_checks)
@@ -708,19 +726,22 @@ class BootstrapResult:
                        for _name, _run_id, status, conclusion in self.required_jobs)
                 or self.workflow_run_id is None
                 or self.workflow_status != "completed" or self.workflow_conclusion != "success"
-                or self.self_review_comment_id is None or self.independent_review_comment_id is None
-                or self.bootstrap_policy_sha256 is None or not self.verified_review_evidence
-                or self.independent_context_artifact_comment_id is None
-                or self.independent_context_artifact_sha256 is None or not self.separate_context_confirmed):
-            raise GatePolicyError("Bootstrap REVIEW_READY record is missing successful evidence")
-        if (self.status == "BOOTSTRAP_REVIEW_READY") != (not self.reasons):
+                or self.bootstrap_policy_sha256 is None
+                or (legacy and (
+                    self.self_review_comment_id is None or self.independent_review_comment_id is None
+                    or not self.verified_review_evidence
+                    or self.independent_context_artifact_comment_id is None
+                    or self.independent_context_artifact_sha256 is None or not self.separate_context_confirmed
+                ))):
+            raise GatePolicyError("Bootstrap READY record is missing required evidence")
+        if (self.status == ready_status) != (not self.reasons):
             raise GatePolicyError("Bootstrap status and reasons disagree")
         return self
 
     def payload(self) -> dict[str, Any]:
         self.validate()
-        return {"independent_review_comment_id": self.independent_review_comment_id,
-                "local_checks": [{"argv": list(check.argv), "exit_status": check.exit_status,
+        payload = {"independent_review_comment_id": self.independent_review_comment_id,
+                   "local_checks": [{"argv": list(check.argv), "exit_status": check.exit_status,
                                   "name": check.name, "output_sha256": check.output_sha256,
                                   "output_truncated": check.output_truncated, "status": check.status}
                                  for check in self.local_checks],
@@ -728,17 +749,30 @@ class BootstrapResult:
                     {"check_run_id": run_id, "conclusion": conclusion, "name": name, "status": status}
                     for name, run_id, status, conclusion in self.required_jobs],
                 "schema": "PASES_BOOTSTRAP_REVIEW_V1", "self_review_comment_id": self.self_review_comment_id,
-                "can_request_final_user_review": self.status == "BOOTSTRAP_REVIEW_READY",
+                "can_request_final_user_review": self.review_mode is None and self.status == "BOOTSTRAP_REVIEW_READY",
                 "status": self.status, "subject": self.subject.as_dict(), "unverified_hosts": list(self.unverified_hosts),
                 "ordinary_pases_readiness": "NOT_EVALUATED",
                 "bootstrap_policy_sha256": self.bootstrap_policy_sha256,
+                "workflow_conclusion": self.workflow_conclusion, "workflow_run_id": self.workflow_run_id,
+                "workflow_status": self.workflow_status}
+        if self.review_mode is None:
+            payload.update({
                 "verified_review_evidence": [row.as_dict() for row in self.verified_review_evidence],
                 "independent_context_artifact_comment_id": self.independent_context_artifact_comment_id,
                 "independent_context_artifact_sha256": self.independent_context_artifact_sha256,
                 "separate_context_confirmed": self.separate_context_confirmed,
                 "independence_assurance": INDEPENDENCE_ASSURANCE,
-                "workflow_conclusion": self.workflow_conclusion, "workflow_run_id": self.workflow_run_id,
-                "workflow_status": self.workflow_status}
+            })
+        else:
+            payload.update({
+                "review_mode": self.review_mode,
+                "verified_review_evidence": [],
+                "independent_context_artifact_comment_id": None,
+                "independent_context_artifact_sha256": None,
+                "separate_context_confirmed": False,
+                "independence_assurance": WAIVED_INDEPENDENCE_ASSURANCE,
+            })
+        return payload
 
     @classmethod
     def from_payload(cls, value: Any) -> "BootstrapResult":
@@ -750,17 +784,25 @@ class BootstrapResult:
         evidence_fields = {"verified_review_evidence", "independent_context_artifact_comment_id",
                            "independent_context_artifact_sha256", "separate_context_confirmed",
                            "independence_assurance"}
+        technical_fields = expected_with_policy | evidence_fields | {"review_mode"}
+        is_technical = isinstance(value, dict) and "review_mode" in value
         accepted_shapes = {frozenset(expected), frozenset(expected_with_policy),
                            frozenset(expected | evidence_fields),
                            frozenset(expected_with_policy | evidence_fields)}
-        if (not isinstance(value, dict) or frozenset(value) not in accepted_shapes
+        if (not isinstance(value, dict)
+                or (frozenset(value) != frozenset(technical_fields)
+                    if is_technical else frozenset(value) not in accepted_shapes)
                 or value.get("schema") != "PASES_BOOTSTRAP_REVIEW_V1"
                 or value.get("ordinary_pases_readiness") != "NOT_EVALUATED"):
             raise GatePolicyError("Bootstrap result has unknown schema or fields")
         has_evidence_fields = evidence_fields.issubset(value)
-        if has_evidence_fields and value.get("independence_assurance") != INDEPENDENCE_ASSURANCE:
+        if is_technical and (value.get("review_mode") != WAIVED_REVIEW_MODE
+                             or value.get("independence_assurance") != WAIVED_INDEPENDENCE_ASSURANCE):
+            raise GatePolicyError("technical Bootstrap waiver fields are missing or changed")
+        if not is_technical and has_evidence_fields and value.get("independence_assurance") != INDEPENDENCE_ASSURANCE:
             raise GatePolicyError("Bootstrap independence assurance is missing or changed")
-        if (value.get("can_request_final_user_review") is not (value.get("status") == "BOOTSTRAP_REVIEW_READY")
+        expected_final_review = (value.get("status") == "BOOTSTRAP_REVIEW_READY") if not is_technical else False
+        if (value.get("can_request_final_user_review") is not expected_final_review
                 or not isinstance(value.get("reasons"), list)
                 or not isinstance(value.get("local_checks"), list)
                 or not isinstance(value.get("required_jobs"), list)
@@ -792,7 +834,8 @@ class BootstrapResult:
                      value.get("bootstrap_policy_sha256"), tuple(verified),
                      value.get("independent_context_artifact_comment_id"),
                      value.get("independent_context_artifact_sha256"),
-                     value.get("separate_context_confirmed", False))
+                     value.get("separate_context_confirmed", False),
+                     value.get("review_mode"))
         return result.validate()
 
     @property
@@ -953,48 +996,20 @@ def evaluate_bootstrap(subject: BootstrapSubject, *, pr: dict[str, Any], respons
             else:
                 if check.status != "completed" or check.exit_status != 0 or check.output_truncated:
                     reasons.append(f"local check did not complete cleanly: {check.name}")
-    required_ids = tuple(sorted(tuple(adc_requirement_ids) + tuple(adc_checklist_ids)))
-    if self_review is None:
-        reasons.append("ADC-wide self-review evidence is missing")
-    else:
-        try:
-            self_review.validate(required_ids)
-        except GatePolicyError as exc:
-            reasons.append(f"self-review is invalid: {exc}")
-        if self_review.subject != subject:
-            reasons.append("self-review is bound to a different Bootstrap subject")
-    if independent_review is None:
-        reasons.append("separate-context independent review evidence is missing")
-    else:
-        try:
-            independent_review.validate()
-        except GatePolicyError as exc:
-            reasons.append(f"independent review is invalid: {exc}")
-        if independent_review.subject != subject:
-            reasons.append("independent review is bound to a different Bootstrap subject")
+    # Bootstrap review requirements are waived for this fixed migration cohort.
+    # Keep legacy review inputs parseable for old callers, but do not read or trust
+    # them when deciding technical readiness.
+    if (subject.repository.casefold() != BOOTSTRAP_REPOSITORY.casefold()
+            or subject.issue_number not in BOOTSTRAP_ISSUES):
+        reasons.append("Bootstrap technical readiness is limited to the fixed repository and child Issue cohort")
     if (type(unverified_hosts) is not tuple or not unverified_hosts
             or any(not isinstance(host, str) or not host.strip() for host in unverified_hosts)):
         reasons.append("unverified-host disclosure is invalid")
-    status = "BOOTSTRAP_REVIEW_READY" if not reasons else "BOOTSTRAP_BLOCKED"
-    candidate_evidence = tuple(
-        (self_review.verified_evidence if self_review is not None else ())
-        + (independent_review.verified_evidence if independent_review is not None else ())
-    )
-    verified_evidence = tuple(
-        artifact for artifact in candidate_evidence
-        if isinstance(artifact, VerifiedReviewEvidence) and artifact.head_sha40 == subject.head_sha40
-    )
-    context_verified = (independent_review is not None and independent_review.context_artifact_verified is True
-                        and independent_review.context_artifact_comment_id is not None
-                        and independent_review.separate_context_confirmed is True)
+    status = "BOOTSTRAP_TECHNICAL_READY" if not reasons else "BOOTSTRAP_BLOCKED"
     return BootstrapResult(status, subject, tuple(dict.fromkeys(reasons)), local_checks, tuple(job_results),
                            workflow_run_id, workflow_status, workflow_conclusion,
-                           self_review.comment_id if self_review else None,
-                           independent_review.comment_id if independent_review else None,
-                           unverified_hosts, bootstrap_policy_sha256, verified_evidence,
-                           (independent_review.context_artifact_comment_id if context_verified else None),
-                           (independent_review.context_artifact_sha256 if context_verified else None),
-                           context_verified).validate()
+                           None, None, unverified_hosts, bootstrap_policy_sha256,
+                           review_mode=WAIVED_REVIEW_MODE).validate()
 
 
 def _decode_record_comment(body: Any, sentinel: str) -> dict[str, Any]:

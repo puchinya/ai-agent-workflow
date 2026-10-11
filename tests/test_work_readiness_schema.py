@@ -111,6 +111,7 @@ class WorkReadinessSchemaTests(unittest.TestCase):
         self.assertEqual(evaluate_readiness(**{**args, "pr": setup(draft=True)[3]}).status, "BLOCKED")
         self.assertEqual(evaluate_readiness(**{**args, "pr": setup(fork=True)[3]}).status, "BLOCKED")
         self.assertEqual(evaluate_readiness(**{**args, "pr_binding": setup(stale=True)[2]}).status, "BLOCKED")
+        self.assertEqual(evaluate_readiness(**{**args, "independent_review": None}).status, "BLOCKED")
         self.assertEqual(evaluate_readiness(**{**args, "independent_review": setup(unresolved=True)[8]}).status, "CONCERNS")
 
     def test_unaccepted_dependency_is_an_explicit_readiness_blocker(self):

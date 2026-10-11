@@ -24,10 +24,10 @@ from .profile import ProfileError, load_profile
 from .gate_policy import (
     BOOTSTRAP_ISSUES, BOOTSTRAP_POLICY, BootstrapResult, BootstrapSubject, GateSelection,
     GatePolicyError, bootstrap_policy_digest, choose_gate_for_new_issue, current_checkout_subject,
-    evaluate_bootstrap, parse_independent_review_comment, parse_self_review_comment,
+    evaluate_bootstrap,
     pin_gate_selection, publish_immutable_record, read_bootstrap_adc, read_bootstrap_evidence,
-    read_gate_selection, read_latest_bootstrap_evidence, read_review_comment,
-    run_local_bootstrap_checks_bound, verify_bootstrap_review_evidence, verify_independent_context_artifact,
+    read_gate_selection, read_latest_bootstrap_evidence,
+    run_local_bootstrap_checks_bound,
     validate_bootstrap_pr_identity,
 )
 from .work import (
@@ -1221,24 +1221,6 @@ def _delivery_bootstrap_check(args: argparse.Namespace, repository: str, root: P
         local_checks = ()
         reasons.append(f"local exact-head verification failed: {exc}")
 
-    self_review = None
-    if args.self_review_comment is not None:
-        try:
-            comment = read_review_comment(github, args.issue, args.self_review_comment,
-                                          "PASES_BOOTSTRAP_SELF_REVIEW_V1")
-            self_review = parse_self_review_comment(comment.get("body"), args.self_review_comment)
-        except GatePolicyError as exc:
-            reasons.append(str(exc))
-    independent_review = None
-    if args.independent_review_comment is not None:
-        try:
-            comment = read_review_comment(github, args.issue, args.independent_review_comment,
-                                          "PASES_BOOTSTRAP_INDEPENDENT_REVIEW_V1")
-            independent_review = parse_independent_review_comment(comment.get("body"),
-                                                                  args.independent_review_comment)
-        except GatePolicyError as exc:
-            reasons.append(str(exc))
-
     try:
         profile = load_profile(root)
         check_runs = github.check_runs_for_ref(subject.head_sha40)
@@ -1252,33 +1234,12 @@ def _delivery_bootstrap_check(args: argparse.Namespace, repository: str, root: P
         except ProfileError:
             profile = None
 
-    verified_review_evidence = ()
-    try:
-        if independent_review is not None:
-            independent_review = verify_independent_context_artifact(github, subject, independent_review)
-        verified_review_evidence = verify_bootstrap_review_evidence(
-            github, subject, self_review=self_review, independent_review=independent_review,
-            pr=pr, workflow_runs=workflow_runs)
-        if self_review is not None:
-            self_refs = {(item.item_id, ref) for item in self_review.items for ref in item.evidence_refs}
-            self_review = replace(self_review, verified_evidence=tuple(
-                item for item in verified_review_evidence if (item.item_id, item.reference) in self_refs))
-        if independent_review is not None:
-            finding_refs = {(item.finding_id, item.evidence_ref) for item in independent_review.findings}
-            independent_review = replace(independent_review, verified_evidence=tuple(
-                item for item in verified_review_evidence if (item.item_id, item.reference) in finding_refs))
-    except (GatePolicyError, GitHubError) as exc:
-        reasons.append(f"Bootstrap review artifact readback failed: {exc}")
-
     # Recheck after local and GitHub verification; a checkout change invalidates every result.
     try:
         current_checkout_subject(root, subject)
     except GatePolicyError as exc:
         reasons.append(f"local checkout changed during Bootstrap verification: {exc}")
     required_names = tuple(name for name, _app_id in profile.required_checks) if profile else ()
-    checklist_body = bootstrap_adc.contract.section("reviewer_checklist")
-    checklist_lines = [line for line in checklist_body.splitlines() if line.strip()]
-    checklist_ids = tuple(f"CHECKLIST-{index:03d}" for index, _line in enumerate(checklist_lines, 1))
     unverified_hosts = tuple(args.unverified_host)
     try:
         policy_sha256 = bootstrap_policy_digest()
@@ -1288,8 +1249,8 @@ def _delivery_bootstrap_check(args: argparse.Namespace, repository: str, root: P
     result = evaluate_bootstrap(
         subject, pr=pr, response_repository=repository, workflow_runs=workflow_runs, check_runs=check_runs,
         required_check_names=required_names, local_checks=local_checks,
-        adc_requirement_ids=bootstrap_adc.contract.requirement_ids, adc_checklist_ids=checklist_ids,
-        self_review=self_review, independent_review=independent_review, unverified_hosts=unverified_hosts,
+        adc_requirement_ids=(), adc_checklist_ids=(),
+        self_review=None, independent_review=None, unverified_hosts=unverified_hosts,
         bootstrap_policy_sha256=policy_sha256)
     if reasons:
         result = replace(result, status="BOOTSTRAP_BLOCKED",
@@ -1338,7 +1299,7 @@ def _delivery_bootstrap_check(args: argparse.Namespace, repository: str, root: P
            "gate_selection_comment_id": gate_comment_id, "evidence_comment_id": evidence_comment_id,
            "evidence_sha256": result.sha256 if evidence_comment_id else None,
            "evidence_refs": ([f"Issue #{args.issue} comment {evidence_comment_id}"] if evidence_comment_id else [])})
-    return 0 if result.status == "BOOTSTRAP_REVIEW_READY" else 2
+    return 0 if result.status == "BOOTSTRAP_TECHNICAL_READY" else 2
 
 
 def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
@@ -1755,9 +1716,9 @@ def _parser() -> argparse.ArgumentParser:
     bootstrap.add_argument("issue", type=_positive_number)
     bootstrap.add_argument("pr", type=_positive_number)
     bootstrap.add_argument("--self-review-comment", type=_positive_number,
-                           help="exact Issue comment containing PASES_BOOTSTRAP_SELF_REVIEW_V1")
+                           help="legacy option, accepted and ignored by the Bootstrap technical gate")
     bootstrap.add_argument("--independent-review-comment", type=_positive_number,
-                           help="exact Issue comment containing PASES_BOOTSTRAP_INDEPENDENT_REVIEW_V1 and a separately read-back context artifact")
+                           help="legacy option, accepted and ignored by the Bootstrap technical gate")
     bootstrap.add_argument("--unverified-host", action="append", default=[],
                            help="host/environment not verified; use 'none' when no host remains unverified")
     bootstrap.add_argument("--repo", help="repository owner/name; defaults to origin")
