@@ -93,7 +93,7 @@ EXPECTED_BRANCH_PAIRS = {
     # PR #33 is merged into main, so PR #34 was retargeted from its stacked
     # parent branch. Its old exact-subject evidence is invalid after this move.
     29: ("main", "pases/verification"),
-    30: ("pases/verification", "pases/work-readiness"),
+    30: ("main", "pases/work-readiness"),
 }
 _CLOSES_LINE = re.compile(r"(?im)^\s*closes\s+#([1-9][0-9]*)\s*$")
 _CLOSES_ANY = re.compile(r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#([1-9][0-9]*)\b")

@@ -101,7 +101,7 @@ def activation_fixture(*, approval_author="puchinya", merged_by="puchinya", open
         pair = {
             27: ("main", "pases/adc-core"), 28: ("main", "pases/documentation"),
             29: ("main", "pases/verification"),
-            30: ("pases/verification", "pases/work-readiness"),
+            30: ("main", "pases/work-readiness"),
             31: ("pases/work-readiness", "pases/issue-31"),
             32: ("pases/work-readiness", "pases/issue-32"),
         }[issue]
