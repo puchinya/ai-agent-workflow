@@ -1904,6 +1904,34 @@ PARENT_CHILD_DAG = {
     27: (), 28: (27,), 29: (27, 28), 30: (27, 29),
     31: (29, 30), 32: (27, 28, 29, 30, 31),
 }
+PARENT_ISSUE_CONTRACT_SOURCE = "planning/p-ases/08-migration-contract.md"
+PARENT_ISSUE_CONTRACT_COMMIT = "f34f166f11bbbe6c45b1555827f37f9467b1e49b"
+
+
+def _parent_contract_declaration(content: bytes) -> tuple[str, str, str]:
+    try:
+        text = content.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise IntegrationError("approved child ADC parent-contract reference is not UTF-8") from exc
+    source_rows = re.findall(r"(?m)^Parent contract: `([^`]+)` at `([0-9a-f]{40})`$", text)
+    digest_rows = re.findall(r"(?m)^Parent ADC SHA-256: `([0-9a-f]{64})`$", text)
+    if (len(source_rows) != 1 or source_rows[0] !=
+            (PARENT_ISSUE_CONTRACT_SOURCE, PARENT_ISSUE_CONTRACT_COMMIT) or len(digest_rows) != 1):
+        raise IntegrationError("current approved child ADC does not declare the pinned parent contract and digest")
+    return source_rows[0][0], source_rows[0][1], digest_rows[0]
+
+
+def _parent_adc_authority(github: GitHub) -> tuple[str, Any]:
+    """Read the pinned legacy parent ADC digest from approved child #31's immutable ADC."""
+    child_adc = verify_adc(github, 31)
+    if child_adc.pointer.state != "approved":
+        raise IntegrationError("parent Integration needs the approved child #31 ADC authority")
+    source_path, source_commit, parent_adc_sha256 = _parent_contract_declaration(child_adc.contract.content)
+    # Parent #26 predates the append-only ADC pointer journal. Its approved digest
+    # is declared by child #31's current immutable ADC and pinned to this source commit.
+    if not github.content_at_ref(source_path, source_commit):
+        raise IntegrationError("pinned parent contract source is empty or unavailable")
+    return parent_adc_sha256, child_adc.pointer
 
 
 def _repository_file_reference(value: Path | str) -> str:
@@ -1986,13 +2014,18 @@ def _read_parent_integration(args: argparse.Namespace, repository: str, root: Pa
     parent_number = getattr(args, "parent", getattr(args, "issue", None))
     if parent_number != 26:
         raise CLIError("native parent integration is fixed to Issue #26 for this migration")
-    def snapshot() -> tuple[Any, Any, Any, Any, Any]:
+    def snapshot() -> tuple[Any, str, Any, str, Any, Any, Any]:
         parent_issue = github.issue(parent_number)
-        if parent_issue.get("number") != parent_number or parent_issue.get("state") != "open":
+        if (parent_issue.get("number") != parent_number or parent_issue.get("state") != "open"
+                or parent_issue.get("pull_request") is not None
+                or parent_issue.get("repository_url", "").casefold()
+                != f"https://api.github.com/repos/{repository}".casefold()):
             raise CLIError("parent Integration requires the same open parent Issue")
-        verified_adc = verify_adc(github, parent_number)
-        if verified_adc.pointer.state != "approved":
-            raise CLIError("parent Integration requires the current approved parent ADC")
+        parent_body = parent_issue.get("body")
+        if not isinstance(parent_body, str):
+            raise CLIError("parent Integration requires the current parent Issue body readback")
+        parent_body_sha256 = hashlib.sha256(parent_body.encode("utf-8")).hexdigest()
+        parent_adc_sha256, child_adc_pointer = _parent_adc_authority(github)
         metadata = github.repository_metadata()
         main_ref = metadata.get("default_branch")
         if not isinstance(main_ref, str) or not main_ref:
@@ -2034,7 +2067,7 @@ def _read_parent_integration(args: argparse.Namespace, repository: str, root: Pa
                 ancestry[merge_sha] = False
         result = evaluate_parent_integration(
             repository=repository, parent_issue_number=parent_number,
-            parent_adc_sha256=verified_adc.pointer.sha256, main_sha40=main_sha,
+            parent_adc_sha256=parent_adc_sha256, main_sha40=main_sha,
             expected_child_issue_numbers=PARENT_CHILD_ISSUES,
             native_sub_issues=subs, child_issue_rows=child_rows,
             actual_blockers_by_issue=blockers, declared_dependencies=PARENT_CHILD_DAG,
@@ -2042,11 +2075,13 @@ def _read_parent_integration(args: argparse.Namespace, repository: str, root: Pa
             integration_verification=verification_evidence,
             integration_acceptance=acceptance_evidence,
         )
-        return result, verified_adc, main_ref, verification_evidence, acceptance_evidence
+        return (result, parent_adc_sha256, child_adc_pointer, parent_body_sha256,
+                main_ref, verification_evidence, acceptance_evidence)
 
-    first, first_adc, first_main_ref, verification_evidence, acceptance_evidence = snapshot()
-    second, second_adc, second_main_ref, second_verification, second_acceptance = snapshot()
-    if (first.sha256 != second.sha256 or first_adc.pointer != second_adc.pointer
+    first, first_adc_sha, first_source_pointer, first_body_sha, first_main_ref, verification_evidence, acceptance_evidence = snapshot()
+    second, second_adc_sha, second_source_pointer, second_body_sha, second_main_ref, second_verification, second_acceptance = snapshot()
+    if (first.sha256 != second.sha256 or first_adc_sha != second_adc_sha
+            or first_source_pointer != second_source_pointer or first_body_sha != second_body_sha
             or first_main_ref != second_main_ref
             or verification_evidence != second_verification
             or acceptance_evidence != second_acceptance):

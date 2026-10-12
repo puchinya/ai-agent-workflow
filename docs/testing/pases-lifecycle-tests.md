@@ -63,7 +63,7 @@ Changes requested reuse the same Issue/PR and invalidate dependent exact-subject
 <a id="tst-ur-003"></a>
 ### 2.3 TST-UR-003 Parent Integration evidence
 
-**Setup and action:** Remove, duplicate, open, fork, unmerged, out-of-main, and cyclic child records; invert a dependency merge timestamp; alter a merge SHA; omit or stale the typed Verification/Acceptance evidence; supply a local-only PASS record; change or omit a source/check file at the exact main commit.
+**Setup and action:** Remove, duplicate, open, fork, unmerged, out-of-main, and cyclic child records; invert a dependency merge timestamp; alter a merge SHA; omit or stale the typed Verification/Acceptance evidence; supply a local-only PASS record; change or omit a source/check file at the exact main commit. For the legacy parent #26, omit an ADC pointer and verify the evaluator uses only the current approved child #31 ADC's unique pinned parent-contract declaration; reject duplicate declarations, a different source path/commit, an unapproved child pointer, or an unavailable pinned source.
 
 <a id="ora-ur-003"></a>
 #### 2.3.1 ORA-UR-003 Expected result

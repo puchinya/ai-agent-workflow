@@ -5,6 +5,8 @@ import sys
 import hashlib
 import json
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,7 +15,11 @@ sys.path.insert(0, str(ROOT / "runtime"))
 from p_ases.integration import (
     IntegrationError, IntegrationGateEvidence, evaluate_parent_integration,
 )
-from p_ases.cli import _load_parent_gate_evidence_from_github
+from p_ases.cli import (
+    PARENT_ISSUE_CONTRACT_COMMIT, PARENT_ISSUE_CONTRACT_SOURCE,
+    _load_parent_gate_evidence_from_github, _parent_adc_authority,
+    _parent_contract_declaration,
+)
 
 EXPECTED = (27, 28, 29, 30, 31, 32)
 DAG = {
@@ -59,6 +65,72 @@ def integration_fixture():
 
 
 class ParentIntegrationTests(unittest.TestCase):
+    def test_legacy_parent_adc_reference_comes_from_current_approved_child_adc(self):
+        content = (
+            f"Parent contract: `{PARENT_ISSUE_CONTRACT_SOURCE}` at `{PARENT_ISSUE_CONTRACT_COMMIT}`\n"
+            f"Parent ADC SHA-256: `{'f' * 64}`\n"
+        ).encode()
+        self.assertEqual(_parent_contract_declaration(content), (
+            PARENT_ISSUE_CONTRACT_SOURCE, PARENT_ISSUE_CONTRACT_COMMIT, "f" * 64,
+        ))
+
+        pointer = SimpleNamespace(state="approved")
+        approved_adc = SimpleNamespace(
+            contract=SimpleNamespace(content=content),
+            pointer=pointer,
+        )
+
+        class ContentGitHub:
+            def __init__(self):
+                self.calls = []
+
+            def content_at_ref(self, path, ref):
+                self.calls.append((path, ref))
+                return b"pinned migration contract source\n"
+
+        github = ContentGitHub()
+        with patch("p_ases.cli.verify_adc", return_value=approved_adc) as verify:
+            parent_digest, child_pointer = _parent_adc_authority(github)
+        verify.assert_called_once_with(github, 31)
+        self.assertEqual(parent_digest, "f" * 64)
+        self.assertIs(child_pointer, pointer)
+        self.assertEqual(github.calls, [(PARENT_ISSUE_CONTRACT_SOURCE, PARENT_ISSUE_CONTRACT_COMMIT)])
+
+    def test_parent_contract_reference_must_be_unique_and_exactly_pinned(self):
+        valid = (
+            f"Parent contract: `{PARENT_ISSUE_CONTRACT_SOURCE}` at `{PARENT_ISSUE_CONTRACT_COMMIT}`\n"
+            f"Parent ADC SHA-256: `{'f' * 64}`\n"
+        ).encode()
+        invalid = (
+            valid + valid,
+            valid.replace(PARENT_ISSUE_CONTRACT_COMMIT.encode(), b"0" * 40),
+            valid.replace(b"f" * 64, b"not-a-digest"),
+            b"\xff",
+        )
+        for content in invalid:
+            with self.subTest(content=content[:50]), self.assertRaises(IntegrationError):
+                _parent_contract_declaration(content)
+
+    def test_parent_adc_authority_requires_approved_pointer_and_pinned_source(self):
+        content = (
+            f"Parent contract: `{PARENT_ISSUE_CONTRACT_SOURCE}` at `{PARENT_ISSUE_CONTRACT_COMMIT}`\n"
+            f"Parent ADC SHA-256: `{'f' * 64}`\n"
+        ).encode()
+        for state, source in (("draft", b"present"), ("approved", b"")):
+            with self.subTest(state=state, source=source):
+                adc = SimpleNamespace(
+                    contract=SimpleNamespace(content=content),
+                    pointer=SimpleNamespace(state=state),
+                )
+
+                class ContentGitHub:
+                    def content_at_ref(self, path, ref):
+                        return source
+
+                with patch("p_ases.cli.verify_adc", return_value=adc):
+                    with self.assertRaises(IntegrationError):
+                        _parent_adc_authority(ContentGitHub())
+
     def test_u07_six_closed_merged_children_and_exact_evidence_can_pass(self):
         result = evaluate_parent_integration(**integration_fixture())
         self.assertEqual(result.status, "PASS")
