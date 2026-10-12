@@ -55,7 +55,7 @@ def _strip_generated_blocks(markdown: str) -> str:
         for index, line in enumerate(lines):
             if protected[index]:
                 continue
-            marker = line.strip()
+            marker = line
             if block_start is None and marker == start:
                 block_start = index
             elif block_start is not None and marker == end:
@@ -81,10 +81,17 @@ def _strip_generated_blocks(markdown: str) -> str:
 
 def _protected_lines(lines: list[str], *, expose_generated_markers: bool = False) -> list[bool]:
     protected = [False] * len(lines)
+    next_nonblank_indented = [False] * len(lines)
+    following_nonblank_is_indented = False
+    for index in range(len(lines) - 1, -1, -1):
+        if lines[index].strip():
+            following_nonblank_is_indented = _has_indented_code_prefix(lines[index])
+        next_nonblank_indented[index] = following_nonblank_is_indented
     in_fence: str | None = None
     fence_length = 0
     in_comment = False
     in_pre = False
+    in_indented_code = False
     front_matter = bool(lines and lines[0].strip() == "---")
     for index, line in enumerate(lines):
         if front_matter:
@@ -95,7 +102,12 @@ def _protected_lines(lines: list[str], *, expose_generated_markers: bool = False
         if in_fence is not None:
             protected[index] = True
             marker = _FENCE.match(line)
-            if marker and marker.group(1)[0] == in_fence and len(marker.group(1)) >= fence_length:
+            if (
+                marker
+                and marker.group(1)[0] == in_fence
+                and len(marker.group(1)) >= fence_length
+                and not line[marker.end():].strip()
+            ):
                 in_fence = None
                 fence_length = 0
             continue
@@ -109,7 +121,22 @@ def _protected_lines(lines: list[str], *, expose_generated_markers: bool = False
             if re.search(r"</pre\s*>", line, re.I):
                 in_pre = False
             continue
-        if expose_generated_markers and line.strip() in _GENERATED_MARKERS:
+        if in_indented_code:
+            if not line.strip():
+                if next_nonblank_indented[index]:
+                    protected[index] = True
+                    continue
+                in_indented_code = False
+            if _has_indented_code_prefix(line):
+                protected[index] = True
+                continue
+            if line.strip():
+                in_indented_code = False
+        if _has_indented_code_prefix(line) and line.strip():
+            protected[index] = True
+            in_indented_code = True
+            continue
+        if expose_generated_markers and line in _GENERATED_MARKERS:
             continue
         marker = _FENCE.match(line)
         if marker:
@@ -127,6 +154,19 @@ def _protected_lines(lines: list[str], *, expose_generated_markers: bool = False
             if not re.search(r"</pre\s*>", line, re.I):
                 in_pre = True
     return protected
+
+
+def _has_indented_code_prefix(line: str) -> bool:
+    """Return whether leading whitespace reaches Markdown's four-column indent."""
+    columns = 0
+    for character in line:
+        if character == " ":
+            columns += 1
+        elif character == "\t":
+            columns += 4 - (columns % 4)
+        else:
+            return columns >= 4
+    return columns >= 4
 
 
 def _manual_anchors(markdown: str) -> set[str]:

@@ -72,6 +72,67 @@ title: "## front matter"
         self.assertLess(fence_end, actual_contents)
         self.assertLess(actual_contents, actual_heading)
 
+    def test_fence_info_string_cannot_close_an_open_fence(self):
+        fenced = (
+            "```text\n"
+            "```python\n"
+            "<!-- contents:start -->\n"
+            "Keep this source code example.\n"
+            "<!-- contents:end -->\n"
+            "```"
+        )
+        source = (
+            "# Document\n\n"
+            f"{fenced}\n\n"
+            "## Actual\n"
+        )
+
+        formatted = format_markdown(source).text
+
+        self.assertIn(fenced, formatted)
+        self.assertEqual(format_markdown(formatted).text, formatted)
+
+    def test_indented_code_markers_and_blank_lines_are_preserved(self):
+        example = (
+            "    <!-- contents:start -->\n"
+            "    Keep this indented code example.\n"
+            "\n\n"
+            "    <!-- contents:end -->"
+        )
+        source = f"# Document\n\n{example}\n\n## Actual\n"
+
+        formatted = format_markdown(source).text
+
+        self.assertIn(example, formatted)
+        self.assertEqual(format_markdown(formatted).text, formatted)
+
+    def test_tree_write_and_check_preserve_opaque_code_examples(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            doc = repo / "docs" / "specs" / "a.md"
+            doc.parent.mkdir(parents=True)
+            fenced = (
+                "```text\n"
+                "```python\n"
+                "<!-- contents:start -->\n"
+                "Keep this source code example.\n"
+                "<!-- contents:end -->\n```"
+            )
+            indented = (
+                "    <!-- contents:start -->\n"
+                "    Keep this indented code example.\n"
+                "\n\n"
+                "    <!-- contents:end -->"
+            )
+            doc.write_text(f"# Document\n\n{fenced}\n\n{indented}\n\n## Actual\n", encoding="utf-8")
+
+            format_tree(repo, write=True)
+            result = doc.read_text(encoding="utf-8")
+            self.assertIn(fenced, result)
+            self.assertIn(indented, result)
+            self.assertEqual(format_tree(repo, write=False), ())
+            self.assertEqual(format_tree(repo, write=True), ())
+
     def test_generated_markers_inside_front_matter_comments_and_pre_are_preserved(self):
         examples = (
             "---\n"

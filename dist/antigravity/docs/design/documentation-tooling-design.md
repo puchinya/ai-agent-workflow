@@ -54,7 +54,7 @@ The p_ases CLI owns docs validate and docs format argument routing and machine-r
 <a id="des-doc-002-numbering-transformation"></a>
 ### 3.2 DES-DOC-002 Numbering transformation
 
-The formatter first removes only its generated contents/map blocks outside front matter, fenced blocks, HTML comments, and raw pre blocks. Protected text and blank lines stay byte-for-byte unchanged. It scans Markdown source using the same protected-line parser for numbering and contents insertion. H1 resets numbering; H2 through H6 use deterministic hierarchical counters. A numeric prefix is recognized as formatter-generated only when it matches the next counter at that level, so other leading numbers stay in the title. Setext headings normalize to ATX so the next run produces the same bytes.
+The formatter first removes only its exact generated contents/map marker lines outside front matter, fenced blocks, four-column indented code blocks, HTML comments, and raw pre blocks. A fence closes only when its matching delimiter is long enough and has no non-whitespace suffix, so a fence-like line with an info string remains protected content. Indented code and its internal blank lines stay byte-for-byte unchanged. It scans Markdown source using the same protected-line parser for numbering and contents insertion. H1 resets numbering; H2 through H6 use deterministic hierarchical counters. A numeric prefix is recognized as formatter-generated only when it matches the next counter at that level, so other leading numbers stay in the title. Setext headings normalize to ATX so the next run produces the same bytes.
 
 <a id="des-doc-003"></a>
 <a id="des-doc-003-anchor-and-link-continuity"></a>
