@@ -80,25 +80,25 @@ The complete REQ-to-DES-to-Oracle/Test-to-Evidence path passes; each missing or 
 <a id="tst-doc-003-hierarchical-heading-numbering"></a>
 ### 2.3 TST-DOC-003 Hierarchical heading numbering
 
-**Setup and action:** Format mixed H1-H6 headings, repeated headings, already numbered headings, and Setext headings.
+**Setup and action:** Format mixed H1-H6 headings, repeated headings, already generated numbers, author titles beginning with years/numbers, and Setext headings.
 
 <a id="ora-doc-003"></a>
 <a id="ora-doc-003-expected-result"></a>
 #### 2.3.1 ORA-DOC-003 Expected result
 
-H1 remains unnumbered; H2-H6 have deterministic hierarchical counters and a second format has no changes.
+H1 remains unnumbered, including a year-leading title. H2-H6 have deterministic hierarchical counters; a numeric prefix is removed and re-added only when it matches the next counter. Other leading numbers remain part of the title, and a second format has no changes.
 
 <a id="tst-doc-004"></a>
 <a id="tst-doc-004-opaque-source-blocks"></a>
 ### 2.4 TST-DOC-004 Opaque source blocks
 
-**Setup and action:** Place heading-like lines inside fences, HTML comments, raw pre blocks, and front matter.
+**Setup and action:** Place heading-like lines and generated contents markers inside fences, HTML comments, raw pre blocks, and front matter, with multiple blank lines. Put a real heading after a protected block following H1.
 
 <a id="ora-doc-004"></a>
 <a id="ora-doc-004-expected-result"></a>
 #### 2.4.1 ORA-DOC-004 Expected result
 
-Protected headings and their bytes are unchanged by numbering.
+Protected headings, generated-marker examples, and blank lines are unchanged byte-for-byte. Contents and heading maps are inserted outside protected regions, before the first real heading after H1.
 
 <a id="tst-doc-005"></a>
 <a id="tst-doc-005-contents-and-anchor-continuity"></a>

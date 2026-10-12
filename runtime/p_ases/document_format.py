@@ -19,10 +19,11 @@ _MARKERS = {
     "contents": ("<!-- contents:start -->", "<!-- contents:end -->"),
     "heading-map": ("<!-- heading-map:start -->", "<!-- heading-map:end -->"),
 }
+_GENERATED_MARKERS = frozenset(marker for pair in _MARKERS.values() for marker in pair)
 _FENCE = re.compile(r"^ {0,3}(" + re.escape(chr(96)) + r"{3,}|~{3,})")
 _ATX = re.compile(r"^( {0,3})(#{1,6})[ \t]+(.+?)\s*#*\s*$")
 _SETEXT = re.compile(r"^ {0,3}(=+|-{3,})[ \t]*$")
-_AUTO_NUMBER = re.compile(r"^\d+(?:\.\d+)*\.?\s+")
+_AUTO_NUMBER = re.compile(r"^(\d+(?:\.\d+)*\.?)\s+")
 _STABLE_ID = re.compile(r"\b(?:REQ|DES|TST|ORA)-[A-Z0-9]+-\d{3}\b")
 _ANCHOR = re.compile(r"<a\s+[^>]*\bid\s*=\s*['\"]([^'\"]+)['\"][^>]*>\s*</a\s*>", re.I)
 _LINK = re.compile(r"(?:(?P<image>!\[[^\]]*\])|(?<!!)(?P<text>\[[^\]]*\]))\((?P<target><[^>]+>|[^\s)]+)(?P<tail>[^)]*)\)")
@@ -46,14 +47,39 @@ class FormattedMarkdown:
 
 
 def _strip_generated_blocks(markdown: str) -> str:
-    text = markdown
+    lines = markdown.splitlines()
+    protected = _protected_lines(lines, expose_generated_markers=True)
+    removed: set[int] = set()
     for start, end in _MARKERS.values():
-        pattern = re.compile(re.escape(start) + r".*?" + re.escape(end), re.S)
-        text = pattern.sub("", text)
-    return re.sub(r"\n{3,}", "\n\n", text)
+        block_start: int | None = None
+        for index, line in enumerate(lines):
+            if protected[index]:
+                continue
+            marker = line.strip()
+            if block_start is None and marker == start:
+                block_start = index
+            elif block_start is not None and marker == end:
+                removed.update(range(block_start, index + 1))
+                block_start = None
+
+    kept = [line for index, line in enumerate(lines) if index not in removed]
+    protected = _protected_lines(kept)
+    normalized: list[str] = []
+    index = 0
+    while index < len(kept):
+        if kept[index] != "" or protected[index]:
+            normalized.append(kept[index])
+            index += 1
+            continue
+        end = index + 1
+        while end < len(kept) and kept[end] == "" and not protected[end]:
+            end += 1
+        normalized.extend(kept[index:min(end, index + 1)])
+        index = end
+    return "\n".join(normalized)
 
 
-def _protected_lines(lines: list[str]) -> list[bool]:
+def _protected_lines(lines: list[str], *, expose_generated_markers: bool = False) -> list[bool]:
     protected = [False] * len(lines)
     in_fence: str | None = None
     fence_length = 0
@@ -78,6 +104,13 @@ def _protected_lines(lines: list[str]) -> list[bool]:
             if "-->" in line:
                 in_comment = False
             continue
+        if in_pre:
+            protected[index] = True
+            if re.search(r"</pre\s*>", line, re.I):
+                in_pre = False
+            continue
+        if expose_generated_markers and line.strip() in _GENERATED_MARKERS:
+            continue
         marker = _FENCE.match(line)
         if marker:
             protected[index] = True
@@ -88,11 +121,6 @@ def _protected_lines(lines: list[str]) -> list[bool]:
             protected[index] = True
             if "-->" not in line[line.find("<!--") + 4:]:
                 in_comment = True
-            continue
-        if in_pre:
-            protected[index] = True
-            if re.search(r"</pre\s*>", line, re.I):
-                in_pre = False
             continue
         if re.search(r"<pre(?:\s|>)", line, re.I):
             protected[index] = True
@@ -153,12 +181,10 @@ def _numbered_headings(markdown: str) -> tuple[str, dict[str, str]]:
         if match:
             indent, hashes, source_title = match.groups()
             level = len(hashes)
-            title = _AUTO_NUMBER.sub("", source_title.strip())
         elif setext_level is not None:
             indent, hashes = "", "#" * setext_level
             source_title = lines[index].strip()
             level = setext_level
-            title = _AUTO_NUMBER.sub("", source_title)
         else:
             output.append(lines[index])
             index += 1
@@ -171,11 +197,19 @@ def _numbered_headings(markdown: str) -> tuple[str, dict[str, str]]:
 
         if level == 1:
             counters = [0] * 7
+            title = source_title.strip()
             new_title = title
         else:
             for missing_level in range(2, level):
                 if counters[missing_level] == 0:
                     counters[missing_level] = 1
+            expected_parts = [*counters[2:level], counters[level] + 1]
+            expected_number = ".".join(str(item) for item in expected_parts)
+            numbered = _AUTO_NUMBER.match(source_title.strip())
+            if numbered and numbered.group(1).rstrip(".") == expected_number:
+                title = source_title.strip()[numbered.end():].strip()
+            else:
+                title = source_title.strip()
             counters[level] += 1
             for deeper in range(level + 1, 7):
                 counters[deeper] = 0
@@ -333,18 +367,16 @@ def _contents_blocks(markdown: str) -> str:
     stable.append("<!-- heading-map:end -->")
 
     lines = markdown.splitlines()
+    protected = _protected_lines(lines)
     first_h1 = next((heading for heading in headings if heading.level == 1), None)
     insertion = first_h1.line + 1 if first_h1 else 0
     if first_h1:
-        for index in range(insertion, len(lines)):
-            if _ATX.match(lines[index]):
-                insertion = index
-                break
-        else:
-            insertion = len(lines)
+        next_heading = next((heading for heading in headings if heading.line > first_h1.line), None)
+        insertion = next_heading.line if next_heading else len(lines)
     while insertion > 0 and (
-        _ANCHOR.fullmatch(lines[insertion - 1].strip())
-        or not lines[insertion - 1].strip()
+        not protected[insertion - 1]
+        and (_ANCHOR.fullmatch(lines[insertion - 1].strip())
+             or not lines[insertion - 1].strip())
     ):
         insertion -= 1
     blocks = ["", *toc, "", *stable, ""]

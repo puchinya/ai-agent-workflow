@@ -50,6 +50,81 @@ title: "## front matter"
         self.assertIn("<!-- contents:start -->", first)
         self.assertIn("<!-- heading-map:start -->", first)
 
+    def test_generated_markers_and_blank_lines_inside_fences_are_preserved(self):
+        fence = (
+            "```markdown\n"
+            "<!-- contents:start -->\n"
+            "Sample source content that MUST remain\n"
+            "\n\n"
+            "<!-- contents:end -->\n"
+            "## Example heading\n"
+            "```"
+        )
+        source = f"# Title\n\n{fence}\n\n## Actual\n"
+
+        formatted = format_markdown(source).text
+
+        self.assertIn(fence, formatted)
+        self.assertEqual(format_markdown(formatted).text, formatted)
+        actual_contents = formatted.rindex("<!-- contents:start -->")
+        actual_heading = formatted.index("## 1 Actual")
+        fence_end = formatted.index("```", formatted.index("## Example heading"))
+        self.assertLess(fence_end, actual_contents)
+        self.assertLess(actual_contents, actual_heading)
+
+    def test_generated_markers_inside_front_matter_comments_and_pre_are_preserved(self):
+        examples = (
+            "---\n"
+            "example: |\n"
+            "  <!-- contents:start -->\n"
+            "  Front matter sample MUST remain\n"
+            "  <!-- contents:end -->\n"
+            "---\n\n# Title\n",
+            "<!-- documentation example\n"
+            "<!-- contents:start -->\n"
+            "HTML comment sample MUST remain\n"
+            "<!-- contents:end -->\n"
+            "-->\n\n# Title\n",
+            "<pre>\n"
+            "<!-- contents:start -->\n"
+            "Preformatted sample MUST remain\n"
+            "<!-- contents:end -->\n"
+            "</pre>\n\n# Title\n",
+        )
+        for source in examples:
+            with self.subTest(source=source):
+                formatted = format_markdown(source).text
+                for sample in (
+                    "Front matter sample MUST remain",
+                    "HTML comment sample MUST remain",
+                    "Preformatted sample MUST remain",
+                ):
+                    if sample in source:
+                        self.assertIn(sample, formatted)
+
+    def test_headings_after_fences_are_selected_for_contents_insertion(self):
+        source = "# Title\n\n```md\n## Example\n```\n\n## Actual\n"
+        formatted = format_markdown(source).text
+        contents_start = formatted.rindex("<!-- contents:start -->")
+        actual_heading = formatted.index("## 1 Actual")
+        fence_end = formatted.index("```", formatted.index("## Example"))
+        self.assertLess(fence_end, contents_start)
+        self.assertLess(contents_start, actual_heading)
+        self.assertIn("## Example", formatted)
+        self.assertEqual(format_markdown(formatted).text, formatted)
+
+    def test_meaningful_numeric_heading_prefixes_are_retained(self):
+        source = "# 2026 Roadmap\n\n## 2026 Changes\n\n## Heading\n"
+        formatted = format_markdown(source).text
+        self.assertIn("# 2026 Roadmap", formatted)
+        self.assertIn("## 1 2026 Changes", formatted)
+        self.assertIn("## 2 Heading", formatted)
+        self.assertEqual(format_markdown(formatted).text, formatted)
+
+        generated = format_markdown("# Title\n\n## 1 Heading\n").text
+        self.assertIn("## 1 Heading", generated)
+        self.assertEqual(format_markdown(generated).text, generated)
+
     def test_setext_headings_and_duplicate_legacy_slugs_are_preserved(self):
         source = "# Title\n\nAlpha\n-----\n\n## Alpha\n\n## Alpha\n"
         formatted = format_markdown(source).text
