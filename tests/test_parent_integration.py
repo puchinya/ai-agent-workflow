@@ -523,25 +523,46 @@ class ParentIntegrationTests(unittest.TestCase):
                     self.actions = actions
                     self.row = comment
                     self.reads = 0
+                    self.list_reads = 0
                     self.duplicate = False
                     self.extra = None
+                    self.response_overrides = {}
                 def __getattr__(self, name):
                     return getattr(self.actions, name)
+                def _response(self, source, index, value):
+                    result = dict(value)
+                    override = self.response_overrides.get((source, index), {})
+                    if "user" in override:
+                        result["user"] = {**result.get("user", {}), **override["user"]}
+                    result.update({key: value for key, value in override.items() if key != "user"})
+                    if "user" in result:
+                        result["user"] = {
+                            **result["user"],
+                            "avatar_url": f"https://avatars.example/{source}?read={index}",
+                        }
+                    return result
                 def issue_comment(self, _issue, _comment):
+                    index = self.reads
                     self.reads += 1
                     if self.row is None:
                         raise GitHubError("comment deleted")
-                    return dict(self.row)
+                    return self._response("direct", index, self.row)
                 def issue_comments(self, _issue):
+                    index = self.list_reads
+                    self.list_reads += 1
                     if self.row is None:
                         return []
                     if self.extra is not None:
-                        return [dict(self.row), dict(self.extra)]
-                    return [dict(self.row), dict(self.row)] if self.duplicate else [dict(self.row)]
+                        return [self._response("list", index, self.row), dict(self.extra)]
+                    return ([self._response("list", index, self.row),
+                             self._response("list", index, self.row)] if self.duplicate
+                            else [self._response("list", index, self.row)])
                 def authenticated_user(self):
                     return {"id": 42, "login": "octocat", "type": "User"}
 
             github = CommentGitHub(github)
+            # Direct-comment and issue-comment-list APIs return different avatar URLs;
+            # those volatile profile fields must not affect comment identity.
             evidence = _load_parent_gate_evidence_from_github(
                 github, comment_id, main_sha, "verification", "octo/repo", "b" * 64)
             self.assertEqual(evidence.source_reference, f"issue-comment:{comment_id}")
@@ -601,6 +622,110 @@ class ParentIntegrationTests(unittest.TestCase):
             with self.assertRaisesRegex(GitHubError, "comment deleted"):
                 _load_parent_gate_evidence_from_github(
                     github, comment_id, main_sha, "verification", "octo/repo", "b" * 64)
+
+    def test_parent_evidence_comment_rejects_stable_author_identity_changes_in_each_read(self):
+        main_sha = "c" * 40
+        actions = trusted_actions_fixture(main_sha)
+        bundle = _parent_gate_bundle_from_actions(actions, 500, "verification", "octo/repo",
+                                                  "b" * 64, main_sha)
+        comment_id = 9876
+        comment = {
+            "id": comment_id, "body": bundle.to_body(),
+            "created_at": "2026-10-12T00:00:00Z", "updated_at": "2026-10-12T00:00:00Z",
+            "issue_url": "https://api.github.com/repos/octo/repo/issues/26",
+            "html_url": f"https://github.com/octo/repo/issues/26#issuecomment-{comment_id}",
+            "url": f"https://api.github.com/repos/octo/repo/issues/comments/{comment_id}",
+            "user": {"id": 42, "login": "octocat", "type": "User"},
+        }
+
+        class CommentGitHub:
+            def __init__(self):
+                self.actions = actions
+                self.row = comment
+                self.direct_reads = 0
+                self.list_reads = 0
+                self.overrides = {}
+                self.authenticated = {"id": 42, "login": "octocat", "type": "User"}
+            def __getattr__(self, name):
+                return getattr(self.actions, name)
+            def _read(self, source, index, value):
+                row = dict(value)
+                override = self.overrides.get((source, index), {})
+                if "user" in override:
+                    row["user"] = {**row["user"], **override["user"]}
+                row.update({key: item for key, item in override.items() if key != "user"})
+                return row
+            def issue_comment(self, _issue, _comment):
+                index = self.direct_reads
+                self.direct_reads += 1
+                return self._read("direct", index, self.row)
+            def issue_comments(self, _issue):
+                index = self.list_reads
+                self.list_reads += 1
+                return [self._read("list", index, self.row)]
+            def authenticated_user(self):
+                return self.authenticated
+
+        # The first direct response, collection response, and second direct response
+        # are each independently security-sensitive.
+        for source, read_index in (("direct", 0), ("list", 0), ("direct", 1)):
+            for field, invalid_value in (("id", 99), ("login", "impostor"), ("type", "Bot")):
+                with self.subTest(source=source, read_index=read_index, field=field):
+                    github = CommentGitHub()
+                    github.overrides[(source, read_index)] = {"user": {field: invalid_value}}
+                    with self.assertRaises(IntegrationError):
+                        _load_parent_gate_evidence_from_github(
+                            github, comment_id, main_sha, "verification", "octo/repo", "b" * 64)
+
+        github = CommentGitHub()
+        github.authenticated = {"id": 42, "login": "different-login", "type": "User"}
+        with self.assertRaisesRegex(IntegrationError, "authenticated GitHub user"):
+            _load_parent_gate_evidence_from_github(
+                github, comment_id, main_sha, "verification", "octo/repo", "b" * 64)
+
+    def test_parent_evidence_comment_rejects_changes_to_each_stable_comment_field(self):
+        main_sha = "d" * 40
+        actions = trusted_actions_fixture(main_sha)
+        bundle = _parent_gate_bundle_from_actions(actions, 500, "verification", "octo/repo",
+                                                  "b" * 64, main_sha)
+        comment_id = 9876
+        original = {
+            "id": comment_id, "body": bundle.to_body(),
+            "created_at": "2026-10-12T00:00:00Z", "updated_at": "2026-10-12T00:00:00Z",
+            "issue_url": "https://api.github.com/repos/octo/repo/issues/26",
+            "html_url": f"https://github.com/octo/repo/issues/26#issuecomment-{comment_id}",
+            "url": f"https://api.github.com/repos/octo/repo/issues/comments/{comment_id}",
+            "user": {"id": 42, "login": "octocat", "type": "User"},
+        }
+
+        class CommentGitHub:
+            def __init__(self, row):
+                self.actions = actions
+                self.row = row
+            def __getattr__(self, name):
+                return getattr(self.actions, name)
+            def issue_comment(self, _issue, _comment):
+                return dict(self.row)
+            def issue_comments(self, _issue):
+                return [dict(self.row)]
+            def authenticated_user(self):
+                return {"id": 42, "login": "octocat", "type": "User"}
+
+        mutations = {
+            "id": comment_id + 1,
+            "body": original["body"] + "tampered",
+            "created_at": "2026-10-11T00:00:00Z",
+            "updated_at": "2026-10-12T00:01:00Z",
+            "issue_url": "https://api.github.com/repos/octo/repo/issues/27",
+            "html_url": "https://github.com/octo/repo/issues/27#issuecomment-9876",
+            "url": "https://api.github.com/repos/octo/repo/issues/comments/9877",
+        }
+        for field, value in mutations.items():
+            with self.subTest(field=field):
+                changed = {**original, field: value}
+                with self.assertRaises(IntegrationError):
+                    _load_parent_gate_evidence_from_github(
+                        CommentGitHub(changed), comment_id, main_sha, "verification", "octo/repo", "b" * 64)
 
     def test_parent_evidence_blocks_failed_or_stale_actions_and_acceptance_steps(self):
         main_sha = "1" * 40
@@ -753,6 +878,8 @@ class ParentIntegrationTests(unittest.TestCase):
             def __init__(self):
                 self.active_actions = None
                 self.action_sources = (verification_actions, acceptance_actions)
+                self.direct_reads = 0
+                self.list_reads = 0
 
             def workflow_runs_for_ref(self, sha, *, workflow_path, event):
                 for source in self.action_sources:
@@ -770,11 +897,22 @@ class ParentIntegrationTests(unittest.TestCase):
 
             def issue_comment(self, issue_id, comment_id):
                 self.assert_issue(issue_id)
-                return dict(comments[comment_id])
+                row = dict(comments[comment_id])
+                row["user"] = {**row["user"], "avatar_url":
+                                f"https://avatars.example/direct?read={self.direct_reads}"}
+                self.direct_reads += 1
+                return row
 
             def issue_comments(self, issue_id):
                 self.assert_issue(issue_id)
-                return [dict(row) for row in comments.values()]
+                rows = []
+                for row in comments.values():
+                    item = dict(row)
+                    item["user"] = {**item["user"], "avatar_url":
+                                    f"https://avatars.example/list?read={self.list_reads}"}
+                    rows.append(item)
+                self.list_reads += 1
+                return rows
 
             @staticmethod
             def assert_issue(issue_id):

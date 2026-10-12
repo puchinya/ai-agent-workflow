@@ -2083,6 +2083,43 @@ def _repository_file_reference(value: Path | str) -> str:
     return reference
 
 
+def _parent_gate_comment_security_fingerprint(row: dict[str, Any]) -> tuple[Any, ...]:
+    """Canonical stable security identity for a GitHub parent evidence comment."""
+    if not isinstance(row, dict):
+        raise IntegrationError("parent evidence comment API readback is malformed")
+    comment_id = row.get("id")
+    body = row.get("body")
+    created_at = row.get("created_at")
+    updated_at = row.get("updated_at")
+    issue_url = row.get("issue_url")
+    html_url = row.get("html_url")
+    api_url = row.get("url")
+    if (type(comment_id) is not int or comment_id < 1 or not isinstance(body, str)
+            or not all(isinstance(value, str) for value in
+                       (created_at, updated_at, issue_url, html_url, api_url))):
+        raise IntegrationError("parent evidence comment stable identity fields are malformed")
+    try:
+        created_time = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        updated_time = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise IntegrationError("parent evidence comment timestamps are invalid") from exc
+    if (created_time.tzinfo is None or created_time.utcoffset() is None
+            or updated_time.tzinfo is None or updated_time.utcoffset() is None):
+        raise IntegrationError("parent evidence comment timestamps require a timezone")
+    if updated_at != created_at:
+        raise IntegrationError("parent evidence comment was edited")
+    user = row.get("user")
+    if (not isinstance(user, dict) or type(user.get("id")) is not int
+            or not isinstance(user.get("login"), str) or not user["login"]
+            or user.get("type") != "User"):
+        raise IntegrationError("parent evidence comment stable author identity is malformed")
+    # Profile URLs and avatar_url vary between otherwise identical GitHub API responses.
+    # Only fields that identify the comment, its contents, and its authenticated author
+    # participate in equality checks.
+    return (comment_id, body, created_at, updated_at, issue_url, html_url, api_url,
+            (user["id"], user["login"], user["type"]))
+
+
 def _load_parent_gate_evidence_from_github(
     github: GitHub, comment_id: int, main_sha40: str, kind: str,
     repository: str, parent_adc_sha256: str,
@@ -2097,7 +2134,7 @@ def _load_parent_gate_evidence_from_github(
     if not re.fullmatch(r"[0-9a-f]{64}", parent_adc_sha256):
         raise IntegrationError("parent Integration evidence parent ADC digest is invalid")
 
-    def read_comment() -> tuple[dict[str, Any], ParentGateEvidenceComment, bytes]:
+    def read_comment() -> tuple[dict[str, Any], ParentGateEvidenceComment, bytes, tuple[Any, ...]]:
         direct = github.issue_comment(26, comment_id)
         listed = github.issue_comments(26)
         if not isinstance(direct, dict) or not isinstance(listed, list):
@@ -2108,6 +2145,8 @@ def _load_parent_gate_evidence_from_github(
         if len(matches) != 1:
             raise IntegrationError("pinned parent evidence comment is missing or duplicated on Issue #26")
         row = matches[0]
+        direct_fingerprint = _parent_gate_comment_security_fingerprint(direct)
+        listed_fingerprint = _parent_gate_comment_security_fingerprint(row)
         bundle = ParentGateEvidenceComment.from_body(row.get("body"))
         subject_comment_ids: list[int] = []
         for candidate in listed:
@@ -2133,22 +2172,9 @@ def _load_parent_gate_evidence_from_github(
         after = github.issue_comment(26, comment_id)
         if not isinstance(after, dict):
             raise IntegrationError("parent evidence comment second API readback is malformed")
-        stable_fields = ("id", "body", "created_at", "updated_at", "issue_url", "html_url", "url", "user")
-        created_at = row.get("created_at")
-        updated_at = row.get("updated_at")
-        if not isinstance(created_at, str) or not isinstance(updated_at, str):
-            raise IntegrationError("parent evidence comment timestamps are missing")
-        try:
-            created_time = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-            updated_time = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
-        except ValueError as exc:
-            raise IntegrationError("parent evidence comment timestamps are invalid") from exc
-        if (created_time.tzinfo is None or created_time.utcoffset() is None
-                or updated_time.tzinfo is None or updated_time.utcoffset() is None):
-            raise IntegrationError("parent evidence comment timestamps require a timezone")
-        if (any(direct.get(field) != row.get(field) or row.get(field) != after.get(field)
-                for field in stable_fields)
-                or direct.get("id") != comment_id or direct.get("updated_at") != direct.get("created_at")):
+        after_fingerprint = _parent_gate_comment_security_fingerprint(after)
+        if (direct_fingerprint != listed_fingerprint or listed_fingerprint != after_fingerprint
+                or listed_fingerprint[0] != comment_id):
             raise IntegrationError("parent evidence comment was edited or changed during double-read")
         expected_issue_url = f"https://api.github.com/repos/{repository}/issues/26"
         expected_html = f"https://github.com/{repository}/issues/26#issuecomment-{comment_id}"
@@ -2159,21 +2185,22 @@ def _load_parent_gate_evidence_from_github(
                 or row["url"].casefold() != expected_api.casefold()):
             raise IntegrationError("parent evidence comment repository or Issue identity does not match")
         identity = github.authenticated_user()
-        author = row.get("user")
         if (not isinstance(identity, dict) or type(identity.get("id")) is not int
-                or not isinstance(author, dict) or type(author.get("id")) is not int
-                or author.get("type") != "User" or author.get("id") != identity.get("id")
-                or identity.get("type") != "User"):
+                or not isinstance(identity.get("login"), str) or not identity["login"]
+                or identity.get("type") != "User"
+                or listed_fingerprint[-1] !=
+                (identity["id"], identity["login"], identity["type"])):
             raise IntegrationError("parent evidence comment author is not the authenticated GitHub user")
         if (bundle.kind != kind or bundle.repository.casefold() != repository.casefold()
                 or bundle.parent_issue_number != 26 or bundle.parent_adc_sha256 != parent_adc_sha256
                 or bundle.main_sha40 != main_sha40):
             raise IntegrationError("parent evidence comment does not match the exact current main/ADC subject")
-        return row, bundle, row["body"].encode("utf-8")
+        return row, bundle, row["body"].encode("utf-8"), listed_fingerprint
 
-    first_row, first_bundle, first_body = read_comment()
-    second_row, second_bundle, second_body = read_comment()
-    if (first_row != second_row or first_bundle != second_bundle or first_body != second_body):
+    _first_row, first_bundle, first_body, first_fingerprint = read_comment()
+    _second_row, second_bundle, second_body, second_fingerprint = read_comment()
+    if (first_fingerprint != second_fingerprint
+            or first_bundle != second_bundle or first_body != second_body):
         raise IntegrationError("parent evidence comment changed during double-read")
     _validate_parent_gate_bundle(first_bundle, kind, repository, parent_adc_sha256, main_sha40)
     expected_first = _parent_gate_bundle_from_actions(
