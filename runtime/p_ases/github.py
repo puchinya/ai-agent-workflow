@@ -128,6 +128,25 @@ class GitHub:
             raise GitHubError("created PR response is missing a valid number")
         return result
 
+    def pull_reviews(self, number: int) -> list[dict[str, Any]]:
+        """Paginate formal GitHub PR reviews, preserving actor/commit/edit state."""
+        number = _positive_int(number, "PR number")
+        return self._paginate(f"{self.prefix}/pulls/{number}/reviews")
+
+    def pull_diff_comments(self, number: int) -> list[dict[str, Any]]:
+        """Paginate inline PR discussion comments (not plain conversation comments)."""
+        number = _positive_int(number, "PR number")
+        return self._paginate(f"{self.prefix}/pulls/{number}/comments")
+
+    def pull_conversation_comments(self, number: int) -> list[dict[str, Any]]:
+        """PR conversation comments use GitHub Issues comments API."""
+        number = _positive_int(number, "PR number")
+        return self.issue_comments(number)
+
+    def pull_requests_all(self) -> list[dict[str, Any]]:
+        """Read full PR set for exact parent-integration merge evidence."""
+        return self._paginate(f"{self.prefix}/pulls?state=all")
+
     def check_runs_for_ref(self, head_sha40: str) -> list[dict[str, Any]]:
         """Read every Check Run for an exact commit SHA; never fall back to statuses."""
         if not isinstance(head_sha40, str) or not re.fullmatch(r"[0-9a-f]{40}", head_sha40):
