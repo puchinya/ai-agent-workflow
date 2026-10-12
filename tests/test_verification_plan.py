@@ -11,7 +11,10 @@ sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases.acceptance import AcceptanceObservation, evaluate_acceptance
 from p_ases.evidence_store import EvidenceError, EvidenceRecord, VerificationSubject, read_evidence, write_evidence
-from p_ases.oracle_trace import OracleDefinition, OracleTraceError, trace_requirements, validate_plan_oracles
+from p_ases.oracle_trace import (
+    OracleDefinition, OracleTraceError, TestDefinition, trace_requirements,
+    validate_plan_oracles, validate_plan_tests,
+)
 from p_ases.verification import (
     GateResult, RequiredCheckPolicy, VerificationError, VerificationResult,
     build_verification_result, evaluate_evidence, evaluate_required_checks,
@@ -91,6 +94,59 @@ class VerificationPlanTests(unittest.TestCase):
         second = plan(tuple(reversed(first.entries)))
         self.assertEqual(first.sha256, second.sha256)
         self.assertEqual(read_plan(first.to_bytes()), first)
+
+    def test_canonical_document_ids_round_trip_and_trace_without_renaming(self):
+        canonical_entry = replace(entry("REQ-DOC-001"), oracle_id="ORA-DOC-001", test_id="TST-DOC-001")
+        canonical_plan = create_plan(
+            repository="octo/repo", issue_number=29, adc_comment_id=123, adc_sha256=ADC_SHA,
+            source_digests=PLAN_INPUTS, entries=(canonical_entry,), required_req_ids=("REQ-DOC-001",),
+        )
+        self.assertEqual(read_plan(canonical_plan.to_bytes()), canonical_plan)
+        self.assertEqual(canonical_plan.entries[0].req_id, "REQ-DOC-001")
+
+        canonical_oracle = replace(
+            oracle(reqs=("REQ-DOC-001",)), oracle_id="ORA-DOC-001",
+            req_ids=("REQ-DOC-001",),
+        )
+        canonical_test = TestDefinition(
+            test_id="TST-DOC-001", req_id="REQ-DOC-001", target="linux",
+            source_ref="test.md", source_sha256="d" * 64,
+        ).validate()
+        self.assertEqual(OracleDefinition.from_dict(canonical_oracle.as_dict()), canonical_oracle)
+        self.assertEqual(TestDefinition.from_dict(canonical_test.as_dict()), canonical_test)
+        trace = trace_requirements(
+            ("REQ-DOC-001",), canonical_plan.entries, {canonical_oracle.oracle_id: canonical_oracle},
+        )
+        self.assertEqual(trace.status, "PASS")
+        validate_plan_oracles(canonical_plan, ("REQ-DOC-001",), {canonical_oracle.oracle_id: canonical_oracle})
+        self.assertEqual(validate_plan_tests(canonical_plan, (canonical_test,)), (canonical_test,))
+        with self.assertRaisesRegex(OracleTraceError, "mapping mismatch"):
+            validate_plan_tests(canonical_plan, (replace(canonical_test, test_id="TST-DOC-002"),))
+        with self.assertRaisesRegex(OracleTraceError, "duplicate"):
+            validate_plan_tests(canonical_plan, (canonical_test, canonical_test))
+
+    def test_canonical_ids_reject_malformed_undefined_missing_and_duplicate_mappings(self):
+        for changes in (
+            {"req_id": "REQ-DOC-0001"}, {"oracle_id": "ORA-doc-001"}, {"test_id": "TST-DOC-01"},
+        ):
+            with self.subTest(changes=changes), self.assertRaises(PlanError):
+                replace(entry("REQ-DOC-001"), **changes).validate()
+        canonical_entry = replace(entry("REQ-DOC-001"), oracle_id="ORA-DOC-001", test_id="TST-DOC-001")
+        canonical_oracle = replace(
+            oracle(reqs=("REQ-DOC-001",)), oracle_id="ORA-DOC-001", req_ids=("REQ-DOC-001",),
+        )
+        with self.assertRaisesRegex(OracleTraceError, "undefined Oracle IDs"):
+            trace_requirements(("REQ-DOC-001",), (canonical_entry,), {"ORACLE-core": oracle()})
+        with self.assertRaisesRegex(OracleTraceError, "does not define REQ-DOC-001"):
+            trace_requirements(("REQ-DOC-001",), (canonical_entry,), {
+                "ORA-DOC-001": replace(canonical_oracle, req_ids=("REQ-DOC-002",)),
+            })
+        with self.assertRaises(OracleTraceError):
+            replace(canonical_oracle, req_ids=("REQ-DOC-001", "REQ-DOC-001")).validate()
+        with self.assertRaises(OracleTraceError):
+            trace_requirements(("REQ-DOC-001", "REQ-DOC-001"), (canonical_entry,), {
+                "ORA-DOC-001": canonical_oracle,
+            })
 
     def test_plan_rejects_empty_missing_or_unexpected_requirement_coverage(self):
         with self.assertRaises(PlanError):
@@ -251,6 +307,12 @@ class VerificationPlanTests(unittest.TestCase):
             observations=(criteria,),
         )
         self.assertEqual(spec.status, "PASS")
+        canonical_spec = evaluate_acceptance(
+            artifact_type="spec_change", subject=current, required_req_ids=("REQ-DOC-001",),
+            mapped_req_ids=("REQ-DOC-001",), verification=passing, oracle_trace=passing,
+            observations=(replace(criteria, reference="acceptance.md#REQ-DOC-001"),),
+        )
+        self.assertEqual(canonical_spec.status, "PASS")
         docs = evaluate_acceptance(
             artifact_type="documentation_only", subject=current, required_req_ids=("REQ-01",),
             mapped_req_ids=("REQ-01",), verification=passing, oracle_trace=passing,

@@ -53,6 +53,31 @@ class FakePullRequestGitHub:
 
 
 class VerificationCLITests(unittest.TestCase):
+    def test_normative_req_ids_combine_adc_and_canonical_source_ids(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            specification = root / "spec.md"
+            test_specification = root / "tests.md"
+            specification.write_text(
+                "### 3.1 REQ-DOC-001 Stable document IDs\n\n"
+                "REQ-06: Legacy ADC-era requirement remains accepted.\n",
+                encoding="utf-8",
+            )
+            test_specification.write_text(
+                "| [REQ-DOC-001](spec.md#req-doc-001) | Oracle | Test |\n"
+                "| [REQ-RT-001](spec.md#req-rt-001) | Oracle | Test |\n",
+                encoding="utf-8",
+            )
+            sources = (
+                ("specification", "spec.md", "a" * 64),
+                ("test_specification", "tests.md", "b" * 64),
+            )
+            contract = SimpleNamespace(requirement_ids=("REQ-07",))
+            self.assertEqual(
+                cli._normative_req_ids(contract, sources, root),
+                ("REQ-06", "REQ-07", "REQ-DOC-001", "REQ-RT-001"),
+            )
+
     def test_current_pr_readback_binds_head_repo_state_base_and_issue_closing_line(self):
         subject = VerificationSubject("owner/repo", 29, 83, 501, "a" * 64, "c" * 64, "b" * 40)
         good = FakePullRequestGitHub().pull_request(83)
