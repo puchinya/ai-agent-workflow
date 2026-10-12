@@ -183,12 +183,13 @@ class DistributionMigrationTests(unittest.TestCase):
             target.write_bytes(original)
 
     def test_setuptools_package_discovery_excludes_the_retired_import_surface(self):
-        from setuptools import find_packages
-        packages = find_packages(where=str(ROOT / "runtime"), include=["p_ases*"])
-        self.assertEqual(packages, ["p_ases"])
         pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
         self.assertIn('name = "p-ases"', pyproject)
         self.assertIn('version = {attr = "p_ases.__version__"}', pyproject)
+        package_finder = pyproject.split("[tool.setuptools.packages.find]", 1)[1].split("\n[", 1)[0]
+        self.assertIn('where = ["runtime"]', package_finder)
+        self.assertIn('include = ["p_ases*"]', package_finder)
+        self.assertNotIn("agent_workflow", package_finder)
         self.assertFalse((ROOT / "runtime/agent_workflow").exists())
 
 

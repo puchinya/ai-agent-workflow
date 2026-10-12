@@ -130,7 +130,11 @@ def validate_markdown_file(path: Path, repo: Path) -> list[str]:
     repository = Path(repo)
     if repository.is_symlink() or not repository.is_dir():
         return ["Markdown repository root must be a regular directory"]
-    root = repository.resolve()
+    # Keep the root's lexical spelling for containment checks. On macOS, the
+    # temporary-directory path may be under /var while resolve() returns
+    # /private/var; resolving the root but not the supplied file makes a valid
+    # in-root path appear to be outside the repository.
+    root = repository.absolute()
     source = Path(path)
     if not source.is_absolute():
         source = root / source

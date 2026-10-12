@@ -105,7 +105,7 @@ class ProjectContextCLITests(unittest.TestCase):
 
     def test_context_show_returns_existing_frozen_binding_without_resolving_a_new_base(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
+            root = Path(tmp).resolve()
             digest = "a" * 64
             binding = ExecutionBinding("owner/repo", 32, 99, digest, "main", "b" * 40,
                                        str(root), "b" * 40)
