@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import re
 import subprocess
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote, urlencode
 
 
 class GitHubError(RuntimeError):
@@ -85,9 +88,45 @@ class GitHub:
             raise GitHubError("GitHub Issue response must be an object")
         return result
 
+    def repository_metadata(self) -> dict[str, Any]:
+        result = self.request("GET", self.prefix)
+        if not isinstance(result, dict) or not isinstance(result.get("default_branch"), str):
+            raise GitHubError("GitHub repository metadata has no default branch")
+        return result
+
     def issue_comments(self, number: int) -> list[dict[str, Any]]:
         number = _positive_int(number, "Issue number")
         return self._paginate(f"{self.prefix}/issues/{number}/comments")
+
+    def pull_requests_for_refs(self, *, base_ref: str, head_ref: str) -> list[dict[str, Any]]:
+        """Read all PRs matching exact same-repository head/base refs, including closed ones."""
+        if (not isinstance(base_ref, str) or not base_ref or any(c in base_ref for c in "\x00\r\n")
+                or not isinstance(head_ref, str) or not head_ref or any(c in head_ref for c in "\x00\r\n")):
+            raise GitHubError("PR search requires non-empty base and head refs")
+        owner, _name = self.repo.split("/", 1)
+        query = urlencode({"state": "all", "base": base_ref, "head": f"{owner}:{head_ref}"})
+        return self._paginate(f"{self.prefix}/pulls?{query}")
+
+    def pull_request(self, number: int) -> dict[str, Any]:
+        number = _positive_int(number, "PR number")
+        result = self.request("GET", f"{self.prefix}/pulls/{number}")
+        if not isinstance(result, dict) or result.get("number") != number:
+            raise GitHubError("GitHub PR readback is missing or has a mismatched number")
+        return result
+
+    def create_pull_request(self, *, title: str, body: str, head_ref: str, base_ref: str) -> dict[str, Any]:
+        if not isinstance(title, str) or not title.strip() or any(c in title for c in "\x00\r\n"):
+            raise GitHubError("new PR title must be a non-empty single line")
+        if not isinstance(body, str) or not isinstance(head_ref, str) or not isinstance(base_ref, str):
+            raise GitHubError("new PR body and refs must be text")
+        owner, _name = self.repo.split("/", 1)
+        result = self.request("POST", f"{self.prefix}/pulls", {
+            "title": title, "body": body, "head": f"{owner}:{head_ref}", "base": base_ref,
+            "draft": False,
+        })
+        if not isinstance(result, dict) or type(result.get("number")) is not int or result["number"] < 1:
+            raise GitHubError("created PR response is missing a valid number")
+        return result
 
     def check_runs_for_ref(self, head_sha40: str) -> list[dict[str, Any]]:
         """Read every Check Run for an exact commit SHA; never fall back to statuses."""
@@ -129,6 +168,57 @@ class GitHub:
                 return items
             page += 1
 
+    def workflow_runs_for_ref(self, head_sha40: str, *, workflow_path: str = ".github/workflows/ci.yml") -> list[dict[str, Any]]:
+        """Read all pull_request workflow runs for an exact SHA and workflow path."""
+        if not isinstance(head_sha40, str) or not re.fullmatch(r"[0-9a-f]{40}", head_sha40):
+            raise GitHubError("workflow run ref must be a full lowercase commit SHA")
+        if (not isinstance(workflow_path, str) or not workflow_path.startswith(".github/workflows/")
+                or any(char in workflow_path for char in "\x00\r\n?#")):
+            raise GitHubError("workflow path is invalid")
+        from urllib.parse import quote, urlencode
+        workflow_id = workflow_path.rsplit("/", 1)[-1]
+        encoded_path = quote(workflow_id, safe="._-")
+        query = urlencode({"head_sha": head_sha40, "event": "pull_request", "per_page": 100})
+        endpoint = f"{self.prefix}/actions/workflows/{encoded_path}/runs?{query}"
+        items: list[dict[str, Any]] = []
+        page = 1
+        total_count: int | None = None
+        while True:
+            result = self.request("GET", f"{endpoint}&page={page}")
+            if not isinstance(result, dict):
+                raise GitHubError(f"GitHub workflow runs page {page} must be an object")
+            count, runs = result.get("total_count"), result.get("workflow_runs")
+            if (type(count) is not int or count < 0 or not isinstance(runs, list)
+                    or any(not isinstance(run, dict) for run in runs)):
+                raise GitHubError(f"GitHub workflow runs page {page} has an invalid response shape")
+            if total_count is None:
+                total_count = count
+            elif total_count != count:
+                raise GitHubError("GitHub workflow runs total_count changed during pagination")
+            for run in runs:
+                head_repo = run.get("head_repository")
+                if (type(run.get("id")) is not int or run["id"] < 1
+                        or type(run.get("run_number")) is not int or run["run_number"] < 1
+                        or type(run.get("run_attempt")) is not int or run["run_attempt"] < 1
+                        or run.get("path") != workflow_path or run.get("head_sha") != head_sha40
+                        or run.get("event") != "pull_request"
+                        or not isinstance(run.get("status"), str)
+                        or (run.get("conclusion") is not None and not isinstance(run.get("conclusion"), str))
+                        or not isinstance(run.get("head_branch"), str) or not run["head_branch"]
+                        or not isinstance(head_repo, dict)
+                        or not isinstance(head_repo.get("full_name"), str)
+                        or not isinstance(run.get("pull_requests"), list)):
+                    raise GitHubError(f"GitHub workflow run page {page} contains incomplete identity data")
+            items.extend(runs)
+            if len(runs) < 100:
+                if len(items) != total_count:
+                    raise GitHubError("GitHub workflow run pagination count does not match total_count")
+                ids = [run["id"] for run in items]
+                if len(ids) != len(set(ids)):
+                    raise GitHubError("GitHub workflow run pagination contains duplicate IDs")
+                return items
+            page += 1
+
     def issues(self) -> list[dict[str, Any]]:
         return self._paginate(f"{self.prefix}/issues?state=all")
 
@@ -154,6 +244,30 @@ class GitHub:
         if not isinstance(result, dict):
             raise GitHubError("GitHub Issue comment response must be an object")
         return result
+
+    def content_at_ref(self, path: str, ref: str) -> bytes:
+        """Read one regular repository file at an exact commit and verify its Git blob ID."""
+        if (not isinstance(path, str) or not path or path.startswith("/")
+                or any(part in {"", ".", ".."} for part in path.split("/"))
+                or any(char in path for char in "\\\x00\r\n?#:")):
+            raise GitHubError("evidence content path is invalid")
+        if not isinstance(ref, str) or not re.fullmatch(r"[0-9a-f]{40}", ref):
+            raise GitHubError("evidence content ref must be a full commit SHA")
+        endpoint = f"{self.prefix}/contents/{quote(path, safe='/')}?ref={ref}"
+        result = self.request("GET", endpoint)
+        if (not isinstance(result, dict) or result.get("path") != path or result.get("type") != "file"
+                or result.get("encoding") != "base64" or not isinstance(result.get("content"), str)
+                or not isinstance(result.get("sha"), str) or not re.fullmatch(r"[0-9a-f]{40}", result["sha"])):
+            raise GitHubError("evidence content readback is incomplete or not a regular file")
+        try:
+            encoded = re.sub(r"\s+", "", result["content"])
+            content = base64.b64decode(encoded, validate=True)
+        except (ValueError, base64.binascii.Error) as exc:
+            raise GitHubError("evidence content encoding is invalid") from exc
+        git_blob_sha = hashlib.sha1(b"blob " + str(len(content)).encode("ascii") + b"\x00" + content).hexdigest()
+        if git_blob_sha != result["sha"]:
+            raise GitHubError("evidence content does not match its Git blob ID")
+        return content
 
     def pull_request(self, number: int) -> dict[str, Any]:
         """Read the current Pull Request resource, including base/head repository identities."""

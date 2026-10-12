@@ -9,14 +9,40 @@ import os
 import re
 import sys
 import tempfile
+from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from .adc import ADCError, parse_adc, publish_adc, restore_adc, verify_adc
+from .git import GitError, current_branch, discover_repository, head_sha40, remote_branch_sha, worktree_clean
 from .document_format import DocumentFormatError, format_tree
 from .documents import DocumentError, validate_documents
-from .git import GitError, discover_repository
 from .github import GitHub, GitHubError
+from .execution import ExecutionError, binding_digest, read_binding
+from .checkpoint import CheckpointError, PRBinding, read_pr_binding
+from .context import WorkContext
+from .profile import ProfileError, load_profile
+from .gate_policy import (
+    BOOTSTRAP_ISSUES, BOOTSTRAP_POLICY, BootstrapResult, BootstrapSubject, GateSelection,
+    GatePolicyError, bootstrap_policy_digest, choose_gate_for_new_issue, current_checkout_subject,
+    evaluate_bootstrap,
+    pin_gate_selection, publish_immutable_record, read_bootstrap_adc, read_bootstrap_evidence,
+    read_gate_selection, read_latest_bootstrap_evidence,
+    run_local_bootstrap_checks_bound,
+    validate_bootstrap_pr_identity,
+)
+from .work import (
+    WorkError, bind_work, ensure_branch, ensure_pull_request, execution_binding_path,
+    pr_binding_path, recover_work,
+)
+from .audits import (
+    AuditError, AuditItem, IndependentReview, ReviewFinding, SelfAudit,
+    read_independent_review, read_self_audit, write_independent_review, write_self_audit,
+)
+from .delivery import (
+    PRReadback, ReadinessError, evaluate_readiness, readiness_path, write_readiness,
+)
 from .acceptance import (
     ACCEPTANCE_POLICY_VERSION, ARTIFACT_TYPES, OBSERVATION_KINDS, AcceptanceError,
     AcceptanceObservation, AcceptanceResult, acceptance_result_path, evaluate_acceptance,
@@ -618,6 +644,9 @@ def _unaccepted_dependencies(github: GitHub, contract: Any) -> tuple[str, ...]:
     elif not numbers and getattr(contract, "issue_number", None) == 30:
         # The approved #30 ADC fixes #27/#29 as its upstream dependencies.
         numbers = [27, 29]
+    if getattr(contract, "issue_number", None) == 30:
+        # #28 is an explicit transitive blocker through #29 until formal Oracle acceptance.
+        numbers = sorted(set(numbers) | {28})
     pending: list[str] = []
     for number in numbers:
         try:
@@ -761,6 +790,765 @@ def _acceptance_verify(args: argparse.Namespace, repository: str, root: Path, gi
     return 0
 
 
+CHECKLIST_LINE = re.compile(r"^\s*[-*+]\s+\[[ xX]\]\s+(.+?)\s*$")
+FILE_EVIDENCE_REF = re.compile(r"^(.+)#sha256=([0-9a-f]{64})$")
+STANDALONE_CLOSE = re.compile(r"(?im)^Closes #([1-9][0-9]*)\s*$")
+ANY_CLOSE = re.compile(r"(?i)\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)\s+#([1-9][0-9]*)\b")
+
+
+def _runtime_root(args: argparse.Namespace) -> Path:
+    root_arg = getattr(args, "root", None)
+    root = _repo_root(None) if root_arg is None else Path(root_arg)
+    if root.is_symlink() or not root.is_dir():
+        raise CLIError("repository root must be a regular directory")
+    return root.resolve()
+
+
+def _approved_issue_adc(github: GitHub, issue_number: int, repository: str) -> tuple[dict[str, Any], Any]:
+    issue = github.issue(issue_number)
+    if (issue.get("number") != issue_number or issue.get("state") != "open"
+            or issue.get("pull_request") is not None):
+        raise CLIError("work management requires the exact Issue to remain open")
+    verified = verify_adc(github, issue_number)
+    if verified.contract.repository != repository or verified.pointer.state != "approved":
+        raise CLIError("work management requires the current approved ADC for this repository")
+    return issue, verified
+
+
+def _work_json(result: Any, issue_number: int, repository: str, *, extra: dict[str, Any] | None = None) -> int:
+    binding = result.binding
+    context = result.context
+    value = {
+        "status": result.status,
+        "repository": repository,
+        "issue": issue_number,
+        "binding": None if binding is None else binding.__dict__,
+        "binding_sha256": None if binding is None else binding_digest(binding),
+        "context": None if context is None else {
+            "branch_ref": context.branch_ref,
+            "current_head_sha40": context.current_head_sha40,
+            "worktree_clean": context.worktree_clean,
+        },
+        "remote_base_sha40": result.remote_base_sha40,
+        "checkpoint_path": None if result.checkpoint_path is None else str(result.checkpoint_path),
+        "checkpoint_sha256": result.checkpoint_sha256,
+        "reasons": list(result.reasons),
+        "evidence_refs": [] if result.checkpoint_path is None else [str(result.checkpoint_path)],
+    }
+    if extra:
+        value.update(extra)
+    _json(value)
+    return 0 if result.status not in {"BLOCKED", "FAIL", "CONCERNS"} else 2
+
+
+def _work_command(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
+    _issue, verified = _approved_issue_adc(github, args.issue, repository)
+    if args.verb == "base":
+        binding_path = execution_binding_path(root, args.issue)
+        if binding_path.exists():
+            binding = read_binding(binding_path)
+            if (binding.repository != repository or binding.adc_comment_id != verified.pointer.comment_id
+                    or binding.adc_sha256 != verified.pointer.sha256 or Path(binding.work_directory) != root):
+                raise CLIError("existing ExecutionBinding conflicts with the current Issue/ADC/worktree")
+            current_remote = remote_branch_sha(root, binding.base_ref)
+            status = "BLOCKED" if current_remote != binding.base_sha else "FROZEN"
+            _json({"status": status, "repository": repository, "issue": args.issue,
+                   "base_ref": binding.base_ref, "base_sha40": binding.base_sha,
+                   "remote_base_sha40": current_remote, "binding_sha256": binding_digest(binding),
+                   "reasons": [] if current_remote == binding.base_sha else [
+                       "remote base advanced; the immutable base remains frozen and must not be re-resolved"],
+                   "evidence_refs": [str(binding_path)]})
+            return 0 if status == "FROZEN" else 2
+        if not worktree_clean(root):
+            raise CLIError("base selection requires a clean worktree")
+        base_ref = args.base_ref or github.repository_metadata().get("default_branch")
+        if not isinstance(base_ref, str) or not base_ref:
+            raise CLIError("GitHub repository default branch is invalid")
+        selected = remote_branch_sha(root, base_ref)
+        _json({"status": "BASE_SELECTED", "repository": repository, "issue": args.issue,
+               "adc_comment_id": verified.pointer.comment_id, "adc_sha256": verified.pointer.sha256,
+               "base_ref": base_ref, "base_sha40": selected, "reasons": [], "evidence_refs": []})
+        return 0
+    if args.verb == "branch":
+        result = ensure_branch(root, args.base_ref, args.base_sha, args.branch_ref)
+        return _work_json(result, args.issue, repository)
+    if args.verb == "bind":
+        result = bind_work(root, repository=repository, issue_number=args.issue,
+                           adc_comment_id=verified.pointer.comment_id, adc_sha256=verified.pointer.sha256,
+                           base_ref=args.base_ref, branch_ref=args.branch_ref,
+                           expected_base_sha40=args.base_sha)
+        return _work_json(result, args.issue, repository)
+    result = recover_work(root, repository=repository, issue_number=args.issue,
+                          adc_comment_id=verified.pointer.comment_id, adc_sha256=verified.pointer.sha256,
+                          expected_branch_ref=args.branch_ref)
+    return _work_json(result, args.issue, repository)
+
+
+def _pr_ensure(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
+    _issue, verified = _approved_issue_adc(github, args.issue, repository)
+    binding_path = execution_binding_path(root, args.issue)
+    binding = read_binding(binding_path)
+    body = _safe_file_bytes(args.body_file, "PR body file", root=root).decode("utf-8", errors="strict")
+    result = ensure_pull_request(
+        root, github, repository=repository, issue_number=args.issue, binding=binding,
+        branch_ref=args.branch_ref, base_ref=args.base_ref, title=args.title, body=body,
+    )
+    _issue, current_verified = _approved_issue_adc(github, args.issue, repository)
+    if current_verified.pointer != verified.pointer:
+        raise CLIError("ADC pointer changed during PR ensure; the PR remains open but no newer binding was written")
+    if (not worktree_clean(root) or current_branch(root) != args.branch_ref
+            or head_sha40(root) != result.binding.pr_head_sha40
+            or remote_branch_sha(root, args.branch_ref) != result.binding.pr_head_sha40):
+        raise CLIError("worktree or remote branch changed during final PR/ADC readback")
+    pull = result.pull_request
+    _json({"status": "PR_READY", "repository": repository, "issue": args.issue,
+           "pr": pull.get("number"), "url": pull.get("html_url"), "state": pull.get("state"),
+           "draft": pull.get("draft"), "base_ref": args.base_ref,
+           "base_sha40": result.binding.base_sha40, "head_ref": args.branch_ref,
+           "head_sha40": result.binding.pr_head_sha40, "reused": result.reused,
+           "pr_binding_sha256": result.binding.sha256,
+           "checkpoint_path": str(result.checkpoint_path),
+           "checkpoint_sha256": result.checkpoint_sha256,
+           "reasons": [], "evidence_refs": [str(binding_path), str(pr_binding_path(root, args.issue)),
+                                            str(result.checkpoint_path)]})
+    return 0
+
+
+def _audit_subject(args: argparse.Namespace, repository: str, root: Path,
+                   github: GitHub) -> tuple[Any, VerificationSubject, tuple[str, ...], dict[str, str]]:
+    _issue, verified = _approved_issue_adc(github, args.issue, repository)
+    plan, _required, _oracles, _tests = _load_plan(root, repository, args.issue, args.plan, verified)
+    subject = _subject(repository, args.issue, args.pr, args.head, verified, plan)
+    try:
+        checklist_text = verified.contract.section("reviewer_checklist")
+    except (KeyError, ValueError) as exc:
+        raise CLIError("ADC reviewer checklist is missing") from exc
+    checklist_rows = [match.group(1) for line in checklist_text.splitlines()
+                      if line.strip() and (match := CHECKLIST_LINE.fullmatch(line))]
+    if not checklist_rows:
+        raise CLIError("ADC reviewer checklist has no valid checklist entries")
+    checklist_labels = {f"checklist:{index:02d}": label
+                        for index, label in enumerate(checklist_rows, start=1)}
+    required = tuple(sorted((*verified.contract.requirement_ids, *checklist_labels)))
+    if len(set(required)) != len(required):
+        raise CLIError("ADC requirement and checklist identifiers are not unique")
+    return verified, subject, required, checklist_labels
+
+
+def _verified_file_evidence(root: Path, reference: Any) -> tuple[str, str]:
+    if not isinstance(reference, str):
+        raise CLIError("evidence reference must be text")
+    match = FILE_EVIDENCE_REF.fullmatch(reference)
+    if match is None:
+        raise CLIError("evidence reference must use path#sha256=<64 lowercase hex>")
+    name, expected = match.groups()
+    if Path(name).is_absolute() or "\\" in name or any(part in {"", ".", ".."} for part in name.split("/")):
+        raise CLIError("evidence reference path must be a canonical repository-relative path")
+    path = root
+    for part in name.split("/"):
+        path = path / part
+        if path.is_symlink():
+            raise CLIError("evidence reference must not traverse a symbolic link")
+    if not path.is_file():
+        raise CLIError(f"evidence reference file is missing: {name}")
+    actual = hashlib.sha256(path.read_bytes()).hexdigest()
+    if actual != expected:
+        raise CLIError(f"evidence reference digest changed: {name}")
+    return f"{name}#sha256={actual}", actual
+
+
+def _audit_self(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
+    verified, subject, required, checklist_labels = _audit_subject(args, repository, root, github)
+    value = _read_json(args.input, "self-audit input", root=root)
+    if (not isinstance(value, dict) or set(value) != {"items", "schema", "subject"}
+            or value.get("schema") != "PASES_SELF_AUDIT_INPUT_V1"
+            or VerificationSubject.from_dict(value.get("subject")) != subject
+            or not isinstance(value.get("items"), list)):
+        raise CLIError("self-audit input is stale or has unknown/missing fields")
+    rows: list[AuditItem] = []
+    for row in value["items"]:
+        if not isinstance(row, dict) or set(row) != {"evidence_refs", "item_id", "status"}:
+            raise CLIError("self-audit item has unknown/missing fields")
+        if not isinstance(row["evidence_refs"], list):
+            raise CLIError("self-audit evidence_refs must be an array")
+        refs = tuple(_verified_file_evidence(root, ref)[0] for ref in row["evidence_refs"])
+        rows.append(AuditItem(row["item_id"], row["status"], refs).validate())
+    audit = SelfAudit(subject, tuple(sorted(rows, key=lambda row: row.item_id))).validate(required)
+    path = root / ".p_ases" / "audits" / str(args.issue) / subject.sha256 / f"self-{audit.sha256}.json"
+    write_self_audit(path, audit, required)
+    _json({"status": audit.status, "subject": subject.as_dict(), "subject_sha256": subject.sha256,
+           "audit_sha256": audit.sha256, "path": str(path), "required_items": list(required),
+           "checklist_labels": checklist_labels, "adc_comment_id": verified.pointer.comment_id,
+           "reasons": [] if audit.status == "PASS" else ["self-audit contains non-PASS items"],
+           "evidence_refs": [str(path), *[ref for row in audit.items for ref in row.evidence_refs]]})
+    return 0 if audit.status == "PASS" else 2
+
+
+def _audit_independent(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
+    _verified, subject, _required, _checklist_labels = _audit_subject(args, repository, root, github)
+    value = _read_json(args.input, "independent-review context artifact", root=root)
+    expected = {"context_id", "findings", "provenance", "reviewed_head_sha40", "schema",
+                "session_description", "subject", "verdict"}
+    if (not isinstance(value, dict) or set(value) != expected
+            or value.get("schema") != "PASES_INDEPENDENT_REVIEW_CONTEXT_V1"
+            or VerificationSubject.from_dict(value.get("subject")) != subject
+            or value.get("reviewed_head_sha40") != subject.pr_head_sha40
+            or not isinstance(value.get("findings"), list)):
+        raise CLIError("independent-review artifact is stale or has unknown/missing fields")
+    if any(not isinstance(value.get(field), str) or not value[field].strip()
+           for field in ("context_id", "provenance", "session_description", "verdict")):
+        raise CLIError("independent-review context description/provenance is incomplete")
+    binding = read_binding(execution_binding_path(root, args.issue))
+    implementation_context = f"execution-binding:{binding_digest(binding)}"
+    findings: list[ReviewFinding] = []
+    for row in value["findings"]:
+        if not isinstance(row, dict) or set(row) != {"description", "evidence_ref", "finding_id", "resolved", "severity"}:
+            raise CLIError("independent-review finding has unknown/missing fields")
+        evidence_ref, _digest = _verified_file_evidence(root, row["evidence_ref"])
+        findings.append(ReviewFinding(row["finding_id"], row["severity"], row["resolved"],
+                                      row["description"], evidence_ref).validate())
+    findings.sort(key=lambda item: item.finding_id)
+    raw = _safe_file_bytes(args.input, "independent-review context artifact", root=root)
+    context_dir = root / ".p_ases" / "audits" / str(args.issue) / subject.sha256
+    context_path = context_dir / f"review-context-{hashlib.sha256(raw).hexdigest()}.json"
+    _write_immutable(context_path, raw, root=root)
+    context_ref = str(context_path.relative_to(root))
+    review = IndependentReview(
+        subject=subject, reviewer_context_id=value["context_id"],
+        implementation_context_id=implementation_context, context_artifact_ref=context_ref,
+        context_artifact_sha256=hashlib.sha256(raw).hexdigest(), findings=tuple(findings), verdict=value["verdict"],
+    ).validate()
+    path = root / ".p_ases" / "audits" / str(args.issue) / subject.sha256 / f"independent-{review.sha256}.json"
+    write_independent_review(path, review)
+    _json({"status": review.verdict, "subject": subject.as_dict(), "subject_sha256": subject.sha256,
+           "review_sha256": review.sha256, "reviewer_context_id": review.reviewer_context_id,
+           "implementation_context_id": review.implementation_context_id,
+           "path": str(path), "context_artifact": str(context_path),
+           "reasons": [] if review.verdict == "PASS" else ["independent review did not PASS"],
+           "evidence_refs": [str(path), str(args.input), str(context_path), *[row.evidence_ref for row in findings]]})
+    return 0 if review.verdict == "PASS" and not review.blocking_findings else 2
+
+
+def _readback_readiness_pr(github: GitHub, repository: str, issue_number: int,
+                           pr_number: int) -> PRReadback:
+    row = github.pull_request(pr_number)
+    base, head = row.get("base"), row.get("head")
+    base_repo = base.get("repo") if isinstance(base, dict) else None
+    head_repo = head.get("repo") if isinstance(head, dict) else None
+    body = row.get("body")
+    close_refs = [int(value) for value in ANY_CLOSE.findall(body)] if isinstance(body, str) else []
+    own_lines = [int(value) for value in STANDALONE_CLOSE.findall(body)] if isinstance(body, str) else []
+    if (not isinstance(base, dict) or not isinstance(head, dict)
+            or not isinstance(base_repo, dict) or not isinstance(head_repo, dict)
+            or not isinstance(base_repo.get("full_name"), str)
+            or base_repo["full_name"].lower() != repository.lower()
+            or not isinstance(head_repo.get("full_name"), str)
+            or not isinstance(body, str)
+            or close_refs != [issue_number] or own_lines != [issue_number]):
+        raise CLIError("PR readback lacks exact same-repository identity or its standalone Closes #N line")
+    return PRReadback(
+        repository=repository, issue_number=issue_number, pr_number=pr_number,
+        state=row.get("state"), draft=row.get("draft"),
+        base_ref=base.get("ref"), base_sha40=base.get("sha"),
+        head_ref=head.get("ref"), head_sha40=head.get("sha"),
+        head_repository=head_repo["full_name"], closing_issue_number=issue_number,
+    ).validate()
+
+
+def _read_audit_references(root: Path, audit: SelfAudit | IndependentReview) -> tuple[str, ...]:
+    references: list[str] = []
+    if isinstance(audit, SelfAudit):
+        refs = [ref for item in audit.items for ref in item.evidence_refs]
+    else:
+        refs = [audit.context_artifact_ref, *(item.evidence_ref for item in audit.findings)]
+    for ref in refs:
+        if isinstance(audit, IndependentReview) and ref == audit.context_artifact_ref:
+            if (not isinstance(ref, str) or Path(ref).is_absolute() or "\\" in ref
+                    or any(part in {"", ".", ".."} for part in ref.split("/"))):
+                raise CLIError("independent-review context reference is not a canonical workspace-relative path")
+            path = root / ref
+            try:
+                raw = _safe_file_bytes(path, "independent-review context artifact", root=root)
+            except (CLIError, OSError) as exc:
+                raise CLIError(f"independent-review context artifact cannot be read back: {exc}") from exc
+            if hashlib.sha256(raw).hexdigest() != audit.context_artifact_sha256:
+                raise CLIError("independent-review context artifact digest changed")
+            references.append(str(path))
+            continue
+        _canonical_ref, _digest = _verified_file_evidence(root, ref)
+        references.append(ref)
+    return tuple(references)
+
+
+def _delivery_gate_policy(args: argparse.Namespace, repository: str, github: GitHub) -> int:
+    selected_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    try:
+        issue = github.issue(args.issue)
+        if issue.get("state") != "open" or issue.get("pull_request") is not None:
+            raise GatePolicyError("gate policy selection requires an open Issue")
+        selection = choose_gate_for_new_issue(github, repository, args.issue, selected_at)
+        if selection is None:
+            _json({"status": "UNDETERMINED", "repository": repository, "issue": args.issue,
+                   "policy": None, "reasons": ["no valid post-activation gate selection is available; activation may be absent/invalid or this Issue may predate activation"]})
+            return 2
+        comment_id, _body = pin_gate_selection(github, selection)
+        if selection.policy_version == BOOTSTRAP_POLICY:
+            status = "BOOTSTRAP_BLOCKED"
+            reason = "Bootstrap quality checks have not been evaluated for this exact PR subject"
+        else:
+            status = "PASES_GATE_REQUIRED"
+            reason = "normal P-ASES Review Readiness is required for work started after activation"
+        _json({"status": status, "repository": repository, "issue": args.issue,
+               "policy": selection.policy_version, "gate_selection_comment_id": comment_id,
+               "reasons": [reason]})
+        return 2 if status == "BOOTSTRAP_BLOCKED" else 0
+    except (GatePolicyError, GitHubError) as exc:
+        _json({"status": "UNDETERMINED", "repository": repository, "issue": args.issue,
+               "policy": None, "reasons": [str(exc)]})
+        return 2
+
+
+def _bootstrap_pr_identity(pr: dict[str, Any]) -> tuple[Any, ...]:
+    """Return all PR fields that identify the Bootstrap subject and Issue association."""
+    def repo_identity(value: Any) -> tuple[Any, Any]:
+        if not isinstance(value, dict):
+            return None, None
+        full_name = value.get("full_name")
+        return (full_name.casefold() if isinstance(full_name, str) else None,
+                value.get("id") if type(value.get("id")) is int else None)
+
+    base, head = pr.get("base"), pr.get("head")
+    base = base if isinstance(base, dict) else {}
+    head = head if isinstance(head, dict) else {}
+    return (pr.get("number"), pr.get("state"), pr.get("draft"),
+            repo_identity(base.get("repo")), base.get("ref"), base.get("sha"),
+            repo_identity(head.get("repo")), head.get("ref"), head.get("sha"),
+            pr.get("body"))
+
+
+def _verify_live_bootstrap_subject(github: GitHub, issue_number: int, pr_number: int,
+                                   repository: str, root: Path, subject: BootstrapSubject,
+                                   initial_adc: Any, initial_pr: dict[str, Any],
+                                   gate_comment_id: int, gate_selection: GateSelection,
+                                   gate_selection_body: str) -> None:
+    """Re-read the complete PR/ADC/gate identity and require it to match the initial snapshot."""
+    current_checkout_subject(root, subject)
+    current_adc = read_bootstrap_adc(github, issue_number)
+    if current_adc.pointer != initial_adc.pointer:
+        raise GatePolicyError("current ADC pointer changed during Bootstrap verification")
+    current_pr = github.pull_request(pr_number)
+    validate_bootstrap_pr_identity(subject, current_pr, repository)
+    if _bootstrap_pr_identity(current_pr) != _bootstrap_pr_identity(initial_pr):
+        raise GatePolicyError("current PR identity or Issue-closing body changed during Bootstrap verification")
+    current_selection = choose_gate_for_new_issue(
+        github, repository, issue_number, datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    if (current_selection is None or current_selection.issue_number != issue_number
+            or current_selection.repository.casefold() != repository.casefold()
+            or current_selection.policy_version != gate_selection.policy_version):
+        raise GatePolicyError("current fixed gate selection changed during Bootstrap verification")
+    current_gate_id, pinned_selection, current_gate_body = read_gate_selection(github, issue_number)
+    if (current_gate_id != gate_comment_id or pinned_selection.payload() != gate_selection.payload()
+            or current_gate_body != gate_selection_body):
+        raise GatePolicyError("pinned gate selection identity changed during Bootstrap verification")
+
+
+def _publish_bootstrap_observation(github: GitHub, issue_number: int,
+                                   result: BootstrapResult) -> int:
+    """Publish and verify that this exact append-only observation is the latest one."""
+    expected = result.payload()
+    last_error: Exception | None = None
+    for _attempt in range(2):
+        try:
+            comment_id, _body = publish_immutable_record(
+                github, issue_number, "PASES_BOOTSTRAP_REVIEW_V1", expected)
+            if read_bootstrap_evidence(github, issue_number, comment_id) != expected:
+                raise GatePolicyError("Bootstrap evidence payload readback does not match the current result")
+        except (GatePolicyError, GitHubError) as exc:
+            last_error = exc
+        else:
+            last_error = None
+        try:
+            latest = read_latest_bootstrap_evidence(github, issue_number)
+            if latest is not None and latest[1] == expected:
+                return latest[0]
+            last_error = GatePolicyError("published Bootstrap result is not the latest append-only observation")
+        except (GatePolicyError, GitHubError) as exc:
+            last_error = exc
+    detail = f": {last_error}" if last_error is not None else ""
+    raise GatePolicyError(f"Bootstrap evidence publish/readback did not become current{detail}")
+
+
+def _append_blocked_bootstrap_observation(github: GitHub, issue_number: int,
+                                          result: BootstrapResult,
+                                          reasons: tuple[str, ...]) -> tuple[BootstrapResult, int]:
+    blocked = replace(result, status="BOOTSTRAP_BLOCKED",
+                      reasons=tuple(dict.fromkeys(result.reasons + reasons))).validate()
+    return blocked, _publish_bootstrap_observation(github, issue_number, blocked)
+
+
+def _delivery_bootstrap_check(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
+    reasons: list[str] = []
+    try:
+        bootstrap_adc = read_bootstrap_adc(github, args.issue)
+        pr = github.pull_request(args.pr)
+        base, head = pr.get("base"), pr.get("head")
+        if not isinstance(base, dict) or not isinstance(head, dict):
+            raise GatePolicyError("current PR base/head readback is incomplete")
+        base_sha, head_sha = base.get("sha"), head.get("sha")
+        if not isinstance(base.get("ref"), str) or not isinstance(base_sha, str):
+            raise GatePolicyError("current PR base ref/SHA readback is incomplete")
+        if not isinstance(head.get("ref"), str) or not isinstance(head_sha, str):
+            raise GatePolicyError("current PR head ref/SHA readback is incomplete")
+        subject = BootstrapSubject(repository, args.issue, args.pr, bootstrap_adc.pointer.comment_id,
+                                  bootstrap_adc.pointer.sha256, base["ref"], base_sha,
+                                  head["ref"], head_sha).validate()
+        selection = choose_gate_for_new_issue(
+            github, repository, args.issue, datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        if selection is None or selection.policy_version != BOOTSTRAP_POLICY:
+            raise GatePolicyError("Issue does not resolve to the fixed Bootstrap policy")
+        gate_comment_id, gate_selection_body = pin_gate_selection(github, selection)
+        read_gate_id, gate_selection, read_gate_body = read_gate_selection(github, args.issue)
+        if (read_gate_id != gate_comment_id or read_gate_body != gate_selection_body
+                or gate_selection.issue_number != args.issue
+                or gate_selection.repository.casefold() != repository.casefold()
+                or gate_selection.policy_version != BOOTSTRAP_POLICY):
+            raise GatePolicyError("pinned gate selection does not match the current Bootstrap subject")
+    except (ADCError, GatePolicyError, GitHubError, KeyError, TypeError) as exc:
+        _json({"status": "BOOTSTRAP_BLOCKED", "subject": None,
+               "reasons": [f"current ADC/PR/gate selection readback failed: {exc}"],
+               "evidence_refs": []})
+        return 2
+
+    if bootstrap_adc.pointer.state != "approved":
+        reasons.append(f"current child ADC approval state is {bootstrap_adc.pointer.state}; explicit approved state is required")
+
+    try:
+        local_checks = run_local_bootstrap_checks_bound(root, subject)
+    except (GatePolicyError, OSError) as exc:
+        local_checks = ()
+        reasons.append(f"local exact-head verification failed: {exc}")
+
+    try:
+        profile = load_profile(root)
+        check_runs = github.check_runs_for_ref(subject.head_sha40)
+        workflow_runs = github.workflow_runs_for_ref(subject.head_sha40)
+        response_repository = repository
+    except (ProfileError, GitHubError) as exc:
+        reasons.append(f"current-head CI/profile readback failed: {exc}")
+        check_runs, workflow_runs = [], []
+        try:
+            profile = load_profile(root)
+        except ProfileError:
+            profile = None
+
+    # Recheck after local and GitHub verification; a checkout change invalidates every result.
+    try:
+        current_checkout_subject(root, subject)
+    except GatePolicyError as exc:
+        reasons.append(f"local checkout changed during Bootstrap verification: {exc}")
+    required_names = tuple(name for name, _app_id in profile.required_checks) if profile else ()
+    unverified_hosts = tuple(args.unverified_host)
+    try:
+        policy_sha256 = bootstrap_policy_digest()
+    except GatePolicyError as exc:
+        policy_sha256 = None
+        reasons.append(f"Bootstrap policy fingerprint failed: {exc}")
+    result = evaluate_bootstrap(
+        subject, pr=pr, response_repository=repository, workflow_runs=workflow_runs, check_runs=check_runs,
+        required_check_names=required_names, local_checks=local_checks,
+        adc_requirement_ids=(), adc_checklist_ids=(),
+        self_review=None, independent_review=None, unverified_hosts=unverified_hosts,
+        bootstrap_policy_sha256=policy_sha256)
+    if reasons:
+        result = replace(result, status="BOOTSTRAP_BLOCKED",
+                         reasons=tuple(dict.fromkeys(result.reasons + tuple(reasons)))).validate()
+
+    # Re-read the complete immutable ADC, PR, and fixed gate selection before publishing.
+    snapshot_stable = True
+    try:
+        _verify_live_bootstrap_subject(
+            github, args.issue, args.pr, repository, root, subject, bootstrap_adc, pr,
+            gate_comment_id, gate_selection, gate_selection_body)
+    except (ADCError, GatePolicyError, GitHubError, AttributeError) as exc:
+        snapshot_stable = False
+        result = replace(result, status="BOOTSTRAP_BLOCKED",
+                         reasons=tuple(dict.fromkeys(result.reasons + (str(exc),)))).validate()
+
+    evidence_comment_id = None
+    if snapshot_stable:
+        try:
+            # This final clean-checkout read is immediately before publication.
+            current_checkout_subject(root, subject)
+            evidence_comment_id = _publish_bootstrap_observation(github, args.issue, result)
+            post_publish_failures: list[str] = []
+            try:
+                _verify_live_bootstrap_subject(
+                    github, args.issue, args.pr, repository, root, subject, bootstrap_adc, pr,
+                    gate_comment_id, gate_selection, gate_selection_body)
+            except (ADCError, GatePolicyError, GitHubError, AttributeError) as exc:
+                post_publish_failures.append(f"PR/ADC/gate selection changed during evidence publication: {exc}")
+            try:
+                current_checkout_subject(root, subject)
+            except GatePolicyError as exc:
+                post_publish_failures.append(f"local checkout changed during evidence publication: {exc}")
+            if post_publish_failures:
+                # A published READY must not remain the latest observation after any subject drift.
+                result, evidence_comment_id = _append_blocked_bootstrap_observation(
+                    github, args.issue, result, tuple(post_publish_failures))
+        except (ADCError, GatePolicyError, GitHubError, AttributeError) as exc:
+            reasons = tuple(dict.fromkeys(result.reasons + (str(exc),)))
+            _json({"status": "BOOTSTRAP_BLOCKED", "subject": subject.as_dict(), "reasons": list(reasons),
+                   "gate_selection_comment_id": gate_comment_id, "evidence_comment_id": evidence_comment_id,
+                   "evidence_refs": ([f"Issue #{args.issue} comment {evidence_comment_id}"]
+                                     if evidence_comment_id else [])})
+            return 2
+    _json({"status": result.status, "subject": subject.as_dict(), "reasons": list(result.reasons),
+           "gate_selection_comment_id": gate_comment_id, "evidence_comment_id": evidence_comment_id,
+           "evidence_sha256": result.sha256 if evidence_comment_id else None,
+           "evidence_refs": ([f"Issue #{args.issue} comment {evidence_comment_id}"] if evidence_comment_id else [])})
+    return 0 if result.status == "BOOTSTRAP_TECHNICAL_READY" else 2
+
+
+def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
+    blockers: list[str] = []
+    published_refs: list[str] = []
+    verified_adc = None
+    try:
+        _issue, verified_adc = _approved_issue_adc(github, args.issue, repository)
+    except (ADCError, CLIError, GitHubError) as exc:
+        blockers.append(f"current open Issue/approved ADC readback failed: {exc}")
+
+    plan = None
+    required_item_ids: tuple[str, ...] = ()
+    if verified_adc is not None:
+        try:
+            plan, _reqs, _oracles, _tests = _load_plan(root, repository, args.issue, args.plan, verified_adc)
+        except (PlanError, OracleTraceError, CLIError, OSError) as exc:
+            blockers.append(f"current Verification Plan readback failed: {exc}")
+
+    subject = None
+    if verified_adc is not None and plan is not None:
+        try:
+            subject = _subject(repository, args.issue, args.pr, args.head, verified_adc, plan)
+        except (CLIError, EvidenceError) as exc:
+            blockers.append(f"exact readiness subject is invalid: {exc}")
+
+    pr_readback = None
+    try:
+        pr_readback = _readback_readiness_pr(github, repository, args.issue, args.pr)
+    except (GitHubError, CLIError, ReadinessError) as exc:
+        blockers.append(f"current GitHub PR readback failed: {exc}")
+
+    pr_binding = None
+    binding = None
+    binding_path = execution_binding_path(root, args.issue)
+    try:
+        binding = read_binding(binding_path)
+        pr_binding = read_pr_binding(pr_binding_path(root, args.issue))
+        if binding.repository != repository or binding.issue_number != args.issue:
+            raise CLIError("ExecutionBinding repository/Issue does not match")
+        if (binding.adc_comment_id != (None if verified_adc is None else verified_adc.pointer.comment_id)
+                or binding.adc_sha256 != (None if verified_adc is None else verified_adc.pointer.sha256)):
+            blockers.append("ExecutionBinding belongs to a stale ADC pointer")
+    except (ExecutionError, CheckpointError, CLIError, OSError) as exc:
+        blockers.append(f"current immutable work/PR binding readback failed: {exc}")
+
+    work_context = None
+    if binding is not None:
+        try:
+            work_context = WorkContext(
+                binding, head_sha40(root), current_branch(root), worktree_clean(root), binding_digest(binding),
+            ).validate()
+        except (GitError, ValueError) as exc:
+            blockers.append(f"current local work context readback failed: {exc}")
+
+    verification = None
+    verification_args = argparse.Namespace(issue=args.issue, pr=args.pr, head=args.head, plan=args.plan)
+    try:
+        saved_verification = read_verification_result(args.verification)
+        current_verification, _evidence_refs = _calculate_verification(
+            verification_args, repository, root, github,
+        )
+        if saved_verification != current_verification:
+            blockers.append("saved #29 Verification is stale relative to current ADC/Plan/Evidence/Checks")
+        elif subject is None or saved_verification.subject != subject:
+            blockers.append("saved #29 Verification does not match the current exact subject")
+        else:
+            verification = current_verification
+            comment_id = _exact_published(github, args.issue,
+                                          _result_comment("verification", current_verification.as_json()))
+            if comment_id is None:
+                blockers.append("exact current #29 Verification result comment is not published on the Issue")
+            else:
+                published_refs.append(f"issue-comment:{comment_id}")
+    except (VerificationError, ADCError, PlanError, OracleTraceError, EvidenceError,
+            GitHubError, CLIError, OSError) as exc:
+        blockers.append(f"#29 Verification readback/recomputation failed: {exc}")
+
+    acceptance = None
+    try:
+        saved_acceptance = read_acceptance_result(args.acceptance)
+        current_acceptance = _acceptance_recompute_saved(
+            argparse.Namespace(issue=args.issue), repository, root, github, saved_acceptance,
+        )
+        if subject is None or saved_acceptance.subject != subject or current_acceptance != saved_acceptance:
+            blockers.append("saved #29 Acceptance is stale or does not match the current exact subject")
+        else:
+            acceptance = current_acceptance
+            comment_id = _exact_published(github, args.issue,
+                                          _result_comment("acceptance", current_acceptance.as_json()))
+            if comment_id is None:
+                blockers.append("exact current #29 Acceptance result comment is not published on the Issue")
+            else:
+                published_refs.append(f"issue-comment:{comment_id}")
+    except (AcceptanceError, ADCError, PlanError, OracleTraceError, EvidenceError,
+            VerificationError, GitHubError, CLIError, OSError) as exc:
+        blockers.append(f"#29 Acceptance readback/recomputation failed: {exc}")
+
+    self_audit = None
+    independent_review = None
+    if verified_adc is not None:
+        try:
+            checklist_text = verified_adc.contract.section("reviewer_checklist")
+            checklist_rows = [match.group(1) for line in checklist_text.splitlines()
+                              if line.strip() and (match := CHECKLIST_LINE.fullmatch(line))]
+            required_item_ids = tuple(sorted((*verified_adc.contract.requirement_ids,
+                                              *(f"checklist:{index:02d}" for index in range(1, len(checklist_rows) + 1)))))
+        except (KeyError, ValueError) as exc:
+            blockers.append(f"ADC self-audit checklist cannot be reconstructed: {exc}")
+        try:
+            self_audit = read_self_audit(args.self_audit)
+            self_audit.validate(required_item_ids)
+            if subject is None or self_audit.subject != subject:
+                blockers.append("self-audit is stale or does not match the current exact subject")
+            _read_audit_references(root, self_audit)
+        except (AuditError, CLIError, OSError) as exc:
+            blockers.append(f"self-audit readback/evidence validation failed: {exc}")
+            self_audit = None
+        try:
+            independent_review = read_independent_review(args.independent_review)
+            independent_review.validate()
+            if subject is None or independent_review.subject != subject:
+                blockers.append("independent review is stale or does not match the current exact subject")
+            if binding is not None and independent_review.implementation_context_id != f"execution-binding:{binding_digest(binding)}":
+                blockers.append("independent-review implementation context does not match the current work binding")
+            _read_audit_references(root, independent_review)
+        except (AuditError, CLIError, OSError) as exc:
+            blockers.append(f"independent-review readback/evidence validation failed: {exc}")
+            independent_review = None
+
+    dependency_reasons: tuple[str, ...] = ()
+    if verified_adc is not None:
+        dependency_reasons = _unaccepted_dependencies(github, verified_adc.contract)
+        blockers.extend(dependency_reasons)
+
+    check_sha = None if verification is None else verification.check_result_sha256
+    try:
+        profile = load_profile(root)
+        policy = profile.required_check_policy()
+        if verification is None or verification.required_check_policy_sha256 != policy.sha256:
+            blockers.append("current Required Check policy has no matching trusted #29 Verification")
+    except (ProfileError, VerificationError) as exc:
+        blockers.append(f"Required Check policy cannot be trusted: {exc}")
+
+    if subject is not None and verified_adc is not None:
+        try:
+            final_issue = github.issue(args.issue)
+            if final_issue.get("number") != args.issue or final_issue.get("state") != "open":
+                blockers.append("Issue changed from open before Review Readiness persistence")
+        except GitHubError as exc:
+            blockers.append(f"Issue final readback failed before Readiness persistence: {exc}")
+        try:
+            last_adc = verify_adc(github, args.issue)
+            if last_adc.pointer != verified_adc.pointer:
+                blockers.append("ADC pointer changed before Review Readiness persistence")
+        except (ADCError, GitHubError) as exc:
+            blockers.append(f"ADC final readback failed before Readiness persistence: {exc}")
+        try:
+            last_pr = _readback_readiness_pr(github, repository, args.issue, args.pr)
+            if last_pr != pr_readback:
+                blockers.append("PR identity/base/head changed before Review Readiness persistence")
+        except (GitHubError, CLIError, ReadinessError) as exc:
+            blockers.append(f"PR final readback failed before Readiness persistence: {exc}")
+        try:
+            if (current_branch(root) != (None if pr_readback is None else pr_readback.head_ref)
+                    or head_sha40(root) != subject.pr_head_sha40 or not worktree_clean(root)
+                    or (pr_readback is not None
+                        and remote_branch_sha(root, pr_readback.head_ref) != subject.pr_head_sha40)):
+                blockers.append("local worktree or remote branch changed before Readiness persistence")
+        except GitError as exc:
+            blockers.append(f"local/remote branch final readback failed before Readiness persistence: {exc}")
+        if verification is not None:
+            try:
+                last_verification, _last_refs = _calculate_verification(
+                    verification_args, repository, root, github,
+                )
+                if last_verification != verification:
+                    blockers.append("#29 Verification/Required Checks changed before Readiness persistence")
+            except (VerificationError, ADCError, PlanError, OracleTraceError, EvidenceError,
+                    GitHubError, CLIError, OSError) as exc:
+                blockers.append(f"#29 final Verification/Check Runs readback failed: {exc}")
+        if acceptance is not None:
+            try:
+                last_acceptance = _acceptance_recompute_saved(
+                    argparse.Namespace(issue=args.issue), repository, root, github, acceptance,
+                )
+                if last_acceptance != acceptance:
+                    blockers.append("#29 Acceptance changed before Readiness persistence")
+            except (AcceptanceError, ADCError, PlanError, OracleTraceError, EvidenceError,
+                    VerificationError, GitHubError, CLIError, OSError) as exc:
+                blockers.append(f"#29 final Acceptance readback failed: {exc}")
+        if binding is not None:
+            try:
+                final_binding = read_binding(binding_path)
+                final_pr_binding = read_pr_binding(pr_binding_path(root, args.issue))
+                if final_binding != binding or final_pr_binding != pr_binding:
+                    blockers.append("immutable ExecutionBinding or PRBinding changed before Readiness persistence")
+            except (ExecutionError, CheckpointError, OSError) as exc:
+                blockers.append(f"work binding final readback failed before Readiness persistence: {exc}")
+        if self_audit is not None:
+            try:
+                final_audit = read_self_audit(args.self_audit)
+                final_audit.validate(required_item_ids)
+                if final_audit != self_audit:
+                    blockers.append("self-audit changed before Readiness persistence")
+                _read_audit_references(root, final_audit)
+            except (AuditError, CLIError, OSError) as exc:
+                blockers.append(f"self-audit final readback failed before Readiness persistence: {exc}")
+        if independent_review is not None:
+            try:
+                final_review = read_independent_review(args.independent_review)
+                if final_review != independent_review:
+                    blockers.append("independent review changed before Readiness persistence")
+                _read_audit_references(root, final_review)
+            except (AuditError, CLIError, OSError) as exc:
+                blockers.append(f"independent-review final readback failed before Readiness persistence: {exc}")
+
+    if subject is None:
+        _json({"status": "BLOCKED", "subject": None, "subject_sha256": None,
+               "reasons": blockers or ["exact readiness subject is unavailable"], "evidence_refs": []})
+        return 2
+
+    # A complete evaluator result is still emitted when external inputs are missing.
+    result = evaluate_readiness(
+        subject=subject, pr=pr_readback, pr_binding=pr_binding, work_context=work_context,
+        verification=verification, acceptance=acceptance, self_audit=self_audit,
+        required_item_ids=required_item_ids, independent_review=independent_review,
+        required_checks_sha256=check_sha, blocker_reasons=blockers,
+    )
+    path = readiness_path(root, result)
+    write_readiness(path, result)
+    _json({"status": result.status, "subject": result.subject.as_dict(),
+           "subject_sha256": result.subject.sha256, "readiness_sha256": result.sha256,
+           "ready_for_user_review": result.ready_for_user_review, "path": str(path),
+           "reasons": list(result.reasons),
+           "evidence_refs": [str(path), str(args.plan), str(args.verification), str(args.acceptance),
+                             str(args.self_audit), str(args.independent_review),
+                             str(execution_binding_path(root, args.issue)),
+                             str(pr_binding_path(root, args.issue)), *published_refs]})
+    return 0 if result.status == "PASS" else 2
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m p_ases")
     namespaces = parser.add_subparsers(dest="namespace", required=True)
@@ -868,6 +1656,81 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--repo", help="repository owner/name; defaults to origin")
         command.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
 
+    work = namespaces.add_parser("work", help="freeze and recover exact-base work contexts")
+    work_commands = work.add_subparsers(dest="verb", required=True)
+    base = work_commands.add_parser("base", help="resolve a clean worktree's exact remote base")
+    base.add_argument("issue", type=_positive_number)
+    base.add_argument("--base-ref", help="explicit base ref; defaults to GitHub repository default branch")
+    branch = work_commands.add_parser("branch", help="create or reuse a branch from an exact base SHA")
+    branch.add_argument("issue", type=_positive_number)
+    branch.add_argument("--base-ref", required=True)
+    branch.add_argument("--base-sha", required=True)
+    branch.add_argument("--branch-ref", required=True)
+    bind = work_commands.add_parser("bind", help="freeze the current clean worktree in ExecutionBinding")
+    bind.add_argument("issue", type=_positive_number)
+    bind.add_argument("--base-ref", required=True)
+    bind.add_argument("--base-sha", required=True)
+    bind.add_argument("--branch-ref", required=True)
+    recover = work_commands.add_parser("recover", help="resume the same immutable work binding")
+    recover.add_argument("issue", type=_positive_number)
+    recover.add_argument("--branch-ref", required=True)
+    for command in (base, branch, bind, recover):
+        command.add_argument("--repo", help="repository owner/name; defaults to origin")
+        command.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
+
+    pr = namespaces.add_parser("pr", help="ensure an exact open PR and immutable PRBinding")
+    pr_commands = pr.add_subparsers(dest="verb", required=True)
+    ensure = pr_commands.add_parser("ensure", help="reuse or create one exact Issue PR")
+    ensure.add_argument("issue", type=_positive_number)
+    ensure.add_argument("--branch-ref", required=True)
+    ensure.add_argument("--base-ref", required=True)
+    ensure.add_argument("--title", required=True)
+    ensure.add_argument("--body-file", type=Path, required=True,
+                        help="UTF-8 PR body with a standalone Closes #N line")
+    ensure.add_argument("--repo", help="repository owner/name; defaults to origin")
+    ensure.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
+
+    audit = namespaces.add_parser("audit", help="record subject-bound self-audit and separate review evidence")
+    audit_commands = audit.add_subparsers(dest="verb", required=True)
+    for verb, label in (("self", "evidence-backed requirement/checklist self-audit"),
+                        ("independent", "ingest a separately supplied review-context artifact")):
+        command = audit_commands.add_parser(verb, help=label)
+        command.add_argument("issue", type=_positive_number)
+        command.add_argument("pr", type=_positive_number)
+        command.add_argument("head", help="exact PR HEAD SHA-40")
+        command.add_argument("plan", type=Path)
+        command.add_argument("input", type=Path)
+        command.add_argument("--repo", help="repository owner/name; defaults to origin")
+        command.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
+
+    delivery = namespaces.add_parser("delivery", help="aggregate exact-subject Review Readiness")
+    delivery_commands = delivery.add_subparsers(dest="verb", required=True)
+    readiness = delivery_commands.add_parser("readiness", help="re-read every delivery gate and persist its result")
+    readiness.add_argument("issue", type=_positive_number)
+    readiness.add_argument("pr", type=_positive_number)
+    readiness.add_argument("head", help="exact PR HEAD SHA-40")
+    readiness.add_argument("plan", type=Path)
+    readiness.add_argument("verification", type=Path)
+    readiness.add_argument("acceptance", type=Path)
+    readiness.add_argument("self_audit", type=Path)
+    readiness.add_argument("independent_review", type=Path)
+    readiness.add_argument("--repo", help="repository owner/name; defaults to origin")
+    readiness.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
+    gate_policy = delivery_commands.add_parser("gate-policy", help="pin or read the versioned gate for an Issue")
+    gate_policy.add_argument("issue", type=_positive_number)
+    gate_policy.add_argument("--repo", help="repository owner/name; defaults to origin")
+    bootstrap = delivery_commands.add_parser("bootstrap-check", help="evaluate the separate migration Bootstrap gate")
+    bootstrap.add_argument("issue", type=_positive_number)
+    bootstrap.add_argument("pr", type=_positive_number)
+    bootstrap.add_argument("--self-review-comment", type=_positive_number,
+                           help="legacy option, accepted and ignored by the Bootstrap technical gate")
+    bootstrap.add_argument("--independent-review-comment", type=_positive_number,
+                           help="legacy option, accepted and ignored by the Bootstrap technical gate")
+    bootstrap.add_argument("--unverified-host", action="append", default=[],
+                           help="host/environment not verified; use 'none' when no host remains unverified")
+    bootstrap.add_argument("--repo", help="repository owner/name; defaults to origin")
+    bootstrap.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
+
     docs = namespaces.add_parser("docs", help="validate and deterministically format canonical Markdown docs")
     docs_commands = docs.add_subparsers(dest="verb", required=True)
     docs_validate = docs_commands.add_parser("validate", help="validate document structure, links, and traceability")
@@ -883,6 +1746,28 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        if args.namespace in {"work", "pr", "audit", "delivery"}:
+            root = _runtime_root(args)
+            repository = args.repo or discover_repository(root)
+            github = GitHub(repository)
+            if args.namespace == "work":
+                return _work_command(args, repository, root, github)
+            if args.namespace == "pr":
+                if args.verb != "ensure":
+                    raise CLIError("unknown PR command")
+                return _pr_ensure(args, repository, root, github)
+            if args.namespace == "audit":
+                if args.verb == "self":
+                    return _audit_self(args, repository, root, github)
+                return _audit_independent(args, repository, root, github)
+            if args.verb == "gate-policy":
+                return _delivery_gate_policy(args, repository, github)
+            if args.verb == "bootstrap-check":
+                return _delivery_bootstrap_check(args, repository, root, github)
+            if args.verb == "readiness":
+                return _delivery_readiness(args, repository, root, github)
+            raise CLIError("unknown Delivery command")
+
         if args.namespace in {"verification", "acceptance"}:
             root: Path | None = None
             if hasattr(args, "root"):
@@ -1006,10 +1891,11 @@ def main(argv: list[str] | None = None) -> int:
                              "issue_id": child.issue_id, "adc_sha256": child.adc_sha256}
                             for child in created]})
         return 0
-    except (ADCError, AcceptanceError, DocumentError, DocumentFormatError, EvidenceError,
-            GitError, GitHubError, IssueGraphError, OracleTraceError, PhaseError, PlanError,
-            VerificationError, CLIError, OSError, UnicodeError) as exc:
-        if args.namespace in {"verification", "acceptance"}:
+    except (ADCError, AcceptanceError, AuditError, CheckpointError, ExecutionError,
+            DocumentError, DocumentFormatError, EvidenceError, GitError, GitHubError,
+            IssueGraphError, OracleTraceError, PhaseError, PlanError, ProfileError, ReadinessError, VerificationError,
+            WorkError, CLIError, OSError, UnicodeError, ValueError) as exc:
+        if args.namespace in {"verification", "acceptance", "work", "pr", "audit", "delivery"}:
             return _blocked_result((str(exc),))
         print(f"p-ases: {exc}", file=sys.stderr)
         return 2

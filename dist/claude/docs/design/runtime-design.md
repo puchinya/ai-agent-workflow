@@ -16,7 +16,8 @@
   - [4.2 DES-RT-004 Workspace binding and publication](#42-des-rt-004-workspace-binding-and-publication)
   - [4.3 DES-RT-005 Review-PR establishment sequence](#43-des-rt-005-review-pr-establishment-sequence)
 - [5 DES-RT-006 Failure handling](#5-des-rt-006-failure-handling)
-- [6 Alternatives considered](#6-alternatives-considered)
+- [6 Migration gate policy](#6-migration-gate-policy)
+- [7 Alternatives considered](#7-alternatives-considered)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -105,8 +106,15 @@ The implementation Skill resolves the selected base ref and exact SHA before eva
 
 `gh api` receives argument arrays. Large body values travel through JSON temporary files, not command arguments. The environment owns authentication. Git commands use argv arrays. Default hook output is suppressed; diagnostic capture is removed on all handled paths and credential-redacted before a bounded failure tail is emitted. Issue identifiers, repository owner/name, remote refs, expected SHAs, returned comment/PR associations, hashes, and lengths are checked before success. Atomic writes preserve previous verified data on ordinary failures.
 
+<a id="migration-gate-policy"></a>
+## 6 Migration gate policy
+
+`gate_policy.py` owns repository-scoped fixed-cohort routing, `PASES_GATE_SELECTION_V1`, Bootstrap subjects/results, append-only Bootstrap evidence, and activation validation. Each result fingerprints the gate evaluator and its CLI, GitHub, ADC, Git, process, and profile adapters so a tool update appends a new evidence attempt without changing the pinned Issue gate. It is not called by `delivery.evaluate_readiness` or phase advancement. `cli.py` runs `delivery gate-policy` and `delivery bootstrap-check`; the latter executes the repository's fixed bounded local verification set and reads the exact current PR, ADC, Actions workflow run, and Check Runs through `github.py`. Bootstrap review artifacts remain parseable for historical records, but current technical evaluation neither reads nor requires self-review, independent-review, or separate-context artifacts. New evidence sets `review_mode=WAIVED_BOOTSTRAP` and reports technical success as `BOOTSTRAP_TECHNICAL_READY` without claiming review evidence or final-user-review eligibility. The clean checkout, complete PR identity/body, ADC pointer, and pinned gate selection are re-read before and after evidence publication. If publication races with a subject change, a newer BLOCKED observation is appended and read back as latest. Activation is read-only until all child merges, closed Issues, parent integration evidence, and a distinct explicit approval comment can be verified; no implementation command transitions an Issue or merges a PR. Ordinary P-ASES review gates are unchanged, and this policy does not grant permission to merge a PR.
+
+The fixed policy names each accepted child base/head pair. Merging an upstream PR and retargeting a child changes its subject, so prior evidence is invalidated; add the new pair explicitly and cover it with a strict regression test before evaluating the retargeted PR. Missing pairs fail closed rather than being guessed from the dependency graph.
+
 <a id="alternatives-considered"></a>
-## 6 Alternatives considered
+## 7 Alternatives considered
 
 - One monolithic `agent_tool.py` would couple profile, GitHub, and review logic. Focused modules make fake transports and focused tests possible.
 - A general HTTP client would need a new credential boundary. The existing authenticated `gh api` transport is explicit and testable.

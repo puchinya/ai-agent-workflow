@@ -16,6 +16,7 @@
 - [6 DES-WF-004 Failure handling](#6-des-wf-004-failure-handling)
 - [7 DES-WF-005 Authorization boundary and PR handoff](#7-des-wf-005-authorization-boundary-and-pr-handoff)
 - [8 Alternatives considered](#8-alternatives-considered)
+- [9 Migration gate routing](#9-migration-gate-routing)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -134,3 +135,14 @@ The approved Issue contract is the authority for routine work through a review-r
 - Hand-authored host-specific Skill trees would drift. Adapters contain only explicit host differences.
 - A database, MCP server, daemon, or hosted API would add a second authority and is outside the product boundary.
 - A shared OpenAI/Antigravity `plugin.json` would violate their different schemas. Packages are separate directories.
+
+<a id="migration-gate-routing"></a>
+## 9 Migration gate routing
+
+`runtime/p_ases/gate_policy.py` owns a versioned gate decision alongside, not inside, `delivery.evaluate_readiness`. Only Issues #26–#32 in `puchinya/ai-agent-workflow` select `bootstrap-legacy-v1`; repository identity comparisons are case-insensitive and all other repositories fail closed. A `PASES_GATE_SELECTION_V1` Issue comment pins the selection. Other Issues require a unique, exact-readback `PASES_ACTIVATION_V1` plus an explicit earlier `PASES_ACTIVATION_APPROVAL_V1`; without them routing is `UNDETERMINED` and stops.
+
+`delivery bootstrap-check` reads the current approved ADC and PR, runs the bounded local verification commands, and reads current-head Check Runs and the Actions workflow run through `github.py`. Review comments, review citations, and independent-context artifacts are not inputs to this fixed-cohort technical decision. A new result records `review_mode=WAIVED_BOOTSTRAP`; technical success is `BOOTSTRAP_TECHNICAL_READY`, with reviewer/context IDs null, review evidence empty, the separate-context flag false, and final-user-review eligibility false. The checkout is rechecked after local tests, after GitHub evidence collection, and immediately before publishing. The full PR identity and body, ADC pointer, and immutable gate selection are re-read before and after publication. If any field changes after a result is published, a newer `BOOTSTRAP_BLOCKED` observation is appended and read back as latest. Failed or stale technical inputs return machine-readable `BOOTSTRAP_BLOCKED`; normal P-ASES readiness, phase advancement, and review requirements remain unchanged. This policy does not grant PR merge permission or close an Issue.
+
+When the Bootstrap evaluator lives on a downstream stacked PR, run its CLI from that evaluator checkout and pass `--root` pointing to a separate clean checkout of the earlier target PR's exact current HEAD. The evaluator fingerprint comes from the evaluator checkout while local checks and cleanliness checks run against the target checkout; do not copy evaluator code into the target branch. For legacy Issue-body ADC pointers, retain the original `## Agent Development Contract` block as the first journal record's predecessor anchor (or record `none` when absent); do not edit or delete the old anchor during migration.
+
+The activation reader validates the fixed six-child set, each merged PR and closed Issue, a separate integration-evidence record covering docs/tests/16 Skills/distribution, and a distinct immutable approval comment. The activation record binds those PR merge SHAs and the integration digest. Policy readers reject duplicates, stale subjects, mismatched byte/digest values, forks, and non-current PR heads. No activation record is issued during child implementation.
