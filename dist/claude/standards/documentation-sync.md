@@ -23,11 +23,11 @@ Requirements and design establish the decisions. During implementation, compare 
 
 Use stable REQ-AREA-NNN IDs for normative requirements, DES-AREA-NNN for design decisions, TST-AREA-NNN for test conditions, and ORA-AREA-NNN for independent Oracles. docs/testing/traceability.md links every REQ through a DES and an ORA/TST to executable evidence. These identities do not depend on numbered headings.
 
-P-ASES provides python -m p_ases docs validate and python -m p_ases docs format --write|--check. Formatting deterministically numbers H2+ headings, preserves manual/legacy anchors, updates contents and heading maps, and repairs local Markdown fragments. It processes Markdown under docs only; it never formats immutable ADC comments or generated dist files. The check form does not write.
+P-ASES provides `python -m p_ases docs validate` and `python -m p_ases docs format (--write|--check)`. Formatting deterministically numbers H2+ headings, preserves manual/legacy anchors, updates contents and heading maps, and repairs local Markdown fragments. It processes Markdown under docs only; it never formats immutable ADC comments or generated dist files. The check form does not write.
 
 ## Validation
 
-`python -m agent_workflow validate-docs` without a selector keeps the full scan. Use mutually exclusive `--issue N` to validate only that Issue's declared existing owners or `--changed BASE` to validate only changed `docs/**/*.md` files from `BASE...HEAD`. Issue-scoped validation fails on a linked missing owner or malformed/wrong-tree decision; unchanged and evidence-only rows require no file. Changed-scope validation ignores deletions and fails on an unknown base without broadening. Git ref/diff resolution stays in `git.py`; neither scoped command runs shell hooks. The validator is offline and does not claim an external URL is current.
+Run `python -m p_ases docs validate --root PATH` for the complete repository scan. It validates local Markdown structure, links, and traceability without fetching external URLs or executing shell hooks. Use `python -m p_ases docs format --check --root PATH` to read deterministic formatting state; the check mode does not write. Git ref and diff operations remain owned by `runtime/p_ases/git.py`.
 
 ## Related resources
 

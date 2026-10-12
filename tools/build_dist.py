@@ -13,11 +13,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
-from agent_workflow import __version__  # noqa: E402
+from p_ases import __version__  # noqa: E402
 
 HOSTS = ("openai", "claude", "antigravity")
-EXPECTED_SKILLS = ("requirements", "design", "implementation-contract", "implementation",
-                   "evidence", "checkpoint", "self-review", "pr-review", "qa", "delivery")
+EXPECTED_SKILLS = (
+    "request-intake", "adc-authoring", "adc-registry", "issue-decomposition",
+    "product-specification", "technical-design", "test-specification", "work-execution",
+    "verification-evidence", "acceptance-validation", "contract-audit", "independent-review",
+    "user-review", "integration-validation", "delivery-control", "work-checkpoint",
+)
 GENERATED_ROOT_FILES = {".agents/plugins/marketplace.json", ".claude-plugin/marketplace.json"}
 
 
@@ -53,7 +57,7 @@ def expected_files() -> dict[str, bytes]:
             if not isinstance(manifest, dict):
                 raise BuildError(f"adapters/{host}/plugin.json: manifest must be a JSON object")
             if "version" in manifest:
-                raise BuildError(f"adapters/{host}/plugin.json: adapter-owned version is forbidden; use agent_workflow.__version__")
+                raise BuildError(f"adapters/{host}/plugin.json: adapter-owned version is forbidden; use p_ases.__version__")
             manifest["version"] = __version__
             manifest_bytes = (json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8")
         if host == "openai":
@@ -74,9 +78,9 @@ def expected_files() -> dict[str, bytes]:
             for file in sorted(path for path in source.rglob("*") if path.is_file()):
                 rel = file.relative_to(source).as_posix()
                 data = _read(file)
-                # Canonical Skills link to repo specs three levels up; packages use two.
+                # Canonical Skills link to repository docs three levels up; packages use two.
                 if file.suffix.lower() == ".md":
-                    data = data.replace(b"../../../docs/specs/", b"../../docs/specs/")
+                    data = data.replace(b"../../../docs/", b"../../docs/")
                 result[f"{prefix}/skills/{skill}/{rel}"] = data
         for folder in ("standards", "templates"):
             for file in sorted((ROOT / "workflow" / folder).rglob("*")):
@@ -88,8 +92,8 @@ def expected_files() -> dict[str, bytes]:
                 if file.is_file():
                     rel = file.relative_to(ROOT / "docs").as_posix()
                     result[f"{prefix}/docs/{rel}"] = _read(file)
-        for file in sorted((ROOT / "runtime" / "agent_workflow").glob("*.py")):
-            result[f"{prefix}/runtime/agent_workflow/{file.name}"] = _read(file)
+        for file in sorted((ROOT / "runtime" / "p_ases").glob("*.py")):
+            result[f"{prefix}/runtime/p_ases/{file.name}"] = _read(file)
     return result
 
 

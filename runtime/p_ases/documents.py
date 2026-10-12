@@ -125,6 +125,30 @@ def _valid_local_links(path: Path, repo: Path) -> list[str]:
     return errors
 
 
+def validate_markdown_file(path: Path, repo: Path) -> list[str]:
+    """Validate one package Markdown file's UTF-8 encoding and repository-local links."""
+    repository = Path(repo)
+    if repository.is_symlink() or not repository.is_dir():
+        return ["Markdown repository root must be a regular directory"]
+    root = repository.resolve()
+    source = Path(path)
+    if not source.is_absolute():
+        source = root / source
+    source = source.absolute()
+    try:
+        relative = source.relative_to(root)
+    except ValueError:
+        return ["Markdown file must stay inside its repository root"]
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            return [f"{relative.as_posix()}: symlinked Markdown path is not allowed"]
+    if not current.is_file():
+        return [f"{relative.as_posix()}: Markdown file is missing or not a regular file"]
+    return _valid_local_links(current, root)
+
+
 def _definitions(path: Path, repo: Path, docs: Path,
                  errors: list[str]) -> dict[str, Path]:
     definitions: dict[str, Path] = {}

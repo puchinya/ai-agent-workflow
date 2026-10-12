@@ -3,16 +3,17 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "agent-workflow"
+name = "p-ases"
 dynamic = ["version"]
-description = "Portable Issue-first workflow tools for AI coding agents"
+description = "Puchinya Agentic Software Engineering System workflow runtime and tools"
 requires-python = ">=3.10"
 
 [tool.setuptools]
 package-dir = {"" = "runtime"}
 
 [tool.setuptools.dynamic]
-version = {attr = "agent_workflow.__version__"}
+version = {attr = "p_ases.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["runtime"]
+include = ["p_ases*"]

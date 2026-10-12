@@ -58,6 +58,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Install the P-ASES package
+        run: python -m pip install -e .
       - name: Compile runtime, tools, and tests
         run: python -m compileall runtime tools tests
       - name: Check committed distributions before mutation
@@ -65,9 +67,9 @@ jobs:
       - name: Unit tests
         run: python -m unittest discover -s tests -p "test_*.py"
       - name: Validate repository documentation
-        env:
-          PYTHONPATH: runtime
-        run: python -m agent_workflow validate-docs
+        run: python -m p_ases docs validate --root .
+      - name: Check repository documentation formatting
+        run: python -m p_ases docs format --check --root .
       - name: Generate distributions
         run: python tools/build_dist.py
       - name: Check generated distributions
@@ -112,7 +114,7 @@ jobs:
             exit 1
           fi
           gh release upload "$RELEASE_TAG" \
-            "$ASSET_DIR/ai-agent-workflow-openai-$RELEASE_TAG.zip" \
-            "$ASSET_DIR/ai-agent-workflow-claude-$RELEASE_TAG.zip" \
-            "$ASSET_DIR/ai-agent-workflow-antigravity-$RELEASE_TAG.zip" \
+            "$ASSET_DIR/p-ases-openai-$RELEASE_TAG.zip" \
+            "$ASSET_DIR/p-ases-claude-$RELEASE_TAG.zip" \
+            "$ASSET_DIR/p-ases-antigravity-$RELEASE_TAG.zip" \
             "$ASSET_DIR/SHA256SUMS" --clobber

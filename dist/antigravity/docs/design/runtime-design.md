@@ -36,6 +36,8 @@
 
 The CLI must be easy to run from a consumer checkout, fakeable in tests, and safe when GitHub or local state is uncertain. Python 3.10+ standard library supplies filesystem, hashing, process, and JSON support. There is no MCP server, dependency service, or daemon.
 
+Legacy design note: detailed module behavior below describes the former flat Agent Workflow runtime where it names retired commands or profile semantics. Current P-ASES routes are the `python -m p_ases <namespace> <verb>` interface documented in the README and canonical Skills.
+
 <a id="requirements-traceability"></a>
 ## 2 Requirements traceability
 

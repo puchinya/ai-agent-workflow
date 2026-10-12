@@ -5,43 +5,70 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import sys
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
-from agent_workflow import __version__  # noqa: E402
-from agent_workflow.documents import validate_markdown_file  # noqa: E402
+from p_ases import __version__  # noqa: E402
+from p_ases.documents import validate_markdown_file  # noqa: E402
 
 HOSTS = ("openai", "claude", "antigravity")
-SKILLS = ("requirements", "design", "implementation-contract", "implementation",
-          "evidence", "checkpoint", "self-review", "pr-review", "delivery")
+SKILLS = (
+    "request-intake", "adc-authoring", "adc-registry", "issue-decomposition",
+    "product-specification", "technical-design", "test-specification", "work-execution",
+    "verification-evidence", "acceptance-validation", "contract-audit", "independent-review",
+    "user-review", "integration-validation", "delivery-control", "work-checkpoint",
+)
 OPENAI_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
 ANTIGRAVITY_SCHEMA = "https://antigravity.google/schemas/v1/plugin.json"
 FORBIDDEN_PATH = re.compile(r"(?i)(?:update-template|refresh-template-manifest|template-manifest|update_template|refresh_template)")
-RUNTIME_COMMANDS = (
-    "init-project", "agent-context", "validate-docs", "run-hook",
-    "save-implementation-contract", "publish-implementation-contract",
-    "restore-implementation-contract", "verify-implementation-contract", "ensure-review-pr",
-    "resolve-implementation-base",
-    "prepare-self-review", "validate-self-review", "publish-self-review",
-    "validate-public-review", "delivery-check", "finalize-merged-issue",
-)
-BARE_RUNTIME_COMMAND = re.compile(
-    r"(?:^|[;&|]\s*)(?:\$\s+)?(" + "|".join(RUNTIME_COMMANDS) + r")(?=\s|$)"
+CLI_ROUTES = {
+    "project": {"status"}, "context": {"show"},
+    "adc": {"validate", "publish", "verify", "restore"},
+    "issue": {"validate-split", "split", "advance", "integration-check"},
+    "docs": {"validate", "format"}, "work": {"base", "branch", "bind", "recover"},
+    "pr": {"ensure"}, "verification": {"plan", "collect", "validate", "final", "published"},
+    "acceptance": {"prepare", "validate", "publish", "verify"},
+    "audit": {"self", "independent"},
+    "user-review": {"start", "sync", "record", "status"},
+    "delivery": {"readiness", "gate-policy", "bootstrap-check", "final", "finalize", "parent",
+                 "parent-evidence", "parent-migrate-labels"},
+}
+OLD_COMMAND = re.compile(
+    r"(?i)\b(?:init-project|agent-context|validate-docs|run-hook|ensure-milestone|"
+    r"start-feature-branch|resolve-implementation-base|recover-implementation-binding|"
+    r"prepare-implementation|ensure-review-pr|verify-final|validate-public-final-verification|"
+    r"save-implementation-contract|publish-implementation-contract|restore-implementation-contract|"
+    r"verify-implementation-contract|validate-implementation-contract-structure|"
+    r"prepare-self-review|validate-self-review|publish-self-review|validate-public-review|"
+    r"prepare-qa|validate-qa|publish-qa|validate-public-qa|prepare-pr-review|validate-pr-review|"
+    r"publish-pr-review|validate-public-pr-review|delivery-check|finalize-merged-issue)\b"
 )
 
 
 def validate_skill_commands(text: str, rel: str) -> list[str]:
-    """Check executable examples in inline code and fenced command blocks."""
+    """Reject retired flat commands and route every P-ASES example to a real verb."""
     examples = re.findall(r"(?<!`)`([^`\n]+)`(?!`)", text)
     for block in re.finditer(r"(?ms)^\s*(`{3,}|~{3,})[^\n]*\n(.*?)^\s*\1\s*$", text):
         examples.extend(block.group(2).splitlines())
     errors = []
+    if "agent_workflow" in text or OLD_COMMAND.search(text):
+        errors.append(f"{rel}: public Skill contains a retired runtime module or command")
     for example in examples:
-        match = BARE_RUNTIME_COMMAND.search(example.strip())
-        if match:
-            errors.append(f"{rel}: execute {match.group(1)} with python -m agent_workflow")
+        if "python -m agent_workflow" in example:
+            errors.append(f"{rel}: use python -m p_ases; the legacy runtime is not public")
+        for match in re.finditer(r"\bpython\s+-m\s+p_ases\s+([^\n`]+)", example):
+            try:
+                tokens = shlex.split(match.group(1))
+            except ValueError:
+                errors.append(f"{rel}: malformed python -m p_ases command example")
+                continue
+            if tokens and tokens[0] in {"--help", "-h"}:
+                continue
+            if len(tokens) < 2 or tokens[0] not in CLI_ROUTES or tokens[1] not in CLI_ROUTES[tokens[0]]:
+                errors.append(f"{rel}: python -m p_ases example does not use an implemented namespace/verb")
     return errors
 
 
@@ -78,7 +105,7 @@ def _validate_openai(errors: list[str]) -> None:
         if not isinstance(manifest.get("version"), str) or not isinstance(manifest.get("description"), str):
             errors.append("dist/openai/plugin.json: version and description must be strings")
         if manifest.get("version") != __version__:
-            errors.append("dist/openai/plugin.json: version must equal agent_workflow.__version__")
+            errors.append("dist/openai/plugin.json: version must equal p_ases.__version__")
         allowed = {"$schema", "name", "version", "description", "author", "homepage", "repository", "license", "keywords", "extensions"}
         if set(manifest) - allowed:
             errors.append("dist/openai/plugin.json: unsupported portable manifest field")
@@ -101,8 +128,8 @@ def _validate_openai(errors: list[str]) -> None:
             errors.append("dist/openai/plugin.json: each extension namespace value must be an object")
     market = _load(ROOT / ".agents/plugins/marketplace.json", errors)
     if isinstance(market, dict):
-        if market.get("name") != "ai-agent-workflow":
-            errors.append(".agents/plugins/marketplace.json: marketplace name must be ai-agent-workflow")
+        if market.get("name") != "p-ases":
+            errors.append(".agents/plugins/marketplace.json: marketplace name must be p-ases")
         plugins = market.get("plugins")
         if not isinstance(plugins, list) or len(plugins) != 1 or not isinstance(plugins[0], dict):
             errors.append(".agents/plugins/marketplace.json: expected one plugin entry")
@@ -121,8 +148,8 @@ def _validate_openai(errors: list[str]) -> None:
             elif target is not None and not (target / "plugin.json").is_file():
                 errors.append(".agents/plugins/marketplace.json: marketplace-source error: dist/openai/plugin.json does not exist")
             manifest_name = manifest.get("name") if isinstance(manifest, dict) else None
-            if manifest_name != "ai-agent-workflow":
-                errors.append("dist/openai/plugin.json: marketplace entry and manifest name must be ai-agent-workflow")
+            if manifest_name != "p-ases":
+                errors.append("dist/openai/plugin.json: marketplace entry and manifest name must be p-ases")
             if entry.get("name") != manifest_name:
                 errors.append(".agents/plugins/marketplace.json: plugin entry name does not match the OpenAI manifest name")
             if entry.get("category") != "Productivity":
@@ -141,7 +168,7 @@ def _validate_claude(errors: list[str]) -> None:
     if isinstance(manifest, dict):
         name = manifest.get("name", "")
         if manifest.get("version") != __version__:
-            errors.append("dist/claude/.claude-plugin/plugin.json: version must equal agent_workflow.__version__")
+            errors.append("dist/claude/.claude-plugin/plugin.json: version must equal p_ases.__version__")
         if not isinstance(name, str) or len(name) > 64 or not re.fullmatch(r"[a-z0-9-]+", name):
             errors.append("dist/claude/.claude-plugin/plugin.json: name must be lowercase letters/digits/hyphens, max 64")
         display_name = manifest.get("displayName", "")
@@ -163,7 +190,7 @@ def _validate_claude(errors: list[str]) -> None:
         errors.append("dist/claude/bin is unsupported")
     market = _load(ROOT / ".claude-plugin/marketplace.json", errors)
     if isinstance(market, dict):
-        if market.get("name") != "ai-agent-workflow" or not isinstance(market.get("owner"), dict) or not market["owner"].get("name") or not isinstance(market.get("plugins"), list):
+        if market.get("name") != "p-ases" or not isinstance(market.get("owner"), dict) or not market["owner"].get("name") or not isinstance(market.get("plugins"), list):
             errors.append(".claude-plugin/marketplace.json: name, owner.name, and plugins are required")
         else:
             manifest_name = manifest.get("name") if isinstance(manifest, dict) else None
@@ -184,8 +211,8 @@ def _validate_claude(errors: list[str]) -> None:
                                   "dist/claude/.claude-plugin/plugin.json does not exist")
                 if entry.get("name") != manifest_name:
                     errors.append(".claude-plugin/marketplace.json: plugin entry name does not match the Claude manifest name")
-                if manifest_name != "ai-agent-workflow":
-                    errors.append("dist/claude/.claude-plugin/plugin.json: marketplace entry and manifest name must be ai-agent-workflow")
+                if manifest_name != "p-ases":
+                    errors.append("dist/claude/.claude-plugin/plugin.json: marketplace entry and manifest name must be p-ases")
 
 
 def _validate_antigravity(errors: list[str]) -> None:
@@ -195,6 +222,8 @@ def _validate_antigravity(errors: list[str]) -> None:
             errors.append("dist/antigravity/plugin.json: only schema-supported name and description are allowed")
         if not isinstance(manifest.get("name"), str) or not re.fullmatch(r"[A-Za-z0-9_-]+", manifest.get("name", "")):
             errors.append(f"dist/antigravity/plugin.json: name violates {ANTIGRAVITY_SCHEMA}")
+        if manifest.get("name") != "p-ases":
+            errors.append("dist/antigravity/plugin.json: name must be p-ases")
         if not isinstance(manifest.get("description"), str):
             errors.append("dist/antigravity/plugin.json: description must be a string")
     root = ROOT / "dist/antigravity"
@@ -222,6 +251,10 @@ def validate() -> list[str]:
             continue
         manifest_path = root / (".claude-plugin/plugin.json" if host == "claude" else "plugin.json")
         manifests.append((host, _load(manifest_path, errors)))
+        skill_root = root / "skills"
+        skill_dirs = {path.name for path in skill_root.iterdir() if path.is_dir()} if skill_root.is_dir() else set()
+        if skill_dirs != set(SKILLS):
+            errors.append(f"dist/{host}/skills: directory set must exactly match the 16 canonical Skills")
         for name in SKILLS:
             skill_path = root / "skills" / name / "SKILL.md"
             try:
@@ -238,12 +271,18 @@ def validate() -> list[str]:
                     errors.append(f"dist/{host}/skills/{name}/SKILL.md: invalid name/description metadata")
             errors.extend(validate_markdown_file(skill_path, root))
             errors.extend(validate_skill_commands(text, skill_path.relative_to(ROOT).as_posix()))
-        for required in ("runtime/agent_workflow/__init__.py", "runtime/agent_workflow/cli.py",
+        for required in ("runtime/p_ases/__init__.py", "runtime/p_ases/cli.py",
                          "standards/specification.md", "standards/design.md", "standards/documentation-sync.md",
                          "templates/spec-template.md", "templates/design-template.md", "templates/status-template.md",
                          "pyproject.toml"):
             if not (root / required).is_file():
                 errors.append(f"dist/{host}/{required}: required supporting resource missing")
+        if (root / "runtime/agent_workflow").exists():
+            errors.append(f"dist/{host}/runtime/agent_workflow: retired runtime package is forbidden")
+        expected_runtime = {path.name for path in (ROOT / "runtime" / "p_ases").glob("*.py")}
+        actual_runtime = {path.name for path in (root / "runtime" / "p_ases").glob("*.py")}
+        if actual_runtime != expected_runtime:
+            errors.append(f"dist/{host}/runtime/p_ases: module set must match canonical runtime")
         for path in root.rglob("*"):
             if FORBIDDEN_PATH.search(path.name):
                 errors.append(f"{path.relative_to(ROOT)}: forbidden reference synchronization artifact")

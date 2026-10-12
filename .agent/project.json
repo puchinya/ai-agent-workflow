@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "initialized": true,
-  "project_name": "ai-agent-workflow",
+  "project_name": "p-ases",
   "components": [
     {
       "id": "root",
@@ -30,7 +30,7 @@
     "mode": "required",
     "version_source": {
       "type": "python-attr",
-      "path": "runtime/agent_workflow/__init__.py",
+      "path": "runtime/p_ases/__init__.py",
       "field": "__version__"
     }
   },

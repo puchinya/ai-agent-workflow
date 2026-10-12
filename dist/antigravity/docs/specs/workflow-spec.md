@@ -49,9 +49,11 @@ Define the reusable development workflow shared by OpenAI/Codex, Claude Code, an
 <a id="scope"></a>
 ## 2 Scope
 
-The repository owns ten Skills, shared standards and templates, application profiles, implementation-contract handling, evidence and checkpoints, self-review, independent PR review, QA, PR delivery, project-profile routing, deterministic validation, and host-specific packages. Canonical reusable documents under `workflow/templates/` include specification/design/status templates, a ten-section Implementation Contract starting point, and one portable Chat project-instructions body. A consumer project owns its source, `.agent/project.json`, Issue-specific documents, hooks, and verification commands.
+The repository owns exactly 16 canonical Skills, shared standards and templates, ADC and Issue workflows, immutable verification and acceptance evidence, audit and user review, delivery gates, project/context readback, deterministic documentation validation, and host-specific packages. The current public CLI uses the `project`, `context`, `adc`, `issue`, `docs`, `work`, `pr`, `verification`, `acceptance`, `audit`, `user-review`, and `delivery` namespaces. A consumer project owns its source, `.agent/project.json`, Issue-specific artifacts, and verification commands.
 
 The product does not own a service, database, daemon, GUI, project-template repository, source synchronization, automatic semantic document rewriting, stack-wide detectors, or existing-consumer migration.
+
+Legacy note: the historical procedures retained in Section 3 are reference material only, except for the current Skill inventory in §3.4. Retired flat CLI commands and the ten-Skill workflow are superseded by the current P-ASES route table and canonical Skill source under `workflow/skills/`.
 
 <a id="normative-requirements"></a>
 ## 3 Normative requirements
@@ -70,7 +72,7 @@ Requirements, specifications, design, code/tests, and status/evidence have disti
 
 Every new durable work item records explicit specification, design, and status decisions in the Issue's `## Document impact` section. Link decisions point into the matching `docs/specs/`, `docs/design/`, or `docs/status/` tree; unchanged decisions and evidence-only status decisions include a reason. Requirements and design establish these decisions, implementation re-evaluates them against the final diff, and self-review checks final alignment. An unchanged or evidence-only decision does not require creating a document.
 
-Feature work uses `python -m agent_workflow start-feature-branch <issue> <description...>` after its open Issue and project profile are validated. The runtime derives a deterministic `<prefix>/<issue>-<slug>` branch name, checks the worktree, and performs cleanup and global `branch_switch` hooks only after an actual branch switch. Repeating the command on the current target branch performs no cleanup or hooks.
+Feature work uses the `work` namespace's exact-base, branch, bind, and recover operations after the owning Issue and approved ADC are validated. The frozen execution identity is the Issue, repository, ADC digest, base ref/SHA, branch, and initial HEAD.
 
 <a id="req-wf-002"></a>
 <a id="req-wf-002-host-managed-implementation-workspaces"></a>
@@ -78,9 +80,9 @@ Feature work uses `python -m agent_workflow start-feature-branch <issue> <descri
 
 Publishing, reviewing, or approving an Implementation Contract does not allocate a workspace. Execution of the approved Contract is the trigger. The normal user request remains “Implement this Contract”; the Skill reads the Schema 2 `workspace.isolation` policy before edits and lets the active host establish or reuse isolation.
 
-For every new execution, after `agent-context` confirms that no valid binding exists and before host capability selection, the implementation Skill MUST run `python -m agent_workflow resolve-implementation-base ISSUE` (adding `--base-ref BRANCH` for a selected stacked base). The returned `base_ref` and `base_sha` are authoritative for host exact-base capability, host starting-ref selection, initial isolated HEAD verification, current-mode `start-feature-branch`, and `prepare-implementation`; current-mode setup passes both `--base-ref` and `--expected-base-sha`. Expected-SHA mismatch fails closed if the remote advances. Existing valid bindings skip resolution and reuse their frozen tuple without re-fetching a newer remote tip. Resolution permits a dirty current checkout, validates the approved execution authority and exact same-repository remote branch, and only fetches that branch; it creates no binding or workspace and performs no branch, hook, source, or GitHub mutation.
+Before implementation, `context show` reads the current approved ADC and existing binding; `work base` resolves an exact base; `work branch` and `work bind` establish the frozen execution identity. Existing bindings are reused only when their Issue, repository, ADC digest, base, branch, and HEAD invariants still match.
 
-If a checkout already contains the open PR continuation for the same Issue but its local binding is missing, do not treat it as a normal new execution or re-resolve it onto the PR HEAD. The implementation Skill may run `recover-implementation-binding ISSUE PR --base-ref BRANCH --expected-base-sha SHA40` only when PR, local branch/HEAD, same-repository identity, current Contract, clean state, and exact base ancestry all verify. It creates a Schema 2 local continuation binding that records both the frozen base and verified PR checkpoint; then `prepare-implementation --supersede` validates the current approved Contract. Recovery fails closed on any mismatch and does not switch/create branches or worktrees, run hooks, or mutate GitHub. Normal new executions continue to use `resolve-implementation-base`.
+For a verified existing continuation, `work recover` restores a binding only after the exact Issue, ADC, PR, base, branch, and HEAD tuple is checked. It fails closed on mismatch and does not switch branches, create worktrees, or mutate GitHub.
 
 - Before host isolation, resolve the selected same-repository base ref and its full SHA. For an already-bound execution, reuse its frozen `base_ref` and `base_sha`.
 - Resume a valid binding in its existing workspace after commits without rerunning `start-feature-branch` or resolving the frozen SHA against a newer remote tip. `prepare-implementation` may validate reuse and explicit Contract supersession; it must not reinitialize the workspace.
@@ -98,7 +100,7 @@ Issue/PR identity remains the user's routing key. One implementation writer owns
 
 When Claude Code uses its default in-repository `.claude/worktrees/` location, the consumer project owns ignoring that path in its root `.gitignore`. Custom in-repository locations require an ignore rule for their actual relative path; external locations need no rule for those files. The workflow documents this expectation but neither mutates ignore files nor performs generic ignore-path preflight/availability checks.
 
-After an Issue exists, the requirements Skill runs `python -m agent_workflow ensure-milestone <issue>` unless an approved Issue contract explicitly names a target release, in which case it passes that unchanged value with `--target-version <version>`. Skills MUST NOT invent or infer a target version. Milestones follow the consumer profile's `auto`, `required`, or `disabled` mode. `disabled` always skips and cannot be overridden by a target. Otherwise an explicit target takes precedence over the repository version source; absent a target, the existing profile source applies. `auto` accepts an unresolved fallback as `NOT_APPLICABLE`; `required` fails closed when no fallback version can be resolved. Exact-title reuse is idempotent, and closed or duplicate milestones are never silently reopened or replaced. An Issue's existing Milestone is immutable through this command: a different current assignment fails without mutation.
+P-ASES exposes no public milestone command. Skills must not infer or mutate milestones through a hidden or retired CLI route.
 
 <a id="req-wf-003"></a>
 <a id="req-wf-003-authorization-continuity-and-implementation-handoff"></a>
@@ -108,30 +110,36 @@ Once a user authorizes execution of an approved Issue-scoped Implementation Cont
 
 That authorization does not cover material scope or architecture changes, contract supersession, an ambiguous or conflicting owning Issue/base, force-push or branch deletion, merge, tag/release creation, publication outside the review PR workflow, credential or permission escalation, mutation of an unrelated Issue/PR, or an explicit user request to stop before PR creation. A conflict requiring one of these decisions blocks only the dependent work.
 
-For an authorized contract, the implementation Skill owns the full sequence: `verify_quick` -> commit -> `ensure-review-pr` (safe non-force push and PR create/reuse) -> `verify-final` -> exact-HEAD self-review -> QA -> fresh-context independent PR review -> `delivery-check`. The implementation session MUST NOT author the independent review artifact; the `pr-review` Skill requires a new session/subagent or human. If that reviewer is unavailable, report the exact blocker with the review PR URL. The workflow MUST NOT claim runtime proof of fresh context or assume a host-specific session API. It MUST NOT report implementation complete before an open, non-draft review PR exists. Pending Required Checks are reported as `BLOCKED_DELIVERY_CHECKS_PENDING`; the review PR must already exist. Automatic merge is forbidden.
+The current handoff is owned by `verification`, `acceptance`, `audit`, `pr`, `delivery`, and `user-review` routes as appropriate to the artifact. Evidence is bound to exact subjects and read back before acceptance. User Review is a separate recorded gate. The implementation context does not author independent-review evidence. The workflow does not claim runtime proof of fresh context and does not merge or release automatically.
 
 <a id="req-wf-004"></a>
 <a id="req-wf-004-skills"></a>
 ### 3.4 REQ-WF-004 Skills
 
-Canonical Skill source is `workflow/skills/`. It contains exactly these task areas:
+Canonical Skill source is `workflow/skills/`. It contains exactly these 16 task areas:
 
-1. `requirements` — elicit decisions and establish an Issue-owned contract.
-2. `design` — create traceable specification and design documents.
-3. `implementation-contract` — preserve, publish, restore, and verify approved contract bytes.
-4. `implementation` — work from the approved Issue and scoped context.
-5. `evidence` — record reproducible verification and unverified targets.
-6. `checkpoint` — save and resume Issue-scoped progress.
-7. `self-review` — review every approved contract section and every effective checklist item against evidence.
-8. `pr-review` — review a change independently against its contract and current HEAD.
-9. `qa` — record current-HEAD functional cases or a reasoned not-applicable result.
-10. `delivery` — enforce PR handoff and merged-delivery gates.
+1. `request-intake`
+2. `adc-authoring`
+3. `adc-registry`
+4. `issue-decomposition`
+5. `product-specification`
+6. `technical-design`
+7. `test-specification`
+8. `work-execution`
+9. `verification-evidence`
+10. `acceptance-validation`
+11. `contract-audit`
+12. `independent-review`
+13. `user-review`
+14. `integration-validation`
+15. `delivery-control`
+16. `work-checkpoint`
 
 Each Skill MUST have concise YAML frontmatter with `name` and `description`. Detailed shared policy belongs in standards or referenced resources. A Skill MUST state its trigger, expected inputs, ordered procedure, output, uncertainty behavior, and supporting resources where relevant. Skill copies in `dist/**` are generated.
 
-The requirements Skill creates/validates the Issue first and then runs `ensure-milestone`, passing `--target-version` only when the approved Issue requirements explicitly supply it; it may continue after `NOT_APPLICABLE` only when the profile mode is `auto`. On approved Contract execution, the implementation Skill checks workspace policy, establishes/reuses host-managed isolation where available, starts the feature branch only in the allowed current-checkout path, and runs `prepare-implementation` before source edits. It preserves any approved target version unchanged through the implementation handoff.
+Skills route work through the public namespaces above. ADC Skills preserve exact approved bytes and verify named-comment readback; Issue Skills validate dependencies and parent integration; work Skills freeze base and binding identity; verification and acceptance Skills bind results to declared subjects; delivery Skills re-read all required gates; user-review records the separate user decision. Mutations require the authority defined by the approved ADC and remain limited to the named repository and Issue/PR.
 
-New Implementation Contracts use `workflow/templates/implementation-contract-template.md` as a starting point. Before saving or publishing a new contract created from that template, the requirements and implementation-contract Skills run `python -m agent_workflow validate-implementation-contract-structure <issue> <path>`. This deterministic read-only preflight checks the required numbered H2 layout and filled authoring markers; it does not approve contract content or change the existing publication flow. Historical contracts are not retroactively gated. The Japanese `workflow/templates/chat-project-instructions-template.md` is a single copy/paste project-instructions body whose only repository-specific substitution is its top repository URL line; it does not claim capabilities supplied only by a host or plugin.
+ADC authoring and registry instructions define current ADC payload structure, validation, publication, exact comment readback, and supersession. Historical Implementation Contract artifacts remain historical evidence and do not define the current P-ASES command surface. The portable Chat project-instructions template describes only capabilities available to the active host or plugin.
 
 <a id="req-wf-005"></a>
 <a id="req-wf-005-review-and-delivery-principles"></a>

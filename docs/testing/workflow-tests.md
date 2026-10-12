@@ -96,13 +96,13 @@ Routine commit/push/PR handoff can proceed; merge, release, force-push, and unre
 <a id="tst-wf-004-triggered-skill-loading"></a>
 ### 2.4 TST-WF-004 Triggered Skill loading
 
-**Setup and action:** Invoke a supported task with its Issue inputs and inspect loaded resources.
+**Setup and action:** Compare canonical Skill directories with generated OpenAI, Claude, and Antigravity package directories after a build.
 
 <a id="ora-wf-004"></a>
 <a id="ora-wf-004-expected-result"></a>
 #### 2.4.1 ORA-WF-004 Expected result
 
-Only the canonical task Skill and its referenced shared resources are required; no global task discovery occurs.
+Each source and generated host package contains exactly the canonical 16 Skills with matching `SKILL.md` files; no deprecated Skill alias is present.
 
 <a id="tst-wf-005"></a>
 <a id="tst-wf-005-independent-review-and-delivery-gates"></a>

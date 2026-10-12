@@ -15,7 +15,7 @@ Design documents explain decisions that satisfy approved specifications without 
 
 ## Validation
 
-Run `python -m agent_workflow validate-docs`, then review the traceability table against current requirements and tests.
+Run `python -m p_ases docs validate --root .`, then review the traceability table against current requirements and tests.
 
 ## Related resources
 
