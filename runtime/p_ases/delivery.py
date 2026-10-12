@@ -160,6 +160,124 @@ class ReadinessResult:
         return self.status == "PASS"
 
 
+@dataclass(frozen=True)
+class FinalDeliveryResult:
+    """Final gates after Review Readiness; this result never grants merge authority."""
+
+    status: str
+    subject: VerificationSubject
+    user_review_sha256: str | None
+    required_check_result_sha256: str | None
+    branch_protection_sha256: str | None
+    reasons: tuple[str, ...]
+
+    def validate(self) -> "FinalDeliveryResult":
+        self.subject.validate()
+        if self.status not in {"READY_FOR_EXPLICIT_MERGE_AUTHORIZATION", "BLOCKED"}:
+            raise ReadinessError("Final Delivery status is invalid")
+        if type(self.reasons) is not tuple or any(not isinstance(x, str) or not x for x in self.reasons):
+            raise ReadinessError("Final Delivery reasons are invalid")
+        digests = (self.user_review_sha256, self.required_check_result_sha256, self.branch_protection_sha256)
+        if any(value is not None and (not isinstance(value, str) or not SHA256.fullmatch(value)) for value in digests):
+            raise ReadinessError("Final Delivery evidence digest is invalid")
+        if ((self.status == "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION") != (not self.reasons)
+                or self.status == "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION" and any(x is None for x in digests)):
+            raise ReadinessError("Final Delivery status and evidence are inconsistent")
+        return self
+
+    @property
+    def sha256(self) -> str:
+        self.validate()
+        value = {"branch_protection_sha256": self.branch_protection_sha256,
+                 "required_check_result_sha256": self.required_check_result_sha256,
+                 "reasons": list(self.reasons), "schema": "PASES_FINAL_DELIVERY_V1",
+                 "status": self.status, "subject": self.subject.as_dict(),
+                 "user_review_sha256": self.user_review_sha256,
+                 "merge_authorized": False}
+        return hashlib.sha256(_canonical(value)).hexdigest()
+
+    def as_dict(self) -> dict[str, Any]:
+        self.validate()
+        return {"branch_protection_sha256": self.branch_protection_sha256,
+                "final_delivery_sha256": self.sha256,
+                "merge_authorized": False,
+                "required_check_result_sha256": self.required_check_result_sha256,
+                "reasons": list(self.reasons), "schema": "PASES_FINAL_DELIVERY_V1",
+                "status": self.status, "subject": self.subject.as_dict(),
+                "user_review_sha256": self.user_review_sha256}
+
+
+def evaluate_final_delivery(
+    *,
+    subject: VerificationSubject,
+    user_review: Any,
+    verification: VerificationResult | None,
+    current_pr_head_sha40: str,
+    current_pr_state: str,
+    current_pr_draft: bool,
+    github_review_decision: str | None,
+    github_review_head_sha40: str | None,
+    branch_protection: dict[str, Any] | None,
+    required_check_names: Iterable[str],
+    mergeable: bool | None,
+) -> FinalDeliveryResult:
+    """Require human review, GitHub review, checks, and branch protection separately."""
+    subject.validate()
+    reasons: list[str] = []
+    user_review_sha: str | None = None
+    if user_review is None:
+        reasons.append("exact-subject final User Review evidence is missing")
+    else:
+        try:
+            user_review.validate()
+            review_subject = user_review.subject.verification_subject
+            if user_review.status != "APPROVED" or review_subject != subject:
+                reasons.append("User Review is not APPROVED for the exact Verification subject")
+            else:
+                user_review_sha = user_review.sha256
+        except (AttributeError, TypeError, ValueError):
+            reasons.append("final User Review evidence is malformed")
+    check_result_sha: str | None = None
+    if not isinstance(verification, VerificationResult):
+        reasons.append("current #29 Verification result is missing")
+    else:
+        try:
+            verification.validate()
+            if verification.status != "PASS" or verification.subject != subject:
+                reasons.append("#29 Verification is not PASS for the exact final subject")
+            elif verification.check_result_sha256 is None:
+                reasons.append("#29 Required Check Run evidence is missing")
+            else:
+                check_result_sha = verification.check_result_sha256
+        except ValueError:
+            reasons.append("#29 Verification result is malformed")
+    if current_pr_head_sha40 != subject.pr_head_sha40:
+        reasons.append("PR HEAD changed after the final review subject")
+    if current_pr_state != "open" or current_pr_draft is not False:
+        reasons.append("PR is not open and non-draft")
+    if github_review_decision != "APPROVED" or github_review_head_sha40 != subject.pr_head_sha40:
+        reasons.append("GitHub formal review decision is not APPROVED for the current HEAD")
+    if not isinstance(branch_protection, dict):
+        reasons.append("GitHub branch protection could not be read")
+    else:
+        required = tuple(sorted(set(required_check_names)))
+        status_checks = branch_protection.get("required_status_checks")
+        contexts = status_checks.get("contexts") if isinstance(status_checks, dict) else None
+        review_policy = branch_protection.get("required_pull_request_reviews")
+        if not required or not isinstance(contexts, list) or set(contexts) != set(required):
+            reasons.append("branch protection does not require the exact configured Check set")
+        if (not isinstance(review_policy, dict)
+                or type(review_policy.get("required_approving_review_count")) is not int
+                or review_policy["required_approving_review_count"] < 1):
+            reasons.append("branch protection does not require a formal pull-request review")
+    protection_sha = None if not isinstance(branch_protection, dict) else hashlib.sha256(_canonical(branch_protection)).hexdigest()
+    if mergeable is not True:
+        reasons.append("GitHub has not confirmed the PR as mergeable")
+    status = "BLOCKED" if reasons else "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION"
+    return FinalDeliveryResult(status, subject, user_review_sha, check_result_sha,
+                               protection_sha, tuple(dict.fromkeys(reasons))).validate()
+
+
 def evaluate_readiness(
     *,
     subject: VerificationSubject,

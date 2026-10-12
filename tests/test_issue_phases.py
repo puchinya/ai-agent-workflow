@@ -337,6 +337,13 @@ class PhaseTests(unittest.TestCase):
         state = advance(state, Phase.EXECUTION, changes_requested=True)
         self.assertIs(state.phase, Phase.EXECUTION)
 
+    def test_new_scope_returns_user_review_to_requirements_explicitly(self):
+        state = PhaseState(1, IssueKind.CHILD, Phase.USER_REVIEW)
+        with self.assertRaisesRegex(PhaseError, "new-scope decision"):
+            advance(state, Phase.REQUIREMENTS)
+        state = advance(state, Phase.REQUIREMENTS, new_requirements=True)
+        self.assertIs(state.phase, Phase.REQUIREMENTS)
+
     def test_issue_closure_requires_user_approval_and_merge_or_parent_integration(self):
         child = PhaseState(9, IssueKind.CHILD, Phase.USER_REVIEW)
         with self.assertRaisesRegex(PhaseError, "explicit user approval"):

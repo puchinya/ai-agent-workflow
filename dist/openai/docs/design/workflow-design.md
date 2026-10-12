@@ -17,6 +17,7 @@
 - [7 DES-WF-005 Authorization boundary and PR handoff](#7-des-wf-005-authorization-boundary-and-pr-handoff)
 - [8 Alternatives considered](#8-alternatives-considered)
 - [9 Migration gate routing](#9-migration-gate-routing)
+- [10 DES-WF-006 Human review and final delivery](#10-des-wf-006-human-review-and-final-delivery)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -26,6 +27,7 @@
 - [DES-WF-003](#des-wf-003) — 5 DES-WF-003 Workspace execution flow
 - [DES-WF-004](#des-wf-004) — 6 DES-WF-004 Failure handling
 - [DES-WF-005](#des-wf-005) — 7 DES-WF-005 Authorization boundary and PR handoff
+- [DES-WF-006](#des-wf-006) — 10 DES-WF-006 Human review and final delivery
 <!-- heading-map:end -->
 
 
@@ -146,3 +148,12 @@ The approved Issue contract is the authority for routine work through a review-r
 When the Bootstrap evaluator lives on a downstream stacked PR, run its CLI from that evaluator checkout and pass `--root` pointing to a separate clean checkout of the earlier target PR's exact current HEAD. The evaluator fingerprint comes from the evaluator checkout while local checks and cleanliness checks run against the target checkout; do not copy evaluator code into the target branch. For legacy Issue-body ADC pointers, retain the original `## Agent Development Contract` block as the first journal record's predecessor anchor (or record `none` when absent); do not edit or delete the old anchor during migration.
 
 The activation reader validates the fixed six-child set, each merged PR and closed Issue, a separate integration-evidence record covering docs/tests/16 Skills/distribution, and a distinct immutable approval comment. The activation record binds those PR merge SHAs and the integration digest. Policy readers reject duplicates, stale subjects, mismatched byte/digest values, forks, and non-current PR heads. No activation record is issued during child implementation.
+
+<a id="des-wf-006"></a>
+## 10 DES-WF-006 Human review and final delivery
+
+`user_review.py` owns the subject-bound human decision, immutable session start, and feedback snapshots. A child session binds the current ADC, PR HEAD, plan, and Readiness digest; older approvals and change requests cannot satisfy it. Ordinary comments are questions. The only comment-driven execution transition is the whole-body `P-ASES-DECISION: CHANGES_REQUESTED` / `P-ASES-HEAD: <sha40>` pair from the authenticated human; inline comments must name their GitHub `commit_id`. `github.py` is the only network boundary and paginates the four REST feedback surfaces plus GraphQL review-thread state. A previously stored snapshot is compared with every complete new read; missing records are retained as deletion tombstones. Review history treats only `<64 lowercase hex>.json` as a feedback snapshot; `session.json` and canonical `*.result.json` records are separate schemas, and unexpected filenames or a content/name digest mismatch fail closed. Review evaluation derives decisions from the authenticated GitHub user or a verified host adapter, never from CLI-supplied identity fields.
+
+`integration.py` owns the fixed parent child set, native dependency DAG, merged PR/Issue readback, main ancestry, and typed Integration Verification/Acceptance evidence. The authority decision for this migration is exact-main GitHub Actions run, job, step, and Check Run API data; the #26 comment is only a discoverable pointer/cache and cannot prove execution on its own. This resolves Git's self-reference conflict by keeping proof outside the named commit, while deletion or edit fails closed. `delivery parent-evidence <issue> <kind> <run-id>` reconstructs evidence from those API records. Verification requires the latest exact-main `ci.yml` push run, all four configured matrix jobs, App ID 15368, and successful compile, committed/generated distribution checks, unit tests, documentation validation, distribution build/validation, generated-path stability, and committed-diff whitespace steps. Acceptance requires the latest exact-main `parent-integration.yml` workflow_dispatch run and successful specification/design/test-oracle traceability, exact 16-Skill package, generated-distribution consistency, and distribution validation. Each referenced job Check Run URL must name the same repository and resolve to that App's completed/success Check Run on the exact SHA. The reader rejects caller-supplied PASS JSON even when all supplied artifact hashes match; it re-fetches and reconstructs the exact V2 payload on every read. Since parent #26 predates ADC pointer journals, the CLI obtains its pinned ADC digest and source declaration from the approved child #31 ADC, verifies the pinned migration-contract source, and double-reads the child ADC pointer plus parent Issue body. The Issue evidence comment remains editable/deletable GitHub storage: exact comment ID/body/actor/repository/subject are double-read, detected mutation blocks, and no intrinsic immutability is claimed. The dedicated parent-label migration remains read-only by default and mutates labels only under explicit `--apply`; parent delivery never applies it implicitly. After Integration PASS, parent User Review binds the ADC, six child merge pairs, and Integration result digest; approval never activates, closes, or merges the parent.
+
+The CLI performs phase transitions only after re-reading the Issue and confirming its current labels. An in-scope request returns the same Issue to execution; an explicitly triaged new scope returns it to requirements. Finalize is a readback command and has no merge or close mutation. Parent final delivery remains blocked until child Integration and the separate parent review/activation gates are satisfied.

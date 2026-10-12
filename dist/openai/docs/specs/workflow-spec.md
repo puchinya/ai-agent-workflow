@@ -21,6 +21,9 @@
 - [5 REQ-WF-007 Error and boundary behavior](#5-req-wf-007-error-and-boundary-behavior)
 - [6 REQ-WF-008 Security and privacy](#6-req-wf-008-security-and-privacy)
 - [7 P-ASES migration Bootstrap gates](#7-p-ases-migration-bootstrap-gates)
+- [8 P-ASES human review and final delivery](#8-p-ases-human-review-and-final-delivery)
+  - [8.1 REQ-WF-009 Exact-subject User Review](#81-req-wf-009-exact-subject-user-review)
+  - [8.2 REQ-WF-010 Parent Integration and Final Delivery](#82-req-wf-010-parent-integration-and-final-delivery)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -33,6 +36,8 @@
 - [REQ-WF-006](#req-wf-006) — 4 REQ-WF-006 Observable behavior
 - [REQ-WF-007](#req-wf-007) — 5 REQ-WF-007 Error and boundary behavior
 - [REQ-WF-008](#req-wf-008) — 6 REQ-WF-008 Security and privacy
+- [REQ-WF-009](#req-wf-009) — 8.1 REQ-WF-009 Exact-subject User Review
+- [REQ-WF-010](#req-wf-010) — 8.2 REQ-WF-010 Parent Integration and Final Delivery
 <!-- heading-map:end -->
 
 
@@ -190,6 +195,51 @@ The workflow never prints or stores credentials in contract payloads, logs, Skil
 The migration from the legacy workflow to P-ASES uses two separately named gates. The fixed Bootstrap cohort is parent Issue #26 and child Issues #27–#32 **in `puchinya/ai-agent-workflow` only**. Repository identity is compared case-insensitively. Those child Issues use `bootstrap-legacy-v1`; no label, issue text, caller flag, or agent decision can add another Issue or repository to that set. Existing non-cohort Issues created before activation remain on the existing legacy workflow and are never migrated automatically. Only a non-cohort Issue created after the verified activation timestamp selects `p-ases-v1`; missing or invalid activation and pre-activation Issues are `UNDETERMINED` in the new router, which never falls back automatically.
 
 Bootstrap reports `BOOTSTRAP_TECHNICAL_READY` or `BOOTSTRAP_BLOCKED` for the fixed migration cohort only. Technical readiness requires the current approved child ADC, exact open/non-draft same-repository PR and current HEAD, standalone `Closes #N`, a clean checkout, executed local tests/static/distribution checks, successful current-head required GitHub CI jobs with provenance, fixed gate selection and evaluator digest, and explicit unverified-environment disclosure. Self-review, independent review, review artifacts, ordinary `PASES_REVIEW_READINESS_V1: PASS`, GitHub approval, and final User Review are not Bootstrap prerequisites. Technical readiness does not claim any of those reviews occurred or passed, does not grant merge permission, and does not cause an Issue phase transition. The #27 legacy ADC approval state and the Issue dependency graph remain required technical gates; #28 acceptance remains a dependency.
+
+<a id="p-ases-human-review-and-final-delivery"></a>
+## 8 P-ASES human review and final delivery
+
+<a id="req-wf-009"></a>
+### 8.1 REQ-WF-009 Exact-subject User Review
+
+Final human User Review begins only after Review Readiness is PASS for the same repository, Issue, PR, approved ADC digest, exact PR HEAD, and Readiness digest. An immutable session start time is created for that exact subject; a prior approval or change request cannot satisfy a newly started session. The runtime reads every page of Issue comments, PR conversation comments, formal PR reviews, and inline diff comments. It records numeric actor identity and type, object ID, creation/update times, body digest, formal review state, target commit, permalink, and deletion/resolution observations. Snapshot history is immutable so removed or edited feedback makes earlier approval evidence stale.
+
+Only a current human identity can decide User Review. GitHub approval requires a formal `APPROVED` review on the exact current HEAD. A direct chat decision is eligible only through a host adapter that attests the current user, direct conversation, explicit decision, and absence of quoted or attached third-party content. A filesystem payload, bot event, PR existence, generic comment text, or unverifiable chat identity cannot approve. A PR conversation or inline comment requests in-scope changes only when its entire body has exactly these two lines:
+
+```text
+P-ASES-DECISION: CHANGES_REQUESTED
+P-ASES-HEAD: <current full SHA-40>
+```
+
+The authenticated current human must have authored the comment; an inline comment's `commit_id` must equal the named SHA. Quoted, extended, malformed, stale-head, bot, unauthorized, and natural-language comments do not trigger the execution transition. Other comments remain questions. Changes requested on the current scope return the same Issue and PR to execution; a separately triaged scope change returns to requirements. Questions, pending reviews, unresolved discussion threads, stale HEAD/ADC/Readiness, and incomplete API reads remain blockers.
+
+<a id="req-wf-010"></a>
+### 8.2 REQ-WF-010 Parent Integration and Final Delivery
+
+Parent Integration uses the declared native child Issue set and dependency DAG. It reads every child Issue, native blocker edge, merged PR, standalone child-closing line, actual merge commit, merge timestamp, and final-main ancestry from GitHub. Each dependency must have merged no later than its dependent child. The child set, dependency graph, current main SHA, parent ADC, and typed Integration Verification/Acceptance records form one immutable subject. For this migration, legacy parent Issue #26 has no ADC pointer journal; the current approved child #31 ADC is therefore the authority for the parent ADC digest and the immutable `planning/p-ases/08-migration-contract.md` source at commit `f34f166f11bbbe6c45b1555827f37f9467b1e49b`. The evaluator verifies that declaration and source availability, then double-reads the child ADC pointer and parent Issue body while collecting the Integration snapshot.
+
+**Parent evidence authority decision for this migration:** the exact-main GitHub Actions run, job, step, and Check Run API records are authoritative. Issue #26 comments store only a discoverable pointer/cache for the reconstructed result; a comment by itself is never proof. This is the selected resolution to the Git self-reference conflict: execution proof stays outside the commit whose SHA it names, and a deleted or edited comment fails closed without falling back to local files or comment-authored PASS claims. Typed Verification and Acceptance evidence is published outside `main` in canonical `PASES_PARENT_GATE_EVIDENCE_COMMENT_V2` Issue comments on #26. `delivery parent-evidence <issue> <kind> <run-id>` reads a completed run for the exact current `main` SHA and reconstructs its result and artifact bytes from those API responses.
+
+Verification must use the latest `.github/workflows/ci.yml` `push` run for the exact current `main` SHA, `head_branch=main`, same-repository `head_repository`, completed/success, and GitHub Actions App ID `15368`. The run must contain the four fixed Python/OS matrix jobs; each job Check Run URL must resolve to a completed/success Check Run from that App on the same SHA and same repository. The API job steps `Compile runtime, tools, and tests`, `Check committed distributions before mutation`, `Unit tests`, `Validate repository documentation`, `Generate distributions`, `Check generated distributions`, `Validate distributions`, `Confirm generated paths remain unchanged`, and `Check committed diff whitespace` must each be completed/success in every matrix job. A newer failed attempt or run invalidates an older success.
+
+Acceptance must use the latest `.github/workflows/parent-integration.yml` `workflow_dispatch` run for the exact current `main` SHA and same-repository `main` branch, also completed/success from App ID `15368`. Its `parent-acceptance` job Check Run and six named steps prove specification traceability, design traceability, test-oracle traceability, the exact canonical 16-Skill package, generated-distribution consistency, and distribution validation. That workflow is dispatched only after the fixed migration cohort is present; it does not permit the legacy 10-Skill package to pass.
+
+The result stores run ID/attempt/path, every required job Check Run identity, step conclusions, cited artifact bytes, and SHA-256 digests. On publication and every later read, the adapter re-fetches the latest matching workflow run, jobs, steps, and exact-SHA Check Runs, reconstructs the canonical V2 payload, and requires byte-for-byte equality. Thus a hand-authored result with plausible hashes, a local-only PASS, wrong App, stale SHA, failed/skipped step, incomplete matrix, or superseded run is BLOCKED even when posted by the authenticated user.
+
+This boundary avoids storing a commit's own SHA inside that commit. `delivery parent` and `issue integration-check` require exact Issue #26 comment IDs. For each ID, the reader GETs the comment, finds that same ID exactly once in Issue #26's paginated comment list, GETs it again, and compares ID, body, timestamps, Issue/API/HTML URLs, and author. It also requires exactly one evidence comment for each kind and current parent/main subject. `updated_at` must equal `created_at`; the current authenticated GitHub `User` ID must equal the comment author; the workflow provenance, payload subject, canonical bytes, result digest, artifact digests, and fixed check set must all match. A deleted ID, edit, duplicate subject, wrong repository/Issue, wrong author, malformed payload, changed ADC, stale main, failed/superseded run, or untrusted App blocks without fallback. GitHub comments can be edited or deleted, so this detects mutations at each read; it does not claim GitHub provides immutable comment storage.
+
+Legacy parent #26 labels are migrated only by `delivery parent-migrate-labels 26`. Default invocation is read-only preflight: the Issue must be open in the same repository, and any conflicting kind/phase blocks. `--apply` re-reads the exact current labels, creates only the P-ASES-owned definitions needed for `kind:parent`, `phase:integration`, and the next `phase:user-review` transition when absent, and verifies each definition's exact name, description, and color. The owned definitions are `kind:parent` (`c5def5`, `P-ASES Issue kind: parent`), `phase:integration` (`0e8a16`, `Workflow phase: integration`), and `phase:user-review` (`d93f0b`, `Workflow phase: user review`). Existing definitions with different metadata fail without overwrite. It then adds only the needed parent/Integration labels, preserves unrelated labels such as `enhancement` and attention labels, and confirms the complete Issue state. A lost definition or Issue-label write response is retried by re-reading and recognizing the exact prior write; conflicting or incomplete states fail closed. Parent delivery does not run this migration implicitly.
+
+After Integration passes, `delivery parent` moves parent Issue #26 from `phase:integration` to `phase:user-review` and starts one immutable parent review session. Its exact subject binds the repository, parent Issue, approved parent ADC digest, six child Issue/merge-SHA pairs, and Integration result digest. The first invocation starts the session; a decision must be a new parent Issue comment with exactly these two lines:
+
+```text
+P-ASES-DECISION: APPROVED
+P-ASES-SUBJECT: <current parent User Review SHA-256>
+```
+
+`CHANGES_REQUESTED` may be used in the first line to withhold parent approval. Only the authenticated current human on the open parent Issue can decide. Edited/deleted comments, a decision predating the session, or a changed ADC, child merge, or Integration subject invalidates prior approval. Child User Review snapshot discovery accepts only `<64 lowercase hex>.json` filenames, verifies that the filename digest equals the parsed snapshot digest, and rejects unexpected files; `session.json` and `*.result.json` are not feedback snapshots. Parent approval only makes the result ready for a separate explicit activation decision; it does not close or activate the parent or authorize merge/release.
+
+Final Delivery keeps human User Review, GitHub's required formal review decision, exact-HEAD Required Check evidence, branch protection, explicit merge authorization, merge readback, Issue closure, and parent activation as separate gates. A delivery result never performs a merge, release, Issue close, or parent activation. Finalization only reports what GitHub confirms after a separately authorized merge.
 
 Gate selection is recorded immutably when work starts and remains fixed if the PR HEAD changes or a check becomes blocked. `p-ases-v1` applies only to Issues created after activation. Activation requires all six child PRs to be merged by the repository owner with explicit user authorization, all six Issues closed, parent integration documentation/tests/16 Skills/distribution checks passing, and an explicit activation approval comment authored by the repository owner. A unique `PASES_ACTIVATION_V1` record binds the repository, child Issues and PR merge SHAs, integration-evidence digest, gate version, and activation commit. Missing, stale, duplicated, or mismatched activation evidence blocks new P-ASES work.
 

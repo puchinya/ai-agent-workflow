@@ -102,7 +102,7 @@ def activation_fixture(*, approval_author="puchinya", merged_by="puchinya", open
             27: ("main", "pases/adc-core"), 28: ("main", "pases/documentation"),
             29: ("main", "pases/verification"),
             30: ("main", "pases/work-readiness"),
-            31: ("pases/work-readiness", "pases/issue-31"),
+            31: ("main", "pases/user-review-integration"),
             32: ("pases/work-readiness", "pases/issue-32"),
         }[issue]
         prs[pr_number] = {
@@ -309,7 +309,7 @@ class BootstrapPolicyTests(unittest.TestCase):
                                   workflow_runs=[verification_run]).status,
                          "BOOTSTRAP_BLOCKED")
 
-        for issue_number in (31, 32):
+        for issue_number in (32,):
             with self.subTest(issue_number=issue_number):
                 undocumented_subject = replace(
                     verification_subject, issue_number=issue_number,
@@ -327,6 +327,35 @@ class BootstrapPolicyTests(unittest.TestCase):
                 self.assertEqual(result.status, "BOOTSTRAP_BLOCKED")
                 self.assertIn("approved Bootstrap base/head branch pair is not defined for this child Issue",
                               result.reasons)
+
+    def test_pr31_uses_main_and_exact_review_branch_and_rejects_other_refs(self):
+        review_subject = replace(
+            subject(), issue_number=31, pr_number=37, base_ref="main",
+            head_ref="pases/user-review-integration")
+        review_pr = pr_readback(
+            number=37, base={"ref": "main", "sha": BASE, "repo": {"full_name": REPO}},
+            head={"ref": "pases/user-review-integration", "sha": HEAD,
+                  "repo": {"full_name": REPO}}, body="Closes #31\n")
+        review_run = workflow_run(
+            head_branch="pases/user-review-integration",
+            pull_requests=[{"number": 37}])
+        self.assertEqual(
+            evaluate(subject=review_subject, pr=review_pr,
+                     workflow_runs=[review_run]).status, "BOOTSTRAP_TECHNICAL_READY")
+        bad_base = replace(review_subject, base_ref="pases/work-readiness")
+        bad_pr = dict(review_pr)
+        bad_pr["base"] = {"ref": "pases/work-readiness", "sha": BASE,
+                          "repo": {"full_name": REPO}}
+        self.assertEqual(
+            evaluate(subject=bad_base, pr=bad_pr,
+                     workflow_runs=[review_run]).status, "BOOTSTRAP_BLOCKED")
+        bad_head = replace(review_subject, head_ref="pases/issue-31")
+        changed_pr = dict(review_pr)
+        changed_pr["head"] = {"ref": "pases/issue-31", "sha": HEAD,
+                              "repo": {"full_name": REPO}}
+        self.assertEqual(
+            evaluate(subject=bad_head, pr=changed_pr,
+                     workflow_runs=[review_run]).status, "BOOTSTRAP_BLOCKED")
 
     def test_pr28_uses_approved_documentation_pair_and_rejects_other_refs(self):
         documentation_subject = replace(
@@ -552,7 +581,7 @@ class BootstrapPolicyTests(unittest.TestCase):
             _validate_activation_candidate(github, record)
 
         github, record = activation_fixture()
-        with self.assertRaisesRegex(GatePolicyError, "child PR #37 has no matching approved base/head branch contract"):
+        with self.assertRaisesRegex(GatePolicyError, "child PR #38 has no matching approved base/head branch contract"):
             _validate_activation_candidate(github, record)
 
     def test_gate_selection_refuses_comment_readback_from_another_issue(self):

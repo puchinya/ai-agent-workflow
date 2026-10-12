@@ -48,6 +48,44 @@ class PasesCLITests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertIn('"status": "VERIFIED"', output.getvalue())
 
+    def test_issue_31_cli_namespaces_are_present_and_chat_file_fails_closed(self):
+        args = _parser().parse_args([
+            "user-review", "start", "31", "37", "a" * 40, "plan.json", "readiness.json",
+            "--repo", "octo/repo", "--root", str(ROOT),
+        ])
+        self.assertEqual((args.namespace, args.verb), ("user-review", "start"))
+        args = _parser().parse_args([
+            "issue", "integration-check", "26", "--verification-comment-id", "100",
+            "--acceptance-comment-id", "101",
+            "--repo", "octo/repo", "--root", str(ROOT),
+        ])
+        self.assertEqual((args.namespace, args.verb), ("issue", "integration-check"))
+        self.assertEqual((args.verification_comment_id, args.acceptance_comment_id), (100, 101))
+        migration = _parser().parse_args([
+            "delivery", "parent-migrate-labels", "26", "--repo", "octo/repo", "--root", str(ROOT),
+        ])
+        self.assertFalse(migration.apply)
+        evidence = _parser().parse_args([
+            "delivery", "parent-evidence", "26", "verification", "600",
+            "--repo", "octo/repo", "--root", str(ROOT),
+        ])
+        self.assertEqual((evidence.verb, evidence.kind), ("parent-evidence", "verification"))
+        self.assertEqual(evidence.run_id, 600)
+        stdout = io.StringIO()
+        with patch("p_ases.cli._repo_root", return_value=ROOT), contextlib.redirect_stdout(stdout):
+            status = main(["user-review", "record", "31", "37", "untrusted.json",
+                           "--repo", "octo/repo", "--root", str(ROOT)])
+        self.assertEqual(status, 2)
+        self.assertIn("UNVERIFIABLE_CHAT_IDENTITY", stdout.getvalue())
+
+    def test_final_delivery_cli_exposes_all_distinct_gates(self):
+        args = _parser().parse_args([
+            "delivery", "final", "31", "37", "a" * 40, "plan.json", "verification.json",
+            "acceptance.json", "self.json", "independent.json", "readiness.json", "review.json",
+            "--repo", "octo/repo", "--root", str(ROOT),
+        ])
+        self.assertEqual((args.namespace, args.verb), ("delivery", "final"))
+
 
 if __name__ == "__main__":
     unittest.main()

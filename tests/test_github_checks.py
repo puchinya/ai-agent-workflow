@@ -111,6 +111,41 @@ class GitHubCheckRunTests(unittest.TestCase):
         with self.assertRaises(GitHubError):
             github.check_runs_for_ref(HEAD)
 
+    def test_workflow_runs_support_main_push_and_dispatch_with_exact_event_path(self):
+        run = {"id": 30, "run_number": 8, "run_attempt": 1,
+               "path": ".github/workflows/ci.yml", "event": "push",
+               "head_sha": HEAD, "head_branch": "main", "status": "completed",
+               "conclusion": "success", "head_repository": {"full_name": "octo/repo"}}
+        github = FakeGitHub(({"total_count": 1, "workflow_runs": [run]},))
+        self.assertEqual(github.workflow_runs_for_ref(HEAD, event="push"), [run])
+        self.assertIn("event=push", github.calls[0][1])
+        with self.assertRaises(GitHubError):
+            FakeGitHub(()).workflow_runs_for_ref(HEAD, event="delete")
+        with self.assertRaises(GitHubError):
+            FakeGitHub(({"total_count": 1, "workflow_runs": [{**run, "event": "workflow_dispatch"}]},)).workflow_runs_for_ref(
+                HEAD, event="push")
+
+    def test_workflow_run_jobs_paginates_and_validates_step_provenance(self):
+        def job(identifier, run_id=30):
+            return {"id": identifier, "run_id": run_id, "head_sha": HEAD,
+                    "name": f"job-{identifier}", "status": "completed", "conclusion": "success",
+                    "check_run_url": f"https://api.github.com/repos/octo/repo/check-runs/{identifier}",
+                    "steps": [{"number": 1, "name": "Unit tests", "status": "completed", "conclusion": "success"}]}
+        first = [job(i) for i in range(1, 101)]
+        github = FakeGitHub(({"total_count": 101, "jobs": first},
+                             {"total_count": 101, "jobs": [job(101)]}))
+        rows = github.workflow_run_jobs(30)
+        self.assertEqual(len(rows), 101)
+        self.assertIn("/actions/runs/30/jobs?page=1&per_page=100", github.calls[0][1])
+        self.assertIn("/actions/runs/30/jobs?page=2&per_page=100", github.calls[1][1])
+
+        wrong_run = FakeGitHub(({"total_count": 1, "jobs": [job(1, 31)]},))
+        with self.assertRaisesRegex(GitHubError, "incomplete identity"):
+            wrong_run.workflow_run_jobs(30)
+        truncated = FakeGitHub(({"total_count": 2, "jobs": [job(1)]},))
+        with self.assertRaisesRegex(GitHubError, "pagination count"):
+            truncated.workflow_run_jobs(30)
+
 
 if __name__ == "__main__":
     unittest.main()
