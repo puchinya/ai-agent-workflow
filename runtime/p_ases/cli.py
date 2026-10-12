@@ -89,7 +89,7 @@ from .user_review import (
     write_parent_review_session, write_review_session,
 )
 from .integration import (
-    IntegrationError, IntegrationGateEvidence, evaluate_parent_integration,
+    IntegrationError, IntegrationGateEvidence, ParentGateEvidenceComment, evaluate_parent_integration,
 )
 
 
@@ -1597,10 +1597,17 @@ def _latest_review_snapshot(root: Path, subject: UserReviewSubject) -> FeedbackS
     if not folder.is_dir():
         raise UserReviewError("User Review history path is not a directory")
     snapshots: list[FeedbackSnapshot] = []
-    for path in folder.glob("*.json"):
-        if path.name.endswith(".result.json"):
+    for path in folder.iterdir():
+        if path.name == "session.json":
             continue
+        if re.fullmatch(r"[0-9a-f]{64}-[0-9a-f]{64}\.result\.json", path.name):
+            continue
+        match = re.fullmatch(r"([0-9a-f]{64})\.json", path.name)
+        if match is None:
+            raise UserReviewError(f"unexpected file in User Review history: {path.name}")
         item = read_feedback_snapshot(path)
+        if item.sha256 != match.group(1):
+            raise UserReviewError("User Review snapshot filename does not match its content digest")
         if item.subject == subject:
             snapshots.append(item)
     return max(snapshots, key=lambda item: item.observed_at) if snapshots else None
@@ -1940,7 +1947,9 @@ def _parent_adc_authority(github: GitHub) -> tuple[str, Any]:
 
 
 def _repository_file_reference(value: Path | str) -> str:
-    """Validate a repository-relative file path used for exact-main evidence readback."""
+    """Validate a repository-relative file reference carried by parent evidence."""
+    if not isinstance(value, (Path, str)):
+        raise IntegrationError("parent Integration evidence reference must be text")
     path = Path(value)
     if path.is_absolute() or not path.parts or any(part in {"", ".", ".."} for part in path.parts):
         raise IntegrationError("parent Integration evidence reference must be repository-relative")
@@ -1951,28 +1960,113 @@ def _repository_file_reference(value: Path | str) -> str:
 
 
 def _load_parent_gate_evidence_from_github(
-    github: GitHub, reference: Path | str, main_sha40: str, kind: str,
+    github: GitHub, comment_id: int, main_sha40: str, kind: str,
+    repository: str, parent_adc_sha256: str,
 ) -> IntegrationGateEvidence:
-    """Read the typed result and every cited artifact from the exact current main commit."""
+    """Read external parent evidence by pinned Issue comment ID and verify it twice."""
     if not isinstance(main_sha40, str) or not re.fullmatch(r"[0-9a-f]{40}", main_sha40):
-        raise IntegrationError("parent Integration evidence requires an exact main SHA-40")
-    evidence_path = _repository_file_reference(reference)
+        raise IntegrationError("parent Integration evidence requires an exact current main SHA-40")
+    if type(comment_id) is not int or comment_id < 1:
+        raise IntegrationError("parent Integration evidence requires a positive Issue comment ID")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+        raise IntegrationError("parent Integration evidence repository is invalid")
+    if not re.fullmatch(r"[0-9a-f]{64}", parent_adc_sha256):
+        raise IntegrationError("parent Integration evidence parent ADC digest is invalid")
+
+    def read_comment() -> tuple[dict[str, Any], ParentGateEvidenceComment, bytes]:
+        direct = github.issue_comment(26, comment_id)
+        listed = github.issue_comments(26)
+        if not isinstance(direct, dict) or not isinstance(listed, list):
+            raise IntegrationError("parent evidence comment API readback is malformed")
+        if any(not isinstance(item, dict) for item in listed):
+            raise IntegrationError("parent evidence Issue comment list contains a malformed row")
+        matches = [row for row in listed if row.get("id") == comment_id]
+        if len(matches) != 1:
+            raise IntegrationError("pinned parent evidence comment is missing or duplicated on Issue #26")
+        row = matches[0]
+        subject_comment_ids: list[int] = []
+        for candidate in listed:
+            candidate_body = candidate.get("body")
+            if not isinstance(candidate_body, str) or not candidate_body.startswith("P-ASES-PARENT-EVIDENCE-V1\n"):
+                continue
+            candidate_bundle = ParentGateEvidenceComment.from_body(candidate_body)
+            if (candidate_bundle.kind == kind
+                    and candidate_bundle.repository.casefold() == repository.casefold()
+                    and candidate_bundle.parent_issue_number == 26
+                    and candidate_bundle.parent_adc_sha256 == parent_adc_sha256
+                    and candidate_bundle.main_sha40 == main_sha40):
+                if candidate.get("updated_at") != candidate.get("created_at"):
+                    raise IntegrationError("a parent evidence comment for this subject was edited")
+                candidate_id = candidate.get("id")
+                if type(candidate_id) is not int or candidate_id < 1:
+                    raise IntegrationError("parent evidence comment subject has a malformed ID")
+                subject_comment_ids.append(candidate_id)
+        if subject_comment_ids and subject_comment_ids != [comment_id]:
+            raise IntegrationError("parent evidence subject has duplicate or mismatched comment IDs")
+        after = github.issue_comment(26, comment_id)
+        if not isinstance(after, dict):
+            raise IntegrationError("parent evidence comment second API readback is malformed")
+        stable_fields = ("id", "body", "created_at", "updated_at", "issue_url", "html_url", "url", "user")
+        created_at = row.get("created_at")
+        updated_at = row.get("updated_at")
+        if not isinstance(created_at, str) or not isinstance(updated_at, str):
+            raise IntegrationError("parent evidence comment timestamps are missing")
+        try:
+            created_time = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            updated_time = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise IntegrationError("parent evidence comment timestamps are invalid") from exc
+        if (created_time.tzinfo is None or created_time.utcoffset() is None
+                or updated_time.tzinfo is None or updated_time.utcoffset() is None):
+            raise IntegrationError("parent evidence comment timestamps require a timezone")
+        if (any(direct.get(field) != row.get(field) or row.get(field) != after.get(field)
+                for field in stable_fields)
+                or direct.get("id") != comment_id or direct.get("updated_at") != direct.get("created_at")):
+            raise IntegrationError("parent evidence comment was edited or changed during double-read")
+        expected_issue_url = f"https://api.github.com/repos/{repository}/issues/26"
+        expected_html = f"https://github.com/{repository}/issues/26#issuecomment-{comment_id}"
+        expected_api = f"https://api.github.com/repos/{repository}/issues/comments/{comment_id}"
+        if (not all(isinstance(row.get(field), str) for field in ("issue_url", "html_url", "url"))
+                or row["issue_url"].casefold() != expected_issue_url.casefold()
+                or row["html_url"].casefold() != expected_html.casefold()
+                or row["url"].casefold() != expected_api.casefold()):
+            raise IntegrationError("parent evidence comment repository or Issue identity does not match")
+        identity = github.authenticated_user()
+        author = row.get("user")
+        if (not isinstance(identity, dict) or type(identity.get("id")) is not int
+                or not isinstance(author, dict) or type(author.get("id")) is not int
+                or author.get("type") != "User" or author.get("id") != identity.get("id")
+                or identity.get("type") != "User"):
+            raise IntegrationError("parent evidence comment author is not the authenticated GitHub user")
+        bundle = ParentGateEvidenceComment.from_body(row.get("body"))
+        if (bundle.kind != kind or bundle.repository.casefold() != repository.casefold()
+                or bundle.parent_issue_number != 26 or bundle.parent_adc_sha256 != parent_adc_sha256
+                or bundle.main_sha40 != main_sha40):
+            raise IntegrationError("parent evidence comment does not match the exact current main/ADC subject")
+        return row, bundle, row["body"].encode("utf-8")
+
+    first_row, first_bundle, first_body = read_comment()
+    second_row, second_bundle, second_body = read_comment()
+    if (first_row != second_row or first_bundle != second_bundle or first_body != second_body):
+        raise IntegrationError("parent evidence comment changed during double-read")
+    _validate_parent_gate_bundle(first_bundle, kind, repository, parent_adc_sha256, main_sha40)
+    raw_source = first_bundle.result_bytes
+    source_sha256 = hashlib.sha256(raw_source).hexdigest()
+    evidence = IntegrationGateEvidence(kind, repository, 26, parent_adc_sha256, main_sha40,
+                                       "PASS", source_sha256, f"issue-comment:{comment_id}").validate()
+    return evidence
+
+
+def _validate_parent_gate_bundle(
+    bundle: ParentGateEvidenceComment, kind: str, repository: str,
+    parent_adc_sha256: str, main_sha40: str,
+) -> dict[str, Any]:
+    """Check canonical PASS result bytes and exact cited artifact bytes inside a comment."""
+    bundle.validate()
     try:
-        raw_evidence = github.content_at_ref(evidence_path, main_sha40)
-        value = json.loads(raw_evidence.decode("utf-8", errors="strict"))
-    except (GitHubError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise IntegrationError("parent Integration typed evidence could not be read from exact main") from exc
-    evidence = IntegrationGateEvidence.from_dict(value)
-    if evidence.kind != kind or evidence.main_sha40 != main_sha40 or raw_evidence != evidence.to_bytes():
-        raise IntegrationError("parent Integration evidence is not canonical or belongs to another main subject")
-    try:
-        source_path = _repository_file_reference(evidence.source_reference)
-        raw_source = github.content_at_ref(source_path, main_sha40)
-        source_value = json.loads(raw_source.decode("utf-8", errors="strict"))
-    except (GitHubError, IntegrationError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise IntegrationError(f"parent Integration {kind} source could not be read from exact main") from exc
-    if hashlib.sha256(raw_source).hexdigest() != evidence.result_sha256:
-        raise IntegrationError(f"parent Integration {kind} source digest does not match its exact-main bytes")
+        source_value = json.loads(bundle.result_bytes.decode("utf-8", errors="strict"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise IntegrationError(f"parent Integration {kind} result bytes are invalid JSON") from exc
     required_source = {"schema", "kind", "status", "repository", "parent_issue_number",
                        "parent_adc_sha256", "main_sha40", "checks"}
     source_repository = source_value.get("repository") if isinstance(source_value, dict) else None
@@ -1980,17 +2074,23 @@ def _load_parent_gate_evidence_from_github(
             or source_value.get("schema") != "PASES_PARENT_INTEGRATION_CHECKS_V1"
             or source_value.get("kind") != kind or source_value.get("status") != "PASS"
             or not isinstance(source_repository, str)
-            or source_repository.casefold() != evidence.repository.casefold()
+            or source_repository.casefold() != repository.casefold()
             or type(source_value.get("parent_issue_number")) is not int
-            or source_value.get("parent_issue_number") != evidence.parent_issue_number
-            or source_value.get("parent_adc_sha256") != evidence.parent_adc_sha256
-            or source_value.get("main_sha40") != main_sha40):
+            or source_value.get("parent_issue_number") != 26
+            or source_value.get("parent_adc_sha256") != parent_adc_sha256
+            or source_value.get("main_sha40") != main_sha40
+            or bundle.kind != kind or bundle.parent_issue_number != 26
+            or bundle.parent_adc_sha256 != parent_adc_sha256 or bundle.main_sha40 != main_sha40
+            or bundle.repository.casefold() != repository.casefold()
+            or bundle.result_bytes != _canonical(source_value) + b"\n"):
         raise IntegrationError(f"parent Integration {kind} source has no matching typed PASS subject")
     checks = source_value["checks"]
     if not isinstance(checks, list) or any(not isinstance(row, dict) or set(row) != {
             "check_id", "status", "evidence_sha256", "evidence_reference"} for row in checks):
         raise IntegrationError(f"parent Integration {kind} source check list is malformed")
+    artifacts = dict(bundle.artifacts)
     by_id: dict[str, dict[str, Any]] = {}
+    expected_artifacts: set[str] = set()
     for row in checks:
         check_id = row["check_id"]
         if (not isinstance(check_id, str) or not check_id or check_id in by_id
@@ -1999,19 +2099,163 @@ def _load_parent_gate_evidence_from_github(
             raise IntegrationError(f"parent Integration {kind} source contains a failing or duplicate check")
         try:
             evidence_reference = _repository_file_reference(row["evidence_reference"])
-            evidence_bytes = github.content_at_ref(evidence_reference, main_sha40)
-        except (GitHubError, IntegrationError) as exc:
-            raise IntegrationError(f"parent Integration {kind} check artifact is unavailable from exact main") from exc
+            evidence_bytes = artifacts[evidence_reference]
+        except (IntegrationError, KeyError) as exc:
+            raise IntegrationError(f"parent Integration {kind} check artifact bytes are missing from its comment") from exc
         if hashlib.sha256(evidence_bytes).hexdigest() != row["evidence_sha256"]:
-            raise IntegrationError(f"parent Integration {kind} check evidence digest does not match its exact-main bytes")
+            raise IntegrationError(f"parent Integration {kind} check evidence digest does not match comment bytes")
+        expected_artifacts.add(evidence_reference)
         by_id[check_id] = row
+    if set(artifacts) != expected_artifacts:
+        raise IntegrationError(f"parent Integration {kind} comment has missing or unreferenced artifact bytes")
     required = ({"compileall", "unit-tests", "docs-validation", "format-check", "required-ci"}
                 if kind == "verification" else
                 {"specification-traceability", "design-traceability", "test-oracle-traceability",
                  "16-skills-package", "distribution-validation"})
     if set(by_id) != required:
         raise IntegrationError(f"parent Integration {kind} evidence does not cover the fixed required check set")
-    return evidence
+    return source_value
+
+
+def _parent_current_main_sha(github: GitHub) -> str:
+    metadata = github.repository_metadata()
+    main_ref = metadata.get("default_branch")
+    if not isinstance(main_ref, str) or not main_ref:
+        raise GitHubError("repository default branch is unavailable")
+    row = github.branch(main_ref)
+    commit = row.get("commit") if isinstance(row, dict) else None
+    sha = commit.get("sha") if isinstance(commit, dict) else None
+    if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise GitHubError("current main branch SHA is invalid")
+    return sha
+
+
+def _parent_gate_bundle_from_file(
+    result_path: Path, root: Path, repository: str, parent_adc_sha256: str,
+    main_sha40: str, kind: str,
+) -> ParentGateEvidenceComment:
+    if path_has_symlink(result_path):
+        raise CLIError("parent evidence result path must not traverse a symbolic link")
+    try:
+        result_bytes = result_path.read_bytes()
+        value = json.loads(result_bytes.decode("utf-8", errors="strict"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CLIError("parent evidence result file is unreadable or invalid JSON") from exc
+    if result_bytes != _canonical(value) + b"\n" or not isinstance(value, dict):
+        raise CLIError("parent evidence result must use canonical JSON bytes")
+    checks = value.get("checks")
+    if not isinstance(checks, list):
+        raise CLIError("parent evidence result does not contain a check list")
+    base = Path(root).resolve()
+    artifacts: dict[str, bytes] = {}
+    for check in checks:
+        if not isinstance(check, dict) or not isinstance(check.get("evidence_reference"), str):
+            raise CLIError("parent evidence result check reference is malformed")
+        reference = _repository_file_reference(check["evidence_reference"])
+        path = base.joinpath(*reference.split("/"))
+        if path_has_symlink(path):
+            raise CLIError("parent evidence artifact path must not traverse a symbolic link")
+        try:
+            resolved = path.resolve(strict=True)
+            resolved.relative_to(base)
+            if not resolved.is_file():
+                raise OSError("artifact is not a regular file")
+            content = resolved.read_bytes()
+        except (OSError, ValueError) as exc:
+            raise CLIError(f"parent evidence artifact is missing or outside the repository: {reference}") from exc
+        if reference in artifacts:
+            raise CLIError("parent evidence result repeats an artifact reference")
+        artifacts[reference] = content
+    bundle = ParentGateEvidenceComment(
+        kind, repository, 26, parent_adc_sha256, main_sha40, result_bytes,
+        tuple((reference, artifacts[reference]) for reference in sorted(artifacts)),
+    ).validate()
+    _validate_parent_gate_bundle(bundle, kind, repository, parent_adc_sha256, main_sha40)
+    return bundle
+
+
+def _publish_parent_gate_evidence(args: argparse.Namespace, repository: str, root: Path,
+                                  github: GitHub) -> int:
+    try:
+        if args.issue != 26:
+            raise CLIError("parent evidence publication is fixed to Issue #26")
+        parent_issue = github.issue(26)
+        expected_issue_url = f"https://api.github.com/repos/{repository}"
+        if (not isinstance(parent_issue, dict) or parent_issue.get("number") != 26
+                or parent_issue.get("state") != "open"
+                or parent_issue.get("pull_request") is not None
+                or not isinstance(parent_issue.get("repository_url"), str)
+                or parent_issue["repository_url"].casefold() != expected_issue_url.casefold()):
+            raise CLIError("parent evidence publication needs the same open Issue #26")
+        parent_body = parent_issue.get("body")
+        if not isinstance(parent_body, str):
+            raise CLIError("parent evidence publication requires Issue #26 body readback")
+        parent_body_sha = hashlib.sha256(parent_body.encode("utf-8")).hexdigest()
+        adc_sha256, adc_pointer = _parent_adc_authority(github)
+        main_sha40 = _parent_current_main_sha(github)
+        bundle = _parent_gate_bundle_from_file(args.result, root, repository, adc_sha256,
+                                               main_sha40, args.kind)
+        expected_body = bundle.to_body()
+        identity = github.authenticated_user()
+        if not isinstance(identity, dict) or identity.get("type") != "User" or type(identity.get("id")) is not int:
+            raise CLIError("parent evidence publication requires a readback of the authenticated GitHub user")
+
+        matching_ids: list[int] = []
+        existing_comments = github.issue_comments(26)
+        if (not isinstance(existing_comments, list)
+                or any(not isinstance(row, dict) for row in existing_comments)):
+            raise IntegrationError("parent Issue comment list is malformed")
+        for row in existing_comments:
+            body = row.get("body")
+            if not isinstance(body, str) or not body.startswith("P-ASES-PARENT-EVIDENCE-V1\n"):
+                continue
+            if row.get("updated_at") != row.get("created_at"):
+                raise IntegrationError("an existing parent evidence comment was edited")
+            existing = ParentGateEvidenceComment.from_body(body)
+            if (existing.kind == args.kind and existing.repository.casefold() == repository.casefold()
+                    and existing.parent_issue_number == 26 and existing.parent_adc_sha256 == adc_sha256
+                    and existing.main_sha40 == main_sha40):
+                author = row.get("user")
+                if (not isinstance(author, dict) or author.get("id") != identity["id"]
+                        or author.get("type") != "User"):
+                    raise IntegrationError("existing parent evidence comment author is not the authenticated user")
+                matching_ids.append(row.get("id"))
+                if body != expected_body:
+                    raise IntegrationError("a different parent evidence comment already claims this exact subject")
+        if len(matching_ids) > 1 or any(type(value) is not int or value < 1 for value in matching_ids):
+            raise IntegrationError("parent evidence subject has duplicate or malformed Issue comments")
+        if matching_ids:
+            comment_id = matching_ids[0]
+            evidence = _load_parent_gate_evidence_from_github(
+                github, comment_id, main_sha40, args.kind, repository, adc_sha256)
+            status = "REUSED"
+        else:
+            created = github.create_issue_comment(26, expected_body)
+            comment_id = created.get("id")
+            if type(comment_id) is not int or comment_id < 1:
+                raise GitHubError("created parent evidence comment has no valid ID")
+            evidence = _load_parent_gate_evidence_from_github(
+                github, comment_id, main_sha40, args.kind, repository, adc_sha256)
+            status = "PUBLISHED"
+        if (_parent_current_main_sha(github) != main_sha40
+                or _parent_adc_authority(github) != (adc_sha256, adc_pointer)):
+            raise IntegrationError("main or parent ADC changed during evidence publication")
+        final_issue = github.issue(26)
+        if (not isinstance(final_issue, dict) or final_issue.get("number") != 26
+                or final_issue.get("state") != "open"
+                or final_issue.get("pull_request") is not None
+                or final_issue.get("repository_url") != parent_issue.get("repository_url")
+                or final_issue.get("body") != parent_body
+                or hashlib.sha256(final_issue.get("body", "").encode("utf-8")).hexdigest() != parent_body_sha):
+            raise IntegrationError("parent Issue changed during evidence publication")
+        _json({"status": status, "kind": args.kind, "parent_issue": 26,
+               "main_sha40": main_sha40, "comment_id": comment_id,
+               "evidence_sha256": evidence.sha256,
+               "comment_sha256": hashlib.sha256(expected_body.encode("utf-8")).hexdigest(),
+               "evidence_refs": [f"issue-comment:{comment_id}"], "reasons": []})
+        return 0
+    except (ADCError, GitHubError, IntegrationError, CLIError, OSError, ValueError) as exc:
+        return _blocked_result((str(exc),))
 
 
 def _read_parent_integration(args: argparse.Namespace, repository: str, root: Path,
@@ -2036,16 +2280,20 @@ def _read_parent_integration(args: argparse.Namespace, repository: str, root: Pa
         if not isinstance(main_ref, str) or not main_ref:
             raise GitHubError("repository default branch is unavailable")
         main_row = github.branch(main_ref)
-        main_commit = main_row.get("commit")
+        main_commit = main_row.get("commit") if isinstance(main_row, dict) else None
         main_sha = main_commit.get("sha") if isinstance(main_commit, dict) else None
         if not isinstance(main_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", main_sha):
             raise GitHubError("current main branch SHA is invalid")
-        verification_evidence = (None if args.verification is None else
+        verification_comment_id = getattr(args, "verification_comment_id", None)
+        acceptance_comment_id = getattr(args, "acceptance_comment_id", None)
+        verification_evidence = (None if verification_comment_id is None else
                                  _load_parent_gate_evidence_from_github(
-                                     github, args.verification, main_sha, "verification"))
-        acceptance_evidence = (None if args.acceptance is None else
+                                     github, verification_comment_id, main_sha, "verification",
+                                     repository, parent_adc_sha256))
+        acceptance_evidence = (None if acceptance_comment_id is None else
                                _load_parent_gate_evidence_from_github(
-                                   github, args.acceptance, main_sha, "acceptance"))
+                                   github, acceptance_comment_id, main_sha, "acceptance",
+                                   repository, parent_adc_sha256))
         subs = github.sub_issues(parent_number)
         child_rows = [github.issue(number) for number in PARENT_CHILD_ISSUES]
         blockers: dict[int, tuple[int, ...]] = {}
@@ -2106,9 +2354,7 @@ def _issue_integration_check(args: argparse.Namespace, repository: str, root: Pa
         _json({"status": result.status, "parent_issue": 26,
                "integration_sha256": result.sha256, "subject": result.subject.as_dict(),
                "reasons": list(result.reasons),
-               "evidence_refs": [str(path), *(str(value) for value in (args.verification, args.acceptance)
-                                                  if value is not None),
-                                 *(row.source_reference for row in (verification, acceptance)
+               "evidence_refs": [str(path), *(row.source_reference for row in (verification, acceptance)
                                    if row is not None)]})
         return 0 if result.status == "PASS" else 2
     except (ADCError, GitHubError, IntegrationError, CLIError, OSError, ValueError) as exc:
@@ -2146,6 +2392,142 @@ def _latest_parent_feedback_snapshot(root: Path, subject: ParentReviewSubject) -
         if snapshot.subject == subject:
             snapshots.append(snapshot)
     return max(snapshots, key=lambda item: item.observed_at) if snapshots else None
+
+
+PARENT_MIGRATION_LABEL_DEFINITIONS = {
+    "kind:parent": ("c5def5", "P-ASES Issue kind: parent"),
+    "phase:integration": ("0e8a16", "Workflow phase: integration"),
+    "phase:user-review": ("d93f0b", "Workflow phase: user review"),
+}
+
+
+def _parent_label_migration_plan(github: GitHub, repository: str, issue_number: int
+                                 ) -> tuple[dict[str, Any], list[str], list[str], list[dict[str, str]]]:
+    if issue_number != 26:
+        raise CLIError("legacy parent label migration is fixed to Issue #26")
+    issue = github.issue(issue_number)
+    expected_repo = f"https://api.github.com/repos/{repository}"
+    if (not isinstance(issue, dict) or issue.get("number") != issue_number or issue.get("state") != "open"
+            or issue.get("pull_request") is not None
+            or not isinstance(issue.get("repository_url"), str)
+            or issue["repository_url"].casefold() != expected_repo.casefold()):
+        raise CLIError("parent label migration requires the same open Issue #26")
+    rows = issue.get("labels")
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise CLIError("parent label migration cannot read the current label set")
+    current = [row.get("name") for row in rows]
+    if (any(not isinstance(label, str) or not label for label in current)
+            or len(current) != len(set(current))):
+        raise CLIError("parent label migration found malformed or duplicate labels")
+    kinds = [label for label in current if label.startswith("kind:")]
+    phases = [label for label in current if label.startswith("phase:")]
+    if kinds and kinds != ["kind:parent"]:
+        raise CLIError("parent label migration conflicts with an existing Issue kind label")
+    if phases and phases != ["phase:integration"]:
+        raise CLIError("parent label migration conflicts with an existing phase label")
+    repo_labels = github.repository_labels()
+    if not isinstance(repo_labels, list):
+        raise CLIError("repository label definition list is malformed")
+    definitions: dict[str, dict[str, Any]] = {}
+    for row in repo_labels:
+        if not isinstance(row, dict) or not isinstance(row.get("name"), str) or not row["name"]:
+            raise CLIError("repository label definitions are malformed")
+        if row["name"] in definitions:
+            raise CLIError("repository label definitions are duplicated")
+        definitions[row["name"]] = row
+    missing: list[dict[str, str]] = []
+    for name, (color, description) in PARENT_MIGRATION_LABEL_DEFINITIONS.items():
+        existing = definitions.get(name)
+        if existing is None:
+            missing.append({"name": name, "color": color, "description": description})
+            continue
+        if (not isinstance(existing.get("color"), str) or existing["color"].casefold() != color
+                or existing.get("description") != description):
+            raise CLIError(f"repository label definition {name} has conflicting metadata")
+    if any(not isinstance(name, str) for name in definitions):
+        raise CLIError("repository label definitions are malformed or duplicated")
+    target = list(current)
+    for name in ("kind:parent", "phase:integration"):
+        if name not in target:
+            target.append(name)
+    return issue, current, target, missing
+
+
+def _delivery_parent_label_migration(args: argparse.Namespace, repository: str,
+                                     github: GitHub) -> int:
+    try:
+        issue, current, target, definitions_to_create = _parent_label_migration_plan(
+            github, repository, args.issue)
+        expected_repo = f"https://api.github.com/repos/{repository}".casefold()
+        if current == target and not definitions_to_create:
+            _json({"status": "ALREADY_MIGRATED", "parent_issue": 26,
+                   "labels_before": current, "labels_after": target,
+                   "label_definitions_created": [], "changed": False, "reasons": []})
+            return 0
+        if not args.apply:
+            _json({"status": "PREFLIGHT_READY", "parent_issue": 26,
+                   "labels_before": current, "labels_after": target,
+                   "label_definitions_to_create": definitions_to_create,
+                   "changed": False, "requires_apply": True,
+                   "note": "no GitHub state was changed; rerun with --apply to apply this exact migration",
+                   "reasons": []})
+            return 0
+        latest, latest_labels, latest_target, latest_definitions = _parent_label_migration_plan(
+            github, repository, 26)
+        if latest_labels != current or latest_target != target or latest_definitions != definitions_to_create:
+            raise CLIError("parent labels or Issue identity changed after migration preflight")
+        for definition in definitions_to_create:
+            try:
+                github.create_repository_label(
+                    definition["name"], definition["color"], definition["description"])
+            except GitHubError:
+                # A lost response is safe to retry only when the exact named definition now exists.
+                reread = {row.get("name"): row for row in github.repository_labels()
+                          if isinstance(row, dict)}
+                current_definition = reread.get(definition["name"])
+                if (not isinstance(current_definition, dict)
+                        or not isinstance(current_definition.get("color"), str)
+                        or current_definition["color"].casefold() != definition["color"]
+                        or current_definition.get("description") != definition["description"]):
+                    raise
+        verified_definitions = {row.get("name"): row for row in github.repository_labels()
+                                if isinstance(row, dict)}
+        if any((name not in verified_definitions
+                or not isinstance(verified_definitions[name].get("color"), str)
+                or verified_definitions[name]["color"].casefold() != color
+                or verified_definitions[name].get("description") != description)
+               for name, (color, description) in PARENT_MIGRATION_LABEL_DEFINITIONS.items()):
+            raise CLIError("GitHub did not confirm all exact P-ASES label definitions")
+        latest_issue = github.issue(26)
+        latest_rows = latest_issue.get("labels") if isinstance(latest_issue, dict) else None
+        latest_issue_labels = ([row.get("name") for row in latest_rows if isinstance(row, dict)]
+                               if isinstance(latest_rows, list) else None)
+        if (not isinstance(latest_issue, dict) or latest_issue.get("number") != 26 or latest_issue.get("state") != "open"
+                or latest_issue.get("pull_request") is not None
+                or not isinstance(latest_issue.get("repository_url"), str)
+                or latest_issue["repository_url"].casefold() != expected_repo
+                or latest_issue_labels != current):
+            raise CLIError("parent labels changed during label-definition creation")
+        if current != target:
+            github.replace_issue_labels(26, target)
+        readback = github.issue(26)
+        readback_rows = readback.get("labels") if isinstance(readback, dict) else None
+        readback_labels = ([row.get("name") for row in readback_rows if isinstance(row, dict)]
+                           if isinstance(readback_rows, list) else None)
+        if (not isinstance(readback, dict) or readback.get("number") != 26 or readback.get("state") != "open"
+                or readback.get("pull_request") is not None
+                or not isinstance(readback.get("repository_url"), str)
+                or readback["repository_url"].casefold() != expected_repo
+                or readback_labels is None or set(readback_labels) != set(target)
+                or len(readback_labels) != len(target)):
+            raise CLIError("GitHub did not confirm the complete parent label migration")
+        _json({"status": "MIGRATED", "parent_issue": 26,
+               "labels_before": current, "labels_after": target,
+               "label_definitions_created": [row["name"] for row in definitions_to_create],
+               "changed": current != target or bool(definitions_to_create), "reasons": []})
+        return 0
+    except (GitHubError, CLIError, OSError, ValueError) as exc:
+        return _blocked_result((str(exc),))
 
 
 def _require_parent_user_review_phase(issue: dict[str, Any], issue_number: int) -> None:
@@ -2202,10 +2584,8 @@ def _delivery_parent(args: argparse.Namespace, repository: str, root: Path,
                      github: GitHub) -> int:
     try:
         result, path, verification, acceptance = _read_parent_integration(args, repository, root, github)
-        evidence_refs = [str(path), *(str(value) for value in (args.verification, args.acceptance)
-                                       if value is not None),
-                         *(row.source_reference for row in (verification, acceptance)
-                           if row is not None)]
+        evidence_refs = [str(path), *(row.source_reference for row in (verification, acceptance)
+                                      if row is not None)]
         if result.status != "PASS":
             _json({"status": "BLOCKED", "parent_issue": 26,
                    "integration_status": result.status, "integration_sha256": result.sha256,
@@ -2365,10 +2745,10 @@ def _parser() -> argparse.ArgumentParser:
     advance_issue.add_argument("--skip-phase", action="append", default=[], metavar="PHASE=REASON")
     integration_check = issue_commands.add_parser("integration-check", help="read back all child merges and parent evidence")
     integration_check.add_argument("parent", type=_positive_number)
-    integration_check.add_argument("--verification", type=Path,
-                                   help="repository-relative typed Verification record in current main")
-    integration_check.add_argument("--acceptance", type=Path,
-                                   help="repository-relative typed Acceptance record in current main")
+    integration_check.add_argument("--verification-comment-id", type=_positive_number,
+                                   help="exact Issue #26 comment ID containing Verification evidence")
+    integration_check.add_argument("--acceptance-comment-id", type=_positive_number,
+                                   help="exact Issue #26 comment ID containing Acceptance evidence")
     integration_check.add_argument("--repo", help="repository owner/name; defaults to origin")
     integration_check.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
 
@@ -2523,12 +2903,26 @@ def _parser() -> argparse.ArgumentParser:
     finalize.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
     parent_final = delivery_commands.add_parser("parent", help="evaluate parent integration and its User Review gates")
     parent_final.add_argument("issue", type=_positive_number)
-    parent_final.add_argument("--verification", type=Path,
-                              help="repository-relative typed Verification record in current main")
-    parent_final.add_argument("--acceptance", type=Path,
-                              help="repository-relative typed Acceptance record in current main")
+    parent_final.add_argument("--verification-comment-id", type=_positive_number,
+                              help="exact Issue #26 comment ID containing external typed Verification evidence")
+    parent_final.add_argument("--acceptance-comment-id", type=_positive_number,
+                              help="exact Issue #26 comment ID containing external typed Acceptance evidence")
     parent_final.add_argument("--repo", help="repository owner/name; defaults to origin")
     parent_final.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
+    parent_evidence = delivery_commands.add_parser(
+        "parent-evidence", help="publish current-main Verification or Acceptance bytes to Issue #26")
+    parent_evidence.add_argument("issue", type=_positive_number)
+    parent_evidence.add_argument("kind", choices=("verification", "acceptance"))
+    parent_evidence.add_argument("result", type=Path, help="canonical PASS result JSON with cited artifact references")
+    parent_evidence.add_argument("--repo", help="repository owner/name; defaults to origin")
+    parent_evidence.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
+    parent_labels = delivery_commands.add_parser(
+        "parent-migrate-labels", help="preflight the legacy parent #26 P-ASES labels")
+    parent_labels.add_argument("issue", type=_positive_number)
+    parent_labels.add_argument("--apply", action="store_true",
+                               help="apply the exact preflighted labels after Issue and label readback")
+    parent_labels.add_argument("--repo", help="repository owner/name; defaults to origin")
+    parent_labels.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
 
     user_review = namespaces.add_parser("user-review", help="start, synchronize, or inspect exact-subject human review")
     user_review_commands = user_review.add_subparsers(dest="verb", required=True)
@@ -2598,6 +2992,10 @@ def main(argv: list[str] | None = None) -> int:
                 return _delivery_finalize(args, repository, github)
             if args.verb == "parent":
                 return _delivery_parent(args, repository, root, github)
+            if args.verb == "parent-evidence":
+                return _publish_parent_gate_evidence(args, repository, root, github)
+            if args.verb == "parent-migrate-labels":
+                return _delivery_parent_label_migration(args, repository, github)
             raise CLIError("unknown Delivery command")
 
         if args.namespace in {"verification", "acceptance"}:

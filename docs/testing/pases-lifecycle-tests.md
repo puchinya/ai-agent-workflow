@@ -47,12 +47,12 @@ Verify human User Review, child Integration, and final merge gates as independen
 <a id="tst-ur-001"></a>
 ### 2.1 TST-UR-001 User Review identity and exact subject
 
-**Setup and action:** Submit current and stale approvals from human, bot, and unrelated accounts; change HEAD, ADC, Readiness, feedback, and review-thread resolution between reads.
+**Setup and action:** Submit current and stale approvals from human, bot, and unrelated accounts; change HEAD, ADC, Readiness, feedback, and review-thread resolution between reads. Drive the CLI through `start → sync → status` with `session.json` present in the snapshot directory. Then alter a correctly named snapshot without changing its SHA filename and add an unknown JSON filename.
 
 <a id="ora-ur-001"></a>
 #### 2.1.1 ORA-UR-001 Expected result
 
-Only a current human approval on the exact subject passes. Edits, deletions, stale state, incomplete pagination, or unresolved threads invalidate approval.
+Only a current human approval on the exact subject passes. Edits, deletions, stale state, incomplete pagination, or unresolved threads invalidate approval. Without approval the three-step CLI sequence reaches PENDING; a valid filename with modified bytes or an unexpected JSON filename fails closed.
 
 <a id="tst-ur-002"></a>
 ### 2.2 TST-UR-002 Feedback loops and host provenance
@@ -67,12 +67,12 @@ Only a current authorized human's exact, unquoted, whole-body decision on the cu
 <a id="tst-ur-003"></a>
 ### 2.3 TST-UR-003 Parent Integration evidence
 
-**Setup and action:** Remove, duplicate, open, fork, unmerged, out-of-main, and cyclic child records; invert a dependency merge timestamp; alter a merge SHA; omit or stale the typed Verification/Acceptance evidence; supply a local-only PASS record; change or omit a source/check file at the exact main commit. For the legacy parent #26, omit an ADC pointer and verify the evaluator uses only the current approved child #31 ADC's unique pinned parent-contract declaration; reject duplicate declarations, a different source path/commit, an unapproved child pointer, or an unavailable pinned source.
+**Setup and action:** Remove, duplicate, open, fork, unmerged, out-of-main, and cyclic child records; invert a dependency merge timestamp; alter a merge SHA; omit or stale the typed Verification/Acceptance evidence; supply a local-only PASS record; and change a cited artifact byte. Create a real temporary Git commit, put its actual HEAD SHA in the evidence result, and publish the result plus all check bytes in a canonical Issue #26 comment outside that commit. Test double read by exact comment ID, edit timestamp/body, deletion, wrong author, wrong repository/Issue, wrong main/ADC, duplicate same-subject comments, and digest mismatch. For legacy #26 labels, preflight current `[enhancement]`, apply once, retry idempotently, conflict with an existing phase, and simulate an API response loss after a partial label write. For the parent ADC, omit a pointer and verify the evaluator uses only the current approved child #31 ADC's unique pinned parent-contract declaration; reject duplicate declarations, a different source path/commit, an unapproved child pointer, or an unavailable pinned source.
 
 <a id="ora-ur-003"></a>
 #### 2.3.1 ORA-UR-003 Expected result
 
-Integration passes only for the frozen native child set, exact dependency DAG, closed Issues, one merged same-repository PR per child, main ancestry, and matching typed evidence fetched from exact main. Local-only records, stale refs, or altered GitHub content fail closed.
+Integration passes only for the frozen native child set, exact dependency DAG, closed Issues, one merged same-repository PR per child, main ancestry, and matching typed evidence read from authenticated exact-ID Issue comments for the current main SHA. The evidence comment binds canonical result and artifact bytes, its author, repository, Issue, and ADC subject. Edited/deleted or stale comments, local-only records, or altered bytes fail closed. The real-commit test demonstrates the main SHA is not embedded in that commit's own tree.
 
 <a id="tst-ur-004"></a>
 ### 2.4 TST-UR-004 Final Delivery separation

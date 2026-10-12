@@ -4,6 +4,7 @@ This is deliberately read-only. Approval and activation are separate gates.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import re
@@ -22,6 +23,119 @@ class IntegrationError(ValueError):
 
 def _canonical(value: Any) -> bytes:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+@dataclass(frozen=True)
+class ParentGateEvidenceComment:
+    """Canonical external evidence payload posted to the fixed parent Issue.
+
+    The Issue comment is outside the main commit it names, avoiding a Git
+    self-reference. Its comment ID and GitHub author are verified by the API
+    adapter; this payload binds the exact result and cited artifact bytes.
+    """
+
+    kind: str
+    repository: str
+    parent_issue_number: int
+    parent_adc_sha256: str
+    main_sha40: str
+    result_bytes: bytes
+    artifacts: tuple[tuple[str, bytes], ...]
+
+    def validate(self) -> "ParentGateEvidenceComment":
+        if not isinstance(self.kind, str) or self.kind not in {"verification", "acceptance"}:
+            raise IntegrationError("parent evidence comment kind is invalid")
+        if not isinstance(self.repository, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", self.repository):
+            raise IntegrationError("parent evidence comment repository is invalid")
+        if type(self.parent_issue_number) is not int or self.parent_issue_number < 1:
+            raise IntegrationError("parent evidence comment Issue number is invalid")
+        if not isinstance(self.parent_adc_sha256, str) or not SHA256.fullmatch(self.parent_adc_sha256):
+            raise IntegrationError("parent evidence comment ADC digest is invalid")
+        if not isinstance(self.main_sha40, str) or not SHA40.fullmatch(self.main_sha40):
+            raise IntegrationError("parent evidence comment main SHA is invalid")
+        if not isinstance(self.result_bytes, bytes) or not self.result_bytes:
+            raise IntegrationError("parent evidence comment result bytes are missing")
+        if type(self.artifacts) is not tuple or not self.artifacts:
+            raise IntegrationError("parent evidence comment artifacts are missing")
+        references: list[str] = []
+        for row in self.artifacts:
+            if (type(row) is not tuple or len(row) != 2 or not isinstance(row[0], str)
+                    or not isinstance(row[1], bytes) or not row[1]):
+                raise IntegrationError("parent evidence comment artifact row is malformed")
+            reference = row[0]
+            if (reference.startswith("/") or "\\" in reference
+                    or any(part in {"", ".", ".."} for part in reference.split("/"))
+                    or any(char in reference for char in "\x00\r\n?#:")):
+                raise IntegrationError("parent evidence comment artifact reference is invalid")
+            references.append(reference)
+        if references != sorted(set(references)):
+            raise IntegrationError("parent evidence comment artifacts must be sorted and unique")
+        return self
+
+    def payload(self) -> dict[str, Any]:
+        self.validate()
+        return {
+            "artifacts": [{"reference": reference,
+                           "sha256": hashlib.sha256(content).hexdigest(),
+                           "content_base64": base64.b64encode(content).decode("ascii")}
+                          for reference, content in self.artifacts],
+            "kind": self.kind,
+            "main_sha40": self.main_sha40,
+            "parent_adc_sha256": self.parent_adc_sha256,
+            "parent_issue_number": self.parent_issue_number,
+            "repository": self.repository,
+            "result_base64": base64.b64encode(self.result_bytes).decode("ascii"),
+            "result_sha256": hashlib.sha256(self.result_bytes).hexdigest(),
+            "schema": "PASES_PARENT_GATE_EVIDENCE_COMMENT_V1",
+        }
+
+    def to_body(self) -> str:
+        payload = self.payload()
+        payload["payload_sha256"] = hashlib.sha256(_canonical(payload)).hexdigest()
+        return "P-ASES-PARENT-EVIDENCE-V1\n" + _canonical(payload).decode("utf-8") + "\n"
+
+    @classmethod
+    def from_body(cls, body: Any) -> "ParentGateEvidenceComment":
+        if not isinstance(body, str) or not body.startswith("P-ASES-PARENT-EVIDENCE-V1\n"):
+            raise IntegrationError("Issue comment is not a parent evidence record")
+        raw = body[len("P-ASES-PARENT-EVIDENCE-V1\n"):].encode("utf-8")
+        try:
+            value = json.loads(raw.decode("utf-8", errors="strict"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise IntegrationError("parent evidence comment is not valid canonical JSON") from exc
+        expected = {"artifacts", "kind", "main_sha40", "parent_adc_sha256", "parent_issue_number",
+                    "repository", "result_base64", "result_sha256", "schema", "payload_sha256"}
+        if not isinstance(value, dict) or set(value) != expected:
+            raise IntegrationError("parent evidence comment has unknown or missing fields")
+        if value["schema"] != "PASES_PARENT_GATE_EVIDENCE_COMMENT_V1":
+            raise IntegrationError("parent evidence comment schema is unknown")
+        digest_payload = {key: item for key, item in value.items() if key != "payload_sha256"}
+        if (value["payload_sha256"] != hashlib.sha256(_canonical(digest_payload)).hexdigest()
+                or raw != _canonical(value) + b"\n"):
+            raise IntegrationError("parent evidence comment digest or canonical bytes do not match")
+        try:
+            result_bytes = base64.b64decode(value["result_base64"], validate=True)
+        except (TypeError, ValueError) as exc:
+            raise IntegrationError("parent evidence result bytes are malformed") from exc
+        if hashlib.sha256(result_bytes).hexdigest() != value["result_sha256"]:
+            raise IntegrationError("parent evidence result digest does not match its bytes")
+        rows = value["artifacts"]
+        if not isinstance(rows, list):
+            raise IntegrationError("parent evidence artifact list is malformed")
+        artifacts: list[tuple[str, bytes]] = []
+        for row in rows:
+            if not isinstance(row, dict) or set(row) != {"reference", "sha256", "content_base64"}:
+                raise IntegrationError("parent evidence artifact row has unknown or missing fields")
+            try:
+                content = base64.b64decode(row["content_base64"], validate=True)
+            except (TypeError, ValueError) as exc:
+                raise IntegrationError("parent evidence artifact bytes are malformed") from exc
+            if hashlib.sha256(content).hexdigest() != row["sha256"]:
+                raise IntegrationError("parent evidence artifact digest does not match its bytes")
+            artifacts.append((row["reference"], content))
+        return cls(value["kind"], value["repository"], value["parent_issue_number"],
+                   value["parent_adc_sha256"], value["main_sha40"], result_bytes,
+                   tuple(artifacts)).validate()
 
 
 def _time(value: Any) -> datetime:
@@ -99,8 +213,9 @@ class IntegrationGateEvidence:
             raise IntegrationError("parent evidence main SHA is invalid")
         if self.status != "PASS" or not isinstance(self.result_sha256, str) or not SHA256.fullmatch(self.result_sha256):
             raise IntegrationError("parent evidence must be an exact PASS result with a digest")
-        if not isinstance(self.source_reference, str) or not self.source_reference.strip():
-            raise IntegrationError("parent evidence source reference is missing")
+        if (not isinstance(self.source_reference, str)
+                or not re.fullmatch(r"issue-comment:[1-9][0-9]*", self.source_reference)):
+            raise IntegrationError("parent evidence source must identify an exact Issue comment ID")
         return self
 
     def as_dict(self) -> dict[str, Any]:

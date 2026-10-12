@@ -98,6 +98,25 @@ class GitHub:
         number = _positive_int(number, "Issue number")
         return self._paginate(f"{self.prefix}/issues/{number}/comments")
 
+    def repository_labels(self) -> list[dict[str, Any]]:
+        """Read existing repository labels without creating or changing definitions."""
+        return self._paginate(f"{self.prefix}/labels")
+
+    def create_repository_label(self, name: str, color: str, description: str) -> dict[str, Any]:
+        if (not isinstance(name, str) or not name or any(char in name for char in "\x00\r\n")
+                or not isinstance(color, str) or not re.fullmatch(r"[0-9a-fA-F]{6}", color)
+                or not isinstance(description, str) or not description.strip()):
+            raise GitHubError("repository label definition is invalid")
+        result = self.request("POST", f"{self.prefix}/labels", {
+            "name": name, "color": color.lower(), "description": description,
+        })
+        if (not isinstance(result, dict) or result.get("name") != name
+                or not isinstance(result.get("color"), str)
+                or result["color"].casefold() != color.casefold()
+                or result.get("description") != description):
+            raise GitHubError("created repository label did not match its requested definition")
+        return result
+
     def pull_requests_for_refs(self, *, base_ref: str, head_ref: str) -> list[dict[str, Any]]:
         """Read all PRs matching exact same-repository head/base refs, including closed ones."""
         if (not isinstance(base_ref, str) or not base_ref or any(c in base_ref for c in "\x00\r\n")

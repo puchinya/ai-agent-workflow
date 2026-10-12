@@ -55,11 +55,21 @@ class PasesCLITests(unittest.TestCase):
         ])
         self.assertEqual((args.namespace, args.verb), ("user-review", "start"))
         args = _parser().parse_args([
-            "issue", "integration-check", "26", "--verification", "verification.json",
-            "--acceptance", "acceptance.json",
+            "issue", "integration-check", "26", "--verification-comment-id", "100",
+            "--acceptance-comment-id", "101",
             "--repo", "octo/repo", "--root", str(ROOT),
         ])
         self.assertEqual((args.namespace, args.verb), ("issue", "integration-check"))
+        self.assertEqual((args.verification_comment_id, args.acceptance_comment_id), (100, 101))
+        migration = _parser().parse_args([
+            "delivery", "parent-migrate-labels", "26", "--repo", "octo/repo", "--root", str(ROOT),
+        ])
+        self.assertFalse(migration.apply)
+        evidence = _parser().parse_args([
+            "delivery", "parent-evidence", "26", "verification", "result.json",
+            "--repo", "octo/repo", "--root", str(ROOT),
+        ])
+        self.assertEqual((evidence.verb, evidence.kind), ("parent-evidence", "verification"))
         stdout = io.StringIO()
         with patch("p_ases.cli._repo_root", return_value=ROOT), contextlib.redirect_stdout(stdout):
             status = main(["user-review", "record", "31", "37", "untrusted.json",
