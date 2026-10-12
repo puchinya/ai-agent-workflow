@@ -108,13 +108,13 @@ Independent builds are byte-identical and contain `runtime/p_ases/` plus exactly
 <a id="tst-dist-005-release-asset-contract"></a>
 ### 2.5 TST-DIST-005 Release asset contract
 
-**Setup and action:** Package a valid stable tag and invalid/version-mismatched tags in temporary directories.
+**Setup and action:** Package valid and invalid stable tags in temporary directories. Compare the complete Release `verify` matrix and step sequence with CI. In an isolated repository fixture, run the same documentation and traceability validators with one broken local documentation link and one broken requirement-to-source mapping.
 
 <a id="ora-dist-005"></a>
 <a id="ora-dist-005-expected-result"></a>
 #### 2.5.1 ORA-DIST-005 Expected result
 
-Valid output contains `p-ases-openai`, `p-ases-claude`, and `p-ases-antigravity` ZIPs plus `SHA256SUMS`; invalid input creates no assets.
+Release `verify` matches CI across Ubuntu 3.10/3.14, Windows 3.14, and macOS 3.14, including install, docs validation/format, all three traceability scopes, and 16-Skill acceptance in the same order. Documentation or traceability corruption returns nonzero before packaging can reach publication. Valid stable-tag output contains `p-ases-openai`, `p-ases-claude`, and `p-ases-antigravity` ZIPs plus `SHA256SUMS`; invalid input creates no assets.
 
 <a id="tst-dist-006"></a>
 <a id="tst-dist-006-observable-package-behavior"></a>

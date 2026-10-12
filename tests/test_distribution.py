@@ -4,6 +4,8 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -19,6 +21,8 @@ import build_dist  # noqa: E402
 import package_release  # noqa: E402
 import validate_dist  # noqa: E402
 from p_ases import __version__  # noqa: E402
+from p_ases.document_format import format_tree  # noqa: E402
+from validate_pases_traceability import validate as validate_traceability  # noqa: E402
 
 SKILLS = (
     "request-intake", "adc-authoring", "adc-registry", "issue-decomposition",
@@ -26,6 +30,82 @@ SKILLS = (
     "verification-evidence", "acceptance-validation", "contract-audit", "independent-review",
     "user-review", "integration-validation", "delivery-control", "work-checkpoint",
 )
+
+
+def _workflow_steps(workflow: Path, job_name: str) -> str:
+    lines = workflow.read_text(encoding="utf-8").splitlines()
+    start = lines.index(f"  {job_name}:")
+    end = next((index for index in range(start + 1, len(lines))
+                if re.fullmatch(r"  [A-Za-z0-9_-]+:", lines[index])), len(lines))
+    job_lines = lines[start:end]
+    steps = next(index for index, line in enumerate(job_lines) if line == "    steps:")
+    return "\n".join(job_lines[steps:])
+
+
+def _release_gate_fixture(root: Path) -> None:
+    (root / "docs/specs").mkdir(parents=True)
+    (root / "docs/design").mkdir(parents=True)
+    (root / "docs/testing").mkdir(parents=True)
+    (root / "tests").mkdir()
+    (root / "tools").mkdir()
+    (root / "tests/evidence.py").write_text("# executable evidence\n", encoding="utf-8")
+    (root / "docs/specs/spec.md").write_text(
+        """<!-- agent-doc-type: specification -->
+<!-- agent-doc-schema: 2 -->
+# Demo specification
+
+## Purpose
+## Scope
+## Normative requirements
+<a id="req-demo-001"></a>
+### REQ-DEMO-001 Stable behavior
+## Observable behavior
+## Error and boundary behavior
+## Security and privacy
+""", encoding="utf-8")
+    (root / "docs/design/design.md").write_text(
+        """<!-- agent-doc-type: design -->
+<!-- agent-doc-schema: 2 -->
+# Demo design
+
+## Context and goals
+## Requirements traceability
+<a id="des-demo-001"></a>
+### DES-DEMO-001 Ownership decision
+## Architecture
+## Data flow and ownership
+## Failure handling
+## Alternatives considered
+""", encoding="utf-8")
+    (root / "docs/testing/oracle.md").write_text(
+        """<!-- agent-doc-type: test-specification -->
+<!-- agent-doc-schema: 2 -->
+# Demo tests
+
+## Test purpose
+## Test conditions and oracles
+<a id="tst-demo-001"></a>
+### TST-DEMO-001 Input boundary
+Exercise a documented public command.
+<a id="ora-demo-001"></a>
+#### ORA-DEMO-001 Independent expected result
+A boundary violation returns nonzero.
+""", encoding="utf-8")
+    (root / "docs/testing/traceability.md").write_text(
+        """<!-- agent-doc-type: test-specification -->
+<!-- agent-doc-schema: 2 -->
+# Traceability matrix
+
+## Test purpose
+## Test conditions and oracles
+
+| REQ | DES | Oracle | Test | Evidence |
+|---|---|---|---|---|
+| [REQ-DEMO-001](../specs/spec.md#req-demo-001) | [DES-DEMO-001](../design/design.md#des-demo-001) | [ORA-DEMO-001](oracle.md#ora-demo-001) | [TST-DEMO-001](oracle.md#tst-demo-001) | [test source](../../tests/evidence.py) |
+""", encoding="utf-8")
+    shutil.copyfile(ROOT / "tools/validate_pases_traceability.py",
+                    root / "tools/validate_pases_traceability.py")
+    format_tree(root, write=True)
 
 
 class DistributionMigrationTests(unittest.TestCase):
@@ -181,6 +261,67 @@ class DistributionMigrationTests(unittest.TestCase):
                 self.assertEqual(target.read_bytes(), original + b" ")
         finally:
             target.write_bytes(original)
+
+    def test_release_verify_matches_ci_matrix_and_complete_gate_order(self):
+        ci_path = ROOT / ".github/workflows/ci.yml"
+        release_path = ROOT / ".github/workflows/release.yml"
+        ci_steps = _workflow_steps(ci_path, "test")
+        release_steps = _workflow_steps(release_path, "verify")
+        self.assertEqual(release_steps, ci_steps)
+
+        ci_text = ci_path.read_text(encoding="utf-8")
+        release_text = release_path.read_text(encoding="utf-8")
+        matrix_rows = re.compile(r"(?m)^          - os: .+\n            python-version: \"[0-9.]+\"")
+        self.assertEqual(matrix_rows.findall(release_text), matrix_rows.findall(ci_text))
+        self.assertIn('tags: ["v*"]', release_text)
+        self.assertIn("  verify:\n    needs: prepare", release_text)
+        self.assertIn("  publish:\n    needs: verify", release_text)
+        self.assertEqual(release_text.count("contents: write"), 1)
+
+        for required in (
+            "python -m pip install -e .",
+            "python -m p_ases docs validate --root .",
+            "python -m p_ases docs format --check --root .",
+            "python tools/validate_pases_traceability.py specification",
+            "python tools/validate_pases_traceability.py design",
+            "python tools/validate_pases_traceability.py test-oracle",
+            "python tools/validate_parent_acceptance.py 16-skills-package",
+            "python tools/build_dist.py --check",
+            "git diff --exit-code -- dist .agents/plugins/marketplace.json .claude-plugin/marketplace.json",
+        ):
+            self.assertIn(required, release_steps)
+
+    def test_release_quality_gates_fail_on_documentation_or_traceability_corruption(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _release_gate_fixture(root)
+            env = os.environ.copy()
+            env["PYTHONPATH"] = os.pathsep.join(
+                filter(None, (str(ROOT / "runtime"), env.get("PYTHONPATH", ""))))
+            docs_command = [sys.executable, "-m", "p_ases", "docs", "validate", "--root", "."]
+            traceability_command = [sys.executable, "tools/validate_pases_traceability.py", "specification"]
+            self.assertEqual(subprocess.run(docs_command, cwd=root, env=env,
+                                            capture_output=True, text=True).returncode, 0)
+            self.assertEqual(subprocess.run(traceability_command, cwd=root, env=env,
+                                            capture_output=True, text=True).returncode, 0)
+
+            spec = root / "docs/specs/spec.md"
+            original_spec = spec.read_text(encoding="utf-8")
+            spec.write_text(original_spec + "\n[broken](missing-file.md)\n", encoding="utf-8")
+            docs_result = subprocess.run(docs_command, cwd=root, env=env,
+                                         capture_output=True, text=True)
+            self.assertEqual(docs_result.returncode, 2, docs_result.stdout + docs_result.stderr)
+            spec.write_text(original_spec, encoding="utf-8")
+
+            matrix = root / "docs/testing/traceability.md"
+            original_matrix = matrix.read_text(encoding="utf-8")
+            matrix.write_text(original_matrix.replace("[REQ-DEMO-001]", "[REQ-DEMO-999]"),
+                              encoding="utf-8")
+            traceability_result = subprocess.run(traceability_command, cwd=root, env=env,
+                                                  capture_output=True, text=True)
+            self.assertEqual(traceability_result.returncode, 2,
+                             traceability_result.stdout + traceability_result.stderr)
+            self.assertTrue(validate_traceability(root, "specification"))
 
     def test_setuptools_package_discovery_excludes_the_retired_import_surface(self):
         pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")

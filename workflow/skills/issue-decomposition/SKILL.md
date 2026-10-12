@@ -21,7 +21,6 @@ Owner: runtime/p_ases/issue_graph.py and runtime/p_ases/phases.py. Inputs are th
 ~~~sh
 python -m p_ases issue validate-split path/to/split-plan.json --repo OWNER/REPO
 python -m p_ases issue split path/to/split-plan.json --dry-run --repo OWNER/REPO
-python -m p_ases issue integration-check 26 --repo OWNER/REPO --root .
 ~~~
 
 Omit dry-run only when the approved contract authorizes creation and the complete plan has been validated.
