@@ -16,6 +16,8 @@ from typing import Any
 
 from .adc import ADCError, parse_adc, publish_adc, restore_adc, verify_adc
 from .git import GitError, current_branch, discover_repository, head_sha40, remote_branch_sha, worktree_clean
+from .document_format import DocumentFormatError, format_tree
+from .documents import DocumentError, validate_documents
 from .github import GitHub, GitHubError
 from .execution import ExecutionError, binding_digest, read_binding
 from .checkpoint import CheckpointError, PRBinding, read_pr_binding
@@ -1723,6 +1725,16 @@ def _parser() -> argparse.ArgumentParser:
                            help="host/environment not verified; use 'none' when no host remains unverified")
     bootstrap.add_argument("--repo", help="repository owner/name; defaults to origin")
     bootstrap.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
+
+    docs = namespaces.add_parser("docs", help="validate and deterministically format canonical Markdown docs")
+    docs_commands = docs.add_subparsers(dest="verb", required=True)
+    docs_validate = docs_commands.add_parser("validate", help="validate document structure, links, and traceability")
+    docs_validate.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
+    docs_format = docs_commands.add_parser("format", help="number headings and refresh contents maps")
+    mode = docs_format.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--write", action="store_true", help="atomically write deterministic formatting")
+    mode.add_argument("--check", action="store_true", help="report formatting drift without writing")
+    docs_format.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
     return parser
 
 
@@ -1776,6 +1788,18 @@ def main(argv: list[str] | None = None) -> int:
             if args.verb == "publish":
                 return _acceptance_publish(args, repository, root or _repo_root(None), github)
             return _acceptance_verify(args, repository, root or _repo_root(None), github)
+
+        if args.namespace == "docs":
+            root = (args.root or _repo_root(None)).resolve()
+            if args.verb == "validate":
+                errors = validate_documents(root)
+                _json({"status": "VALID" if not errors else "INVALID", "root": str(root),
+                       "errors": errors})
+                return 0 if not errors else 2
+            changed = format_tree(root, write=args.write)
+            status = "FORMATTED" if args.write else ("CLEAN" if not changed else "DRIFT")
+            _json({"status": status, "root": str(root), "changed_paths": list(changed)})
+            return 0 if args.write or not changed else 2
 
         if args.repo:
             repository = args.repo
@@ -1863,8 +1887,8 @@ def main(argv: list[str] | None = None) -> int:
                             for child in created]})
         return 0
     except (ADCError, AcceptanceError, AuditError, CheckpointError, ExecutionError,
-            EvidenceError, GitError, GitHubError, IssueGraphError, OracleTraceError,
-            PhaseError, PlanError, ProfileError, ReadinessError, VerificationError,
+            DocumentError, DocumentFormatError, EvidenceError, GitError, GitHubError,
+            IssueGraphError, OracleTraceError, PhaseError, PlanError, ProfileError, ReadinessError, VerificationError,
             WorkError, CLIError, OSError, UnicodeError, ValueError) as exc:
         if args.namespace in {"verification", "acceptance", "work", "pr", "audit", "delivery"}:
             return _blocked_result((str(exc),))

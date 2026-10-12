@@ -7,19 +7,53 @@
 - Related design: [Workflow design](../design/workflow-design.md)
 - Runtime contract: [Runtime specification](runtime-spec.md)
 
-## Purpose
+<!-- contents:start -->
+**Contents**
+- [1 Purpose](#1-purpose)
+- [2 Scope](#2-scope)
+- [3 Normative requirements](#3-normative-requirements)
+  - [3.1 REQ-WF-001 Workflow phases](#31-req-wf-001-workflow-phases)
+  - [3.2 REQ-WF-002 Host-managed implementation workspaces](#32-req-wf-002-host-managed-implementation-workspaces)
+  - [3.3 REQ-WF-003 Authorization continuity and implementation handoff](#33-req-wf-003-authorization-continuity-and-implementation-handoff)
+  - [3.4 REQ-WF-004 Skills](#34-req-wf-004-skills)
+  - [3.5 REQ-WF-005 Review and delivery principles](#35-req-wf-005-review-and-delivery-principles)
+- [4 REQ-WF-006 Observable behavior](#4-req-wf-006-observable-behavior)
+- [5 REQ-WF-007 Error and boundary behavior](#5-req-wf-007-error-and-boundary-behavior)
+- [6 REQ-WF-008 Security and privacy](#6-req-wf-008-security-and-privacy)
+- [7 P-ASES migration Bootstrap gates](#7-p-ases-migration-bootstrap-gates)
+<!-- contents:end -->
+
+<!-- heading-map:start -->
+**Stable heading map**
+- [REQ-WF-001](#req-wf-001) — 3.1 REQ-WF-001 Workflow phases
+- [REQ-WF-002](#req-wf-002) — 3.2 REQ-WF-002 Host-managed implementation workspaces
+- [REQ-WF-003](#req-wf-003) — 3.3 REQ-WF-003 Authorization continuity and implementation handoff
+- [REQ-WF-004](#req-wf-004) — 3.4 REQ-WF-004 Skills
+- [REQ-WF-005](#req-wf-005) — 3.5 REQ-WF-005 Review and delivery principles
+- [REQ-WF-006](#req-wf-006) — 4 REQ-WF-006 Observable behavior
+- [REQ-WF-007](#req-wf-007) — 5 REQ-WF-007 Error and boundary behavior
+- [REQ-WF-008](#req-wf-008) — 6 REQ-WF-008 Security and privacy
+<!-- heading-map:end -->
+
+
+<a id="purpose"></a>
+## 1 Purpose
 
 Define the reusable development workflow shared by OpenAI/Codex, Claude Code, and Google Antigravity 2.0. The product provides workflow behavior and deterministic local tools; it does not scaffold application source or synchronize projects with another repository.
 
-## Scope
+<a id="scope"></a>
+## 2 Scope
 
 The repository owns ten Skills, shared standards and templates, application profiles, implementation-contract handling, evidence and checkpoints, self-review, independent PR review, QA, PR delivery, project-profile routing, deterministic validation, and host-specific packages. Canonical reusable documents under `workflow/templates/` include specification/design/status templates, a ten-section Implementation Contract starting point, and one portable Chat project-instructions body. A consumer project owns its source, `.agent/project.json`, Issue-specific documents, hooks, and verification commands.
 
 The product does not own a service, database, daemon, GUI, project-template repository, source synchronization, automatic semantic document rewriting, stack-wide detectors, or existing-consumer migration.
 
-## Normative requirements
+<a id="normative-requirements"></a>
+## 3 Normative requirements
 
-### Workflow phases
+<a id="req-wf-001"></a>
+<a id="req-wf-001-workflow-phases"></a>
+### 3.1 REQ-WF-001 Workflow phases
 
 The shared Issue lifecycle is exactly:
 
@@ -33,7 +67,9 @@ Every new durable work item records explicit specification, design, and status d
 
 Feature work uses `python -m agent_workflow start-feature-branch <issue> <description...>` after its open Issue and project profile are validated. The runtime derives a deterministic `<prefix>/<issue>-<slug>` branch name, checks the worktree, and performs cleanup and global `branch_switch` hooks only after an actual branch switch. Repeating the command on the current target branch performs no cleanup or hooks.
 
-### Host-managed implementation workspaces
+<a id="req-wf-002"></a>
+<a id="req-wf-002-host-managed-implementation-workspaces"></a>
+### 3.2 REQ-WF-002 Host-managed implementation workspaces
 
 Publishing, reviewing, or approving an Implementation Contract does not allocate a workspace. Execution of the approved Contract is the trigger. The normal user request remains “Implement this Contract”; the Skill reads the Schema 2 `workspace.isolation` policy before edits and lets the active host establish or reuse isolation.
 
@@ -59,7 +95,9 @@ When Claude Code uses its default in-repository `.claude/worktrees/` location, t
 
 After an Issue exists, the requirements Skill runs `python -m agent_workflow ensure-milestone <issue>` unless an approved Issue contract explicitly names a target release, in which case it passes that unchanged value with `--target-version <version>`. Skills MUST NOT invent or infer a target version. Milestones follow the consumer profile's `auto`, `required`, or `disabled` mode. `disabled` always skips and cannot be overridden by a target. Otherwise an explicit target takes precedence over the repository version source; absent a target, the existing profile source applies. `auto` accepts an unresolved fallback as `NOT_APPLICABLE`; `required` fails closed when no fallback version can be resolved. Exact-title reuse is idempotent, and closed or duplicate milestones are never silently reopened or replaced. An Issue's existing Milestone is immutable through this command: a different current assignment fails without mutation.
 
-### Authorization continuity and implementation handoff
+<a id="req-wf-003"></a>
+<a id="req-wf-003-authorization-continuity-and-implementation-handoff"></a>
+### 3.3 REQ-WF-003 Authorization continuity and implementation handoff
 
 Once a user authorizes execution of an approved Issue-scoped Implementation Contract, that authorization continues through the routine Issue-scoped mutations required to reach a review-ready PR: commit, non-force push, PR create/reuse and required title/body update, transition to `phase:review`, exact-HEAD Agent Self-Review publication, CI/Required Check reads, and the final delivery gate. Skills MUST NOT request a separate conversational confirmation solely for those operations. Host-enforced security prompts may still apply.
 
@@ -67,7 +105,9 @@ That authorization does not cover material scope or architecture changes, contra
 
 For an authorized contract, the implementation Skill owns the full sequence: `verify_quick` -> commit -> `ensure-review-pr` (safe non-force push and PR create/reuse) -> `verify-final` -> exact-HEAD self-review -> QA -> fresh-context independent PR review -> `delivery-check`. The implementation session MUST NOT author the independent review artifact; the `pr-review` Skill requires a new session/subagent or human. If that reviewer is unavailable, report the exact blocker with the review PR URL. The workflow MUST NOT claim runtime proof of fresh context or assume a host-specific session API. It MUST NOT report implementation complete before an open, non-draft review PR exists. Pending Required Checks are reported as `BLOCKED_DELIVERY_CHECKS_PENDING`; the review PR must already exist. Automatic merge is forbidden.
 
-### Skills
+<a id="req-wf-004"></a>
+<a id="req-wf-004-skills"></a>
+### 3.4 REQ-WF-004 Skills
 
 Canonical Skill source is `workflow/skills/`. It contains exactly these task areas:
 
@@ -88,7 +128,9 @@ The requirements Skill creates/validates the Issue first and then runs `ensure-m
 
 New Implementation Contracts use `workflow/templates/implementation-contract-template.md` as a starting point. Before saving or publishing a new contract created from that template, the requirements and implementation-contract Skills run `python -m agent_workflow validate-implementation-contract-structure <issue> <path>`. This deterministic read-only preflight checks the required numbered H2 layout and filled authoring markers; it does not approve contract content or change the existing publication flow. Historical contracts are not retroactively gated. The Japanese `workflow/templates/chat-project-instructions-template.md` is a single copy/paste project-instructions body whose only repository-specific substitution is its top repository URL line; it does not claim capabilities supplied only by a host or plugin.
 
-### Review and delivery principles
+<a id="req-wf-005"></a>
+<a id="req-wf-005-review-and-delivery-principles"></a>
+### 3.5 REQ-WF-005 Review and delivery principles
 
 Self-review is evidence, never approval. Review findings use these categories:
 
@@ -113,13 +155,17 @@ Final Verification is a machine-generated current-HEAD receipt. It requires a cl
 
 Schema-v1 public self-reviews may be read for diagnostics, but they do not establish full-contract conformance and cannot satisfy handoff. Delivery gives explicit guidance to regenerate and publish a schema-v2 review with the current workflow; historical comments are not rewritten automatically.
 
-## Observable behavior
+<a id="req-wf-006"></a>
+<a id="req-wf-006-observable-behavior"></a>
+## 4 REQ-WF-006 Observable behavior
 
 The portable workflow routes agents from an owning Issue to its active phase, affected components, applicable application profiles, explicit document impact decisions and linked specification/design/status owners, relevant symbols and tests, and current diff. It does not require reading every standard or generated project summary by default. Skills describe when to load additional standards; they do not duplicate full policy text.
 
 The consumer's explicit project profile is the machine authority for components, stacks, application types, targets, hooks, and branch/milestone policy. Application type, stack, target, and runtime host are independent concepts. Application type is never inferred from repository contents, stack, target, or host.
 
-## Error and boundary behavior
+<a id="req-wf-007"></a>
+<a id="req-wf-007-error-and-boundary-behavior"></a>
+## 5 REQ-WF-007 Error and boundary behavior
 
 | Condition | Required behavior |
 |---|---|
@@ -132,15 +178,14 @@ The consumer's explicit project profile is the machine authority for components,
 | Required Checks remain pending after PR creation | Report `BLOCKED_DELIVERY_CHECKS_PENDING`; do not report implementation complete. |
 | Submitted self-review without matching evidence | Treat it as a claim to check, never as proof. |
 
-## Security and privacy
+<a id="req-wf-008"></a>
+<a id="req-wf-008-security-and-privacy"></a>
+## 6 REQ-WF-008 Security and privacy
 
 The workflow never prints or stores credentials in contract payloads, logs, Skills, generated packages, or PR evidence. Local hooks are trusted explicit commands, not a sandbox. Network-backed operations fail closed on uncertain ownership, identity, authorization, or state.
 
-## Verification strategy
-
-Validate Skill metadata and references, stable Issue and phase routing, document-owner links, generated package parity, review evidence, and each delivery-gate condition independently. The [Runtime specification](runtime-spec.md) owns command-level acceptance cases; the [Distribution specification](distribution-spec.md) owns host-package acceptance cases.
-
-## P-ASES migration Bootstrap gates
+<a id="p-ases-migration-bootstrap-gates"></a>
+## 7 P-ASES migration Bootstrap gates
 
 The migration from the legacy workflow to P-ASES uses two separately named gates. The fixed Bootstrap cohort is parent Issue #26 and child Issues #27–#32 **in `puchinya/ai-agent-workflow` only**. Repository identity is compared case-insensitively. Those child Issues use `bootstrap-legacy-v1`; no label, issue text, caller flag, or agent decision can add another Issue or repository to that set. Existing non-cohort Issues created before activation remain on the existing legacy workflow and are never migrated automatically. Only a non-cohort Issue created after the verified activation timestamp selects `p-ases-v1`; missing or invalid activation and pre-activation Issues are `UNDETERMINED` in the new router, which never falls back automatically.
 

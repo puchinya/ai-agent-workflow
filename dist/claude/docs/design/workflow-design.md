@@ -6,13 +6,38 @@
 - Owning Issue: [Issue #7](https://github.com/puchinya/ai-agent-workflow/issues/7)
 - Related specification: [Portable Workflow Specification](../specs/workflow-spec.md)
 
-## Context and goals
+<!-- contents:start -->
+**Contents**
+- [1 Context and goals](#1-context-and-goals)
+- [2 Requirements traceability](#2-requirements-traceability)
+- [3 DES-WF-001 Architecture](#3-des-wf-001-architecture)
+- [4 DES-WF-002 Data flow and ownership](#4-des-wf-002-data-flow-and-ownership)
+- [5 DES-WF-003 Workspace execution flow](#5-des-wf-003-workspace-execution-flow)
+- [6 DES-WF-004 Failure handling](#6-des-wf-004-failure-handling)
+- [7 DES-WF-005 Authorization boundary and PR handoff](#7-des-wf-005-authorization-boundary-and-pr-handoff)
+- [8 Alternatives considered](#8-alternatives-considered)
+- [9 Migration gate routing](#9-migration-gate-routing)
+<!-- contents:end -->
+
+<!-- heading-map:start -->
+**Stable heading map**
+- [DES-WF-001](#des-wf-001) — 3 DES-WF-001 Architecture
+- [DES-WF-002](#des-wf-002) — 4 DES-WF-002 Data flow and ownership
+- [DES-WF-003](#des-wf-003) — 5 DES-WF-003 Workspace execution flow
+- [DES-WF-004](#des-wf-004) — 6 DES-WF-004 Failure handling
+- [DES-WF-005](#des-wf-005) — 7 DES-WF-005 Authorization boundary and PR handoff
+<!-- heading-map:end -->
+
+
+<a id="context-and-goals"></a>
+## 1 Context and goals
 
 The workflow must feel consistent in three agent hosts while respecting each host's plugin format. The source remains repository-owned Markdown, standards, and a standard-library Python CLI. Host packages are deterministic projections of that source, not separate authoring trees.
 
 Goals are explicit Issue authority, progressive context loading, reliable local verification, recoverable exact-byte records, independent review evidence, and reproducible delivery gates. No remote service or persistent runtime process is introduced.
 
-## Requirements traceability
+<a id="requirements-traceability"></a>
+## 2 Requirements traceability
 
 | Requirement | Design consequence |
 |---|---|
@@ -31,7 +56,9 @@ Goals are explicit Issue authority, progressive context loading, reliable local 
 | New Contract layout is checked without changing legacy publication | A separate read-only preflight validates the canonical template's physical H2 structure before new-template contracts are saved or published; the historical comment and mirror path remains unchanged. |
 | Chat project instructions work across hosts | One Japanese project-instructions body uses one repository URL substitution and describes only capabilities available to the active chat; it does not depend on installing this workflow plugin. |
 
-## Architecture
+<a id="des-wf-001"></a>
+<a id="des-wf-001-architecture-and-phase-authority"></a>
+## 3 DES-WF-001 Architecture
 
 ```text
 workflow/ ─────┐
@@ -52,7 +79,9 @@ consumer Issue + .agent/project.json
 
 `workflow/`, `runtime/`, and `adapters/` are canonical hand-authored trees. `dist/**` is generated and MUST NOT be hand-edited. The CLI is a one-shot Python 3.10+ application using the standard library. GitHub transport is isolated in one module. Git lifecycle commands are isolated in `git.py`; they use subprocess argv, never shell interpolation. Tests replace those boundaries with fakes and do not use network credentials.
 
-## Data flow and ownership
+<a id="des-wf-002"></a>
+<a id="des-wf-002-data-flow-and-artifact-ownership"></a>
+## 4 DES-WF-002 Data flow and ownership
 
 1. A Skill starts from an Issue and reads only the routing data and documents relevant to that task. The Issue declares structured document decisions; older link-only sections remain routable.
 2. A consumer's `.agent/project.json` is parsed and fully validated before profile-dependent output or hook execution.
@@ -63,7 +92,9 @@ consumer Issue + .agent/project.json
 
 The structural Contract preflight is a separate local flow: the CLI reads the explicit source path, `contracts.py` reuses `_prepare_contract_input` and `_contract_h2_headings`, and bounded JSON reports the normalized payload identity. It neither writes a mirror nor contacts GitHub. The implementation Skill invokes it before saving or publishing new contracts created from the canonical template; legacy contract APIs and historical reads do not depend on it.
 
-## Workspace execution flow
+<a id="des-wf-003"></a>
+<a id="des-wf-003-workspace-execution-flow"></a>
+## 5 DES-WF-003 Workspace execution flow
 
 ```text
 approved Contract
@@ -85,26 +116,28 @@ Issue and PR remain the user-facing identities. One implementation writer owns a
 
 Git cleanliness sees untracked content in the main checkout. Claude Code’s default `.claude/worktrees/` location is nested under that checkout, but host settings or `WorktreeCreate` hooks can place worktrees elsewhere. Project-owned ignore rules are therefore guidance and configuration, not runtime host-path inference or a universal preflight. This does not change host-owned worktree lifecycle or PR gates. If a local binding is lost, a verified exact PR continuation can restore an Issue-scoped Schema 2 binding without changing branches or worktrees; normal new executions continue to resolve and bind the selected base.
 
-## Failure handling
+<a id="des-wf-004"></a>
+<a id="des-wf-004-failure-handling"></a>
+## 6 DES-WF-004 Failure handling
 
 Malformed profiles and Document impact declarations fail closed before hooks or scoped validation. Unknown selected components and invalid doc selectors never broaden scope. Host or target requirement mismatches skip commands and remain unverified. Self-review contract `fail`/`untested`, checklist `fail`, Final Verification other than PASS, QA other than PASS/N/A, independent contract units not all PASS, independent checklist `fail`, and blocking A/B/C findings block handoff. Independent D findings and checklist `untested` remain non-blocking by themselves. Legacy schema-v1 self-reviews remain diagnostic-only. GitHub ambiguity fails closed. Atomic local replacements preserve the old verified bytes on failure. Build/check mismatches identify drift without silently accepting edited generated output.
 
-## Authorization boundary and PR handoff
+<a id="des-wf-005"></a>
+<a id="des-wf-005-authorization-boundary-and-pr-handoff"></a>
+## 7 DES-WF-005 Authorization boundary and PR handoff
 
 The approved Issue contract is the authority for routine work through a review-ready PR. The implementation Skill retains ownership after local verification and invokes the delivery Skill for PR establishment and gates. A separate decision is reserved for material scope/architecture changes, contract supersession, ambiguous ownership/base, destructive Git operations, merge/release, permission escalation, unrelated GitHub mutation, or an explicit request to stop. A missing PR is an implementation blocker, not a reason to return a “next step.” Pending CI leaves the PR in place and reports blocked delivery.
 
-## Alternatives considered
+<a id="alternatives-considered"></a>
+## 8 Alternatives considered
 
 - Copying the reference repository or its 105 KiB CLI would introduce template ownership and a monolith. The new runtime uses focused modules and only carries forward specified behavior.
 - Hand-authored host-specific Skill trees would drift. Adapters contain only explicit host differences.
 - A database, MCP server, daemon, or hosted API would add a second authority and is outside the product boundary.
 - A shared OpenAI/Antigravity `plugin.json` would violate their different schemas. Packages are separate directories.
 
-## Verification strategy
-
-Unit tests exercise module boundaries with injected Git/GitHub results. Package tests compare complete generated trees byte-for-byte, validate each host independently, and prove that modifying a generated file is detected by `--check`. The CI trust boundary is specified in the [Distribution specification](../specs/distribution-spec.md).
-
-## Migration gate routing
+<a id="migration-gate-routing"></a>
+## 9 Migration gate routing
 
 `runtime/p_ases/gate_policy.py` owns a versioned gate decision alongside, not inside, `delivery.evaluate_readiness`. Only Issues #26–#32 in `puchinya/ai-agent-workflow` select `bootstrap-legacy-v1`; repository identity comparisons are case-insensitive and all other repositories fail closed. A `PASES_GATE_SELECTION_V1` Issue comment pins the selection. Other Issues require a unique, exact-readback `PASES_ACTIVATION_V1` plus an explicit earlier `PASES_ACTIVATION_APPROVAL_V1`; without them routing is `UNDETERMINED` and stops.
 

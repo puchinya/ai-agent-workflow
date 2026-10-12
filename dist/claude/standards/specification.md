@@ -7,7 +7,8 @@ Specifications own durable, testable product behavior. Each normative rule has o
 ## Rules
 
 - Use Schema 2 marker comments and the specification template.
-- State purpose, scope, normative requirements, observable behavior, errors/boundaries, security/privacy, and verification.
+- State purpose, scope, normative requirements, observable behavior, errors/boundaries, and security/privacy.
+- Do not add a mandatory Verification Strategy chapter. Test procedures belong in docs/testing and results belong in verification evidence.
 - Use MUST/SHOULD/MAY only when the obligation is intentional and testable.
 - Link to the owning Issue and design. Separate confirmed behavior from open questions.
 - Keep examples illustrative and label them; do not let examples silently become policy.

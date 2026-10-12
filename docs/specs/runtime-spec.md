@@ -7,11 +7,52 @@
 - Related design: [Runtime design](../design/runtime-design.md)
 - Workflow invariants: [Portable Workflow Specification](workflow-spec.md)
 
-## Purpose
+<!-- contents:start -->
+**Contents**
+- [1 Purpose](#1-purpose)
+- [2 Scope](#2-scope)
+- [3 Normative requirements](#3-normative-requirements)
+  - [3.1 REQ-RT-001 Project profile and context](#31-req-rt-001-project-profile-and-context)
+  - [3.2 REQ-RT-002 Document validation](#32-req-rt-002-document-validation)
+  - [3.3 REQ-RT-003 Feature branch bases](#33-req-rt-003-feature-branch-bases)
+  - [3.4 REQ-RT-004 Implementation base resolution](#34-req-rt-004-implementation-base-resolution)
+  - [3.5 REQ-RT-005 Implementation execution workspaces](#35-req-rt-005-implementation-execution-workspaces)
+  - [3.6 REQ-RT-006 Review PR establishment](#36-req-rt-006-review-pr-establishment)
+  - [3.7 REQ-RT-007 Implementation Contract bytes and storage](#37-req-rt-007-implementation-contract-bytes-and-storage)
+  - [3.8 REQ-RT-008 Self-review and delivery](#38-req-rt-008-self-review-and-delivery)
+  - [3.9 REQ-RT-009 Failure, logging, and cleanup](#39-req-rt-009-failure-logging-and-cleanup)
+- [4 REQ-RT-010 Observable behavior](#4-req-rt-010-observable-behavior)
+- [5 REQ-RT-011 Data and API formats](#5-req-rt-011-data-and-api-formats)
+- [6 REQ-RT-012 Security and privacy](#6-req-rt-012-security-and-privacy)
+- [7 REQ-RT-013 Error and boundary behavior](#7-req-rt-013-error-and-boundary-behavior)
+- [8 P-ASES Bootstrap commands](#8-p-ases-bootstrap-commands)
+<!-- contents:end -->
+
+<!-- heading-map:start -->
+**Stable heading map**
+- [REQ-RT-001](#req-rt-001) — 3.1 REQ-RT-001 Project profile and context
+- [REQ-RT-002](#req-rt-002) — 3.2 REQ-RT-002 Document validation
+- [REQ-RT-003](#req-rt-003) — 3.3 REQ-RT-003 Feature branch bases
+- [REQ-RT-004](#req-rt-004) — 3.4 REQ-RT-004 Implementation base resolution
+- [REQ-RT-005](#req-rt-005) — 3.5 REQ-RT-005 Implementation execution workspaces
+- [REQ-RT-006](#req-rt-006) — 3.6 REQ-RT-006 Review PR establishment
+- [REQ-RT-007](#req-rt-007) — 3.7 REQ-RT-007 Implementation Contract bytes and storage
+- [REQ-RT-008](#req-rt-008) — 3.8 REQ-RT-008 Self-review and delivery
+- [REQ-RT-009](#req-rt-009) — 3.9 REQ-RT-009 Failure, logging, and cleanup
+- [REQ-RT-010](#req-rt-010) — 4 REQ-RT-010 Observable behavior
+- [REQ-RT-011](#req-rt-011) — 5 REQ-RT-011 Data and API formats
+- [REQ-RT-012](#req-rt-012) — 6 REQ-RT-012 Security and privacy
+- [REQ-RT-013](#req-rt-013) — 7 REQ-RT-013 Error and boundary behavior
+<!-- heading-map:end -->
+
+
+<a id="purpose"></a>
+## 1 Purpose
 
 Define observable behavior for the Python 3.10+ command `python -m agent_workflow <command>`. The runtime is standard-library-first, synchronous, and one-shot. GitHub I/O is owned only by `agent_workflow.github` and uses authenticated `gh api` with argument arrays and structured JSON.
 
-## Scope
+<a id="scope"></a>
+## 2 Scope
 
 The CLI MUST provide `init-project`, `agent-context`, `validate-docs`, `run-hook`, `ensure-milestone`, `start-feature-branch`, `resolve-implementation-base`, `recover-implementation-binding`, `prepare-implementation`, `ensure-review-pr`, `verify-final`, `validate-public-final-verification`, `save-implementation-contract`, `publish-implementation-contract`, `restore-implementation-contract`, `verify-implementation-contract`, `validate-implementation-contract-structure`, `prepare-self-review`, `validate-self-review`, `publish-self-review`, `validate-public-review`, `prepare-qa`, `validate-qa`, `publish-qa`, `validate-public-qa`, `prepare-pr-review`, `validate-pr-review`, `publish-pr-review`, `validate-public-pr-review`, `delivery-check`, and `finalize-merged-issue`.
 
@@ -19,9 +60,12 @@ The commands `update-template` and `refresh-template-manifest` are forbidden. No
 
 GitHub comment, event, check-run, commit-status, and milestone collections MUST paginate with explicit `page=N&per_page=100` GET requests until a selected page contains fewer than 100 items. The transport preserves API order and fails with `GitHubError` on malformed page shapes. Direct named-comment verification remains a single-ID fetch. Git lifecycle subprocesses are owned only by `agent_workflow.git`, use argv arrays, and never pass through the trusted shell-hook boundary.
 
-## Normative requirements
+<a id="normative-requirements"></a>
+## 3 Normative requirements
 
-### Project profile and context
+<a id="req-rt-001"></a>
+<a id="req-rt-001-project-profile-and-context"></a>
+### 3.1 REQ-RT-001 Project profile and context
 
 `.agent/project.json` is the consumer's machine authority. Schema 1 remains readable with its existing flat hooks and is never rewritten automatically. New `init-project` output is Schema 2. Unsupported versions and malformed profiles fail before routing, output, or configured command execution.
 
@@ -55,7 +99,9 @@ Schema 1 retains flat project-wide command strings. Schema 2 project hooks own `
 
 `verify-final ISSUE PR [--runtime-host HOST] [--architecture ARCH] [--capability NAME] [--diagnostic]` requires an open same-repository Issue and open non-draft same-repository PR with a standalone `Closes #ISSUE` line, a valid approved contract, a clean worktree, and local HEAD exactly equal to the full 40-character PR HEAD. It routes the Issue's selected components, plans `verify_final` through the Schema-2 profile, and executes commands through `process.py`. After execution it rechecks worktree cleanliness and local HEAD. It publishes an immutable `Agent Final Verification` comment and PR pointer only after named-comment readback and Issue/contract/PR HEAD race checks. The receipt binds Issue/PR, exact HEAD, contract comment ID/SHA, host, architecture, sorted capabilities, components, plan SHA, executed command identities (scope/component/target/index and command SHA only), skipped targets, and result. Raw commands, child output, and environment values are never stored. `pass` requires at least one executed command and no skipped target; `partial` records skips; `empty` records no commands or skips. Partial and empty receipts are public evidence but fail the command and delivery gate. `validate-public-final-verification` validates the named comment, hash, pointer, identity, and current HEAD/contract without mutation.
 
-### Document validation
+<a id="req-rt-002"></a>
+<a id="req-rt-002-document-validation"></a>
+### 3.2 REQ-RT-002 Document validation
 
 Specifications and designs use Schema-2 document markers and their respective required section sets. `validate-docs` with no selector preserves the existing full-docs scan. Mutually exclusive `--issue N` and `--changed BASE` selectors narrow validation. `--issue N` validates only declared existing owners from that Issue's structured or legacy `Document impact`; a linked missing/planned owner is an error, while `unchanged` and `evidence-only` decisions need no file. Malformed decisions and wrong-tree links fail closed. `--changed BASE` validates only changed `docs/**/*.md` paths from `BASE...HEAD`, ignoring deletions. An unknown BASE fails without broadening scope. Git ref and diff resolution stays in `git.py`; no selector or scoped validator runs shell hooks. Markdown validation checks markers, required headings, and local relative links (including reference links and fragments). It ignores links inside fenced code, does not fetch external links, and performs no migration or template operations.
 
@@ -70,11 +116,15 @@ The structured Issue format has one row per decision, in this order:
 
 Each row selects exactly one alternative. Every link must target the corresponding docs tree.
 
-### Feature branch bases
+<a id="req-rt-003"></a>
+<a id="req-rt-003-feature-branch-bases"></a>
+### 3.3 REQ-RT-003 Feature branch bases
 
 `start-feature-branch N <description...> [--base-ref BRANCH] [--expected-base-sha SHA40]` uses the GitHub default branch when `--base-ref` is omitted. An explicit base must name an existing same-repository remote branch; a SHA cannot be supplied as the base branch. The runtime fetches and resolves `origin/<base-ref>`, then checks `--expected-base-sha` before any branch switch, cleanup, or hook. A new target branch starts directly at that fetched base. Existing current, local, and remote targets remain idempotent and are never rebased. Results include `base_ref`, `base_sha`, `stacked`, and `creation_source` (`current`, `local`, `remote`, or `new`). A base SHA mismatch leaves the current branch and worktree unchanged.
 
-### Implementation base resolution
+<a id="req-rt-004"></a>
+<a id="req-rt-004-implementation-base-resolution"></a>
+### 3.4 REQ-RT-004 Implementation base resolution
 
 `resolve-implementation-base ISSUE [--base-ref BRANCH] [--expected-base-sha SHA40] [--repo PATH]` resolves the exact base identity for a new Implementation Contract execution before host capability selection. It is owned by `execution.py` for orchestration, calls the approved-contract and profile validation boundaries, and delegates remote-ref validation/fetch only to `git.py`'s `fetch_base_ref`. It requires a positive Issue number, Schema 2 profile, origin fetch repository matching the configured GitHub repository, an open same-repository non-PR Issue, the current approved Contract pointer and exact named comment bytes, a valid GitHub default branch, and a valid selected same-origin branch. Omitted `--base-ref` selects the GitHub default branch; an explicit value selects that branch. The resolver returns only Issue/repository identity, Contract comment ID/SHA, default/base refs, exact 40-character base SHA, and `stacked` (true exactly when base ref differs from default).
 
@@ -97,7 +147,9 @@ It does not require a clean worktree. Its only Git side effect is fetching the s
 
 When supplied, `--expected-base-sha` must be exactly 40 lowercase hexadecimal characters and equal the fetched selected-base SHA. A syntax or value mismatch fails closed before host isolation or any branch/worktree/binding/hook/GitHub mutation. This expected-SHA check is used by later setup commands to detect remote advancement between resolution and binding; callers must restart resolution deliberately rather than silently adopt a newer tip. A valid existing binding skips this command and reuses its frozen base ref/SHA.
 
-### Implementation execution workspaces
+<a id="req-rt-005"></a>
+<a id="req-rt-005-implementation-execution-workspaces"></a>
+### 3.5 REQ-RT-005 Implementation execution workspaces
 
 `WorkspaceIdentity` is read from Git metadata: the absolute worktree root, per-worktree git directory, common git directory, whether the checkout is linked, full HEAD SHA, and attached branch or null for detached HEAD. The runtime does not infer isolation from path names or scan sibling directories.
 
@@ -132,7 +184,9 @@ For an isolated binding, the local branch may be host-owned or HEAD may be detac
 
 `agent-context N` reports normalized workspace policy. A structurally valid binding for that Issue is summarized only by mode, canonical branch, base ref/SHA, Contract comment ID/SHA, and a current boolean; it never exposes the workspace path or arbitrary environment data.
 
-### Review PR establishment
+<a id="req-rt-006"></a>
+<a id="req-rt-006-review-pr-establishment"></a>
+### 3.6 REQ-RT-006 Review PR establishment
 
 `ensure-review-pr N --body-file PATH [--title TITLE] [--base-ref BRANCH]` pushes the current Issue feature branch safely, creates or reuses exactly one open same-repository review PR, verifies its identity, replaces phase labels so only `phase:review` remains among them, and reads the final state back. It establishes the PR required by self-review; it does not prepare or publish self-review itself. Success JSON contains `issue`, `pr`, `pr_url`, `head_sha`, `head_branch`, `base_branch`, `created`, `reused`, `push`, and `phase_transition`. A post-create phase failure returns a failed result with PR identity so a retry can reuse it.
 
@@ -153,7 +207,9 @@ Only after a compatible PR exists, read the latest Issue labels, preserve every 
 | PR created/reused but label replacement or readback fails | Return failure with PR identity; a retry reuses the same PR. |
 | Required Checks pending after PR creation | PR establishment succeeds; overall delivery stays blocked. |
 
-### Implementation Contract bytes and storage
+<a id="req-rt-007"></a>
+<a id="req-rt-007-implementation-contract-bytes-and-storage"></a>
+### 3.7 REQ-RT-007 Implementation Contract bytes and storage
 
 The complete contract is one top-level comment on its owning Issue. The Issue body `## Implementation Contract` section contains only `Comment ID: <integer>`, `SHA-256: <64 lowercase hex>`, and `State: approved`. The comment first line is `<!-- agent-contract:v1 issue=N sha256=HEX bytes=DECIMAL -->`, followed by one blank line and the exact normalized UTF-8 payload bytes.
 
@@ -186,7 +242,9 @@ State: approved
 Do not append prose to this block.
 ```
 
-### Self-review and delivery
+<a id="req-rt-008"></a>
+<a id="req-rt-008-self-review-and-delivery"></a>
+### 3.8 REQ-RT-008 Self-review and delivery
 
 The effective Reviewer Checklist is the approved Contract's checklist items in source order as `C001...`, followed by Issue Reviewer Checklist items as `I001...`. A valid `AGENT_REVIEWER_CHECKLIST_V1` canonical block wins; otherwise only the narrow Markdown `Reviewer Checklist` H2 fallback matches. The Reviewer Checklist is a summary review surface, not a substitute for full-contract review.
 
@@ -231,17 +289,23 @@ The repository self-host `.agent/project.json` configures four global `verify_fi
 Preserve checklist failure fields `review_failures` and `review_failure_count`; return at most ten checklist IDs with text truncated to 240 characters. Add `review_schema_version`, `contract_comment_id`, `contract_sha256`, `contract_review_failures`, `contract_review_failure_count`, and `contract_review_untested`/`contract_review_untested_count`. Return bounded summaries for Final Verification, QA, and Independent Review including current result, staleness, and finding/unit counts, without command bodies, evidence bodies, or contract text. The failure and untested detail arrays are each capped at ten entries with bounded ID/title text only; counts report all affected sections and no contract body is emitted. Contract `untested` details identify incomplete conformance. No configured checks is a failure. App-scoped checks require the exact app; source-unrestricted or legacy checks may match a successful check-run or commit status. Check-run conclusions `success`, `skipped`, and `neutral` pass; commit statuses require `success`. Delivery reports `base_ref`, `default_base_ref`, and `stacked` for the PR.
 
 Merged delivery requires a merged PR, closed Issue, and no phase label. `finalize-merged-issue` verifies merged/closed state and removes only `phase:review`; any other `phase:*` label fails without mutation. Repeating after that label is gone succeeds without mutation. A PR affecting a generic component needs a concrete `Generic profile rationale:`.
-### Failure, logging, and cleanup
+<a id="req-rt-009"></a>
+<a id="req-rt-009-failure-logging-and-cleanup"></a>
+### 3.9 REQ-RT-009 Failure, logging, and cleanup
 
 Malformed profiles fail before hooks. Unknown scope never broadens. Subprocess failures retain the exit status and identify the command without secrets. GitHub identity/API ambiguity fails closed. Temporary payloads are removed on handled success/failure paths. Tokens and payload contents are never printed. Skipped targets and unexecuted platform tests are reported as unverified, not passed.
 
 Branch cleanup and hooks occur only after a successful switch. Failures in these post-switch steps leave the current branch in place and report the failed stage; retries on that current target branch are non-destructive.
 
-## Observable behavior
+<a id="req-rt-010"></a>
+<a id="req-rt-010-observable-behavior"></a>
+## 4 REQ-RT-010 Observable behavior
 
 Commands produce bounded JSON or explicitly described skip lines. They identify affected Issue, component, target, contract SHA, review HEAD, and gate result without printing payload content or credentials. Read-only commands never mutate Issue, PR, profile, or source documents.
 
-## Data and API formats
+<a id="req-rt-011"></a>
+<a id="req-rt-011-data-and-api-formats"></a>
+## 5 REQ-RT-011 Data and API formats
 
 Schema-2 profile fields are `schema_version`, `initialized`, `project_name`, `components`, `branch`, `workspace`, `milestones`, and project `hooks`. `branch` contains `prefix`, `max_slug_length`, optional `cleanup_on_switch` (default `[]`), and `required_checks`. `branch.required_checks` is an array of names or `{name, app_id}` entries; an empty array prevents handoff. `workspace` contains only `isolation`, one of `auto|required|disabled`, defaulting to `auto` when omitted. `milestones` contains `mode` and `version_source`, with the legacy `enabled` compatibility mapping described above. Each component declares `id`, `roots`, `stacks`, `application_types`, `targets`, and verification `hooks`; targets declare `id`, `runnable_on`, verification `hooks`, and optional `requirements`. Hook arrays contain command strings; project hooks may include `branch_switch`, while component and target hooks may not.
 
@@ -249,11 +313,15 @@ The canonical checklist block is delimited by the exact lines `<!-- AGENT_REVIEW
 
 Issue-scoped local state lives below `.agent-state/issues/N/`. Contract state contains the exact payload and SHA metadata. Execution state contains only the binding fields defined above and is never published or used as host-provenance evidence. Self-review state records schema version, Issue, PR, HEAD, approved contract comment ID/SHA, ordered contract section identities/evidence, checklist SHA, and checklist item evidence. Temporary JSON/payload files are outside committed source and are removed after use.
 
-## Security and privacy
+<a id="req-rt-012"></a>
+<a id="req-rt-012-security-and-privacy"></a>
+## 6 REQ-RT-012 Security and privacy
 
 GitHub requests use authenticated `gh api` through one module. User payloads travel as structured JSON input, not shell strings. Local contract and execution state is Issue-scoped and should remain uncommitted; temporary data is cleaned after use. Host worktree placement, access control, resume, and cleanup remain host-owned. `.worktreeinclude` is optional project-owned configuration for ignored files; no secrets or ignored files are inferred or copied.
 
-## Error and boundary behavior
+<a id="req-rt-013"></a>
+<a id="req-rt-013-error-and-boundary-behavior"></a>
+## 7 REQ-RT-013 Error and boundary behavior
 
 | Condition | Required behavior |
 |---|---|
@@ -286,11 +354,8 @@ GitHub requests use authenticated `gh api` through one module. User payloads tra
 | Premature merge finalization or unexpected phase label | Fail without label mutation. |
 | Network/API/auth failure | Report exact command/stage and fail closed. |
 
-## Verification strategy
-
-The test suite uses fake GitHub responses and temporary directories. It covers Schema 1/2 boundaries, routing and hook order, no-execution skips, local links, exact-byte hashes and limits, pointer races, comment identity, mirror backup/atomic replacement, checklist precedence, stale review, every handoff precondition, Required Checks, idempotent finalization, and path behavior on POSIX and Windows. The contract command list and acceptance matrix are kept in tests; this specification owns semantics.
-
-## P-ASES Bootstrap commands
+<a id="p-ases-bootstrap-commands"></a>
+## 8 P-ASES Bootstrap commands
 
 `python -m p_ases delivery gate-policy ISSUE` pins and reads the immutable gate selection for an Issue. Only Issues #26–#32 in `puchinya/ai-agent-workflow` select `bootstrap-legacy-v1`; repository identity is compared case-insensitively. A non-cohort Issue requires the current unique activation record and a GitHub `created_at` later than activation to select `p-ases-v1`. Pre-activation existing Issues and Issues without a valid activation return `UNDETERMINED`; the new router does not switch them to another gate. The command never changes phase labels.
 

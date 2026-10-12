@@ -2026,7 +2026,6 @@ class DocumentTests(unittest.TestCase):
 ## Observable behavior
 ## Error and boundary behavior
 ## Security and privacy
-## Verification strategy
 [good](../other.md) [bad](missing.md) [external](https://example.invalid)
 ```md
 [ignored](not-real.md)
@@ -2122,7 +2121,6 @@ class DocumentTests(unittest.TestCase):
 ## Observable behavior
 ## Error and boundary behavior
 ## Security and privacy
-## Verification strategy
 """
             (repo / "docs/specs/owned.md").write_text(required, encoding="utf-8")
             (repo / "docs/specs/unrelated.md").write_text("unrelated legacy defect\n", encoding="utf-8")
@@ -2190,7 +2188,6 @@ class ChangedDocumentValidationTests(unittest.TestCase):
 ## Observable behavior
 ## Error and boundary behavior
 ## Security and privacy
-## Verification strategy
 """
         (specs / "changed.md").write_text(good, encoding="utf-8")
         (specs / "unchanged.md").write_text("unrelated legacy defect\n", encoding="utf-8")

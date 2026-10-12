@@ -6,11 +6,38 @@
 - Owning Issue: [Issue #7](https://github.com/puchinya/ai-agent-workflow/issues/7)
 - Related specification: [Runtime and CLI Specification](../specs/runtime-spec.md)
 
-## Context and goals
+<!-- contents:start -->
+**Contents**
+- [1 Context and goals](#1-context-and-goals)
+- [2 Requirements traceability](#2-requirements-traceability)
+- [3 DES-RT-001 Architecture](#3-des-rt-001-architecture)
+- [4 DES-RT-002 Data flow and ownership](#4-des-rt-002-data-flow-and-ownership)
+  - [4.1 DES-RT-003 Implementation-base resolution ownership](#41-des-rt-003-implementation-base-resolution-ownership)
+  - [4.2 DES-RT-004 Workspace binding and publication](#42-des-rt-004-workspace-binding-and-publication)
+  - [4.3 DES-RT-005 Review-PR establishment sequence](#43-des-rt-005-review-pr-establishment-sequence)
+- [5 DES-RT-006 Failure handling](#5-des-rt-006-failure-handling)
+- [6 Migration gate policy](#6-migration-gate-policy)
+- [7 Alternatives considered](#7-alternatives-considered)
+<!-- contents:end -->
+
+<!-- heading-map:start -->
+**Stable heading map**
+- [DES-RT-001](#des-rt-001) — 3 DES-RT-001 Architecture
+- [DES-RT-002](#des-rt-002) — 4 DES-RT-002 Data flow and ownership
+- [DES-RT-003](#des-rt-003) — 4.1 DES-RT-003 Implementation-base resolution ownership
+- [DES-RT-004](#des-rt-004) — 4.2 DES-RT-004 Workspace binding and publication
+- [DES-RT-005](#des-rt-005) — 4.3 DES-RT-005 Review-PR establishment sequence
+- [DES-RT-006](#des-rt-006) — 5 DES-RT-006 Failure handling
+<!-- heading-map:end -->
+
+
+<a id="context-and-goals"></a>
+## 1 Context and goals
 
 The CLI must be easy to run from a consumer checkout, fakeable in tests, and safe when GitHub or local state is uncertain. Python 3.10+ standard library supplies filesystem, hashing, process, and JSON support. There is no MCP server, dependency service, or daemon.
 
-## Requirements traceability
+<a id="requirements-traceability"></a>
+## 2 Requirements traceability
 
 | Requirement | Design consequence |
 |---|---|
@@ -32,13 +59,17 @@ The CLI must be easy to run from a consumer checkout, fakeable in tests, and saf
 | A lost local binding does not force recreation of an existing PR | `execution.py` can recover only a clean, exact PR continuation after GitHub authority, current branch/head, base SHA, and ancestry all match; `git.py` owns the read-only ancestry check and base fetch. Schema 2 recovery metadata records the verified PR checkpoint; normal Schema 1 bindings are unchanged. |
 | Contract outcomes do not impose authoring chronology | The template lists final outputs without a required edit/commit order; `contracts.py` enforces only the ten physical H2 sections in document order. |
 
-## Architecture
+<a id="des-rt-001"></a>
+<a id="des-rt-001-runtime-module-architecture"></a>
+## 3 DES-RT-001 Architecture
 
 `cli.py` parses commands and converts domain errors into stable nonzero exit codes. `profile.py` validates Schema 1/2 and selects components/targets. `versioning.py` resolves and validates an Issue-scoped target or the configured fallback without dependencies; the existing `resolve_version()` API remains the fallback resolver. `git.py` owns branch lifecycle and changed-doc ref/diff subprocesses through argv; it coordinates clean-worktree checks, selected-base resolution, expected-SHA comparison, branch selection, safe cleanup, and the global switch-hook plan. `context.py` formats routing output, including structured document decisions. `documents.py` parses Issue document impact and validates durable Markdown structure and local links. `contracts.py` owns source-byte validation, safe Markdown checkbox normalization within a recognizable Reviewer Checklist H2, normalized exact-byte hashes, pointer format, mirror state, publication/restore flows, the shared structural classifier, and opt-in ten-section structure validation using the existing tokenizer. `verification.py` owns exact-HEAD final hook plans, command-hash-only receipts, and immutable public evidence. `review.py` derives contract units only from actual Markdown H2 headings and extracts checklist items from the canonical marker block first, then the narrow Markdown Reviewer Checklist H2 fallback using Markdown checkbox syntax; it also owns self-review v2 and current-HEAD independent-review drafts/publication/staleness. `qa.py` owns separate functional QA records with PASS/N/A semantics and immutable public evidence. `delivery.py` checks the four evidence gates before Required Checks and owns merged gates. `github.py` owns repository identity, default-branch metadata, Issue milestone state, and every `gh api` invocation. `process.py` executes configured non-GitHub hook commands sequentially; diagnostic output is captured temporarily and redacted before emission.
 
 The dependency direction is CLI -> domain modules -> injected GitHub/process boundaries. Pure validators do not make network calls. `git.py` invokes Git only through argument arrays and never invokes the trusted shell-hook boundary for Git operations. GitHub functions return parsed JSON or raise explicit operation errors; they do not print payloads. Runtime code never imports files from the reference repository.
 
-## Data flow and ownership
+<a id="des-rt-002"></a>
+<a id="des-rt-002-data-flow-and-ownership"></a>
+## 4 DES-RT-002 Data flow and ownership
 
 1. Parse arguments and discover repository root.
 2. Load and validate all local profile/document state needed for the command.
@@ -49,37 +80,43 @@ The dependency direction is CLI -> domain modules -> injected GitHub/process bou
 7. Commit local state with atomic replacement only after remote verification, or keep old verified bytes on failure.
 8. Clean temporary files in `finally` paths and print bounded diagnostics. Hook diagnostics stay silent on success and emit only a redacted combined tail of at most 16 KiB on failure. Post-switch failures preserve and report the switched branch.
 
-### Implementation-base resolution ownership
+<a id="des-rt-003"></a>
+<a id="des-rt-003-implementation-base-resolution-ownership"></a>
+### 4.1 DES-RT-003 Implementation-base resolution ownership
 
 `execution.py` owns the implementation-base orchestration and authority checks: Schema 2 profile, origin repository identity, approved Issue/Contract, default branch, selected branch, and optional expected-SHA comparison. `git.py` remains the sole raw Git boundary and resolves/fetches a same-origin base through `fetch_base_ref`. `cli.py` parses and prints the bounded result only. The resolver performs no workspace lifecycle, hook, binding, source, or GitHub mutation and does not require a clean checkout. New execution setup carries its returned `(base_ref, base_sha)` unchanged through host capability evaluation and setup; an existing binding skips resolution and keeps its frozen tuple.
 
-### Workspace binding and publication
+<a id="des-rt-004"></a>
+<a id="des-rt-004-workspace-binding-and-publication"></a>
+### 4.2 DES-RT-004 Workspace binding and publication
 
 The implementation Skill resolves the selected base ref and exact SHA before evaluating host capability for a new execution. Isolation is available only when the host can establish the workspace at that exact SHA; otherwise `auto` uses the current-checkout flow and `required` blocks. A valid managed linked worktree is reused; a new one is entered only after its starting base is verified. Before source edits, `prepare-implementation` verifies the Issue, exact approved Contract pointer, clean current workspace, base ref/SHA, initial HEAD, and execution mode. If a binding is missing but the current checkout already is an open PR continuation, `recover-implementation-binding` may restore local state only after verifying the exact PR/head/base/Issue tuple and base ancestry; it does not create or switch branches. A local binding under `.agent-state/issues/N/execution.json` is atomic and ignored. Normal bindings remain Schema 1; a recovered Schema 2 record adds a verified PR checkpoint and requires descendant reuse. Reuse after commits retains the frozen base and canonical branch. Explicit Contract supersession changes only its bound comment ID/SHA.
 
 `execution.py` receives a GitHub boundary and calls Git helpers; it owns no raw subprocess or GitHub transport. `git.py` detects a linked worktree by comparing Git's per-worktree git directory with its common git directory. For isolated mode it leaves the local host branch or detached HEAD unchanged, but pushes HEAD to the binding's canonical branch using the existing non-force and remote-readback protections. Current mode and no-binding calls retain the existing configured-feature-branch requirement. Neither module creates or cleans up worktrees.
 
-### Review-PR establishment sequence
+<a id="des-rt-005"></a>
+<a id="des-rt-005-review-pr-establishment-sequence"></a>
+### 4.3 DES-RT-005 Review-PR establishment sequence
 
 `execution.py` freezes the selected base ref/SHA and canonical branch in the execution binding. The CLI reads the required body file and delegates to `delivery.ensure_review_pr`. Delivery validates body structure, repository/Issue/default/base identity, and the requested title, then loads the current execution binding. A binding's `base_ref` selects the PR base in both current and isolated mode; conflicting explicit values fail before push or PR/label mutation. With no binding, the explicit/default selection remains unchanged. `git.py` validates and publishes against that selected base, including selected-base ancestry, positive ahead count, and (for a bound execution) ancestry of the frozen base SHA. The remote base may advance as long as existing ancestry checks pass. With isolated mode it pushes HEAD to the frozen canonical Issue branch without changing the host-owned local branch; current mode and no binding retain the attached configured-feature-branch check. Delivery uses the published head branch and selected base for exact PR lookup/create/reuse, then replaces phase labels with exactly `phase:review`, preserving non-phase labels, and verifies fresh Issue and PR state. A failed phase transition retains PR identity for retry. No step merges the PR or weakens later self-review/Required Check gates.
 
-## Failure handling
+<a id="des-rt-006"></a>
+<a id="des-rt-006-failure-handling"></a>
+## 5 DES-RT-006 Failure handling
 
 `gh api` receives argument arrays. Large body values travel through JSON temporary files, not command arguments. The environment owns authentication. Git commands use argv arrays. Default hook output is suppressed; diagnostic capture is removed on all handled paths and credential-redacted before a bounded failure tail is emitted. Issue identifiers, repository owner/name, remote refs, expected SHAs, returned comment/PR associations, hashes, and lengths are checked before success. Atomic writes preserve previous verified data on ordinary failures.
 
-## Migration gate policy
+<a id="migration-gate-policy"></a>
+## 6 Migration gate policy
 
 `gate_policy.py` owns repository-scoped fixed-cohort routing, `PASES_GATE_SELECTION_V1`, Bootstrap subjects/results, append-only Bootstrap evidence, and activation validation. Each result fingerprints the gate evaluator and its CLI, GitHub, ADC, Git, process, and profile adapters so a tool update appends a new evidence attempt without changing the pinned Issue gate. It is not called by `delivery.evaluate_readiness` or phase advancement. `cli.py` runs `delivery gate-policy` and `delivery bootstrap-check`; the latter executes the repository's fixed bounded local verification set and reads the exact current PR, ADC, Actions workflow run, and Check Runs through `github.py`. Bootstrap review artifacts remain parseable for historical records, but current technical evaluation neither reads nor requires self-review, independent-review, or separate-context artifacts. New evidence sets `review_mode=WAIVED_BOOTSTRAP` and reports technical success as `BOOTSTRAP_TECHNICAL_READY` without claiming review evidence or final-user-review eligibility. The clean checkout, complete PR identity/body, ADC pointer, and pinned gate selection are re-read before and after evidence publication. If publication races with a subject change, a newer BLOCKED observation is appended and read back as latest. Activation is read-only until all child merges, closed Issues, parent integration evidence, and a distinct explicit approval comment can be verified; no implementation command transitions an Issue or merges a PR. Ordinary P-ASES review gates are unchanged, and this policy does not grant permission to merge a PR.
 
 The fixed policy names each accepted child base/head pair. Merging an upstream PR and retargeting a child changes its subject, so prior evidence is invalidated; add the new pair explicitly and cover it with a strict regression test before evaluating the retargeted PR. Missing pairs fail closed rather than being guessed from the dependency graph.
 
-## Alternatives considered
+<a id="alternatives-considered"></a>
+## 7 Alternatives considered
 
 - One monolithic `agent_tool.py` would couple profile, GitHub, and review logic. Focused modules make fake transports and focused tests possible.
 - A general HTTP client would need a new credential boundary. The existing authenticated `gh api` transport is explicit and testable.
 - GitHub mutations carry user data as structured JSON over stdin and never interpolate payloads into a shell command. Explicit local hook strings run in the user's shell because the profile is trusted configuration; child output is suppressed by default, with an opt-in redacted diagnostic tail for failures.
 - Parallel hook execution would destroy declared order and complicate failure evidence. Hooks remain sequential.
-
-## Verification strategy
-
-Each module has pure boundary tests, while API workflows inject a fake `github.py` interface. Tests assert both expected calls and forbidden calls, especially zero hook execution on invalid profiles, no unrelated-comment fetch on restore, no write on bad identity, and no mutation on failed delivery checks.
