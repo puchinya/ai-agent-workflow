@@ -67,6 +67,12 @@ class FinalDeliveryTests(unittest.TestCase):
         self.assertEqual(evaluate(user_review=stale).status, "BLOCKED")
         self.assertEqual(evaluate(verification=None).status, "BLOCKED")
 
+    def test_in_scope_comment_change_request_returns_to_execution_and_blocks_final_delivery(self):
+        request = UserReviewResult(
+            "CHANGES_REQUESTED", USER_SUBJECT, "f" * 64,
+            ("authorized human requested in-scope changes",), "execution").validate()
+        self.assertEqual(evaluate(user_review=request).status, "BLOCKED")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -25,6 +25,7 @@ REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 CHANNELS = {"issue-comment", "pr-comment", "pr-review", "diff-comment", "chat"}
 KINDS = {"pending", "questions", "changes_requested", "blocked", "approved"}
 STATES = {"PENDING", "QUESTIONS", "CHANGES_REQUESTED", "BLOCKED", "APPROVED"}
+PARENT_REVIEW_CHILD_ISSUES = (27, 28, 29, 30, 31, 32)
 
 
 class UserReviewError(ValueError):
@@ -45,6 +46,30 @@ def _time(value: str) -> datetime:
     if result.utcoffset() != timezone.utc.utcoffset(result):
         raise UserReviewError("feedback timestamp is not UTC")
     return result
+
+
+def _comment_decision(row: dict[str, Any], channel: str, body: str) -> tuple[str, str | None, str | None]:
+    """Parse only whole-body, subject-bound GitHub decision commands.
+
+    Natural language and quoted copies remain ordinary questions. PR conversation
+    decisions name the exact head; inline decisions must also match GitHub's
+    commit_id. Parent Issue decisions use the separate exact subject syntax.
+    """
+    lines = body.splitlines()
+    if channel == "issue-comment" and len(lines) == 2:
+        decision = re.fullmatch(r"P-ASES-DECISION: (APPROVED|CHANGES_REQUESTED)", lines[0])
+        subject = re.fullmatch(r"P-ASES-SUBJECT: ([0-9a-f]{64})", lines[1])
+        if decision and subject:
+            return decision.group(1).lower(), None, subject.group(1)
+    if channel in {"pr-comment", "diff-comment"} and len(lines) == 2:
+        decision = re.fullmatch(r"P-ASES-DECISION: CHANGES_REQUESTED", lines[0])
+        head = re.fullmatch(r"P-ASES-HEAD: ([0-9a-f]{40})", lines[1])
+        if decision and head:
+            named_head = head.group(1)
+            if channel == "diff-comment" and row.get("commit_id") != named_head:
+                return "questions", row.get("commit_id"), None
+            return "changes_requested", named_head, None
+    return "questions", row.get("commit_id") if channel == "diff-comment" else None, None
 
 
 @dataclass(frozen=True)
@@ -172,8 +197,10 @@ class FeedbackEvent:
                 raise UserReviewError("chat feedback requires an exact review-subject digest")
         elif self.host_attestation_sha256 is not None:
             raise UserReviewError("GitHub feedback cannot carry a chat host attestation")
-        elif self.subject_sha256 is not None:
-            raise UserReviewError("GitHub feedback cannot carry a host chat subject digest")
+        elif self.subject_sha256 is not None and (
+                self.channel != "issue-comment" or self.kind not in {"approved", "changes_requested"}
+                or not SHA256.fullmatch(self.subject_sha256)):
+            raise UserReviewError("only an explicit parent Issue decision may carry a subject digest")
         return self
 
     def as_dict(self) -> dict[str, Any]:
@@ -219,16 +246,19 @@ def _feedback_row(row: dict[str, Any], channel: str) -> FeedbackEvent:
             raise UserReviewError("GitHub review has unsupported state")
         head = row.get("commit_id")
     else:
-        # Ordinary comments can request clarification, not grant approval.
-        kind = "questions"
-        head = row.get("commit_id") if channel == "diff-comment" else None
+        # Natural language is never interpreted as a decision. Only the exact
+        # command grammar can request changes or approve a parent Integration.
+        kind, head, subject_sha256 = _comment_decision(row, channel, body or "")
+    if channel == "pr-review":
+        subject_sha256 = None
     link = row.get("html_url")
     if not isinstance(link, str) or not link.startswith("https://github.com/"):
         raise UserReviewError("GitHub feedback has no canonical permalink")
     return FeedbackEvent(channel, str(identifier), actor_id, login, actor_type, created,
                          updated, kind, head, hashlib.sha256((body or "").encode("utf-8")).hexdigest(),
                          link, bool(row.get("deleted", False)), row.get("is_resolved"),
-                         edited=_time(updated) > _time(created)).validate()
+                         edited=_time(updated) > _time(created),
+                         subject_sha256=subject_sha256).validate()
 
 
 def normalize_github_feedback(
@@ -375,8 +405,8 @@ def evaluate_user_review(
     if deletion_times and (latest is None or _time(latest.updated_at) <= max(_time(value) for value in deletion_times)):
         reasons.append("GitHub feedback was deleted; prior approval is invalid")
     if latest and latest.kind == "approved":
-        if required_after is not None and _time(latest.updated_at) < _time(required_after):
-            reasons.append("latest approval predates this exact User Review session")
+        if required_after is not None and _time(latest.updated_at) <= _time(required_after):
+            reasons.append("latest approval predates or is simultaneous with this exact User Review session")
         if latest.edited:
             reasons.append("latest formal approval was edited; a fresh approval is required")
         if any(event.kind == "questions" and _time(event.updated_at) >= _time(latest.updated_at)
@@ -387,10 +417,12 @@ def evaluate_user_review(
                                 tuple(reasons + ["change requires new requirements decision"]),
                                 "requirements", None, unresolved).validate()
     if latest and latest.kind == "changes_requested":
-        if latest.head_sha40 != current_pr_head_sha40:
+        if latest.edited and latest.channel in {"pr-comment", "diff-comment"}:
+            reasons.append("latest change request comment was edited; a fresh command is required")
+        elif latest.head_sha40 != current_pr_head_sha40:
             reasons.append("latest change request targets a stale PR HEAD")
-        elif required_after is not None and _time(latest.updated_at) < _time(required_after):
-            reasons.append("latest change request predates this exact User Review session")
+        elif required_after is not None and _time(latest.updated_at) <= _time(required_after):
+            reasons.append("latest change request predates or is simultaneous with this exact User Review session")
         else:
             return UserReviewResult("CHANGES_REQUESTED", subject, digest,
                                     tuple(reasons + ["authorized user requested changes; reuse same PR"]),
@@ -465,8 +497,8 @@ def add_authenticated_chat_event(
     event = capture_authenticated_chat_event(payload, host_verifier)
     if event.subject_sha256 != session.subject.sha256:
         raise UserReviewError("chat decision belongs to a stale or different User Review subject")
-    if _time(event.updated_at) < _time(session.started_at):
-        raise UserReviewError("chat decision predates this exact User Review session")
+    if _time(event.updated_at) <= _time(session.started_at):
+        raise UserReviewError("chat decision predates or is simultaneous with this exact User Review session")
     events = {(item.channel, item.event_id): item for item in snapshot.events}
     key = (event.channel, event.event_id)
     if key in events and events[key] != event:
@@ -560,6 +592,8 @@ def merge_feedback_history(previous: FeedbackSnapshot | None, current: FeedbackS
             else:
                 live[key] = FeedbackEvent(**{**old.as_dict(), "deleted": True,
                                              "deleted_at": current.observed_at})
+        elif old != live[key] and not live[key].edited:
+            live[key] = FeedbackEvent(**{**live[key].as_dict(), "edited": True})
     return FeedbackSnapshot(current.subject, tuple(sorted(live.values(), key=lambda x: (x.channel, x.event_id))),
                             current.unresolved_thread_ids, current.observed_at).validate()
 
@@ -675,3 +709,374 @@ def write_feedback_snapshot(path: Path, snapshot: FeedbackSnapshot) -> str:
     if read_feedback_snapshot(destination) != snapshot:
         raise UserReviewError("feedback snapshot readback changed")
     return snapshot.sha256
+
+
+@dataclass(frozen=True)
+class ParentReviewSubject:
+    """Frozen human review scope after all parent Integration gates pass."""
+
+    repository: str
+    parent_issue_number: int
+    parent_adc_sha256: str
+    child_merge_set: tuple[tuple[int, str], ...]
+    integration_evidence_digest: str
+
+    def validate(self) -> "ParentReviewSubject":
+        if not isinstance(self.repository, str) or not REPOSITORY.fullmatch(self.repository):
+            raise UserReviewError("parent User Review repository is invalid")
+        if type(self.parent_issue_number) is not int or self.parent_issue_number != 26:
+            raise UserReviewError("parent User Review is fixed to migration Issue #26")
+        if not isinstance(self.parent_adc_sha256, str) or not SHA256.fullmatch(self.parent_adc_sha256):
+            raise UserReviewError("parent User Review needs the approved parent ADC digest")
+        if (type(self.child_merge_set) is not tuple
+                or any(type(row) is not tuple or len(row) != 2 or type(row[0]) is not int
+                       or not isinstance(row[1], str) or not SHA40.fullmatch(row[1])
+                       for row in self.child_merge_set)
+                or tuple(issue for issue, _sha in self.child_merge_set) != PARENT_REVIEW_CHILD_ISSUES
+                or len({sha for _issue, sha in self.child_merge_set}) != len(self.child_merge_set)):
+            raise UserReviewError("parent User Review needs the exact frozen child and merge SHA set")
+        if (not isinstance(self.integration_evidence_digest, str)
+                or not SHA256.fullmatch(self.integration_evidence_digest)):
+            raise UserReviewError("parent User Review needs the exact Integration evidence digest")
+        return self
+
+    def as_dict(self) -> dict[str, Any]:
+        self.validate()
+        return {"schema": "PASES_PARENT_USER_REVIEW_SUBJECT_V1",
+                "repository": self.repository, "parent_issue_number": self.parent_issue_number,
+                "parent_adc_sha256": self.parent_adc_sha256,
+                "child_merge_set": [{"issue_number": issue, "merge_sha40": sha}
+                                    for issue, sha in self.child_merge_set],
+                "integration_evidence_digest": self.integration_evidence_digest}
+
+    @property
+    def sha256(self) -> str:
+        return hashlib.sha256(_canonical(self.as_dict())).hexdigest()
+
+    @classmethod
+    def from_dict(cls, value: Any) -> "ParentReviewSubject":
+        expected = {"schema", "repository", "parent_issue_number", "parent_adc_sha256",
+                    "child_merge_set", "integration_evidence_digest"}
+        if not isinstance(value, dict) or set(value) != expected or value.get("schema") != "PASES_PARENT_USER_REVIEW_SUBJECT_V1":
+            raise UserReviewError("parent User Review subject has unknown or missing fields")
+        rows = value["child_merge_set"]
+        if not isinstance(rows, list) or any(not isinstance(row, dict) or set(row) != {"issue_number", "merge_sha40"}
+                                             for row in rows):
+            raise UserReviewError("parent User Review child merge set is malformed")
+        return cls(value["repository"], value["parent_issue_number"], value["parent_adc_sha256"],
+                   tuple((row["issue_number"], row["merge_sha40"]) for row in rows),
+                   value["integration_evidence_digest"]).validate()
+
+
+@dataclass(frozen=True)
+class ParentUserReviewSession:
+    subject: ParentReviewSubject
+    started_at: str
+
+    def validate(self) -> "ParentUserReviewSession":
+        self.subject.validate()
+        _time(self.started_at)
+        return self
+
+    def as_dict(self) -> dict[str, Any]:
+        self.validate()
+        return {"schema": "PASES_PARENT_USER_REVIEW_SESSION_V1", "started_at": self.started_at,
+                "subject": self.subject.as_dict()}
+
+    @property
+    def sha256(self) -> str:
+        return hashlib.sha256(_canonical(self.as_dict())).hexdigest()
+
+    def to_bytes(self) -> bytes:
+        return _canonical({**self.as_dict(), "session_sha256": self.sha256}) + b"\n"
+
+    @classmethod
+    def from_bytes(cls, raw: bytes) -> "ParentUserReviewSession":
+        try:
+            value = json.loads(raw.decode("utf-8", errors="strict"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise UserReviewError("parent User Review session is not valid UTF-8 JSON") from exc
+        if (not isinstance(value, dict) or set(value) != {"schema", "started_at", "subject", "session_sha256"}
+                or value.get("schema") != "PASES_PARENT_USER_REVIEW_SESSION_V1"):
+            raise UserReviewError("parent User Review session has unknown or missing fields")
+        session = cls(ParentReviewSubject.from_dict(value["subject"]), value["started_at"]).validate()
+        if value["session_sha256"] != session.sha256 or session.to_bytes() != raw:
+            raise UserReviewError("parent User Review session digest or bytes do not match")
+        return session
+
+
+@dataclass(frozen=True)
+class ParentFeedbackSnapshot:
+    subject: ParentReviewSubject
+    events: tuple[FeedbackEvent, ...]
+    observed_at: str
+
+    def validate(self) -> "ParentFeedbackSnapshot":
+        self.subject.validate()
+        if type(self.events) is not tuple or any(not isinstance(row, FeedbackEvent) for row in self.events):
+            raise UserReviewError("parent User Review feedback rows are invalid")
+        for event in self.events:
+            event.validate()
+            if event.channel != "issue-comment":
+                raise UserReviewError("parent User Review accepts only parent Issue comments")
+        keys = [(event.channel, event.event_id) for event in self.events]
+        if keys != sorted(set(keys)):
+            raise UserReviewError("parent User Review feedback rows must be sorted and unique")
+        _time(self.observed_at)
+        return self
+
+    def payload(self) -> dict[str, Any]:
+        self.validate()
+        return {"schema": "PASES_PARENT_USER_REVIEW_FEEDBACK_V1",
+                "subject": self.subject.as_dict(), "events": [event.as_dict() for event in self.events],
+                "observed_at": self.observed_at}
+
+    @property
+    def sha256(self) -> str:
+        return hashlib.sha256(_canonical(self.payload())).hexdigest()
+
+    def to_bytes(self) -> bytes:
+        return _canonical({**self.payload(), "snapshot_sha256": self.sha256}) + b"\n"
+
+    @classmethod
+    def from_bytes(cls, raw: bytes) -> "ParentFeedbackSnapshot":
+        try:
+            value = json.loads(raw.decode("utf-8", errors="strict"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise UserReviewError("parent User Review feedback is not valid UTF-8 JSON") from exc
+        expected = {"schema", "subject", "events", "observed_at", "snapshot_sha256"}
+        if (not isinstance(value, dict) or set(value) != expected
+                or value.get("schema") != "PASES_PARENT_USER_REVIEW_FEEDBACK_V1"
+                or not isinstance(value["events"], list)):
+            raise UserReviewError("parent User Review feedback has unknown or missing fields")
+        events = tuple(FeedbackEvent(**row) for row in value["events"] if isinstance(row, dict))
+        if len(events) != len(value["events"]):
+            raise UserReviewError("parent User Review feedback has a malformed event")
+        snapshot = cls(ParentReviewSubject.from_dict(value["subject"]), events, value["observed_at"]).validate()
+        if value["snapshot_sha256"] != snapshot.sha256 or snapshot.to_bytes() != raw:
+            raise UserReviewError("parent User Review feedback digest or bytes do not match")
+        return snapshot
+
+
+@dataclass(frozen=True)
+class ParentUserReviewResult:
+    status: str
+    subject: ParentReviewSubject
+    feedback_sha256: str
+    reasons: tuple[str, ...]
+    selected_decision_event: str | None = None
+
+    def validate(self) -> "ParentUserReviewResult":
+        self.subject.validate()
+        if self.status not in {"PENDING", "CHANGES_REQUESTED", "BLOCKED", "APPROVED"}:
+            raise UserReviewError("parent User Review status is invalid")
+        if not isinstance(self.feedback_sha256, str) or not SHA256.fullmatch(self.feedback_sha256):
+            raise UserReviewError("parent User Review feedback digest is invalid")
+        if type(self.reasons) is not tuple or any(not isinstance(row, str) or not row for row in self.reasons):
+            raise UserReviewError("parent User Review reasons are invalid")
+        if self.status == "APPROVED" and (self.reasons or not self.selected_decision_event):
+            raise UserReviewError("parent User Review approval needs one proven decision and no reasons")
+        if self.status != "APPROVED" and not self.reasons:
+            raise UserReviewError("non-approved parent User Review needs a reason")
+        return self
+
+    def as_dict(self) -> dict[str, Any]:
+        self.validate()
+        return {"status": self.status, "subject": self.subject.as_dict(),
+                "feedback_sha256": self.feedback_sha256, "reasons": list(self.reasons),
+                "selected_decision_event": self.selected_decision_event}
+
+    @property
+    def sha256(self) -> str:
+        return hashlib.sha256(_canonical(self.as_dict())).hexdigest()
+
+
+def evaluate_parent_user_review(
+    subject: ParentReviewSubject,
+    session: ParentUserReviewSession,
+    events: Iterable[FeedbackEvent],
+    *,
+    allowed_human_user_ids: Iterable[int],
+    all_feedback_read: bool = True,
+) -> ParentUserReviewResult:
+    """Evaluate a parent Issue decision after exact-subject Integration PASS."""
+    subject.validate()
+    session.validate()
+    if session.subject != subject:
+        raise UserReviewError("parent User Review session belongs to a stale Integration subject")
+    rows = tuple(events)
+    digest = feedback_digest(rows)
+    ids = tuple(allowed_human_user_ids)
+    if not ids or any(type(row) is not int or row < 1 for row in ids) or len(set(ids)) != len(ids):
+        raise UserReviewError("trusted parent reviewer ID must be nonempty and unique")
+    reasons: list[str] = []
+    if not all_feedback_read:
+        reasons.append("parent Issue feedback readback is incomplete")
+    deletion_times = [event.deleted_at for event in rows if event.deleted
+                     and event.subject_sha256 == subject.sha256 and event.deleted_at is not None]
+    eligible = [event for event in rows if event.channel == "issue-comment" and event.actor_id in ids
+                and event.actor_type == "User" and event.subject_sha256 == subject.sha256]
+    eligible.sort(key=lambda event: (_time(event.updated_at), _time(event.created_at), event.event_id))
+    latest = eligible[-1] if eligible else None
+    if deletion_times and (latest is None or _time(latest.updated_at) <= max(_time(value) for value in deletion_times)):
+        reasons.append("parent Issue decision was deleted; prior approval is invalid")
+        return ParentUserReviewResult("BLOCKED", subject, digest, tuple(reasons)).validate()
+    if reasons:
+        return ParentUserReviewResult("BLOCKED", subject, digest, tuple(reasons)).validate()
+    if latest is None:
+        reasons.append("no exact-subject parent Issue decision by the authenticated human")
+        return ParentUserReviewResult("PENDING", subject, digest, tuple(reasons)).validate()
+    if latest.deleted:
+        reasons.append("latest parent Issue decision was deleted")
+        return ParentUserReviewResult("BLOCKED", subject, digest, tuple(reasons)).validate()
+    if _time(latest.updated_at) <= _time(session.started_at):
+        reasons.append("parent Issue decision predates or is simultaneous with this Integration-bound User Review session")
+        return ParentUserReviewResult("PENDING", subject, digest, tuple(reasons)).validate()
+    if latest.edited:
+        reasons.append("parent Issue decision was edited; a fresh decision is required")
+        return ParentUserReviewResult("BLOCKED", subject, digest, tuple(reasons)).validate()
+    if latest.kind == "changes_requested":
+        return ParentUserReviewResult("CHANGES_REQUESTED", subject, digest,
+                                      ("authenticated human requested a new parent Integration review",),
+                                      f"issue-comment:{latest.event_id}").validate()
+    if latest.kind != "approved":
+        return ParentUserReviewResult("PENDING", subject, digest,
+                                      ("parent User Review needs an explicit exact-subject approval",)).validate()
+    return ParentUserReviewResult("APPROVED", subject, digest, (),
+                                  f"issue-comment:{latest.event_id}").validate()
+
+
+def parent_review_session_path(root: Path, session: ParentUserReviewSession | ParentReviewSubject) -> Path:
+    subject = session.subject if isinstance(session, ParentUserReviewSession) else session
+    subject.validate()
+    return (Path(root).absolute() / ".p_ases" / "user-review" / str(subject.parent_issue_number)
+            / subject.sha256 / "parent-session.json")
+
+
+def read_parent_review_session(path: Path) -> ParentUserReviewSession:
+    location = Path(path)
+    if path_has_symlink(location):
+        raise UserReviewError("parent User Review session path must not traverse a symbolic link")
+    try:
+        return ParentUserReviewSession.from_bytes(location.read_bytes())
+    except OSError as exc:
+        raise UserReviewError("parent User Review session is missing or unreadable") from exc
+
+
+def write_parent_review_session(path: Path, session: ParentUserReviewSession) -> ParentUserReviewSession:
+    session.validate()
+    destination = Path(path)
+    if path_has_symlink(destination):
+        raise UserReviewError("parent User Review session path must not traverse a symbolic link")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if path_has_symlink(destination):
+        raise UserReviewError("parent User Review session path must not traverse a symbolic link")
+    raw = session.to_bytes()
+    if destination.exists():
+        prior = read_parent_review_session(destination)
+        if prior.subject != session.subject:
+            raise UserReviewError("parent User Review session path belongs to another subject")
+        return prior
+    descriptor, name = tempfile.mkstemp(prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent)
+    temporary = Path(name)
+    try:
+        if hasattr(os, "fchmod"):
+            os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temporary, destination)
+        except FileExistsError:
+            prior = read_parent_review_session(destination)
+            if prior.subject != session.subject:
+                raise UserReviewError("parent User Review session path belongs to another subject")
+            return prior
+        finally:
+            temporary.unlink(missing_ok=True)
+    except OSError as exc:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        temporary.unlink(missing_ok=True)
+        raise UserReviewError("could not atomically store parent User Review session") from exc
+    if read_parent_review_session(destination) != session:
+        raise UserReviewError("parent User Review session readback changed")
+    return session
+
+
+def parent_feedback_snapshot_path(root: Path, snapshot: ParentFeedbackSnapshot) -> Path:
+    snapshot.validate()
+    return (Path(root).absolute() / ".p_ases" / "user-review" / str(snapshot.subject.parent_issue_number)
+            / snapshot.subject.sha256 / f"{snapshot.sha256}.json")
+
+
+def read_parent_feedback_snapshot(path: Path) -> ParentFeedbackSnapshot:
+    location = Path(path)
+    if path_has_symlink(location):
+        raise UserReviewError("parent User Review feedback path must not traverse a symbolic link")
+    try:
+        return ParentFeedbackSnapshot.from_bytes(location.read_bytes())
+    except OSError as exc:
+        raise UserReviewError("parent User Review feedback is missing or unreadable") from exc
+
+
+def write_parent_feedback_snapshot(path: Path, snapshot: ParentFeedbackSnapshot) -> str:
+    snapshot.validate()
+    destination = Path(path)
+    if path_has_symlink(destination):
+        raise UserReviewError("parent User Review feedback path must not traverse a symbolic link")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if path_has_symlink(destination):
+        raise UserReviewError("parent User Review feedback path must not traverse a symbolic link")
+    raw = snapshot.to_bytes()
+    descriptor, name = tempfile.mkstemp(prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent)
+    temporary = Path(name)
+    try:
+        if hasattr(os, "fchmod"):
+            os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temporary, destination)
+        except FileExistsError:
+            if destination.is_symlink() or destination.read_bytes() != raw:
+                raise UserReviewError("parent User Review feedback identity exists with different bytes")
+        finally:
+            temporary.unlink(missing_ok=True)
+    except OSError as exc:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        temporary.unlink(missing_ok=True)
+        raise UserReviewError("could not atomically store parent User Review feedback") from exc
+    if read_parent_feedback_snapshot(destination) != snapshot:
+        raise UserReviewError("parent User Review feedback readback changed")
+    return snapshot.sha256
+
+
+def merge_parent_feedback_history(
+    previous: ParentFeedbackSnapshot | None, current: ParentFeedbackSnapshot,
+) -> ParentFeedbackSnapshot:
+    current.validate()
+    if previous is None:
+        return current
+    previous.validate()
+    if previous.subject != current.subject:
+        raise UserReviewError("parent User Review history belongs to another Integration subject")
+    live = {(event.channel, event.event_id): event for event in current.events}
+    for old in previous.events:
+        key = (old.channel, old.event_id)
+        if key not in live:
+            live[key] = FeedbackEvent(**{**old.as_dict(), "deleted": True,
+                                         "deleted_at": current.observed_at})
+        elif old != live[key] and not live[key].edited:
+            live[key] = FeedbackEvent(**{**live[key].as_dict(), "edited": True})
+    return ParentFeedbackSnapshot(current.subject,
+                                  tuple(sorted(live.values(), key=lambda event: (event.channel, event.event_id))),
+                                  current.observed_at).validate()

@@ -204,12 +204,28 @@ Bootstrap reports `BOOTSTRAP_TECHNICAL_READY` or `BOOTSTRAP_BLOCKED` for the fix
 
 Final human User Review begins only after Review Readiness is PASS for the same repository, Issue, PR, approved ADC digest, exact PR HEAD, and Readiness digest. An immutable session start time is created for that exact subject; a prior approval or change request cannot satisfy a newly started session. The runtime reads every page of Issue comments, PR conversation comments, formal PR reviews, and inline diff comments. It records numeric actor identity and type, object ID, creation/update times, body digest, formal review state, target commit, permalink, and deletion/resolution observations. Snapshot history is immutable so removed or edited feedback makes earlier approval evidence stale.
 
-Only a current human identity can decide User Review. GitHub approval requires a formal `APPROVED` review on the exact current HEAD. A direct chat decision is eligible only through a host adapter that attests the current user, direct conversation, explicit decision, and absence of quoted or attached third-party content. A filesystem payload, bot event, PR existence, generic comment text, or unverifiable chat identity cannot approve. Changes requested on the current scope return the same Issue and PR to execution; a separately triaged scope change returns to requirements. Questions, pending reviews, unresolved discussion threads, stale HEAD/ADC/Readiness, and incomplete API reads remain blockers.
+Only a current human identity can decide User Review. GitHub approval requires a formal `APPROVED` review on the exact current HEAD. A direct chat decision is eligible only through a host adapter that attests the current user, direct conversation, explicit decision, and absence of quoted or attached third-party content. A filesystem payload, bot event, PR existence, generic comment text, or unverifiable chat identity cannot approve. A PR conversation or inline comment requests in-scope changes only when its entire body has exactly these two lines:
+
+```text
+P-ASES-DECISION: CHANGES_REQUESTED
+P-ASES-HEAD: <current full SHA-40>
+```
+
+The authenticated current human must have authored the comment; an inline comment's `commit_id` must equal the named SHA. Quoted, extended, malformed, stale-head, bot, unauthorized, and natural-language comments do not trigger the execution transition. Other comments remain questions. Changes requested on the current scope return the same Issue and PR to execution; a separately triaged scope change returns to requirements. Questions, pending reviews, unresolved discussion threads, stale HEAD/ADC/Readiness, and incomplete API reads remain blockers.
 
 <a id="req-wf-010"></a>
 ### 8.2 REQ-WF-010 Parent Integration and Final Delivery
 
 Parent Integration uses the declared native child Issue set and dependency DAG. It reads every child Issue, native blocker edge, merged PR, standalone child-closing line, actual merge commit, merge timestamp, and final-main ancestry from GitHub. Each dependency must have merged no later than its dependent child. The child set, dependency graph, main SHA, parent ADC, and typed Integration Verification/Acceptance records form one immutable subject. For this migration, legacy parent Issue #26 has no ADC pointer journal; the current approved child #31 ADC is therefore the authority for the parent ADC digest and the immutable `planning/p-ases/08-migration-contract.md` source at commit `f34f166f11bbbe6c45b1555827f37f9467b1e49b`. The evaluator verifies that exact declaration and source availability, then double-reads the child ADC pointer and parent Issue body while collecting the Integration snapshot. Each typed record, its source, and every cited check artifact are fetched through GitHub Contents at that exact main SHA and digest-checked; local caller-supplied PASS files are not authoritative. Missing, extra, duplicate, forked, open, unmerged, out-of-main, or cyclic records block Integration.
+
+After Integration passes, `delivery parent` moves parent Issue #26 from `phase:integration` to `phase:user-review` and starts one immutable parent review session. Its exact subject binds the repository, parent Issue, approved parent ADC digest, six child Issue/merge-SHA pairs, and Integration result digest. The first invocation starts the session; a decision must be a new parent Issue comment with exactly these two lines:
+
+```text
+P-ASES-DECISION: APPROVED
+P-ASES-SUBJECT: <current parent User Review SHA-256>
+```
+
+`CHANGES_REQUESTED` may be used in the first line to withhold parent approval. Only the authenticated current human on the open parent Issue can decide. Edited/deleted comments, a decision predating the session, or a changed ADC, child merge, or Integration subject invalidates prior approval. Parent approval only makes the result ready for a separate explicit activation decision; it does not close or activate the parent or authorize merge/release.
 
 Final Delivery keeps human User Review, GitHub's required formal review decision, exact-HEAD Required Check evidence, branch protection, explicit merge authorization, merge readback, Issue closure, and parent activation as separate gates. A delivery result never performs a merge, release, Issue close, or parent activation. Finalization only reports what GitHub confirms after a separately authorized merge.
 

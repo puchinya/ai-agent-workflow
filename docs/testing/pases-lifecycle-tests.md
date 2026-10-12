@@ -17,6 +17,8 @@
     - [2.3.1 ORA-UR-003 Expected result](#231-ora-ur-003-expected-result)
   - [2.4 TST-UR-004 Final Delivery separation](#24-tst-ur-004-final-delivery-separation)
     - [2.4.1 ORA-UR-004 Expected result](#241-ora-ur-004-expected-result)
+  - [2.5 TST-UR-005 Parent User Review](#25-tst-ur-005-parent-user-review)
+    - [2.5.1 ORA-UR-005 Expected result](#251-ora-ur-005-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -29,6 +31,8 @@
 - [ORA-UR-003](#ora-ur-003) — 2.3.1 ORA-UR-003 Expected result
 - [TST-UR-004](#tst-ur-004) — 2.4 TST-UR-004 Final Delivery separation
 - [ORA-UR-004](#ora-ur-004) — 2.4.1 ORA-UR-004 Expected result
+- [TST-UR-005](#tst-ur-005) — 2.5 TST-UR-005 Parent User Review
+- [ORA-UR-005](#ora-ur-005) — 2.5.1 ORA-UR-005 Expected result
 <!-- heading-map:end -->
 
 
@@ -53,12 +57,12 @@ Only a current human approval on the exact subject passes. Edits, deletions, sta
 <a id="tst-ur-002"></a>
 ### 2.2 TST-UR-002 Feedback loops and host provenance
 
-**Setup and action:** Exercise all four GitHub feedback surfaces, repeated/edited/deleted events, direct host approval, a quoted message, an attachment, and an unverified CLI JSON event.
+**Setup and action:** Exercise all four GitHub feedback surfaces, repeated/edited/deleted events, direct host approval, a quoted message, an attachment, and an unverified CLI JSON event. For PR conversation and diff comments, test the exact two-line `P-ASES-DECISION: CHANGES_REQUESTED` plus `P-ASES-HEAD: <SHA-40>` body, current versus stale HEAD, inline `commit_id` match, authorized versus unrelated human, bot, quote, malformed syntax, and ordinary natural-language requests.
 
 <a id="ora-ur-002"></a>
 #### 2.2.1 ORA-UR-002 Expected result
 
-Changes requested reuse the same Issue/PR and invalidate dependent exact-subject records. Host events require verified current-user provenance; questions and unresolved threads do not approve.
+Only a current authorized human's exact, unquoted, whole-body decision on the current HEAD returns the same Issue/PR to execution. Inline `commit_id` must match. Bot, unauthorized, stale, quoted, malformed, and natural-language comments do not trigger the transition. Host events require verified current-user provenance; questions and unresolved threads do not approve.
 
 <a id="tst-ur-003"></a>
 ### 2.3 TST-UR-003 Parent Integration evidence
@@ -79,3 +83,13 @@ Integration passes only for the frozen native child set, exact dependency DAG, c
 #### 2.4.1 ORA-UR-004 Expected result
 
 Each gate must be checked separately. Final Delivery never authorizes or performs merge, release, Issue closure, or parent activation.
+
+<a id="tst-ur-005"></a>
+### 2.5 TST-UR-005 Parent User Review
+
+**Setup and action:** With parent Integration blocked, verify no parent review session starts and `phase:user-review` is not set. With a passing fixed Integration subject, verify the parent phase moves from `integration` to `user-review`, an immutable session binds the parent ADC, six child/merge pairs, and Integration digest, and the first invocation returns pending. Then vary exact parent Issue decision subject, actor identity/type, session timestamp, comment edit/deletion, ADC digest, child merge SHA, and Integration digest. Confirm an exact current human approval is recognized, while approval never sets merge authorization or activation.
+
+<a id="ora-ur-005"></a>
+#### 2.5.1 ORA-UR-005 Expected result
+
+Parent User Review starts only after exact Integration PASS. Only a new whole-body `P-ASES-DECISION: APPROVED` plus `P-ASES-SUBJECT: <SHA-256>` parent Issue comment from the authenticated human can approve. Stale, edited, deleted, incomplete, or changed-subject decisions fail closed. Approval leaves parent close, activation, merge, and release as separate gates.

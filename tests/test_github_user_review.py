@@ -8,6 +8,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases.github import GitHub, GitHubError
+from p_ases.delivery import ReadinessResult
+from p_ases.evidence_store import VerificationSubject
+from p_ases.phases import IssueKind
+from p_ases.user_review import UserReviewSubject, evaluate_user_review
+from p_ases.cli import _review_payload_from_github, _review_phase_transition
 
 
 class FakeGitHub(GitHub):
@@ -28,6 +33,66 @@ def records(n, offset=0):
 
 
 class UserReviewGitHubAdapterTests(unittest.TestCase):
+    def test_cli_review_sync_maps_explicit_pr_and_diff_comments_to_same_execution_loop(self):
+        head = "a" * 40
+        verification_subject = VerificationSubject(
+            "octo/repo", 31, 37, 123, "b" * 64, "c" * 64, head).validate()
+        readiness = ReadinessResult("PASS", verification_subject, (), ("d" * 64,), "e" * 64).validate()
+        subject = UserReviewSubject(verification_subject, readiness.sha256).validate()
+        body = f"P-ASES-DECISION: CHANGES_REQUESTED\nP-ASES-HEAD: {head}"
+        comment = {"id": 700, "created_at": "2026-10-12T00:00:00Z",
+                   "updated_at": "2026-10-12T00:00:00Z", "body": body,
+                   "user": {"id": 42, "login": "puchinya", "type": "User"},
+                   "html_url": "https://github.com/octo/repo/pull/37#issuecomment-700",
+                   "commit_id": None}
+
+        class FeedbackGitHub:
+            def __init__(self, *, conversation=(), inline=()):
+                self.conversation = list(conversation)
+                self.inline = list(inline)
+
+            def issue_comments(self, _issue):
+                return []
+
+            def pull_conversation_comments(self, _pr):
+                return self.conversation
+
+            def pull_reviews(self, _pr):
+                return []
+
+            def pull_diff_comments(self, _pr):
+                return self.inline
+
+            def pull_review_threads(self, _pr):
+                return []
+
+        for channel, fake in (
+            ("pr-comment", FeedbackGitHub(conversation=(comment,))),
+            ("diff-comment", FeedbackGitHub(inline=({**comment, "commit_id": head},))),
+        ):
+            with self.subTest(channel=channel):
+                snapshot = _review_payload_from_github(
+                    fake, subject, observed_at="2026-10-12T00:01:00Z")
+                result = evaluate_user_review(
+                    subject, readiness, head, snapshot.events, allowed_human_user_ids=(42,))
+                self.assertEqual(result.status, "CHANGES_REQUESTED")
+                self.assertEqual(result.next_phase, "execution")
+                self.assertEqual(result.subject.verification_subject, verification_subject)
+
+        class LabelGitHub:
+            def __init__(self):
+                self.labels = ["phase:user-review"]
+
+            def issue(self, _issue):
+                return {"number": 31, "state": "open", "labels": [{"name": row} for row in self.labels]}
+
+            def replace_issue_labels(self, _issue, labels):
+                self.labels = list(labels)
+
+        github = LabelGitHub()
+        _review_phase_transition(github, 31, IssueKind.CHILD, result, "sync")
+        self.assertIn("phase:execution", github.labels)
+
     def test_formal_reviews_and_inline_comments_paginate_all_pages(self):
         gh = FakeGitHub((records(100), records(1, 100), records(1)))
         self.assertEqual(len(gh.pull_reviews(37)), 101)

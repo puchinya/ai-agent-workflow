@@ -76,12 +76,17 @@ from .verification_plan import (
     REQ_ID_PATTERN, PlanEntry, PlanError, VerificationPlan, create_plan, read_plan,
     verify_plan_sources,
 )
+from .path_safety import path_has_symlink
 from .user_review import (
-    FeedbackSnapshot, UserReviewError, UserReviewResult, UserReviewSession, UserReviewSubject,
-    capture_authenticated_chat_event, feedback_digest, feedback_snapshot_path,
-    merge_feedback_history, normalize_github_feedback, read_feedback_snapshot,
+    FeedbackSnapshot, ParentFeedbackSnapshot, ParentReviewSubject,
+    ParentUserReviewSession, UserReviewError, UserReviewResult, UserReviewSession, UserReviewSubject,
+    capture_authenticated_chat_event, evaluate_parent_user_review, feedback_digest,
+    feedback_snapshot_path, merge_feedback_history, merge_parent_feedback_history,
+    normalize_github_feedback, parent_feedback_snapshot_path, parent_review_session_path,
+    read_feedback_snapshot, read_parent_feedback_snapshot, read_parent_review_session,
     read_review_session, reject_unattested_chat_event, evaluate_user_review,
-    review_session_path, write_feedback_snapshot, write_review_session,
+    review_session_path, write_feedback_snapshot, write_parent_feedback_snapshot,
+    write_parent_review_session, write_review_session,
 )
 from .integration import (
     IntegrationError, IntegrationGateEvidence, evaluate_parent_integration,
@@ -1692,7 +1697,7 @@ def _user_review_run(args: argparse.Namespace, repository: str, root: Path, gith
             session = read_review_session(session_path)
             if session.subject != user_review_subject:
                 raise UserReviewError("User Review session belongs to a stale or different exact subject")
-        observed_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+        observed_at = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
         current = _review_payload_from_github(github, user_review_subject, observed_at=observed_at)
         previous = _latest_review_snapshot(root, user_review_subject)
         snapshot = merge_feedback_history(previous, current)
@@ -1709,7 +1714,7 @@ def _user_review_run(args: argparse.Namespace, repository: str, root: Path, gith
         current_pr_identity = _readback_current_pr(github, subject)
         current_readiness = read_readiness(args.readiness)
         current_identity = github.authenticated_user()
-        second_observed = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+        second_observed = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
         second = _review_payload_from_github(github, user_review_subject, observed_at=second_observed)
         second = merge_feedback_history(previous, second)
         if (current_issue.get("state") != "open" or current_adc.pointer != verified_adc.pointer
@@ -2110,23 +2115,202 @@ def _issue_integration_check(args: argparse.Namespace, repository: str, root: Pa
         return _blocked_result((str(exc),))
 
 
+def _parent_review_subject_from_integration(result: Any) -> ParentReviewSubject:
+    if getattr(result, "status", None) != "PASS":
+        raise CLIError("parent User Review can start only after complete parent Integration PASS")
+    integration_subject = result.subject
+    subject = ParentReviewSubject(
+        integration_subject.repository,
+        integration_subject.parent_issue_number,
+        integration_subject.parent_adc_sha256,
+        tuple((row.issue_number, row.merge_sha40) for row in integration_subject.children),
+        result.sha256,
+    )
+    return subject.validate()
+
+
+def _latest_parent_feedback_snapshot(root: Path, subject: ParentReviewSubject) -> ParentFeedbackSnapshot | None:
+    folder = (Path(root).absolute() / ".p_ases" / "user-review" / str(subject.parent_issue_number)
+              / subject.sha256)
+    if path_has_symlink(folder):
+        raise UserReviewError("parent User Review history path must not traverse a symbolic link")
+    if not folder.exists():
+        return None
+    if not folder.is_dir():
+        raise UserReviewError("parent User Review history path is not a directory")
+    snapshots: list[ParentFeedbackSnapshot] = []
+    for path in folder.glob("*.json"):
+        if path.name == "parent-session.json" or path.name.endswith(".result.json"):
+            continue
+        snapshot = read_parent_feedback_snapshot(path)
+        if snapshot.subject == subject:
+            snapshots.append(snapshot)
+    return max(snapshots, key=lambda item: item.observed_at) if snapshots else None
+
+
+def _require_parent_user_review_phase(issue: dict[str, Any], issue_number: int) -> None:
+    if issue.get("number") != issue_number or issue.get("state") != "open":
+        raise CLIError("parent User Review requires the same open parent Issue")
+    rows = issue.get("labels")
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise CLIError("parent Issue phase labels are malformed")
+    labels = [row.get("name") for row in rows]
+    if any(not isinstance(label, str) for label in labels):
+        raise CLIError("parent Issue phase label is malformed")
+    if "kind:parent" not in labels:
+        raise CLIError("parent Issue kind changed during User Review")
+    if parse_phase_labels(labels) is not Phase.USER_REVIEW or parse_attention_labels(labels):
+        raise CLIError("parent Issue is no longer in unblocked User Review")
+
+
+def _advance_parent_to_user_review(github: GitHub, issue_number: int) -> None:
+    issue = github.issue(issue_number)
+    if issue.get("number") != issue_number or issue.get("state") != "open":
+        raise CLIError("parent User Review phase transition needs the same open parent Issue")
+    rows = issue.get("labels")
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise CLIError("parent Issue phase labels are malformed")
+    labels = [row.get("name") for row in rows]
+    if any(not isinstance(label, str) for label in labels):
+        raise CLIError("parent Issue phase label is malformed")
+    if "kind:parent" not in labels:
+        raise CLIError("parent Issue kind is not parent")
+    phase, attention = parse_phase_labels(labels), parse_attention_labels(labels)
+    if attention:
+        raise CLIError("clear parent waiting/blocked attention before starting User Review")
+    if phase is Phase.USER_REVIEW:
+        return
+    if phase is not Phase.INTEGRATION:
+        raise CLIError("parent User Review can start only from the Integration phase")
+    next_state = advance(PhaseState(issue_number, IssueKind.PARENT, phase, attention),
+                         Phase.USER_REVIEW, integration_passed=True)
+    current = github.issue(issue_number)
+    current_rows = current.get("labels") if isinstance(current, dict) else None
+    current_labels = ([row.get("name") for row in current_rows if isinstance(row, dict)]
+                      if isinstance(current_rows, list) else None)
+    if (current.get("state") != "open" or current.get("number") != issue_number
+            or current_labels != labels):
+        raise CLIError("parent Issue phase changed during Integration readback")
+    kept = [label for label in labels if not label.startswith(("phase:", "attention:"))]
+    kept.append(f"phase:{next_state.phase.value}")
+    github.replace_issue_labels(issue_number, kept)
+    readback = github.issue(issue_number)
+    _require_parent_user_review_phase(readback, issue_number)
+
+
 def _delivery_parent(args: argparse.Namespace, repository: str, root: Path,
                      github: GitHub) -> int:
     try:
         result, path, verification, acceptance = _read_parent_integration(args, repository, root, github)
-        reasons = list(result.reasons)
-        reasons.append("parent User Review evidence is not yet available")
-        reasons.append("parent Activation, merge, and release remain separate user-authorized gates")
-        _json({"status": "BLOCKED", "parent_issue": 26,
+        evidence_refs = [str(path), *(str(value) for value in (args.verification, args.acceptance)
+                                       if value is not None),
+                         *(row.source_reference for row in (verification, acceptance)
+                           if row is not None)]
+        if result.status != "PASS":
+            _json({"status": "BLOCKED", "parent_issue": 26,
+                   "integration_status": result.status, "integration_sha256": result.sha256,
+                   "parent_user_review": "NOT_EVALUATED", "merge_authorized": False,
+                   "activation_issued": False, "reasons": list(result.reasons),
+                   "remaining_gates": ["parent Integration must PASS before Parent User Review"],
+                   "evidence_refs": evidence_refs})
+            return 2
+
+        subject = _parent_review_subject_from_integration(result)
+        expected_repo_url = f"https://api.github.com/repos/{repository}".casefold()
+        issue = github.issue(subject.parent_issue_number)
+        if (not isinstance(issue, dict) or issue.get("number") != subject.parent_issue_number or issue.get("state") != "open"
+                or issue.get("pull_request") is not None
+                or not isinstance(issue.get("repository_url"), str)
+                or issue["repository_url"].casefold() != expected_repo_url
+                or not isinstance(issue.get("body"), str)):
+            raise CLIError("Parent User Review requires the same open parent Issue body readback")
+        _advance_parent_to_user_review(github, subject.parent_issue_number)
+        issue = github.issue(subject.parent_issue_number)
+        if (not isinstance(issue, dict) or issue.get("number") != subject.parent_issue_number or issue.get("state") != "open"
+                or issue.get("pull_request") is not None
+                or not isinstance(issue.get("repository_url"), str)
+                or issue["repository_url"].casefold() != expected_repo_url
+                or not isinstance(issue.get("body"), str)):
+            raise CLIError("parent Issue changed during User Review phase transition")
+        _require_parent_user_review_phase(issue, subject.parent_issue_number)
+        parent_body_sha256 = hashlib.sha256(issue["body"].encode("utf-8")).hexdigest()
+        parent_adc_sha256, parent_adc_pointer = _parent_adc_authority(github)
+        if parent_adc_sha256 != subject.parent_adc_sha256:
+            raise CLIError("parent ADC changed after Integration PASS")
+
+        session_path = parent_review_session_path(root, subject)
+        candidate = ParentUserReviewSession(
+            subject, datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z"))
+        session = (write_parent_review_session(session_path, candidate) if not session_path.exists()
+                   else read_parent_review_session(session_path))
+        if session.subject != subject:
+            raise UserReviewError("Parent User Review session belongs to stale child merges or Integration")
+
+        def read_snapshot(observed_at: str) -> ParentFeedbackSnapshot:
+            comments = github.issue_comments(subject.parent_issue_number)
+            events = normalize_github_feedback(issue_comments=comments, pr_comments=(),
+                                                pr_reviews=(), diff_comments=())
+            ordered = tuple(sorted((row for row in events if row.channel == "issue-comment"),
+                                   key=lambda row: (row.channel, row.event_id)))
+            return ParentFeedbackSnapshot(subject, ordered, observed_at).validate()
+
+        previous = _latest_parent_feedback_snapshot(root, subject)
+        observed_at = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+        current = merge_parent_feedback_history(previous, read_snapshot(observed_at))
+        identity = github.authenticated_user()
+        review = evaluate_parent_user_review(
+            subject, session, current.events, allowed_human_user_ids=(identity["id"],))
+
+        second_result, second_path, _second_verification, _second_acceptance = _read_parent_integration(
+            args, repository, root, github)
+        second_issue = github.issue(subject.parent_issue_number)
+        second_adc_sha256, second_adc_pointer = _parent_adc_authority(github)
+        second_identity = github.authenticated_user()
+        second_observed = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+        second_current = merge_parent_feedback_history(previous, read_snapshot(second_observed))
+        if (second_result.status != "PASS" or second_result.sha256 != result.sha256
+                or second_path != path or second_adc_sha256 != parent_adc_sha256
+                or second_adc_pointer != parent_adc_pointer
+                or not isinstance(second_issue, dict)
+                or second_issue.get("number") != subject.parent_issue_number
+                or second_issue.get("state") != "open"
+                or second_issue.get("pull_request") is not None
+                or not isinstance(second_issue.get("repository_url"), str)
+                or second_issue["repository_url"].casefold() != expected_repo_url
+                or not isinstance(second_issue.get("body"), str)
+                or second_issue.get("labels") != issue.get("labels")
+                or hashlib.sha256(second_issue["body"].encode("utf-8")).hexdigest()
+                != parent_body_sha256
+                or second_identity.get("id") != identity.get("id")
+                or feedback_digest(second_current.events) != feedback_digest(current.events)
+                or session != read_parent_review_session(session_path)):
+            raise CLIError("Parent Issue, ADC, Integration, identity, or feedback changed during User Review")
+        _require_parent_user_review_phase(second_issue, subject.parent_issue_number)
+
+        snapshot_path = parent_feedback_snapshot_path(root, current)
+        write_parent_feedback_snapshot(snapshot_path, current)
+        review_record = {"schema": "PASES_PARENT_USER_REVIEW_RESULT_V1",
+                         "subject": subject.as_dict(), "subject_sha256": subject.sha256,
+                         "session_sha256": session.sha256, "snapshot_sha256": current.sha256,
+                         "result": review.as_dict(), "result_sha256": review.sha256}
+        review_path = (Path(root).absolute() / ".p_ases" / "user-review"
+                       / str(subject.parent_issue_number) / subject.sha256
+                       / f"{review.sha256}-{current.sha256}.result.json")
+        _write_immutable(review_path, _canonical(review_record) + b"\n", root=root)
+        result_status = ("READY_FOR_EXPLICIT_ACTIVATION_APPROVAL" if review.status == "APPROVED"
+                         else "PARENT_USER_REVIEW_" + review.status)
+        _json({"status": result_status, "parent_issue": subject.parent_issue_number,
                "integration_status": result.status, "integration_sha256": result.sha256,
-               "parent_user_review": "NOT_EVALUATED", "merge_authorized": False,
-               "activation_issued": False, "reasons": reasons,
-               "evidence_refs": [str(path), *(str(value) for value in (args.verification, args.acceptance)
-                                                  if value is not None),
-                                 *(row.source_reference for row in (verification, acceptance)
-                                   if row is not None)]})
-        return 2
-    except (ADCError, GitHubError, IntegrationError, CLIError, OSError, ValueError) as exc:
+               "parent_user_review": review.status, "parent_review_subject": subject.as_dict(),
+               "parent_review_subject_sha256": subject.sha256,
+               "parent_review_session_sha256": session.sha256,
+               "parent_review_result_sha256": review.sha256,
+               "merge_authorized": False, "activation_issued": False,
+               "reasons": list(review.reasons),
+               "remaining_gates": ["activation, merge, and release require separate explicit user authorization"],
+               "evidence_refs": [*evidence_refs, str(session_path), str(snapshot_path), str(review_path)]})
+        return 0 if review.status == "APPROVED" else 2
+    except (ADCError, GitHubError, IntegrationError, UserReviewError, CLIError, OSError, ValueError) as exc:
         return _blocked_result((str(exc),))
 
 

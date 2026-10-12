@@ -13,11 +13,15 @@ sys.path.insert(0, str(ROOT / "runtime"))
 from p_ases.delivery import ReadinessResult
 from p_ases.evidence_store import VerificationSubject
 from p_ases.user_review import (
-    FeedbackSnapshot, UserReviewError, UserReviewSession, UserReviewSubject, add_authenticated_chat_event,
+    FeedbackSnapshot, ParentFeedbackSnapshot, ParentReviewSubject, ParentUserReviewSession,
+    UserReviewError, UserReviewSession, UserReviewSubject, add_authenticated_chat_event,
     capture_authenticated_chat_event,
-    evaluate_user_review, feedback_digest, merge_feedback_history,
-    normalize_github_feedback, read_review_session, reject_unattested_chat_event,
-    review_session_path, write_review_session,
+    evaluate_parent_user_review, evaluate_user_review, feedback_digest, merge_feedback_history,
+    merge_parent_feedback_history, normalize_github_feedback,
+    parent_feedback_snapshot_path, parent_review_session_path, read_parent_feedback_snapshot,
+    read_parent_review_session, read_review_session, reject_unattested_chat_event,
+    review_session_path, write_parent_feedback_snapshot, write_parent_review_session,
+    write_review_session,
 )
 
 HEAD = "a" * 40
@@ -25,6 +29,11 @@ SUBJECT = VerificationSubject("octo/repo", 31, 37, 123, "b" * 64, "c" * 64, HEAD
 READINESS = ReadinessResult("PASS", SUBJECT, (), ("d" * 64,), "e" * 64).validate()
 USER_SUBJECT = UserReviewSubject(SUBJECT, READINESS.sha256)
 CREATED = "2026-10-12T00:00:00Z"
+PARENT_SUBJECT = ParentReviewSubject(
+    "octo/repo", 26, "b" * 64,
+    tuple((number, f"{number:040x}") for number in range(27, 33)), "c" * 64,
+).validate()
+PARENT_SESSION = ParentUserReviewSession(PARENT_SUBJECT, "2026-10-11T23:59:00Z").validate()
 
 
 def github_review(identifier=4, *, state="APPROVED", head=HEAD, actor=42, login="puchinya",
@@ -37,12 +46,13 @@ def github_review(identifier=4, *, state="APPROVED", head=HEAD, actor=42, login=
     }
 
 
-def comment(identifier=6, *, user_id=42, body="Please clarify", channel="pr-comment"):
+def comment(identifier=6, *, user_id=42, actor_type="User", body="Please clarify", channel="pr-comment",
+            commit_id=None):
     return {
         "id": identifier, "created_at": CREATED, "updated_at": CREATED, "body": body,
-        "user": {"id": user_id, "login": "someone", "type": "User"},
+        "user": {"id": user_id, "login": "someone", "type": actor_type},
         "html_url": f"https://github.com/octo/repo/pull/37#issuecomment-{identifier}",
-        "commit_id": HEAD if channel == "diff-comment" else None,
+        "commit_id": commit_id or (HEAD if channel == "diff-comment" else None),
     }
 
 
@@ -54,6 +64,21 @@ def rows(*, reviews=(), issue=(), pr=(), diff=()):
 def evaluate(events, **kwargs):
     return evaluate_user_review(
         USER_SUBJECT, READINESS, HEAD, events, allowed_human_user_ids=(42,), **kwargs)
+
+
+def parent_issue_comment(identifier=90, *, user_id=42, actor_type="User", decision="APPROVED",
+                         subject_sha256=None, updated_at=CREATED):
+    subject = subject_sha256 or PARENT_SUBJECT.sha256
+    body = f"P-ASES-DECISION: {decision}\nP-ASES-SUBJECT: {subject}"
+    return {
+        "id": identifier, "created_at": CREATED, "updated_at": updated_at, "body": body,
+        "user": {"id": user_id, "login": "puchinya", "type": actor_type},
+        "html_url": f"https://github.com/octo/repo/issues/26#issuecomment-{identifier}",
+    }
+
+
+def parent_events(*, comments=()):
+    return normalize_github_feedback(issue_comments=comments, pr_comments=(), pr_reviews=(), diff_comments=())
 
 
 class UserReviewTests(unittest.TestCase):
@@ -129,6 +154,135 @@ class UserReviewTests(unittest.TestCase):
         events = rows(pr=(comment(body=text),))
         self.assertNotEqual(evaluate(events).status, "APPROVED")
 
+    def test_explicit_pr_conversation_and_inline_change_commands_return_to_same_execution_loop(self):
+        directive = f"P-ASES-DECISION: CHANGES_REQUESTED\nP-ASES-HEAD: {HEAD}"
+        for channel in ("pr-comment", "diff-comment"):
+            with self.subTest(channel=channel):
+                event_rows = rows(**{ "pr" if channel == "pr-comment" else "diff": (
+                    comment(body=directive, channel=channel),
+                )})
+                event = event_rows[0]
+                self.assertEqual(event.kind, "changes_requested")
+                self.assertEqual(event.head_sha40, HEAD)
+                result = evaluate(event_rows)
+                self.assertEqual(result.status, "CHANGES_REQUESTED")
+                self.assertEqual(result.next_phase, "execution")
+                self.assertEqual(result.subject, USER_SUBJECT)
+
+    def test_ordinary_quoted_malformed_and_unauthorized_comments_never_request_changes(self):
+        invalid_bodies = (
+            "Please fix this defect",
+            f"> P-ASES-DECISION: CHANGES_REQUESTED\n> P-ASES-HEAD: {HEAD}",
+            f"P-ASES-DECISION: CHANGES_REQUESTED\nP-ASES-HEAD: {HEAD}\nPlease fix this",
+            f"P-ASES-DECISION: CHANGES_REQUESTED\nP-ASES-HEAD: {'z' * 40}",
+        )
+        for body in invalid_bodies:
+            with self.subTest(body=body):
+                event_rows = rows(pr=(comment(body=body),))
+                self.assertEqual(event_rows[0].kind, "questions")
+                self.assertNotEqual(evaluate(event_rows).next_phase, "execution")
+
+        directive = f"P-ASES-DECISION: CHANGES_REQUESTED\nP-ASES-HEAD: {HEAD}"
+        unauthorized = rows(pr=(comment(body=directive, user_id=99),))
+        bot = rows(pr=(comment(body=directive, actor_type="Bot"),))
+        self.assertEqual(unauthorized[0].kind, "changes_requested")
+        self.assertNotEqual(evaluate(unauthorized).next_phase, "execution")
+        self.assertNotEqual(evaluate(bot).next_phase, "execution")
+
+    def test_inline_change_command_must_match_github_diff_commit_and_current_head(self):
+        directive = f"P-ASES-DECISION: CHANGES_REQUESTED\nP-ASES-HEAD: {HEAD}"
+        mismatched_diff = rows(diff=(comment(body=directive, channel="diff-comment", commit_id="f" * 40),))
+        self.assertEqual(mismatched_diff[0].kind, "questions")
+        stale = rows(pr=(comment(body=f"P-ASES-DECISION: CHANGES_REQUESTED\nP-ASES-HEAD: {'f' * 40}"),))
+        stale_result = evaluate(stale)
+        self.assertEqual(stale_result.status, "BLOCKED")
+        self.assertNotEqual(stale_result.next_phase, "execution")
+        edited_row = comment(body=directive)
+        edited_row["updated_at"] = "2026-10-12T00:01:00Z"
+        edited = rows(pr=(edited_row,))
+        self.assertTrue(edited[0].edited)
+        self.assertNotEqual(evaluate(edited).next_phase, "execution")
+
+    def test_parent_review_requires_explicit_exact_subject_human_issue_decision(self):
+        approved = parent_events(comments=(parent_issue_comment(),))
+        self.assertEqual(approved[0].kind, "approved")
+        self.assertEqual(approved[0].subject_sha256, PARENT_SUBJECT.sha256)
+        result = evaluate_parent_user_review(
+            PARENT_SUBJECT, PARENT_SESSION, approved, allowed_human_user_ids=(42,))
+        self.assertEqual(result.status, "APPROVED")
+        self.assertEqual(result.selected_decision_event, "issue-comment:90")
+
+        quoted_row = parent_issue_comment(identifier=91)
+        quoted_row["body"] = "> " + quoted_row["body"].replace("\n", "\n> ")
+        ordinary_row = parent_issue_comment(identifier=92)
+        ordinary_row["body"] = "Looks good to me"
+        self.assertEqual(parent_events(comments=(quoted_row,))[0].kind, "questions")
+        self.assertEqual(parent_events(comments=(ordinary_row,))[0].kind, "questions")
+        for rows in (parent_events(comments=(quoted_row,)), parent_events(comments=(ordinary_row,)),
+                     parent_events(comments=(parent_issue_comment(user_id=99),)),
+                     parent_events(comments=(parent_issue_comment(actor_type="Bot"),)),
+                     parent_events(comments=(parent_issue_comment(subject_sha256="d" * 64),))):
+            self.assertEqual(evaluate_parent_user_review(
+                PARENT_SUBJECT, PARENT_SESSION, rows, allowed_human_user_ids=(42,)).status, "PENDING")
+
+    def test_parent_review_changes_stale_and_incomplete_decisions_fail_closed(self):
+        requested = parent_events(comments=(parent_issue_comment(decision="CHANGES_REQUESTED"),))
+        self.assertEqual(evaluate_parent_user_review(
+            PARENT_SUBJECT, PARENT_SESSION, requested, allowed_human_user_ids=(42,)).status,
+            "CHANGES_REQUESTED")
+        edited = parent_events(comments=(parent_issue_comment(updated_at="2026-10-12T00:01:00Z"),))
+        self.assertEqual(evaluate_parent_user_review(
+            PARENT_SUBJECT, PARENT_SESSION, edited, allowed_human_user_ids=(42,)).status, "BLOCKED")
+        approved_before_session = ParentUserReviewSession(PARENT_SUBJECT, "2026-10-12T00:01:00Z")
+        self.assertEqual(evaluate_parent_user_review(
+            PARENT_SUBJECT, approved_before_session, parent_events(comments=(parent_issue_comment(),)),
+            allowed_human_user_ids=(42,)).status, "PENDING")
+        simultaneous_session = ParentUserReviewSession(PARENT_SUBJECT, CREATED)
+        self.assertEqual(evaluate_parent_user_review(
+            PARENT_SUBJECT, simultaneous_session, parent_events(comments=(parent_issue_comment(),)),
+            allowed_human_user_ids=(42,)).status,
+            "PENDING")
+        self.assertEqual(evaluate_parent_user_review(
+            PARENT_SUBJECT, PARENT_SESSION, parent_events(comments=(parent_issue_comment(),)),
+            allowed_human_user_ids=(42,), all_feedback_read=False).status, "BLOCKED")
+        changed_subject = replace(PARENT_SUBJECT, integration_evidence_digest="f" * 64)
+        with self.assertRaisesRegex(UserReviewError, "stale Integration subject"):
+            evaluate_parent_user_review(
+                changed_subject, PARENT_SESSION, parent_events(comments=(parent_issue_comment(),)),
+                allowed_human_user_ids=(42,))
+
+    def test_parent_review_deletion_tombstones_invalidate_approval_and_artifacts_are_immutable(self):
+        first = ParentFeedbackSnapshot(PARENT_SUBJECT, parent_events(comments=(parent_issue_comment(),)), CREATED)
+        current = ParentFeedbackSnapshot(PARENT_SUBJECT, (), "2026-10-12T00:02:00Z")
+        merged = merge_parent_feedback_history(first, current)
+        self.assertTrue(merged.events[0].deleted)
+        result = evaluate_parent_user_review(
+            PARENT_SUBJECT, PARENT_SESSION, merged.events, allowed_human_user_ids=(42,))
+        self.assertEqual(result.status, "BLOCKED")
+
+        edited_row = parent_issue_comment()
+        edited_row["body"] = "Edited comment retaining the old API timestamp"
+        edited_snapshot = ParentFeedbackSnapshot(
+            PARENT_SUBJECT, parent_events(comments=(edited_row,)), "2026-10-12T00:03:00Z")
+        edit_readback = merge_parent_feedback_history(first, edited_snapshot)
+        self.assertTrue(edit_readback.events[0].edited)
+        self.assertNotEqual(evaluate_parent_user_review(
+            PARENT_SUBJECT, PARENT_SESSION, edit_readback.events,
+            allowed_human_user_ids=(42,)).status, "APPROVED")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = parent_review_session_path(root, PARENT_SUBJECT)
+            saved = write_parent_review_session(path, PARENT_SESSION)
+            retry = write_parent_review_session(path, ParentUserReviewSession(
+                PARENT_SUBJECT, "2026-10-12T00:05:00Z"))
+            self.assertEqual(saved, PARENT_SESSION)
+            self.assertEqual(retry, PARENT_SESSION)
+            self.assertEqual(read_parent_review_session(path), PARENT_SESSION)
+            snapshot_path = parent_feedback_snapshot_path(root, first)
+            write_parent_feedback_snapshot(snapshot_path, first)
+            self.assertEqual(read_parent_feedback_snapshot(snapshot_path), first)
+
     def test_latest_question_after_approval_requires_a_new_formal_decision(self):
         events = rows(reviews=(github_review(),), pr=(comment(body="Can we clarify this?"),))
         self.assertEqual(evaluate(events).status, "PENDING")
@@ -164,7 +318,7 @@ class UserReviewTests(unittest.TestCase):
         with self.assertRaisesRegex(UserReviewError, "not a direct unquoted"):
             capture_authenticated_chat_event("quoted", lambda _payload: {**assertion, "is_quoted": True})
 
-        session = UserReviewSession(USER_SUBJECT, CREATED).validate()
+        session = UserReviewSession(USER_SUBJECT, "2026-10-11T23:59:00Z").validate()
         current = FeedbackSnapshot(USER_SUBJECT, (), (), CREATED).validate()
         with_chat = add_authenticated_chat_event(
             current, session, "opaque host payload", lambda _payload: assertion)
@@ -206,6 +360,10 @@ class UserReviewTests(unittest.TestCase):
             )
             self.assertEqual(result.status, "BLOCKED")
             self.assertTrue(any("predates" in reason for reason in result.reasons))
+
+        simultaneous = evaluate(approval, required_after=CREATED)
+        self.assertEqual(simultaneous.status, "BLOCKED")
+        self.assertTrue(any("simultaneous" in reason for reason in simultaneous.reasons))
 
     def test_stale_or_pre_session_change_request_does_not_reopen_execution(self):
         before_session = rows(reviews=(github_review(state="CHANGES_REQUESTED"),))

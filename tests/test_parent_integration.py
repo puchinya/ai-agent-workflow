@@ -3,8 +3,11 @@ from __future__ import annotations
 from dataclasses import replace
 import sys
 import hashlib
+import io
 import json
+import tempfile
 import unittest
+import contextlib
 from types import SimpleNamespace
 from unittest.mock import patch
 from pathlib import Path
@@ -17,8 +20,9 @@ from p_ases.integration import (
 )
 from p_ases.cli import (
     PARENT_ISSUE_CONTRACT_COMMIT, PARENT_ISSUE_CONTRACT_SOURCE,
+    CLIError, _advance_parent_to_user_review, _delivery_parent, _require_parent_user_review_phase,
     _load_parent_gate_evidence_from_github, _parent_adc_authority,
-    _parent_contract_declaration,
+    _parent_contract_declaration, _parent_review_subject_from_integration,
 )
 
 EXPECTED = (27, 28, 29, 30, 31, 32)
@@ -65,6 +69,103 @@ def integration_fixture():
 
 
 class ParentIntegrationTests(unittest.TestCase):
+    def test_parent_review_subject_is_exact_integration_pass_and_phase_transition_is_guarded(self):
+        passed = evaluate_parent_integration(**integration_fixture())
+        subject = _parent_review_subject_from_integration(passed)
+        self.assertEqual(subject.parent_issue_number, 26)
+        self.assertEqual(subject.child_merge_set,
+                         tuple((row.issue_number, row.merge_sha40) for row in passed.subject.children))
+        self.assertEqual(subject.integration_evidence_digest, passed.sha256)
+
+        blocked_inputs = integration_fixture()
+        blocked_inputs["child_issue_rows"][-1]["state"] = "open"
+        blocked = evaluate_parent_integration(**blocked_inputs)
+        with self.assertRaisesRegex(CLIError, "only after complete parent Integration PASS"):
+            _parent_review_subject_from_integration(blocked)
+
+        class LabelGitHub:
+            def __init__(self, labels):
+                self.labels = labels
+                self.replacements = []
+
+            def issue(self, _number):
+                return {"number": 26, "state": "open",
+                        "labels": [{"name": label} for label in self.labels]}
+
+            def replace_issue_labels(self, _number, labels):
+                self.replacements.append(list(labels))
+                self.labels = list(labels)
+
+        github = LabelGitHub(["kind:parent", "phase:integration"])
+        _advance_parent_to_user_review(github, 26)
+        self.assertIn("phase:user-review", github.labels)
+        self.assertEqual(len(github.replacements), 1)
+
+        with self.assertRaisesRegex(CLIError, "no longer in unblocked User Review"):
+            _require_parent_user_review_phase({"number": 26, "state": "open",
+                                               "labels": [{"name": "kind:parent"},
+                                                          {"name": "phase:integration"}]}, 26)
+        _advance_parent_to_user_review(github, 26)
+        self.assertEqual(len(github.replacements), 1)
+
+        waiting = LabelGitHub(["kind:parent", "phase:integration", "attention:waiting-dependency"])
+        with self.assertRaisesRegex(CLIError, "clear parent waiting/blocked attention"):
+            _advance_parent_to_user_review(waiting, 26)
+        self.assertEqual(waiting.replacements, [])
+
+    def test_delivery_parent_requires_integration_and_approval_does_not_activate_or_merge(self):
+        blocked_inputs = integration_fixture()
+        blocked_inputs["child_issue_rows"][-1]["state"] = "open"
+        blocked = evaluate_parent_integration(**blocked_inputs)
+        args = SimpleNamespace(issue=26, verification=None, acceptance=None)
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory() as directory, \
+                patch("p_ases.cli._read_parent_integration", return_value=(blocked, Path(directory) / "blocked.json", None, None)), \
+                patch("p_ases.cli._advance_parent_to_user_review") as advance_phase, \
+                contextlib.redirect_stdout(output):
+            status = _delivery_parent(args, "octo/repo", Path(directory), object())
+            self.assertFalse((Path(directory) / ".p_ases" / "user-review" / "26").exists())
+        self.assertEqual(status, 2)
+        self.assertEqual(json.loads(output.getvalue())["parent_user_review"], "NOT_EVALUATED")
+        advance_phase.assert_not_called()
+
+        passed = evaluate_parent_integration(**integration_fixture())
+        review_subject = _parent_review_subject_from_integration(passed)
+        comment_row = {
+            "id": 811, "created_at": "2026-10-13T00:00:00Z", "updated_at": "2026-10-13T00:00:00Z",
+            "body": f"P-ASES-DECISION: APPROVED\nP-ASES-SUBJECT: {review_subject.sha256}",
+            "user": {"id": 42, "login": "octocat", "type": "User"},
+            "html_url": "https://github.com/octo/repo/issues/26#issuecomment-811",
+        }
+        parent_issue = {"number": 26, "state": "open", "pull_request": None,
+                        "repository_url": "https://api.github.com/repos/octo/repo", "body": "parent",
+                        "labels": [{"name": "kind:parent"}, {"name": "phase:user-review"}]}
+
+        class ParentGitHub:
+            def issue(self, _number):
+                return parent_issue
+
+            def issue_comments(self, _number):
+                return [comment_row]
+
+            def authenticated_user(self):
+                return {"id": 42, "login": "octocat", "type": "User"}
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = io.StringIO()
+            with patch("p_ases.cli._read_parent_integration",
+                       return_value=(passed, Path(directory) / "integration.json", None, None)), \
+                    patch("p_ases.cli._parent_adc_authority", return_value=("b" * 64, object())), \
+                    patch("p_ases.cli._advance_parent_to_user_review"), \
+                    contextlib.redirect_stdout(output):
+                status = _delivery_parent(args, "octo/repo", Path(directory), ParentGitHub())
+            self.assertEqual(status, 0)
+            result = json.loads(output.getvalue())
+            self.assertEqual(result["status"], "READY_FOR_EXPLICIT_ACTIVATION_APPROVAL")
+            self.assertEqual(result["parent_user_review"], "APPROVED")
+            self.assertFalse(result["merge_authorized"])
+            self.assertFalse(result["activation_issued"])
+
     def test_legacy_parent_adc_reference_comes_from_current_approved_child_adc(self):
         content = (
             f"Parent contract: `{PARENT_ISSUE_CONTRACT_SOURCE}` at `{PARENT_ISSUE_CONTRACT_COMMIT}`\n"
