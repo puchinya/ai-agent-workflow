@@ -64,7 +64,7 @@ Requirements, design decisions, test conditions, and independent Oracles use uni
 <a id="req-doc-003-deterministic-heading-numbers"></a>
 ### 3.3 REQ-DOC-003 Deterministic heading numbers
 
-The formatter leaves H1 titles unnumbered and assigns hierarchical numbering to H2 through H6 in document order. It ignores headings inside fenced code, four-column indented code blocks, HTML comments, raw pre blocks, and YAML front matter. A fenced block closes only on a matching fence character with a delimiter at least as long as the opener and whitespace only after the delimiter. For H2-H6, it treats a leading numeric prefix as a previously generated number only when it matches that heading's next hierarchical counter; other numeric prefixes remain part of the heading title. It converts Setext headings to the corresponding ATX form.
+The formatter leaves H1 titles unnumbered and assigns hierarchical numbering to H2 through H6 in document order. It ignores headings inside fenced code, four-column indented code blocks, HTML comments, raw pre blocks, and YAML front matter. A fenced block closes only on a matching fence character with a delimiter at least as long as the opener and whitespace only after the delimiter. An ATX closing-hash sequence is removed only when whitespace separates it from the heading text; otherwise trailing hash characters remain part of the title. For H2-H6, it treats a leading numeric prefix as a previously generated number only when it matches that heading's next hierarchical counter; other numeric prefixes remain part of the heading title. It converts Setext headings to the corresponding ATX form.
 
 <a id="req-doc-004"></a>
 <a id="req-doc-004-contents-maps-and-anchors"></a>

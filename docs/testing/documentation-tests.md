@@ -80,13 +80,13 @@ The complete REQ-to-DES-to-Oracle/Test-to-Evidence path passes; each missing or 
 <a id="tst-doc-003-hierarchical-heading-numbering"></a>
 ### 2.3 TST-DOC-003 Hierarchical heading numbering
 
-**Setup and action:** Format mixed H1-H6 headings, repeated headings, already generated numbers, author titles beginning with years/numbers, and Setext headings.
+**Setup and action:** Format mixed H1-H6 headings, repeated headings, already generated numbers, author titles beginning with years/numbers, and Setext headings. Include ATX titles `C#`, `F#`, and `name###`, a valid closing sequence in `Title ###`, and links to each original slug. Run `format_markdown` twice and run `format_tree --write` followed by `format_tree --check`.
 
 <a id="ora-doc-003"></a>
 <a id="ora-doc-003-expected-result"></a>
 #### 2.3.1 ORA-DOC-003 Expected result
 
-H1 remains unnumbered, including a year-leading title. H2-H6 have deterministic hierarchical counters; a numeric prefix is removed and re-added only when it matches the next counter. Other leading numbers remain part of the title, and a second format has no changes.
+H1 remains unnumbered, including a year-leading title. H2-H6 have deterministic hierarchical counters; a numeric prefix is removed and re-added only when it matches the next counter. Other leading numbers remain part of the title. `C#`, `F#`, and `name###` retain their trailing hashes, while whitespace-separated closing hashes are removed; generated legacy anchors and links use the preserved titles' slugs. A second format has no changes.
 
 <a id="tst-doc-004"></a>
 <a id="tst-doc-004-opaque-source-blocks"></a>

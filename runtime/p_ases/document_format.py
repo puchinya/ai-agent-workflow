@@ -21,7 +21,7 @@ _MARKERS = {
 }
 _GENERATED_MARKERS = frozenset(marker for pair in _MARKERS.values() for marker in pair)
 _FENCE = re.compile(r"^ {0,3}(" + re.escape(chr(96)) + r"{3,}|~{3,})")
-_ATX = re.compile(r"^( {0,3})(#{1,6})[ \t]+(.+?)\s*#*\s*$")
+_ATX = re.compile(r"^( {0,3})(#{1,6})[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$")
 _SETEXT = re.compile(r"^ {0,3}(=+|-{3,})[ \t]*$")
 _AUTO_NUMBER = re.compile(r"^(\d+(?:\.\d+)*\.?)\s+")
 _STABLE_ID = re.compile(r"\b(?:REQ|DES|TST|ORA)-[A-Z0-9]+-\d{3}\b")
