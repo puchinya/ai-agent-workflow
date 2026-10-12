@@ -643,6 +643,19 @@ class ReadyTraceabilityTests(unittest.TestCase):
             _validate_ready_traceability(ROOT, "docs/testing/traceability.md", matrix, Fake(),
                                          "b" * 40, ("REQ-UNKNOWN-999",))
 
+    def test_ready_requires_actual_local_links_for_each_traceability_identity(self):
+        matrix = (ROOT / "docs/testing/traceability.md").read_bytes().replace(
+            b"[DES-WF-001](../design/workflow-design.md#des-wf-001)", b"[DES-WF-001]",
+        )
+
+        class Fake:
+            def regular_content_at_ref(self, path, _commit):
+                return (ROOT / path).read_bytes()
+
+        with self.assertRaisesRegex(PhaseEvidenceError, "missing linked REQ/DES/Oracle/Test anchors"):
+            _validate_ready_traceability(ROOT, "docs/testing/traceability.md", matrix, Fake(),
+                                         "b" * 40, ("REQ-WF-001",))
+
 
 class PhaseEvidenceCollectionTests(unittest.TestCase):
     def make_repository(self, root: Path) -> tuple[str, VerifiedADC]:

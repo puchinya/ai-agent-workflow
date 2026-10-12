@@ -233,11 +233,32 @@ def _validate_ready_traceability(root: Path, path: str, content: bytes, github: 
         if not matches:
             raise PhaseEvidenceError(f"ready traceability matrix does not cover {requirement}")
         for row in matches:
-            if (not re.search(r"\[DES-[A-Z0-9-]+\]", row)
-                    or not re.search(r"\[(?:ORA|ORACLE)-[A-Z0-9._-]+\]", row)
-                    or not re.search(r"\[(?:TST|TEST)-[A-Z0-9._-]+\]", row)):
-                raise PhaseEvidenceError(f"ready traceability row for {requirement} is missing DES/Oracle/Test links")
-            source_links = re.findall(r"\[[^]]+\]\(([^)]+)\)", row)
+            links = re.findall(r"\[([^]]+)\]\(([^)]+)\)", row)
+
+            def linked_target(label: str, destination: str, root_prefix: str) -> bool:
+                linked_path, marker, fragment = destination.partition("#")
+                if (not marker or not fragment or linked_path.startswith("/") or "\\" in destination
+                        or any(char in destination for char in "\x00\r\n?:")):
+                    return False
+                resolved = posixpath.normpath(posixpath.join("docs/testing", linked_path))
+                anchor = fragment.casefold()
+                normalized_label = label.casefold()
+                return (resolved.startswith(root_prefix) and not resolved.startswith("../")
+                        and (anchor == normalized_label or anchor.startswith(normalized_label + "-")))
+
+            req_links = [(label, dest) for label, dest in links if label == requirement]
+            des_links = [(label, dest) for label, dest in links
+                         if re.fullmatch(r"DES-[A-Z0-9-]+", label)]
+            ora_links = [(label, dest) for label, dest in links
+                         if re.fullmatch(r"(?:ORA|ORACLE)-[A-Z0-9._-]+", label)]
+            tst_links = [(label, dest) for label, dest in links
+                         if re.fullmatch(r"(?:TST|TEST)-[A-Z0-9._-]+", label)]
+            if not (len(req_links) == 1 and linked_target(req_links[0][0], req_links[0][1], "docs/specs/")
+                    and len(des_links) == 1 and linked_target(des_links[0][0], des_links[0][1], "docs/design/")
+                    and len(ora_links) == 1 and linked_target(ora_links[0][0], ora_links[0][1], "docs/testing/")
+                    and len(tst_links) == 1 and linked_target(tst_links[0][0], tst_links[0][1], "docs/testing/")):
+                raise PhaseEvidenceError(f"ready traceability row for {requirement} is missing linked REQ/DES/Oracle/Test anchors")
+            source_links = [dest for _label, dest in links]
             source_link = next((item for item in source_links if item.startswith("../../tests/")), None)
             if source_link is None:
                 raise PhaseEvidenceError(f"ready traceability row for {requirement} has no executable test source")
