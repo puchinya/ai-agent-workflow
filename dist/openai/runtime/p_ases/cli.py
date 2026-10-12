@@ -2117,7 +2117,7 @@ def _parent_gate_comment_security_fingerprint(row: dict[str, Any]) -> tuple[Any,
     # Only fields that identify the comment, its contents, and its authenticated author
     # participate in equality checks.
     return (comment_id, body, created_at, updated_at, issue_url, html_url, api_url,
-            (user["id"], user["login"], user["type"]))
+            (user["id"], user["login"].casefold(), user["type"]))
 
 
 def _load_parent_gate_evidence_from_github(
@@ -2189,7 +2189,7 @@ def _load_parent_gate_evidence_from_github(
                 or not isinstance(identity.get("login"), str) or not identity["login"]
                 or identity.get("type") != "User"
                 or listed_fingerprint[-1] !=
-                (identity["id"], identity["login"], identity["type"])):
+                (identity["id"], identity["login"].casefold(), identity["type"])):
             raise IntegrationError("parent evidence comment author is not the authenticated GitHub user")
         if (bundle.kind != kind or bundle.repository.casefold() != repository.casefold()
                 or bundle.parent_issue_number != 26 or bundle.parent_adc_sha256 != parent_adc_sha256

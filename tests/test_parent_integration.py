@@ -137,6 +137,195 @@ def integration_fixture():
     )
 
 
+def parent_integration_github_fixture(
+    verification_bundle: ParentGateEvidenceComment,
+    acceptance_bundle: ParentGateEvidenceComment,
+    verification_actions,
+    acceptance_actions,
+):
+    """GitHub I/O fixture used by the public integration-check route, without stubbing its reader."""
+    repository = "octo/repo"
+    main_sha = MAIN
+    base = integration_fixture()
+    child_adc = (
+        "# Agent Development Contract — parent integration fixture\n"
+        f"Repository: {repository}\nIssue: #31\nChild key: integration-validation\n"
+        "State: approved\n\n"
+        "## Issue\nRead the approved parent contract from the immutable child ADC.\n\n"
+        "## Scope and change kind\nScope: parent Integration validation.\nChange kind: regression fixture.\n\n"
+        "## Requirements\n- REQ-31: Preserve exact GitHub evidence identity.\n\n"
+        "## Architecture decisions\nUse trusted GitHub API records.\n\n"
+        "## Artifact impact\nNo generated artifacts are authored by this fixture.\n\n"
+        "## Exact changes\nExercise the integration-check command route.\n\n"
+        "## Invariants and non-goals\nDo not weaken Integration gates.\n\n"
+        "## Verification obligations\nRun the exact parent Integration path.\n"
+        f"Parent contract: `{PARENT_ISSUE_CONTRACT_SOURCE}` at `{PARENT_ISSUE_CONTRACT_COMMIT}`\n"
+        f"Parent ADC SHA-256: `{'b' * 64}`\n\n"
+        "## Reviewer Checklist\n- [ ] Verify exact child ADC bytes.\n\n"
+        "## Completion gates\nReturn the exact Integration result.\n"
+    ).encode("utf-8")
+    child_adc_comment_id = 3100
+    child_adc_digest = hashlib.sha256(child_adc).hexdigest()
+    child_pointer = (
+        "## Agent Development Contract\n"
+        f"Comment ID: {child_adc_comment_id}\n"
+        f"SHA-256: {child_adc_digest}\n"
+        f"Bytes: {len(child_adc)}\n"
+        "State: approved\n"
+    )
+    child_issues = {
+        row["number"]: {
+            **row, "repository_url": f"https://api.github.com/repos/{repository}",
+            "pull_request": None,
+        }
+        for row in base["child_issue_rows"]
+    }
+    child_issues[31]["body"] = child_pointer
+    child_adc_comment = {
+        "id": child_adc_comment_id, "body": child_adc.decode("utf-8"),
+        "issue_url": f"https://api.github.com/repos/{repository}/issues/31",
+    }
+
+    def make_comment(comment_id, bundle):
+        return {
+            "id": comment_id, "body": bundle.to_body(),
+            "created_at": "2026-10-12T00:00:00Z", "updated_at": "2026-10-12T00:00:00Z",
+            "issue_url": f"https://api.github.com/repos/{repository}/issues/26",
+            "html_url": f"https://github.com/{repository}/issues/26#issuecomment-{comment_id}",
+            "url": f"https://api.github.com/repos/{repository}/issues/comments/{comment_id}",
+            "user": {"id": 42, "login": "octocat", "type": "User"},
+        }
+
+    evidence_comments = {
+        801: make_comment(801, verification_bundle),
+        802: make_comment(802, acceptance_bundle),
+    }
+
+    class IntegrationGitHub:
+        repo = repository
+
+        def __init__(self):
+            self.main_sha40 = main_sha
+            self.direct_reads = 0
+            self.list_reads = 0
+            self.direct_comment_ids = []
+            self.blocked_by_calls = []
+            self.sub_issue_reads = 0
+            self.active_actions = None
+            self.actions_by_run = {
+                verification_actions.run["id"]: verification_actions,
+                acceptance_actions.run["id"]: acceptance_actions,
+            }
+
+        def issue(self, number):
+            if number == 26:
+                return {
+                    "number": 26, "state": "open", "pull_request": None,
+                    "repository_url": f"https://api.github.com/repos/{repository}",
+                    "body": "Parent Integration test contract",
+                }
+            row = dict(child_issues[number])
+            if number == 31:
+                row["body"] = child_pointer
+            return row
+
+        def issue_comments(self, number):
+            if number == 31:
+                return []
+            if number != 26:
+                return []
+            rows = []
+            login = ("OCTOCAT", "octocat", "OcToCaT", "oCToCaT")[self.list_reads % 4]
+            for row in evidence_comments.values():
+                item = dict(row)
+                item["user"] = {
+                    **item["user"], "login": login,
+                    "avatar_url": f"https://avatars.example/list?read={self.list_reads}",
+                    "html_url": f"https://github.com/{login}/profile",
+                }
+                rows.append(item)
+            self.list_reads += 1
+            return rows
+
+        def issue_comment(self, number, comment_id):
+            if number == 31 and comment_id == child_adc_comment_id:
+                return dict(child_adc_comment)
+            if number != 26 or comment_id not in evidence_comments:
+                raise GitHubError("fixture comment does not exist")
+            self.direct_comment_ids.append(comment_id)
+            row = dict(evidence_comments[comment_id])
+            login = ("OctoCat", "octocat", "OCTOCAT", "oCToCaT")[self.direct_reads % 4]
+            row["user"] = {
+                **row["user"], "login": login,
+                "avatar_url": f"https://avatars.example/direct?read={self.direct_reads}",
+                "html_url": f"https://github.com/{login}/profile",
+            }
+            self.direct_reads += 1
+            return row
+
+        @staticmethod
+        def authenticated_user():
+            return {"id": 42, "login": "Octocat", "type": "User"}
+
+        @staticmethod
+        def repository_metadata():
+            return {"default_branch": "main"}
+
+        def branch(self, branch):
+            if branch != "main":
+                raise GitHubError("fixture only has main")
+            return {"commit": {"sha": self.main_sha40}}
+
+        @staticmethod
+        def content_at_ref(path, ref):
+            if path != PARENT_ISSUE_CONTRACT_SOURCE or ref != PARENT_ISSUE_CONTRACT_COMMIT:
+                raise GitHubError("fixture parent contract pin does not match")
+            return b"pinned parent contract bytes\n"
+
+        def sub_issues(self, parent_number):
+            if parent_number != 26:
+                raise GitHubError("fixture parent number does not match")
+            self.sub_issue_reads += 1
+            return [dict(row) for row in base["native_sub_issues"]]
+
+        def blocked_by(self, issue_number):
+            self.blocked_by_calls.append(issue_number)
+            child_ids = {row["number"]: row["id"] for row in base["native_sub_issues"]}
+            return [{"id": child_ids[blocker], "number": blocker}
+                    for blocker in DAG[issue_number]]
+
+        @staticmethod
+        def pull_requests_all():
+            return [dict(row) for row in base["merged_pr_rows"]]
+
+        @staticmethod
+        def compare_commits(base_sha40, head_sha40):
+            if head_sha40 != main_sha or base_sha40 not in base["merge_sha_ancestry"]:
+                return {"status": "behind"}
+            return {"status": "ahead"}
+
+        def workflow_runs_for_ref(self, sha, *, workflow_path, event):
+            for actions in (verification_actions, acceptance_actions):
+                rows = actions.workflow_runs_for_ref(
+                    sha, workflow_path=workflow_path, event=event)
+                if rows:
+                    return rows
+            return []
+
+        def workflow_run_jobs(self, run_id):
+            self.active_actions = self.actions_by_run.get(run_id)
+            if self.active_actions is None:
+                return []
+            return self.active_actions.workflow_run_jobs(run_id)
+
+        def check_runs_for_ref(self, sha):
+            if self.active_actions is None:
+                return []
+            return self.active_actions.check_runs_for_ref(sha)
+
+    return IntegrationGitHub()
+
+
 class ParentIntegrationTests(unittest.TestCase):
     def test_parent_gate_step_contract_matches_committed_workflows(self):
         ci = (ROOT / PARENT_CI_WORKFLOW).read_text(encoding="utf-8")
@@ -678,6 +867,15 @@ class ParentIntegrationTests(unittest.TestCase):
                             github, comment_id, main_sha, "verification", "octo/repo", "b" * 64)
 
         github = CommentGitHub()
+        github.authenticated = {"id": 42, "login": "OctoCat", "type": "User"}
+        github.overrides[("direct", 0)] = {"user": {"login": "OCTOCAT"}}
+        github.overrides[("list", 0)] = {"user": {"login": "octocat"}}
+        github.overrides[("direct", 1)] = {"user": {"login": "OcToCaT"}}
+        evidence = _load_parent_gate_evidence_from_github(
+            github, comment_id, main_sha, "verification", "octo/repo", "b" * 64)
+        self.assertEqual(evidence.source_reference, f"issue-comment:{comment_id}")
+
+        github = CommentGitHub()
         github.authenticated = {"id": 42, "login": "different-login", "type": "User"}
         with self.assertRaisesRegex(IntegrationError, "authenticated GitHub user"):
             _load_parent_gate_evidence_from_github(
@@ -930,35 +1128,41 @@ class ParentIntegrationTests(unittest.TestCase):
         self.assertEqual((verification.source_reference, acceptance.source_reference),
                          ("issue-comment:801", "issue-comment:802"))
 
-        inputs = integration_fixture()
-        inputs["integration_verification"] = verification
-        inputs["integration_acceptance"] = acceptance
-        passed = evaluate_parent_integration(**inputs)
-        self.assertEqual(passed.status, "PASS")
-
         args = _parser().parse_args([
             "issue", "integration-check", "26",
             "--verification-comment-id", "801", "--acceptance-comment-id", "802",
             "--repo", "octo/repo", "--root", ".",
         ])
-        observed_ids = []
-
-        def read_parent(read_args, repository, root, _github):
-            observed_ids.append((read_args.verification_comment_id, read_args.acceptance_comment_id))
-            self.assertEqual(repository, "octo/repo")
-            return passed, Path(root) / "parent-integration.json", verification, acceptance
-
+        integration_github = parent_integration_github_fixture(
+            verification_bundle, acceptance_bundle, verification_actions, acceptance_actions)
         with tempfile.TemporaryDirectory() as directory:
             output = io.StringIO()
-            with patch("p_ases.cli._read_parent_integration", side_effect=read_parent), \
-                    contextlib.redirect_stdout(output):
-                status = _issue_integration_check(args, "octo/repo", Path(directory), github)
+            with contextlib.redirect_stdout(output):
+                status = _issue_integration_check(
+                    args, "octo/repo", Path(directory), integration_github)
         self.assertEqual(status, 0)
-        self.assertEqual(observed_ids, [(801, 802)])
         result = json.loads(output.getvalue())
         self.assertEqual(result["status"], "PASS")
+        self.assertEqual(result["parent_issue"], 26)
+        self.assertEqual(len(result["integration_sha256"]), 64)
         self.assertIn("issue-comment:801", result["evidence_refs"])
         self.assertIn("issue-comment:802", result["evidence_refs"])
+        self.assertEqual(integration_github.direct_comment_ids.count(801), 8)
+        self.assertEqual(integration_github.direct_comment_ids.count(802), 8)
+        self.assertEqual(integration_github.sub_issue_reads, 2)
+        self.assertEqual(integration_github.blocked_by_calls, [*EXPECTED, *EXPECTED])
+
+        # The same exact comment IDs cannot pass after main advances to another SHA.
+        integration_github.main_sha40 = "f" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = _issue_integration_check(
+                    args, "octo/repo", Path(directory), integration_github)
+        self.assertEqual(status, 2)
+        blocked = json.loads(output.getvalue())
+        self.assertEqual(blocked["status"], "BLOCKED")
+        self.assertIn("exact current main/ADC subject", blocked["reasons"][0])
 
     def test_parent_evidence_publish_reuses_exact_comment_and_rejects_conflict(self):
         main_sha = "1" * 40
@@ -971,6 +1175,8 @@ class ParentIntegrationTests(unittest.TestCase):
                 self.comments = []
                 self.posts = 0
                 self.issue_body = "parent contract"
+                self.direct_reads = 0
+                self.list_reads = 0
 
             def __getattr__(self, name):
                 return getattr(self.actions, name)
@@ -981,7 +1187,14 @@ class ParentIntegrationTests(unittest.TestCase):
                         "body": self.issue_body}
 
             def issue_comments(self, _number):
-                return [dict(row) for row in self.comments]
+                rows = []
+                for row in self.comments:
+                    item = dict(row)
+                    item["user"] = {**item["user"], "avatar_url":
+                                    f"https://avatars.example/list?read={self.list_reads}"}
+                    rows.append(item)
+                self.list_reads += 1
+                return rows
 
             def authenticated_user(self):
                 return {"id": 42, "login": "octocat", "type": "User"}
@@ -999,7 +1212,11 @@ class ParentIntegrationTests(unittest.TestCase):
                 return row
 
             def issue_comment(self, _number, comment_id):
-                return next(dict(row) for row in self.comments if row["id"] == comment_id)
+                row = next(dict(row) for row in self.comments if row["id"] == comment_id)
+                row["user"] = {**row["user"], "avatar_url":
+                                f"https://avatars.example/direct?read={self.direct_reads}"}
+                self.direct_reads += 1
+                return row
 
         github = PublishGitHub()
         args = SimpleNamespace(issue=26, kind="verification", run_id=500)
@@ -1022,6 +1239,14 @@ class ParentIntegrationTests(unittest.TestCase):
             self.assertEqual(status, 0)
             self.assertEqual(json.loads(output.getvalue())["status"], "REUSED")
             self.assertEqual(github.posts, 1)
+            github.comments[0]["user"]["login"] = "different-login"
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = _publish_parent_gate_evidence(args, "octo/repo", ROOT, github)
+            self.assertEqual(status, 2)
+            self.assertIn("authenticated", json.loads(output.getvalue())["reasons"][0])
+            self.assertEqual(github.posts, 1)
+            github.comments[0]["user"]["login"] = "octocat"
 
             github.actions.jobs[0]["steps"][0]["conclusion"] = "failure"
             output = io.StringIO()
