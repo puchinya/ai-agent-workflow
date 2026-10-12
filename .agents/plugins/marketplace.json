@@ -1,11 +1,11 @@
 {
-  "name": "ai-agent-workflow",
+  "name": "p-ases",
   "interface": {
-    "displayName": "AI Agent Workflow"
+    "displayName": "P-ASES"
   },
   "plugins": [
     {
-      "name": "ai-agent-workflow",
+      "name": "p-ases",
       "category": "Productivity",
       "source": {
         "source": "local",

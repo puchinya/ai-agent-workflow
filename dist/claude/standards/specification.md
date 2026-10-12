@@ -15,7 +15,7 @@ Specifications own durable, testable product behavior. Each normative rule has o
 
 ## Validation
 
-Run `python -m agent_workflow validate-docs` and connect every requirement to observable evidence. External links are not fetched by the validator.
+Run `python -m p_ases docs validate --root .` and connect every requirement to observable evidence. External links are not fetched by the validator.
 
 ## Related resources
 

@@ -1,14 +1,14 @@
 {
-  "name": "ai-agent-workflow",
+  "name": "p-ases",
   "description": "Claude Code plugins for Issue-first development workflows.",
   "owner": {
     "name": "puchinya"
   },
   "plugins": [
     {
-      "name": "ai-agent-workflow",
+      "name": "p-ases",
       "source": "./dist/claude",
-      "description": "Issue-first development workflow Skills and local verification tools."
+      "description": "P-ASES workflow Skills and deterministic local tools."
     }
   ]
 }

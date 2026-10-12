@@ -16,6 +16,17 @@ from test_adc_intake import FakeGitHub, adc_bytes
 
 
 class PasesCLITests(unittest.TestCase):
+    def test_cli_exposes_exactly_twelve_namespaces_and_adds_project_context(self):
+        namespaces = _parser()._subparsers._group_actions[0].choices
+        self.assertEqual(set(namespaces), {
+            "project", "context", "adc", "issue", "docs", "work", "pr",
+            "verification", "acceptance", "audit", "user-review", "delivery",
+        })
+        self.assertEqual(_parser().parse_args(["project", "status", "--root", str(ROOT)]).verb, "status")
+        context = _parser().parse_args(["context", "show", "32", "--root", str(ROOT),
+                                        "--repo", "owner/repo"])
+        self.assertEqual((context.verb, context.issue, context.repo), ("show", 32, "owner/repo"))
+
     def test_advance_cli_excludes_readiness_approval_and_close_targets(self):
         self.assertNotIn("user-review", CLI_ADVANCE_TARGETS)
         self.assertNotIn("closed", CLI_ADVANCE_TARGETS)

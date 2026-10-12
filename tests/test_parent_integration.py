@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import unittest
 import contextlib
+import shlex
 from types import SimpleNamespace
 from unittest.mock import patch
 from pathlib import Path
@@ -25,6 +26,7 @@ from p_ases.cli import (
     PARENT_REQUIRED_CI_JOBS, PARENT_TRUSTED_ACTIONS_APP_ID, PARENT_VERIFICATION_STEPS,
     PARENT_ISSUE_CONTRACT_COMMIT, PARENT_ISSUE_CONTRACT_SOURCE,
     CLIError, _advance_parent_to_user_review, _delivery_parent, _delivery_parent_label_migration,
+    _issue_integration_check, _parser,
     _require_parent_user_review_phase, _load_parent_gate_evidence_from_github, _parent_adc_authority,
     _parent_contract_declaration, _parent_gate_bundle_from_actions, _parent_review_subject_from_integration,
     _publish_parent_gate_evidence,
@@ -648,6 +650,177 @@ class ParentIntegrationTests(unittest.TestCase):
         generated_distribution["conclusion"] = "failure"
         with self.assertRaisesRegex(IntegrationError, "acceptance step did not pass"):
             _parent_gate_bundle_from_actions(acceptance, 700, "acceptance", "octo/repo", "b" * 64, main_sha)
+
+    def test_parent_evidence_rejects_the_old_pull_request_run_for_both_kinds(self):
+        for kind, expected_path, expected_event in (
+            ("verification", PARENT_CI_WORKFLOW, "push"),
+            ("acceptance", PARENT_ACCEPTANCE_WORKFLOW, "workflow_dispatch"),
+        ):
+            with self.subTest(kind=kind):
+                github = trusted_actions_fixture(MAIN, kind, 38232034746)
+                github.run.update({
+                    "path": PARENT_CI_WORKFLOW,
+                    "event": "pull_request",
+                    "head_branch": "pases/old-pr",
+                    "head_sha": "d2a9d3d" + "0" * 33,
+                })
+                original = github.workflow_runs_for_ref
+                requested = []
+
+                def record_request(sha, *, workflow_path, event):
+                    requested.append((workflow_path, event))
+                    return original(sha, workflow_path=workflow_path, event=event)
+
+                github.workflow_runs_for_ref = record_request
+                with self.assertRaisesRegex(IntegrationError, "no .* GitHub Actions run exists"):
+                    _parent_gate_bundle_from_actions(
+                        github, 38232034746, kind, "octo/repo", "b" * 64, MAIN)
+                self.assertEqual(requested, [(expected_path, expected_event)])
+
+    def test_integration_skill_cli_examples_match_event_and_id_contracts(self):
+        skill = (ROOT / "workflow/skills/integration-validation/SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("`.github/workflows/ci.yml`", skill)
+        self.assertIn("`push`", skill)
+        self.assertIn("`.github/workflows/parent-integration.yml`", skill)
+        self.assertIn("`workflow_dispatch`", skill)
+        self.assertIn("exact current `main` SHA", skill)
+        self.assertNotIn("38232034746", skill)
+        issue_skill = (ROOT / "workflow/skills/issue-decomposition/SKILL.md").read_text(encoding="utf-8")
+        self.assertNotIn("issue integration-check 26", issue_skill)
+
+        blocks = skill.split("~~~sh")[1:]
+        commands = []
+        for block in blocks:
+            commands.extend(line.strip() for line in block.split("~~~", 1)[0].splitlines()
+                            if line.strip().startswith("python -m p_ases "))
+        self.assertEqual(len(commands), 4, commands)
+        replacements = {
+            "VERIFICATION_RUN_ID": "501",
+            "ACCEPTANCE_RUN_ID": "702",
+            "VERIFICATION_COMMENT_ID": "801",
+            "ACCEPTANCE_COMMENT_ID": "802",
+        }
+        parser = _parser()
+        parsed = []
+        for command in commands:
+            for placeholder, value in replacements.items():
+                command = command.replace(placeholder, value)
+            argv = shlex.split(command)
+            self.assertEqual(argv[:3], ["python", "-m", "p_ases"])
+            parsed.append(parser.parse_args(argv[3:]))
+        self.assertEqual([(args.namespace, args.verb) for args in parsed], [
+            ("delivery", "parent-evidence"), ("delivery", "parent-evidence"),
+            ("issue", "integration-check"), ("delivery", "parent"),
+        ])
+        self.assertEqual([(parsed[0].kind, parsed[0].run_id), (parsed[1].kind, parsed[1].run_id)],
+                         [("verification", 501), ("acceptance", 702)])
+        for args in parsed[2:]:
+            self.assertEqual((args.verification_comment_id, args.acceptance_comment_id), (801, 802))
+
+    def test_separate_current_main_runs_and_comment_ids_produce_parent_integration_pass(self):
+        verification_actions = trusted_actions_fixture(MAIN, "verification", 501)
+        acceptance_actions = trusted_actions_fixture(MAIN, "acceptance", 702)
+        verification_bundle = _parent_gate_bundle_from_actions(
+            verification_actions, 501, "verification", "octo/repo", "b" * 64, MAIN)
+        acceptance_bundle = _parent_gate_bundle_from_actions(
+            acceptance_actions, 702, "acceptance", "octo/repo", "b" * 64, MAIN)
+        self.assertNotEqual(verification_bundle.workflow_run_id, acceptance_bundle.workflow_run_id)
+        verification_run = json.loads(verification_bundle.result_bytes)["workflow_run"]
+        acceptance_run = json.loads(acceptance_bundle.result_bytes)["workflow_run"]
+        self.assertEqual((verification_run["id"], verification_run["path"], verification_run["event"],
+                          verification_run["head_branch"], verification_run["head_sha40"]),
+                         (501, PARENT_CI_WORKFLOW, "push", "main", MAIN))
+        self.assertEqual((acceptance_run["id"], acceptance_run["path"], acceptance_run["event"],
+                          acceptance_run["head_branch"], acceptance_run["head_sha40"]),
+                         (702, PARENT_ACCEPTANCE_WORKFLOW, "workflow_dispatch", "main", MAIN))
+
+        def comment(comment_id, bundle):
+            return {
+                "id": comment_id, "body": bundle.to_body(),
+                "created_at": "2026-10-12T00:00:00Z", "updated_at": "2026-10-12T00:00:00Z",
+                "issue_url": "https://api.github.com/repos/octo/repo/issues/26",
+                "html_url": f"https://github.com/octo/repo/issues/26#issuecomment-{comment_id}",
+                "url": f"https://api.github.com/repos/octo/repo/issues/comments/{comment_id}",
+                "user": {"id": 42, "login": "octocat", "type": "User"},
+            }
+
+        comments = {
+            801: comment(801, verification_bundle),
+            802: comment(802, acceptance_bundle),
+        }
+
+        class EvidenceGitHub:
+            def __init__(self):
+                self.active_actions = None
+                self.action_sources = (verification_actions, acceptance_actions)
+
+            def workflow_runs_for_ref(self, sha, *, workflow_path, event):
+                for source in self.action_sources:
+                    runs = source.workflow_runs_for_ref(sha, workflow_path=workflow_path, event=event)
+                    if runs:
+                        self.active_actions = source
+                        return runs
+                return []
+
+            def workflow_run_jobs(self, run_id):
+                return self.active_actions.workflow_run_jobs(run_id)
+
+            def check_runs_for_ref(self, sha):
+                return self.active_actions.check_runs_for_ref(sha)
+
+            def issue_comment(self, issue_id, comment_id):
+                self.assert_issue(issue_id)
+                return dict(comments[comment_id])
+
+            def issue_comments(self, issue_id):
+                self.assert_issue(issue_id)
+                return [dict(row) for row in comments.values()]
+
+            @staticmethod
+            def assert_issue(issue_id):
+                if issue_id != 26:
+                    raise AssertionError(issue_id)
+
+            def authenticated_user(self):
+                return {"id": 42, "login": "octocat", "type": "User"}
+
+        github = EvidenceGitHub()
+        verification = _load_parent_gate_evidence_from_github(
+            github, 801, MAIN, "verification", "octo/repo", "b" * 64)
+        acceptance = _load_parent_gate_evidence_from_github(
+            github, 802, MAIN, "acceptance", "octo/repo", "b" * 64)
+        self.assertEqual((verification.source_reference, acceptance.source_reference),
+                         ("issue-comment:801", "issue-comment:802"))
+
+        inputs = integration_fixture()
+        inputs["integration_verification"] = verification
+        inputs["integration_acceptance"] = acceptance
+        passed = evaluate_parent_integration(**inputs)
+        self.assertEqual(passed.status, "PASS")
+
+        args = _parser().parse_args([
+            "issue", "integration-check", "26",
+            "--verification-comment-id", "801", "--acceptance-comment-id", "802",
+            "--repo", "octo/repo", "--root", ".",
+        ])
+        observed_ids = []
+
+        def read_parent(read_args, repository, root, _github):
+            observed_ids.append((read_args.verification_comment_id, read_args.acceptance_comment_id))
+            self.assertEqual(repository, "octo/repo")
+            return passed, Path(root) / "parent-integration.json", verification, acceptance
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = io.StringIO()
+            with patch("p_ases.cli._read_parent_integration", side_effect=read_parent), \
+                    contextlib.redirect_stdout(output):
+                status = _issue_integration_check(args, "octo/repo", Path(directory), github)
+        self.assertEqual(status, 0)
+        self.assertEqual(observed_ids, [(801, 802)])
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["status"], "PASS")
+        self.assertIn("issue-comment:801", result["evidence_refs"])
+        self.assertIn("issue-comment:802", result["evidence_refs"])
 
     def test_parent_evidence_publish_reuses_exact_comment_and_rejects_conflict(self):
         main_sha = "1" * 40

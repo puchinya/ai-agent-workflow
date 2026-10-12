@@ -13,7 +13,7 @@ from zipfile import ZIP_STORED, ZipFile, ZipInfo
 import build_dist
 import validate_dist
 
-from agent_workflow import __version__
+from p_ases import __version__
 
 
 class PackageError(ValueError):
@@ -25,7 +25,7 @@ def validate_tag(tag: str) -> str:
     if not re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", tag):
         raise PackageError(f"invalid release tag {tag!r}: expected stable SemVer vMAJOR.MINOR.PATCH")
     if tag[1:] != __version__:
-        raise PackageError(f"tag version {tag[1:]} does not equal agent_workflow.__version__ {__version__}")
+        raise PackageError(f"tag version {tag[1:]} does not equal p_ases.__version__ {__version__}")
     return tag[1:]
 
 
@@ -43,7 +43,7 @@ def package(tag: str, output_dir: Path) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     assets = []
     for host in build_dist.HOSTS:
-        target = output_dir / f"ai-agent-workflow-{host}-{tag}.zip"
+        target = output_dir / f"p-ases-{host}-{tag}.zip"
         prefix = f"dist/{host}/"
         with ZipFile(target, "w", compression=ZIP_STORED) as archive:
             for path in sorted(path for path in expected if path.startswith(prefix)):

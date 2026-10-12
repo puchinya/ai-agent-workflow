@@ -40,7 +40,7 @@ OpenAI Agent Plugins and Antigravity both use root `plugin.json` but validate di
 
 | Requirement | Design consequence |
 |---|---|
-| One hand-authored source | `workflow/skills`, `workflow/standards`, `workflow/templates`, `runtime/agent_workflow`, and `adapters` are the only authored inputs. |
+| One hand-authored source | `workflow/skills`, `workflow/standards`, `workflow/templates`, `runtime/p_ases`, and `adapters` are the only authored inputs. |
 | Distinct host schemas | `adapters/openai`, `adapters/claude`, and `adapters/antigravity` own small manifests/marketplace data. |
 | GitHub-hosted OpenAI/Claude marketplaces | The repository hosts root marketplace manifests; GitHub marketplace registration resolves `./dist/openai` or `./dist/claude` within its checkout. |
 | Separate Release distribution | Existing version-fixed ZIPs and `SHA256SUMS` serve manual/offline installs; marketplace installs do not look up Releases or use Release assets. |
@@ -56,7 +56,7 @@ OpenAI Agent Plugins and Antigravity both use root `plugin.json` but validate di
 <a id="des-dist-001-architecture"></a>
 ## 3 DES-DIST-001 Architecture
 
-Each adapter owns only its host manifest and marketplace metadata, excluding version. The GitHub repository itself is the marketplace host for OpenAI/Codex and Claude Code: marketplace registration checks out the repository, then the host resolves a relative source under `dist/`. The package builder combines the host-specific descriptors with one canonical copy of Skills, standards, templates, documentation, and runtime modules. The canonical runtime `__version__` also supplies setuptools dynamic metadata and generated OpenAI/Claude versions. Antigravity's restricted schema remains versionless and its installation remains local/manual.
+Each adapter owns only its host manifest and marketplace metadata, excluding version. Product identity is `p-ases` / `P-ASES`; the repository keeps the canonical GitHub slug `puchinya/ai-agent-workflow`. The GitHub repository itself is the marketplace host for OpenAI/Codex and Claude Code: marketplace registration checks out the repository, then the host resolves a relative source under `dist/`. The package builder combines the host-specific descriptors with one canonical copy of 16 Skills, standards, templates, documentation, and runtime modules. `runtime/p_ases/__version__` supplies setuptools dynamic metadata and generated OpenAI/Claude versions. Antigravity's restricted schema remains versionless and its installation remains local/manual.
 
 <a id="data-flow-and-ownership"></a>
 ## 4 Data flow and ownership
@@ -70,7 +70,7 @@ Canonical files are read as bytes and mapped to package-relative paths. The comp
 ### 4.1 DES-DIST-002 Build flow
 
 1. Read the fixed canonical inputs as UTF-8 bytes.
-2. Parse OpenAI/Claude adapter JSON objects, reject adapter-owned version keys, inject `agent_workflow.__version__`, and serialize sorted keys with stable indentation and a trailing LF. Preserve the Antigravity manifest without adding version metadata.
+2. Parse OpenAI/Claude adapter JSON objects, reject adapter-owned version keys, inject `p_ases.__version__`, and serialize sorted keys with stable indentation and a trailing LF. Preserve the Antigravity manifest without adding version metadata.
 3. Copy only required Skills, standards, templates, and runtime modules into the package.
 4. Create the OpenAI repository marketplace entry with category `Productivity` and source `./dist/openai`; preserve its existing policy.
 5. Sort package paths and serialize JSON with stable indentation/newlines.
@@ -81,9 +81,9 @@ Canonical files are read as bytes and mapped to package-relative paths. The comp
 <a id="des-dist-003-package-boundaries"></a>
 ## 5 DES-DIST-003 Package boundaries
 
-The OpenAI package uses the portable root manifest and optionally references only resources supported by the current Agent Plugins format. The repository-root `.agents/plugins/marketplace.json` has one `ai-agent-workflow` entry for `./dist/openai`. The Claude package has its nested manifest and Claude-specific marketplace metadata; its root marketplace manifest has one matching `ai-agent-workflow` entry for `./dist/claude`. Each path stays inside the GitHub marketplace checkout and targets the corresponding manifest. Neither marketplace source refers to GitHub Release assets or API lookups. Antigravity uses its own root manifest, includes no empty components, and stays local/manual while GitHub marketplace support is unconfirmed. Shared Skills keep host-neutral Markdown; adapters contain host installation and discovery instructions.
+The OpenAI package uses the portable root manifest and optionally references only resources supported by the current Agent Plugins format. The repository-root `.agents/plugins/marketplace.json` has one `p-ases` entry for `./dist/openai`. The Claude package has its nested manifest and Claude-specific marketplace metadata; its root marketplace manifest has one matching `p-ases` entry for `./dist/claude`. Each path stays inside the GitHub marketplace checkout and targets the corresponding manifest. Neither marketplace source refers to GitHub Release assets or API lookups. Antigravity uses its own root manifest, includes no empty components, and stays local/manual while GitHub marketplace support is unconfirmed. Shared Skills keep host-neutral Markdown; adapters contain host installation and discovery instructions.
 
-Generated packages include `skills/`, `standards/`, `templates/`, and `runtime/agent_workflow/` as required resources. No top-level `bin/` is emitted. No `update-template` or reference repository files are emitted.
+Generated packages include the exact 16 Skills, `standards/`, `templates/`, and `runtime/p_ases/` as required resources. No top-level `bin/` is emitted. No reference repository files are emitted.
 
 <a id="des-dist-004"></a>
 <a id="des-dist-004-release-flow"></a>

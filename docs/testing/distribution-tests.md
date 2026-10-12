@@ -66,7 +66,7 @@ Define reproducible conditions and expected results independently of implementat
 <a id="ora-dist-001-expected-result"></a>
 #### 2.1.1 ORA-DIST-001 Expected result
 
-Only the approved OpenAI schema, skill paths, and repository-contained source are present.
+The OpenAI manifest and sole marketplace entry are named `p-ases`; all 16 Skills and the repository-contained `./dist/openai` source are present.
 
 <a id="tst-dist-002"></a>
 <a id="tst-dist-002-claude-package-boundary"></a>
@@ -78,7 +78,7 @@ Only the approved OpenAI schema, skill paths, and repository-contained source ar
 <a id="ora-dist-002-expected-result"></a>
 #### 2.2.1 ORA-DIST-002 Expected result
 
-The Claude plugin manifest and one repository-contained package source are present and names match.
+The `p-ases` Claude manifest and one repository-contained `./dist/claude` source are present and names match.
 
 <a id="tst-dist-003"></a>
 <a id="tst-dist-003-antigravity-package-boundary"></a>
@@ -102,19 +102,19 @@ Only allowed schema properties and resources are present; no marketplace capabil
 <a id="ora-dist-004-expected-result"></a>
 #### 2.4.1 ORA-DIST-004 Expected result
 
-Independent builds are byte-identical; check reports drift without writing or repairing files.
+Independent builds are byte-identical and contain `runtime/p_ases/` plus exactly 16 Skills per host; check reports missing, extra, and edited files without writing or repairing them.
 
 <a id="tst-dist-005"></a>
 <a id="tst-dist-005-release-asset-contract"></a>
 ### 2.5 TST-DIST-005 Release asset contract
 
-**Setup and action:** Package a valid stable tag and invalid/version-mismatched tags in temporary directories.
+**Setup and action:** Package valid and invalid stable tags in temporary directories. Compare the complete Release `verify` matrix and step sequence with CI. In an isolated repository fixture, run the same documentation and traceability validators with one broken local documentation link and one broken requirement-to-source mapping.
 
 <a id="ora-dist-005"></a>
 <a id="ora-dist-005-expected-result"></a>
 #### 2.5.1 ORA-DIST-005 Expected result
 
-Valid output contains exactly the named ZIPs and checksum file; invalid input creates no assets.
+Release `verify` matches CI across Ubuntu 3.10/3.14, Windows 3.14, and macOS 3.14, including install, docs validation/format, all three traceability scopes, and 16-Skill acceptance in the same order. Documentation or traceability corruption returns nonzero before packaging can reach publication. Valid stable-tag output contains `p-ases-openai`, `p-ases-claude`, and `p-ases-antigravity` ZIPs plus `SHA256SUMS`; invalid input creates no assets.
 
 <a id="tst-dist-006"></a>
 <a id="tst-dist-006-observable-package-behavior"></a>

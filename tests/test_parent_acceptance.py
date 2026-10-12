@@ -44,12 +44,9 @@ class ParentAcceptanceTests(unittest.TestCase):
                 "[ORA-WF-001](oracle.md#ora-wf-001) | [TST-WF-002](oracle.md#tst-wf-001)"), encoding="utf-8")
             self.assertTrue(any("omits TST IDs" in reason for reason in validate(root, "test-oracle")))
 
-    def test_sixteen_skill_gate_does_not_claim_the_legacy_ten_skill_package(self):
-        errors = validate_skill_package(ROOT)
-        if tuple(EXPECTED_SKILLS) == PARENT_CANONICAL_SKILLS:
-            self.assertEqual(errors, ())
-        else:
-            self.assertTrue(any("pinned 16-Skill architecture" in error for error in errors))
+    def test_sixteen_skill_gate_matches_the_pinned_canonical_set(self):
+        self.assertEqual(tuple(EXPECTED_SKILLS), PARENT_CANONICAL_SKILLS)
+        self.assertEqual(validate_skill_package(ROOT), ())
 
 
 if __name__ == "__main__":

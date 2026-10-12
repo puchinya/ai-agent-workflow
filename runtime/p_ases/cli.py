@@ -825,6 +825,104 @@ def _runtime_root(args: argparse.Namespace) -> Path:
     return root.resolve()
 
 
+def _project_status(root: Path) -> int:
+    """Read the project profile without creating or changing repository state."""
+    try:
+        profile = load_profile(root)
+    except ProfileError as exc:
+        _json({"status": "UNAVAILABLE", "root": str(root), "reason": str(exc)})
+        return 2
+    _json({
+        "status": "READY",
+        "root": str(profile.root),
+        "project_name": profile.project_name,
+        "branch_prefix": profile.branch_prefix,
+        "required_checks": [
+            {"name": name, "trusted_app_id": app_id}
+            for name, app_id in profile.required_checks
+        ],
+    })
+    return 0
+
+
+def _context_show(issue_number: int, repository: str, root: Path, github: GitHub) -> int:
+    """Read Issue, approved ADC, and an existing frozen binding without resolving a base."""
+    try:
+        issue = github.issue(issue_number)
+    except GitHubError as exc:
+        _json({"status": "ISSUE_UNAVAILABLE", "issue": issue_number,
+               "repository": repository, "binding_status": "NOT_EVALUATED", "reason": str(exc)})
+        return 2
+    if issue.get("number") != issue_number or issue.get("pull_request") is not None:
+        _json({"status": "ISSUE_INVALID", "issue": issue_number, "repository": repository,
+               "binding_status": "NOT_EVALUATED", "reason": "GitHub readback is not the requested Issue"})
+        return 2
+    if issue.get("state") != "open":
+        _json({"status": "ISSUE_CLOSED", "issue": issue_number, "repository": repository,
+               "issue_state": issue.get("state"), "binding_status": "NOT_EVALUATED",
+               "reason": "context is available only for an open Issue"})
+        return 2
+    try:
+        verified = verify_adc(github, issue_number)
+    except ADCError as exc:
+        _json({"status": "ADC_UNAVAILABLE", "issue": issue_number, "repository": repository,
+               "issue_state": "open", "binding_status": "NOT_EVALUATED", "reason": str(exc)})
+        return 2
+    if (verified.pointer.state != "approved"
+            or verified.contract.repository.casefold() != repository.casefold()):
+        _json({"status": "ADC_NOT_APPROVED", "issue": issue_number, "repository": repository,
+               "issue_state": "open", "adc_status": verified.pointer.state.upper(),
+               "adc_comment_id": verified.pointer.comment_id,
+               "adc_sha256": verified.pointer.sha256,
+               "binding_status": "NOT_EVALUATED",
+               "reason": "current ADC is not approved for this repository"})
+        return 2
+
+    binding_path = execution_binding_path(root, issue_number)
+    if path_has_symlink(binding_path):
+        _json({"status": "BINDING_INVALID", "issue": issue_number, "repository": repository,
+               "issue_state": "open", "adc_status": "APPROVED", "binding_status": "INVALID",
+               "reason": "ExecutionBinding path traverses a symbolic link"})
+        return 2
+    if not binding_path.is_file():
+        _json({"status": "NOT_BOUND", "issue": issue_number, "repository": repository,
+               "issue_state": "open", "adc_status": "APPROVED",
+               "adc_comment_id": verified.pointer.comment_id,
+               "adc_sha256": verified.pointer.sha256,
+               "binding_status": "NOT_BOUND"})
+        return 2
+    try:
+        binding = read_binding(binding_path)
+    except (ExecutionError, OSError, ValueError) as exc:
+        _json({"status": "BINDING_INVALID", "issue": issue_number, "repository": repository,
+               "issue_state": "open", "adc_status": "APPROVED", "binding_status": "INVALID",
+               "reason": str(exc)})
+        return 2
+    if (binding.repository.casefold() != repository.casefold() or binding.issue_number != issue_number
+            or binding.adc_comment_id != verified.pointer.comment_id
+            or binding.adc_sha256 != verified.pointer.sha256):
+        _json({"status": "STALE_BINDING", "issue": issue_number, "repository": repository,
+               "issue_state": "open", "adc_status": "APPROVED",
+               "adc_comment_id": verified.pointer.comment_id,
+               "adc_sha256": verified.pointer.sha256, "binding_status": "STALE_ADC",
+               "binding_adc_comment_id": binding.adc_comment_id,
+               "binding_adc_sha256": binding.adc_sha256})
+        return 2
+    if Path(binding.work_directory) != root:
+        _json({"status": "NOT_BOUND_HERE", "issue": issue_number, "repository": repository,
+               "issue_state": "open", "adc_status": "APPROVED",
+               "adc_comment_id": verified.pointer.comment_id,
+               "adc_sha256": verified.pointer.sha256, "binding_status": "BOUND_ELSEWHERE"})
+        return 2
+    _json({"status": "BOUND", "issue": issue_number, "repository": repository,
+           "issue_state": "open", "adc_status": "APPROVED",
+           "adc_comment_id": verified.pointer.comment_id,
+           "adc_sha256": verified.pointer.sha256, "binding_status": "BOUND",
+           "frozen_context": {"base_ref": binding.base_ref, "base_sha": binding.base_sha,
+                              "initial_head_sha": binding.initial_head_sha}})
+    return 0
+
+
 def _approved_issue_adc(github: GitHub, issue_number: int, repository: str) -> tuple[dict[str, Any], Any]:
     issue = github.issue(issue_number)
     if (issue.get("number") != issue_number or issue.get("state") != "open"
@@ -2876,6 +2974,18 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m p_ases")
     namespaces = parser.add_subparsers(dest="namespace", required=True)
 
+    project = namespaces.add_parser("project", help="read the local project profile")
+    project_commands = project.add_subparsers(dest="verb", required=True)
+    project_status = project_commands.add_parser("status", help="read profile status without mutation")
+    project_status.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
+
+    context = namespaces.add_parser("context", help="read Issue and frozen work-binding context")
+    context_commands = context.add_subparsers(dest="verb", required=True)
+    context_show = context_commands.add_parser("show", help="read current Issue, approved ADC, and binding")
+    context_show.add_argument("issue", type=_positive_number)
+    context_show.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
+    context_show.add_argument("--repo", help="repository owner/name; defaults to origin")
+
     adc = namespaces.add_parser("adc", help="validate and manage Agent Development Contracts")
     adc_commands = adc.add_subparsers(dest="verb", required=True)
     validate = adc_commands.add_parser("validate")
@@ -3141,6 +3251,13 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        if args.namespace == "project":
+            return _project_status(_runtime_root(args))
+        if args.namespace == "context":
+            root = _runtime_root(args)
+            repository = args.repo or discover_repository(root)
+            return _context_show(args.issue, repository, root, GitHub(repository))
+
         if args.namespace in {"work", "pr", "audit", "delivery", "user-review"}:
             root = _runtime_root(args)
             repository = args.repo or discover_repository(root)

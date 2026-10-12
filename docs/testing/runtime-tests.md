@@ -5,6 +5,8 @@
 - Status: Approved
 - Owning specification: ../specs/
 
+The stable RT test IDs preserve the earlier traceability graph. Current CLI cases use the namespaced P-ASES routes. Procedures for APIs that the Runtime Specification marks legacy are regression conditions for retained internal behavior, not public-command compatibility requirements.
+
 <!-- contents:start -->
 **Contents**
 - [1 Test purpose](#1-test-purpose)
@@ -88,43 +90,43 @@ Define reproducible conditions and expected results independently of implementat
 <a id="tst-rt-001-project-profile-validation"></a>
 ### 2.1 TST-RT-001 Project profile validation
 
-**Setup and action:** Load valid Schema 1/2 profiles, then unknown versions, fields, or malformed targets.
+**Setup and action:** Run `project status` with a valid, missing, and malformed `.agent/project.json` profile; inspect repository files before and after each invocation.
 
 <a id="ora-rt-001"></a>
 <a id="ora-rt-001-expected-result"></a>
 #### 2.1.1 ORA-RT-001 Expected result
 
-Valid profiles normalize only documented defaults; malformed input fails before output, hooks, or GitHub calls.
+The valid profile reports `READY`; missing or malformed profiles report `UNAVAILABLE` with nonzero status. No case creates, repairs, or rewrites profile state.
 
 <a id="tst-rt-002"></a>
 <a id="tst-rt-002-context-routing"></a>
 ### 2.2 TST-RT-002 Context routing
 
-**Setup and action:** Provide a valid Issue and component declaration.
+**Setup and action:** Run `context show` for open, closed, and missing Issues; approved, unapproved, stale, or unverifiable ADC pointers; and absent, valid, stale, or malformed frozen bindings.
 
 <a id="ora-rt-002"></a>
 <a id="ora-rt-002-expected-result"></a>
 #### 2.2.1 ORA-RT-002 Expected result
 
-Context contains bounded identifiers and paths, not copied Issue or linked-document bodies.
+Results expose bounded identity and digest fields without issue/comment bodies or workspace paths. Every case is read-only and does not re-resolve a frozen base or create a binding.
 
 <a id="tst-rt-003"></a>
 <a id="tst-rt-003-document-owner-validation"></a>
 ### 2.3 TST-RT-003 Document owner validation
 
-**Setup and action:** Use valid, wrong-tree, missing, and malformed local document links.
+**Setup and action:** Run `docs validate` on valid, wrong-tree, missing, and malformed local document links, then run `docs format --check` on clean and drifted documents.
 
 <a id="ora-rt-003"></a>
 <a id="ora-rt-003-expected-result"></a>
 #### 2.3.1 ORA-RT-003 Expected result
 
-Only declared existing owners route; malformed or missing owners fail without broadening scope.
+Valid docs pass; broken links and traceability fail with bounded errors. Format check reports drift without changing bytes.
 
 <a id="tst-rt-004"></a>
 <a id="tst-rt-004-feature-branch-base-selection"></a>
 ### 2.4 TST-RT-004 Feature branch base selection
 
-**Setup and action:** Request a valid same-repository feature base and then an invalid or foreign branch.
+**Setup and action:** Use `work base` and `work branch` with a valid same-repository base, then an invalid or foreign branch.
 
 <a id="ora-rt-004"></a>
 <a id="ora-rt-004-expected-result"></a>
@@ -148,7 +150,7 @@ Resolution fails closed and leaves the current branch, worktree, hooks, and bind
 <a id="tst-rt-006-workspace-binding"></a>
 ### 2.6 TST-RT-006 Workspace binding
 
-**Setup and action:** Prepare current and host-isolated workspaces with exact and mismatched base SHAs.
+**Setup and action:** Use `work bind` and `work recover` with valid, mismatched, and stale binding subjects.
 
 <a id="ora-rt-006"></a>
 <a id="ora-rt-006-expected-result"></a>
@@ -172,7 +174,7 @@ Creation is followed by exact API readback; retries reuse one matching PR and am
 <a id="tst-rt-008-contract-byte-identity"></a>
 ### 2.8 TST-RT-008 Contract byte identity
 
-**Setup and action:** Publish and restore a bounded ADC payload with exact bytes and named comment readback.
+**Setup and action:** Validate, publish, verify, and restore a bounded ADC payload with exact bytes and named comment readback.
 
 <a id="ora-rt-008"></a>
 <a id="ora-rt-008-expected-result"></a>
@@ -184,25 +186,25 @@ The approved comment ID/SHA and bytes match; invalid or changed pointers fail wi
 <a id="tst-rt-009-contract-execution-authority"></a>
 ### 2.9 TST-RT-009 Contract execution authority
 
-**Setup and action:** Use a valid approved contract, a superseded contract, and an unapproved contract.
+**Setup and action:** Exercise a current approved ADC, a superseded ADC, and an unapproved ADC through context and work readiness routes.
 
 <a id="ora-rt-009"></a>
 <a id="ora-rt-009-expected-result"></a>
 #### 2.9.1 ORA-RT-009 Expected result
 
-Only the current approved contract authorizes implementation preparation; no caller boolean substitutes for approval.
+Only the exact current approved ADC authorizes implementation work; no caller boolean substitutes for approval.
 
 <a id="tst-rt-010"></a>
 <a id="tst-rt-010-review-and-delivery-evidence"></a>
 ### 2.10 TST-RT-010 Review and delivery evidence
 
-**Setup and action:** Supply current and stale final verification, self-review, QA, independent review, and required-check records.
+**Setup and action:** Supply current and stale Verification, Acceptance, self-Audit, independent review, User Review, and Required Check records to the delivery gate.
 
 <a id="ora-rt-010"></a>
 <a id="ora-rt-010-expected-result"></a>
 #### 2.10.1 ORA-RT-010 Expected result
 
-Delivery accepts only records bound to the same current PR HEAD and keeps missing or stale gates visible.
+Delivery accepts only records bound to the same current PR HEAD and keeps missing or stale gates visible. It performs no merge.
 
 <a id="tst-rt-011"></a>
 <a id="tst-rt-011-failure-logging-and-cleanup"></a>
@@ -220,13 +222,13 @@ Secrets are redacted, temporary files are cleaned, and prior verified state rema
 <a id="tst-rt-012-observable-cli-results"></a>
 ### 2.12 TST-RT-012 Observable CLI results
 
-**Setup and action:** Run valid help and malformed/incomplete command inputs.
+**Setup and action:** Run `python -m p_ases --help`, inspect all 12 namespaces, and submit malformed/incomplete namespaced route inputs.
 
 <a id="ora-rt-012"></a>
 <a id="ora-rt-012-expected-result"></a>
 #### 2.12.1 ORA-RT-012 Expected result
 
-Commands expose stable machine-readable outcomes and use nonzero exit for failed validation.
+All 12 namespaces are present, retired flat commands are absent, and invalid route inputs fail with nonzero status.
 
 <a id="tst-rt-013"></a>
 <a id="tst-rt-013-data-and-api-formats"></a>

@@ -4,7 +4,7 @@
     "name": "puchinya",
     "url": "https://github.com/puchinya"
   },
-  "description": "Issue-first development workflow Skills and local verification tools for AI coding agents.",
+  "description": "Puchinya Agentic Software Engineering System Skills and deterministic local workflow tools.",
   "keywords": [
     "workflow",
     "issue-first",
@@ -12,7 +12,7 @@
     "review"
   ],
   "license": "MIT",
-  "name": "ai-agent-workflow",
+  "name": "p-ases",
   "repository": "https://github.com/puchinya/ai-agent-workflow",
   "version": "0.8.0"
 }

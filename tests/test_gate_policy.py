@@ -103,7 +103,7 @@ def activation_fixture(*, approval_author="puchinya", merged_by="puchinya", open
             29: ("main", "pases/verification"),
             30: ("main", "pases/work-readiness"),
             31: ("main", "pases/user-review-integration"),
-            32: ("pases/work-readiness", "pases/issue-32"),
+            32: ("main", "pases/distribution-migration"),
         }[issue]
         prs[pr_number] = {
             "number": pr_number, "state": "closed", "merged": True,
@@ -286,7 +286,7 @@ class BootstrapPolicyTests(unittest.TestCase):
                 self.assertEqual(evaluate(pr=row).status, "BOOTSTRAP_BLOCKED")
         self.assertEqual(evaluate(response_repository="fork/repo").status, "BOOTSTRAP_BLOCKED")
 
-    def test_pr29_uses_main_only_after_parent_merge_and_unconfigured_pairs_fail_closed(self):
+    def test_pr29_uses_main_only_after_parent_merge_and_unapproved_pairs_fail_closed(self):
         verification_subject = replace(
             subject(), issue_number=29, pr_number=34, base_ref="main",
             head_ref="pases/verification")
@@ -309,24 +309,52 @@ class BootstrapPolicyTests(unittest.TestCase):
                                   workflow_runs=[verification_run]).status,
                          "BOOTSTRAP_BLOCKED")
 
-        for issue_number in (32,):
-            with self.subTest(issue_number=issue_number):
-                undocumented_subject = replace(
-                    verification_subject, issue_number=issue_number,
-                    pr_number=issue_number + 10, base_ref="unapproved-base",
-                    head_ref="unapproved-head")
-                undocumented_pr = pr_readback(
-                    number=issue_number + 10,
-                    base={"ref": "unapproved-base", "sha": BASE, "repo": {"full_name": REPO}},
-                    head={"ref": "unapproved-head", "sha": HEAD, "repo": {"full_name": REPO}},
-                    body=f"Closes #{issue_number}\n")
-                undocumented_run = workflow_run(
-                    head_branch="unapproved-head", pull_requests=[{"number": issue_number + 10}])
-                result = evaluate(subject=undocumented_subject, pr=undocumented_pr,
-                                  workflow_runs=[undocumented_run])
-                self.assertEqual(result.status, "BOOTSTRAP_BLOCKED")
-                self.assertIn("approved Bootstrap base/head branch pair is not defined for this child Issue",
-                              result.reasons)
+        undocumented_subject = replace(
+            verification_subject, issue_number=32, pr_number=42,
+            base_ref="unapproved-base", head_ref="unapproved-head")
+        undocumented_pr = pr_readback(
+            number=42,
+            base={"ref": "unapproved-base", "sha": BASE, "repo": {"full_name": REPO}},
+            head={"ref": "unapproved-head", "sha": HEAD, "repo": {"full_name": REPO}},
+            body="Closes #32\n")
+        undocumented_run = workflow_run(
+            head_branch="unapproved-head", pull_requests=[{"number": 42}])
+        result = evaluate(subject=undocumented_subject, pr=undocumented_pr,
+                          workflow_runs=[undocumented_run])
+        self.assertEqual(result.status, "BOOTSTRAP_BLOCKED")
+        self.assertIn("PR base/head branch pair does not match the approved child branch contract",
+                      result.reasons)
+
+    def test_pr32_uses_the_approved_main_distribution_migration_branch_pair(self):
+        migration_subject = replace(
+            subject(), issue_number=32, pr_number=42, base_ref="main",
+            head_ref="pases/distribution-migration")
+        migration_pr = pr_readback(
+            number=42,
+            base={"ref": "main", "sha": BASE, "repo": {"full_name": REPO}},
+            head={"ref": "pases/distribution-migration", "sha": HEAD,
+                  "repo": {"full_name": REPO}},
+            body="Closes #32\n")
+        migration_run = workflow_run(
+            head_branch="pases/distribution-migration", pull_requests=[{"number": 42}])
+        self.assertEqual(evaluate(subject=migration_subject, pr=migration_pr,
+                                  workflow_runs=[migration_run]).status,
+                         "BOOTSTRAP_TECHNICAL_READY")
+
+        for wrong_base, wrong_head in (
+            ("pases/work-readiness", "pases/distribution-migration"),
+            ("main", "pases/issue-32"),
+        ):
+            with self.subTest(base=wrong_base, head=wrong_head):
+                wrong_subject = replace(migration_subject, base_ref=wrong_base, head_ref=wrong_head)
+                wrong_pr = dict(migration_pr)
+                wrong_pr["base"] = {"ref": wrong_base, "sha": BASE, "repo": {"full_name": REPO}}
+                wrong_pr["head"] = {"ref": wrong_head, "sha": HEAD, "repo": {"full_name": REPO}}
+                wrong_run = workflow_run(
+                    head_branch=wrong_head, pull_requests=[{"number": 42}])
+                self.assertEqual(evaluate(subject=wrong_subject, pr=wrong_pr,
+                                          workflow_runs=[wrong_run]).status,
+                                 "BOOTSTRAP_BLOCKED")
 
     def test_pr31_uses_main_and_exact_review_branch_and_rejects_other_refs(self):
         review_subject = replace(
@@ -575,12 +603,21 @@ class BootstrapPolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(GatePolicyError, "child PR #33 merge must be explicitly performed"):
             _validate_activation_candidate(github, record)
 
-    def test_activation_refuses_open_child_and_undefined_branch_pair(self):
+    def test_activation_refuses_open_child_and_mismatched_branch_pair(self):
         github, record = activation_fixture(open_child=27)
         with self.assertRaisesRegex(GatePolicyError, "child Issue #27 is not closed"):
             _validate_activation_candidate(github, record)
 
         github, record = activation_fixture()
+        original_pull_request = github.pull_request
+
+        def wrong_child_base(pr_number):
+            result = dict(original_pull_request(pr_number))
+            if pr_number == 38:
+                result["base"] = {"ref": "pases/verification", "repo": {"full_name": REPO}}
+            return result
+
+        github.pull_request = wrong_child_base
         with self.assertRaisesRegex(GatePolicyError, "child PR #38 has no matching approved base/head branch contract"):
             _validate_activation_candidate(github, record)
 

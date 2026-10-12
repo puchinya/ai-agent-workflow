@@ -56,7 +56,7 @@ The GitHub repository itself is the marketplace host for OpenAI/Codex and Claude
 
 `dist/openai/plugin.json` is a portable Agent Plugins manifest at package root. It uses the current `https://agent-plugins.org/schemas/1.0.0/plugin.schema.json` schema and portable `name`, `version`, and `description` fields. Skills are under root `skills/`; the portable manifest relies on fixed package paths and does not require a `skills` field. OpenAI-specific presentation and configuration belongs only under `extensions.com.openai`. `.codex-plugin/plugin.json` is included only if an explicit compatibility need is verified.
 
-The repository-root `.agents/plugins/marketplace.json` is the OpenAI/Codex GitHub marketplace manifest. Its sole plugin entry is named `ai-agent-workflow`, has category `Productivity`, preserves the existing installation/authentication policy, and uses `source: local` with `path: ./dist/openai`. Marketplace registration supplies Git transport; the relative source resolves within the checked-out repository. The path MUST be repository-relative, remain inside the checkout after resolution, and point to an existing directory containing `plugin.json`.
+The product and plugin name is `p-ases` (display name `P-ASES`); the source repository retains the canonical GitHub slug `puchinya/ai-agent-workflow`. The repository-root `.agents/plugins/marketplace.json` is the OpenAI/Codex GitHub marketplace manifest. Its sole plugin entry is named `p-ases`, has category `Productivity`, preserves the existing installation/authentication policy, and uses `source: local` with `path: ./dist/openai`. Marketplace registration supplies Git transport; the relative source resolves within the checked-out repository. The path MUST be repository-relative, remain inside the checkout after resolution, and point to an existing directory containing `plugin.json`.
 
 <a id="req-dist-002"></a>
 <a id="req-dist-002-claude-package"></a>
@@ -64,7 +64,7 @@ The repository-root `.agents/plugins/marketplace.json` is the OpenAI/Codex GitHu
 
 `dist/claude/.claude-plugin/plugin.json` is the sole Claude plugin manifest. It declares a lowercase, unique marketplace name of up to 64 letters/digits/hyphens; `displayName` is at most 64 characters and `description` at most 500. Skills are under root `skills/` and each `SKILL.md` has valid YAML frontmatter with `name` and `description`. No file is placed under a top-level `bin/` directory.
 
-The generated repository-root `.claude-plugin/marketplace.json` uses Claude Code's current `name`, `owner`, and `plugins` format. It contains one plugin entry named `ai-agent-workflow`; its source is `./dist/claude`, relative to and contained within the marketplace repository checkout, with `.claude-plugin/plugin.json` present in that directory. GitHub marketplace registration supplies transport. The Antigravity manifest uses the schema URL as its validator reference; the manifest itself contains only the schema's allowed `name` and optional `description` properties. The Enterprise Plugins API upload format remains an archive or set of files; it is not treated as a local manifest schema.
+The generated repository-root `.claude-plugin/marketplace.json` uses Claude Code's current `name`, `owner`, and `plugins` format. It contains one plugin entry named `p-ases`; its source is `./dist/claude`, relative to and contained within the marketplace repository checkout, with `.claude-plugin/plugin.json` present in that directory. GitHub marketplace registration supplies transport. The Antigravity manifest uses the schema URL as its validator reference; the manifest itself contains only the schema's allowed `name` and optional `description` properties. The Enterprise Plugins API upload format remains an archive or set of files; it is not treated as a local manifest schema.
 
 <a id="req-dist-003"></a>
 <a id="req-dist-003-antigravity-package"></a>
@@ -78,15 +78,17 @@ Install Antigravity locally/manual from `dist/antigravity` or its versioned Rele
 <a id="req-dist-004-generation-and-validation"></a>
 ### 3.4 REQ-DIST-004 Generation and validation
 
-`runtime/agent_workflow/__init__.py::__version__` MUST be the sole hand-authored package version. `pyproject.toml` MUST obtain its dynamic version through `agent_workflow.__version__`. OpenAI/Claude adapters MUST NOT contain a `version` key: generation rejects it before writing and injects the canonical version into their deterministically serialized manifests. Validation MUST require both generated versions to equal the canonical version. Antigravity MUST remain versionless.
+`runtime/p_ases/__init__.py::__version__` MUST be the sole hand-authored package version. `pyproject.toml` MUST obtain its dynamic version through `p_ases.__version__`. The distribution name is `p-ases`. OpenAI/Claude adapters MUST NOT contain a `version` key: generation rejects it before writing and injects the canonical version into their deterministically serialized manifests. Validation MUST require both generated versions to equal the canonical version. Antigravity MUST remain versionless.
 
 `python tools/build_dist.py` deterministically regenerates all package files. `python tools/build_dist.py --check` compares the complete expected path/content map and fails for missing, extra, or edited generated files. No hand edits under `dist/**` are allowed.
 
-CI MUST run `--check` before unit tests or generation can rewrite committed outputs. After tests and generation, `git diff --exit-code -- dist .agents/plugins/marketplace.json .claude-plugin/marketplace.json` MUST prove the generated paths remain identical to the checkout. Executable Skill examples MUST use `python -m agent_workflow <subcommand>`; distribution validation rejects bare runtime command examples.
+Each host package MUST contain the complete `runtime/p_ases/`, standards, templates, specification and design sources, license and host README. Its Skills directory MUST match the exact 16 canonical directories in `workflow-spec.md` §3.4, with no retired Skills or import/command shims. The three packages are independent copies of the same runtime and Skill set, with only their provider manifests and host instructions differing.
+
+CI MUST run `python tools/build_dist.py --check` before unit tests or generation can rewrite committed outputs. After tests and generation, it MUST prove the generated paths remain identical to the checkout. Executable Skill examples MUST use `python -m p_ases <namespace> <verb>`; distribution validation rejects retired command examples and bare runtime command examples.
 
 `python tools/validate_dist.py` validates each host package independently: manifest path and schema-specific fields, unique package/Skill names, required frontmatter, safe relative resource paths, required supporting runtime/standards, host separation, and marketplace metadata. It rejects forbidden reference-template synchronization files and any MCP/agent/rules/hooks placeholders.
 
-Validation MUST require the OpenAI marketplace source to be the repository-contained `./dist/openai` directory with `plugin.json`, `category: Productivity`, the existing policy, and the sole entry name matching manifest name `ai-agent-workflow`. It MUST reject absolute/traversing paths, paths to another host, missing targets, and paths escaping the repository (including through symlinks). The Claude marketplace MUST have exactly one entry whose name matches the `ai-agent-workflow` manifest and whose repository-contained source is `./dist/claude` with `.claude-plugin/plugin.json`. Marketplace installation and refresh MUST use the checked-out GitHub repository snapshot and MUST NOT query Releases or silently fall back to a Release asset when marketplace refresh fails.
+Validation MUST require the OpenAI marketplace source to be the repository-contained `./dist/openai` directory with `plugin.json`, `category: Productivity`, the existing policy, and the sole entry name matching manifest name `p-ases`. It MUST reject absolute/traversing paths, paths to another host, missing targets, and paths escaping the repository (including through symlinks). The Claude marketplace MUST have exactly one entry whose name matches the `p-ases` manifest and whose repository-contained source is `./dist/claude` with `.claude-plugin/plugin.json`. Marketplace installation and refresh MUST use the checked-out GitHub repository snapshot and MUST NOT query Releases or silently fall back to a Release asset when marketplace refresh fails.
 
 <a id="req-dist-005"></a>
 <a id="req-dist-005-github-release-assets"></a>
@@ -98,9 +100,9 @@ These Release ZIP and checksum assets are version-fixed/manual/offline downloads
 
 `python tools/package_release.py --tag vX.Y.Z --output-dir PATH` MUST check tag/version, distribution drift, and independent host validation before producing assets. It MUST NOT repair distributions or call GitHub APIs. It MUST emit exactly these four files:
 
-- `ai-agent-workflow-openai-vX.Y.Z.zip`
-- `ai-agent-workflow-claude-vX.Y.Z.zip`
-- `ai-agent-workflow-antigravity-vX.Y.Z.zip`
+- `p-ases-openai-vX.Y.Z.zip`
+- `p-ases-claude-vX.Y.Z.zip`
+- `p-ases-antigravity-vX.Y.Z.zip`
 - `SHA256SUMS`
 
 Each ZIP MUST contain the corresponding `dist/<host>/` contents at archive root without a `dist/` prefix. Root manifests are `plugin.json` for OpenAI/Antigravity and `.claude-plugin/plugin.json` for Claude. Sorted member paths, `/` separators, fixed timestamps and permissions MUST make identical inputs yield identical ZIP bytes. `SHA256SUMS` MUST contain lowercase SHA-256 hashes, two spaces, and ZIP filenames in filename order, one LF-terminated entry per ZIP.
