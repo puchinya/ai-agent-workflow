@@ -487,6 +487,54 @@ class GitHub:
             raise GitHubError("evidence content does not match its Git blob ID")
         return content
 
+    def regular_blob_sha_at_ref(self, path: str, ref: str) -> str:
+        """Resolve one Git tree path and reject symlinks, submodules, and non-files."""
+        if (not isinstance(path, str) or not path or path.startswith("/")
+                or any(part in {"", ".", ".."} for part in path.split("/"))
+                or any(char in path for char in "\\\x00\r\n?#:")):
+            raise GitHubError("evidence content path is invalid")
+        if not isinstance(ref, str) or not re.fullmatch(r"[0-9a-f]{40}", ref):
+            raise GitHubError("evidence content ref must be a full commit SHA")
+        commit = self.request("GET", f"{self.prefix}/git/commits/{ref}")
+        tree_ref = commit.get("tree", {}).get("sha") if isinstance(commit, dict) and isinstance(
+            commit.get("tree"), dict) else None
+        if not isinstance(tree_ref, str) or not re.fullmatch(r"[0-9a-f]{40}", tree_ref):
+            raise GitHubError("evidence commit tree readback is incomplete")
+        parts = path.split("/")
+        for index, part in enumerate(parts):
+            tree = self.request("GET", f"{self.prefix}/git/trees/{tree_ref}")
+            entries = tree.get("tree") if isinstance(tree, dict) else None
+            if (not isinstance(entries, list) or tree.get("truncated") is True
+                    or any(not isinstance(row, dict) for row in entries)):
+                raise GitHubError("evidence Git tree readback is incomplete or truncated")
+            matches = [row for row in entries if row.get("path") == part]
+            if len(matches) != 1:
+                raise GitHubError("evidence Git tree path is missing or ambiguous")
+            entry = matches[0]
+            is_leaf = index == len(parts) - 1
+            if is_leaf:
+                if entry.get("type") != "blob" or entry.get("mode") not in {"100644", "100755"}:
+                    raise GitHubError("evidence path is not a regular file (symlinks and submodules are forbidden)")
+                sha = entry.get("sha")
+                if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+                    raise GitHubError("evidence Git blob SHA is malformed")
+                return sha
+            if entry.get("type") != "tree" or entry.get("mode") != "040000":
+                raise GitHubError("evidence path contains a non-directory component")
+            tree_ref = entry.get("sha")
+            if not isinstance(tree_ref, str) or not re.fullmatch(r"[0-9a-f]{40}", tree_ref):
+                raise GitHubError("evidence Git subtree SHA is malformed")
+        raise GitHubError("evidence Git tree path is incomplete")
+
+    def regular_content_at_ref(self, path: str, ref: str) -> bytes:
+        """Read content only when the exact commit tree marks its path as a regular blob."""
+        expected_sha = self.regular_blob_sha_at_ref(path, ref)
+        content = self.content_at_ref(path, ref)
+        actual_sha = hashlib.sha1(b"blob " + str(len(content)).encode("ascii") + b"\x00" + content).hexdigest()
+        if actual_sha != expected_sha:
+            raise GitHubError("evidence content differs from its regular Git tree entry")
+        return content
+
     def pull_request(self, number: int) -> dict[str, Any]:
         """Read the current Pull Request resource, including base/head repository identities."""
         number = _positive_int(number, "Pull Request number")

@@ -6,18 +6,21 @@ Keep durable requirements, design decisions, code, tests, and evidence aligned w
 
 ## Rules
 
-Requirements, specifications, design, code/tests, and status/evidence have distinct owners and must agree in the final result. The workflow does not require a particular order for creating or editing those artifacts. When a decision changes, ensure its owner and every affected dependent document or implementation reflect the approved final decision. Link to owners instead of copying rules. This repository does not synchronize another repository, migrate existing consumer documents, or rewrite prose automatically.
+Requirements, specifications, design, code/tests, and status/evidence have distinct owners and must agree in the final result. Product behavior is decided before dependent design is approved; artifact editing itself has no fixed chronology. When a decision changes, ensure its owner and every affected dependent document or implementation reflect the approved final decision. Link to owners instead of copying rules. This repository does not synchronize another repository, migrate existing consumer documents, or rewrite prose automatically.
 
-New durable Issue work includes a structured `## Document impact` section:
+New durable P-ASES Issue work records its decisions in the approved ADC's structured `## Artifact impact` section:
 
 ```markdown
-## Document impact
-- Specification: <links> | unchanged — <reason>
-- Design: <links> | unchanged — <reason>
-- Status: <links> | evidence-only — <reason> | unchanged — <reason>
+## Artifact impact
+- Specification: <create/update docs/specs/<path>.md | unchanged/not applicable — reason>
+- Design: <create/update docs/design/<path>.md | unchanged/not applicable — reason>
+- Testing: <create/update docs/testing/<path>.md | unchanged/not applicable — reason>
+- Status: <create/update links | evidence-only/unchanged/not applicable — reason>
 ```
 
-Each row selects exactly one alternative. Specification links belong under `docs/specs/`, Design links under `docs/design/`, and Status links under `docs/status/`; each row may contain multiple Markdown links. An `unchanged` decision needs a reason. `evidence-only` means verification evidence is recorded on the Issue/PR and no status document needs to change. Do not create a document merely to avoid an unchanged or evidence-only decision. Legacy link-only `Document impact` sections remain supported.
+Each row selects one applicable decision. Specification, Design, and Testing create/update paths belong under `docs/specs/`, `docs/design/`, and `docs/testing/` respectively. Unchanged or not-applicable decisions need a reason; a skipped specification or design phase must use the same reason. `evidence-only` means verification evidence is recorded on the Issue/PR and no status document needs to change. Do not create a document merely to avoid an unchanged or evidence-only decision. Legacy `## Document impact` sections remain supported for existing document routing, but they do not replace the approved ADC's `## Artifact impact` for new phase evidence.
+
+Before `ready`, the approved ADC names the test/Oracle artifact and includes `docs/testing/traceability.md`. Each requirement links through design, an independent Oracle, a test case, and an existing executable test source. The phase receipt binds committed artifact bytes to the Issue branch commit; it records technical evidence and is not a separate approval.
 
 Requirements and design establish the decisions. During implementation, compare the final diff with all three rows and update the decisions if needed. Self-review verifies that the final docs and diff still match the Issue decisions.
 

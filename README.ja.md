@@ -6,23 +6,34 @@ P-ASESは、AIコーディングエージェント向けの**Issue中心のソ�
 
 共通の16 Skills、Markdownの文書標準・テンプレート、Python CLIを提供します。**Codex（OpenAI）、Claude Code、Google Antigravity** 用パッケージは同じ正本から生成します。
 
-> **移行状況：** 子PRのマージやCI成功だけではP-ASESのActivationは完了しません。親[Issue #26](https://github.com/puchinya/ai-agent-workflow/issues/26)のIntegration、User Review、Activationは独立したゲートです。現行のphase CLIは、仕様・設計の承認自体を保証しません。詳細は[現在の制約](#現在の制約)を参照してください。
+> **移行状況：** 子PRのマージやCI成功だけではP-ASESのActivationは完了しません。親[Issue #26](https://github.com/puchinya/ai-agent-workflow/issues/26)には独立したIntegration、User Review、Activationゲートがあります。詳細は[現在の制約](#現在の制約)を参照してください。
 
 ## ワークフローの概要
 
 Issueと承認済み**ADC**が、対象範囲・設計判断・検証義務・完了条件を定めます。製品仕様は*何を実現するか*、設計は*どう実現するか*、テスト仕様は*何を期待結果として独立に判定するか*を定め、実装結果と照合します。
 
-```text
-要求 → Issueと承認済みADC
-     → requirements（要求の確定）
-     → [specification（製品仕様）] → [design（技術設計）] → ready
-     → execution（実装・テスト・ブランチ・push・PR）
-     → verification（PR HEADの検証・受入・レビュー）
-     → user-review（ユーザー最終判断）
-     → 別途承認されたマージ → GitHub Issueのクローズ
+```mermaid
+flowchart TD
+  request[要求] --> issue[Issueと承認済みADC]
+  issue --> req[requirements]
+  subgraph child[単独Issueと子Issue]
+    req -->|製品動作を変更| spec[specification]
+    spec -->|技術判断が必要| design[design]
+    req -.->|仕様を省略する理由を記録| design
+    spec -.->|設計を省略する理由を記録| ready[ready]
+    req -.->|仕様と設計それぞれの理由| ready
+    design --> ready
+    ready --> exec[execution]
+    exec --> verify[verification]
+    verify --> review[user-review]
+    review -->|同一スコープの修正| exec
+    review -->|新しいスコープ| req
+    review -->|ユーザー最終判断と別途マージ承認| merge[マージ]
+    merge --> closed[GitHub Issueをクローズ]
+  end
 ```
 
-角括弧の工程は**条件付き**です。製品の外部動作を新規に定義・変更する場合は`specification`が必要です。重要な技術判断を行う場合は`design`が必要です。省略時は**それぞれ独立した理由**を記録します。テスト仕様、Oracle、Verification Planは`ready`の前に確定する成果物で、独立したIssue phaseではありません。要求・判断の変更が生じた場合は、依存する後続作業の前に正本へ差し戻します。
+点線の矢印は条件付きスキップを表します。製品動作を新規に定義・変更する場合は`specification`が必要で、重要な技術判断を行う場合は`design`が必要です。省略時はそれぞれ独立した理由を記録します。テスト仕様、Oracle、Verification Planは`ready`の前に確定する成果物で、独立したIssue phaseではありません。要求・判断の変更が生じた場合は、依存する後続作業の前に正本へ差し戻します。
 
 | Phase | 役割 |
 | --- | --- |
@@ -117,7 +128,7 @@ git diff --check
 
 ## 現在の制約
 
-**2026-10-12時点**では、`specification`と`design`のフェーズ名、および理由付きスキップは実装されています。しかし`issue advance`は基本的に**phaseラベルの遷移**を検査するもので、仕様書・設計書が意味的に承認済みであることまでは証明しません。また、`issue split`は子Issueの初期`phase:*`ラベルを付けずに作成するため、通常のadvanceフローがそのままつながりません。[`docs/specs/workflow-spec.md`](docs/specs/workflow-spec.md)には旧フローの記述も残っています。これらは**是正が必要なワークフロー整合性の指摘**であり、AcceptanceのPASSではありません。
+通常のphase経路は、specification・design・readyへの遷移で`PASES_PHASE_DECISION_V1`証跡を記録します。この証跡は現行の承認済みADC、Issue種別、ブランチのコミット、ADCが宣言した文書パスとコミット済みの文書バイト列を照合します。文書内容の正しさを判定したり、人間の承認に代わったりはしません。親Issue #26とBootstrap Issue #27〜#32は移行専用のゲートを維持します。通常Issueへの機能適用には検証済みActivationが必要です。ホスト上の実動作確認はリポジトリCIと各ホストのスモークテストで確認します。
 
 P-ASESは不明・失効した証跡について**fail-closed**で判定します。移行時の親Integration・Activationの進行状況は[Issue #26](https://github.com/puchinya/ai-agent-workflow/issues/26)を参照してください。
 

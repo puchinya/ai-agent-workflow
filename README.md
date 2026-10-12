@@ -6,23 +6,34 @@ P-ASES is an Issue-centered development workflow for coding agents. It connects 
 
 It includes 16 portable Skills, Markdown standards and templates, and a Python CLI. Packages are generated for **Codex (OpenAI), Claude Code, and Google Antigravity** from one canonical source tree.
 
-> **Migration status:** The P-ASES migration is not activated merely because its component PRs merged or CI passed. Parent [Issue #26](https://github.com/puchinya/ai-agent-workflow/issues/26) has separate Integration, User Review, and Activation gates. The current phase CLI does **not** by itself certify that a specification or design was approved. See [Current limitations](#current-limitations).
+> **Migration status:** Component PRs and passing CI do not activate the P-ASES migration. Parent [Issue #26](https://github.com/puchinya/ai-agent-workflow/issues/26) has separate Integration, User Review, and Activation gates. See [Current limitations](#current-limitations).
 
 ## How the workflow works
 
 An Issue and its approved **ADC** define the scope, decisions, verification obligations, and completion conditions. Product specifications describe *what* must happen; designs describe *how*; test specifications define independent expected outcomes. Implementation is checked against all three.
 
-```text
-Request → Issue + approved ADC
-        → requirements
-        → [specification] → [design] → ready
-        → execution (code, tests, branch, push, PR)
-        → verification (exact-HEAD checks, acceptance, reviews)
-        → user-review (human decision)
-        → separately authorized merge → GitHub Issue closed
+```mermaid
+flowchart TD
+  request[Request] --> issue[Issue and approved ADC]
+  issue --> req[requirements]
+  subgraph child[Single and child Issues]
+    req -->|product behavior changes| spec[specification]
+    spec -->|technical decisions needed| design[design]
+    req -.->|skip specification with a recorded reason| design
+    spec -.->|skip design with a recorded reason| ready[ready]
+    req -.->|separate specification and design reasons| ready
+    design --> ready
+    ready --> exec[execution]
+    exec --> verify[verification]
+    verify --> review[user-review]
+    review -->|in-scope changes| exec
+    review -->|new scope| req
+    review -->|final user decision and separate merge authorization| merge[merge]
+    merge --> closed[GitHub Issue closed]
+  end
 ```
 
-The square-bracketed phases are **conditional**, not forgotten: `specification` is required when product behavior must be decided or changed; `design` is required when material technical decisions must be made. Each skipped phase needs its own recorded justification. Test specifications, Oracles, and the Verification Plan are established before declaring readiness; they are artifacts, not an additional Issue phase. Changed requirements return to the relevant decision owner before dependent work proceeds.
+Dotted arrows show conditional skips: specification is required when product behavior must be decided or changed, and design is required when material technical decisions must be made. Each skipped phase needs its own recorded justification. Test specifications, Oracles, and the Verification Plan are established before declaring readiness; they are artifacts, not an additional Issue phase. Changed requirements return to the relevant decision owner before dependent work proceeds.
 
 | Phase | Purpose |
 | --- | --- |
@@ -117,7 +128,7 @@ After editing canonical runtime, Skills, standards, templates, or adapters, rege
 
 ## Current limitations
 
-As of **2026-10-12**, the implementation has `specification` and `design` phase names and supports recorded skip reasons, but the foundational `issue advance` operation validates **phase-label transitions**, not the semantic approval of specification/design artifacts. `issue split` currently creates children without their initial `phase:*` label, so the normal advance path is not yet seamless. Parts of [`docs/specs/workflow-spec.md`](docs/specs/workflow-spec.md) still contain a labeled legacy lifecycle, which should not be confused with the intended P-ASES child lifecycle above. These are open workflow-consistency findings, **not passing acceptance criteria**. They must be resolved and tested before claiming the general workflow is fully enforced.
+The ordinary phase route records `PASES_PHASE_DECISION_V1` evidence for specification, design, and ready transitions. The receipt checks the current approved ADC, Issue kind, branch commit, declared document paths, and committed document bytes. It does not decide whether document content is correct or replace human approval. Parent #26 and Bootstrap Issues #27–#32 retain their migration-specific gates. The feature requires verified Activation for ordinary Issues, and end-to-end host behavior still depends on repository CI and host smoke tests.
 
 P-ASES uses **fail-closed** gates for missing or stale evidence. See the [migration Issue #26](https://github.com/puchinya/ai-agent-workflow/issues/26) for its distinct parent Integration and Activation status.
 

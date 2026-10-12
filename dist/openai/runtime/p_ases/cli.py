@@ -62,6 +62,12 @@ from .issue_graph import (
     validate_native_issue_graph,
     validate_split,
 )
+from .phase_evidence import (
+    BOOTSTRAP_ISSUES as PHASE_EVIDENCE_BOOTSTRAP_ISSUES,
+    PhaseEvidenceError,
+    publish_phase_evidence,
+    verify_phase_evidence,
+)
 from .oracle_trace import (
     OracleDefinition, OracleTraceError, TestDefinition, validate_plan_oracles,
     validate_plan_tests,
@@ -130,6 +136,16 @@ def _positive_number(value: str) -> int:
     if not value.isdigit() or int(value) < 1:
         raise argparse.ArgumentTypeError("Issue number must be a positive integer")
     return int(value)
+
+
+def _phase_skip_reasons(values: list[str]) -> dict[str, str]:
+    reasons: dict[str, str] = {}
+    for raw in values:
+        name, separator, reason = raw.partition("=")
+        if not separator or not reason.strip() or name in reasons or name not in {"specification", "design"}:
+            raise CLIError("--skip-phase must be a unique specification=reason or design=reason")
+        reasons[name] = reason.strip()
+    return reasons
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -2083,6 +2099,43 @@ def _repository_file_reference(value: Path | str) -> str:
     return reference
 
 
+def _parent_gate_comment_security_fingerprint(row: dict[str, Any]) -> tuple[Any, ...]:
+    """Canonical stable security identity for a GitHub parent evidence comment."""
+    if not isinstance(row, dict):
+        raise IntegrationError("parent evidence comment API readback is malformed")
+    comment_id = row.get("id")
+    body = row.get("body")
+    created_at = row.get("created_at")
+    updated_at = row.get("updated_at")
+    issue_url = row.get("issue_url")
+    html_url = row.get("html_url")
+    api_url = row.get("url")
+    if (type(comment_id) is not int or comment_id < 1 or not isinstance(body, str)
+            or not all(isinstance(value, str) for value in
+                       (created_at, updated_at, issue_url, html_url, api_url))):
+        raise IntegrationError("parent evidence comment stable identity fields are malformed")
+    try:
+        created_time = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        updated_time = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise IntegrationError("parent evidence comment timestamps are invalid") from exc
+    if (created_time.tzinfo is None or created_time.utcoffset() is None
+            or updated_time.tzinfo is None or updated_time.utcoffset() is None):
+        raise IntegrationError("parent evidence comment timestamps require a timezone")
+    if updated_at != created_at:
+        raise IntegrationError("parent evidence comment was edited")
+    user = row.get("user")
+    if (not isinstance(user, dict) or type(user.get("id")) is not int or user["id"] < 1
+            or not isinstance(user.get("login"), str) or not user["login"]
+            or user.get("type") != "User"):
+        raise IntegrationError("parent evidence comment stable author identity is malformed")
+    # Profile URLs and avatar_url vary between otherwise identical GitHub API responses.
+    # Only fields that identify the comment, its contents, and its authenticated author
+    # participate in equality checks.
+    return (comment_id, body, created_at, updated_at, issue_url, html_url, api_url,
+            (user["id"], user["login"].casefold(), user["type"]))
+
+
 def _load_parent_gate_evidence_from_github(
     github: GitHub, comment_id: int, main_sha40: str, kind: str,
     repository: str, parent_adc_sha256: str,
@@ -2097,7 +2150,7 @@ def _load_parent_gate_evidence_from_github(
     if not re.fullmatch(r"[0-9a-f]{64}", parent_adc_sha256):
         raise IntegrationError("parent Integration evidence parent ADC digest is invalid")
 
-    def read_comment() -> tuple[dict[str, Any], ParentGateEvidenceComment, bytes]:
+    def read_comment() -> tuple[dict[str, Any], ParentGateEvidenceComment, bytes, tuple[Any, ...]]:
         direct = github.issue_comment(26, comment_id)
         listed = github.issue_comments(26)
         if not isinstance(direct, dict) or not isinstance(listed, list):
@@ -2108,6 +2161,8 @@ def _load_parent_gate_evidence_from_github(
         if len(matches) != 1:
             raise IntegrationError("pinned parent evidence comment is missing or duplicated on Issue #26")
         row = matches[0]
+        direct_fingerprint = _parent_gate_comment_security_fingerprint(direct)
+        listed_fingerprint = _parent_gate_comment_security_fingerprint(row)
         bundle = ParentGateEvidenceComment.from_body(row.get("body"))
         subject_comment_ids: list[int] = []
         for candidate in listed:
@@ -2133,22 +2188,9 @@ def _load_parent_gate_evidence_from_github(
         after = github.issue_comment(26, comment_id)
         if not isinstance(after, dict):
             raise IntegrationError("parent evidence comment second API readback is malformed")
-        stable_fields = ("id", "body", "created_at", "updated_at", "issue_url", "html_url", "url", "user")
-        created_at = row.get("created_at")
-        updated_at = row.get("updated_at")
-        if not isinstance(created_at, str) or not isinstance(updated_at, str):
-            raise IntegrationError("parent evidence comment timestamps are missing")
-        try:
-            created_time = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-            updated_time = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
-        except ValueError as exc:
-            raise IntegrationError("parent evidence comment timestamps are invalid") from exc
-        if (created_time.tzinfo is None or created_time.utcoffset() is None
-                or updated_time.tzinfo is None or updated_time.utcoffset() is None):
-            raise IntegrationError("parent evidence comment timestamps require a timezone")
-        if (any(direct.get(field) != row.get(field) or row.get(field) != after.get(field)
-                for field in stable_fields)
-                or direct.get("id") != comment_id or direct.get("updated_at") != direct.get("created_at")):
+        after_fingerprint = _parent_gate_comment_security_fingerprint(after)
+        if (direct_fingerprint != listed_fingerprint or listed_fingerprint != after_fingerprint
+                or listed_fingerprint[0] != comment_id):
             raise IntegrationError("parent evidence comment was edited or changed during double-read")
         expected_issue_url = f"https://api.github.com/repos/{repository}/issues/26"
         expected_html = f"https://github.com/{repository}/issues/26#issuecomment-{comment_id}"
@@ -2159,21 +2201,23 @@ def _load_parent_gate_evidence_from_github(
                 or row["url"].casefold() != expected_api.casefold()):
             raise IntegrationError("parent evidence comment repository or Issue identity does not match")
         identity = github.authenticated_user()
-        author = row.get("user")
         if (not isinstance(identity, dict) or type(identity.get("id")) is not int
-                or not isinstance(author, dict) or type(author.get("id")) is not int
-                or author.get("type") != "User" or author.get("id") != identity.get("id")
-                or identity.get("type") != "User"):
+                or identity["id"] < 1
+                or not isinstance(identity.get("login"), str) or not identity["login"]
+                or identity.get("type") != "User"
+                or listed_fingerprint[-1] !=
+                (identity["id"], identity["login"].casefold(), identity["type"])):
             raise IntegrationError("parent evidence comment author is not the authenticated GitHub user")
         if (bundle.kind != kind or bundle.repository.casefold() != repository.casefold()
                 or bundle.parent_issue_number != 26 or bundle.parent_adc_sha256 != parent_adc_sha256
                 or bundle.main_sha40 != main_sha40):
             raise IntegrationError("parent evidence comment does not match the exact current main/ADC subject")
-        return row, bundle, row["body"].encode("utf-8")
+        return row, bundle, row["body"].encode("utf-8"), listed_fingerprint
 
-    first_row, first_bundle, first_body = read_comment()
-    second_row, second_bundle, second_body = read_comment()
-    if (first_row != second_row or first_bundle != second_bundle or first_body != second_body):
+    _first_row, first_bundle, first_body, first_fingerprint = read_comment()
+    _second_row, second_bundle, second_body, second_fingerprint = read_comment()
+    if (first_fingerprint != second_fingerprint
+            or first_bundle != second_bundle or first_body != second_body):
         raise IntegrationError("parent evidence comment changed during double-read")
     _validate_parent_gate_bundle(first_bundle, kind, repository, parent_adc_sha256, main_sha40)
     expected_first = _parent_gate_bundle_from_actions(
@@ -3031,6 +3075,19 @@ def _parser() -> argparse.ArgumentParser:
     advance_issue.add_argument("--repo", help="repository owner/name; defaults to origin")
     advance_issue.add_argument("--kind", choices=tuple(kind.value for kind in IssueKind), required=True)
     advance_issue.add_argument("--skip-phase", action="append", default=[], metavar="PHASE=REASON")
+    advance_issue.add_argument("--root", type=Path, help="repository root; required for evidence-gated phases")
+    advance_issue.add_argument("--phase-evidence-comment-id", type=_positive_number,
+                               help="exact PASES_PHASE_DECISION_V1 comment ID for specification/design/ready")
+    phase_evidence = issue_commands.add_parser(
+        "phase-evidence", help="publish an ADC- and commit-bound specification/design/ready receipt"
+    )
+    phase_evidence.add_argument("issue", type=_positive_number)
+    phase_evidence.add_argument("from_phase", choices=tuple(phase.value for phase in Phase))
+    phase_evidence.add_argument("to_phase", choices=(Phase.SPECIFICATION.value, Phase.DESIGN.value, Phase.READY.value))
+    phase_evidence.add_argument("--repo", help="repository owner/name; defaults to origin")
+    phase_evidence.add_argument("--root", type=Path, required=True,
+                                help="repository root containing the committed documents")
+    phase_evidence.add_argument("--skip-phase", action="append", default=[], metavar="PHASE=REASON")
     integration_check = issue_commands.add_parser("integration-check", help="read back all child merges and parent evidence")
     integration_check.add_argument("parent", type=_positive_number)
     integration_check.add_argument("--verification-comment-id", type=_positive_number,
@@ -3367,6 +3424,22 @@ def main(argv: list[str] | None = None) -> int:
                    "byte_length": verified.pointer.byte_length})
             return 0
 
+        if args.verb == "phase-evidence":
+            root = _repo_root(str(args.root)).resolve()
+            github = GitHub(repository)
+            source, target = Phase(args.from_phase), Phase(args.to_phase)
+            skips = _phase_skip_reasons(args.skip_phase)
+            comment_id, decision = publish_phase_evidence(
+                github, root, args.issue, source, target, skips)
+            _json({"status": "PUBLISHED", "issue": args.issue, "comment_id": comment_id,
+                   "schema": decision.payload["schema"], "from": source.value, "to": target.value,
+                   "adc_comment_id": decision.payload["adc_comment_id"],
+                   "adc_sha256": decision.payload["adc_sha256"],
+                   "branch_ref": decision.payload["branch_ref"],
+                   "commit_sha40": decision.payload["commit_sha40"],
+                   "documents": decision.payload["documents"]})
+            return 0
+
         if args.verb == "advance":
             github = GitHub(repository)
             issue = github.issue(args.issue)
@@ -3380,14 +3453,26 @@ def main(argv: list[str] | None = None) -> int:
                 raise CLIError("Issue label readback contains an invalid name")
             phase = parse_phase_labels(labels)
             attention = parse_attention_labels(labels)
-            skip_reasons: dict[str, str] = {}
-            for raw in args.skip_phase:
-                name, separator, reason = raw.partition("=")
-                if not separator or name in skip_reasons or name not in {"specification", "design"}:
-                    raise CLIError("--skip-phase must be a unique specification=reason or design=reason")
-                skip_reasons[name] = reason
+            skip_reasons = _phase_skip_reasons(args.skip_phase)
             kind = IssueKind(args.kind)
+            bootstrap = args.issue in PHASE_EVIDENCE_BOOTSTRAP_ISSUES
+            kind_labels = [label.removeprefix("kind:") for label in labels if label.startswith("kind:")]
+            if not bootstrap and (len(kind_labels) != 1 or kind_labels[0] != kind.value):
+                raise CLIError("--kind must match the Issue's unique verified kind:* label")
+            if bootstrap and kind_labels and (len(kind_labels) != 1 or kind_labels[0] != kind.value):
+                raise CLIError("Bootstrap Issue kind label conflicts with --kind")
             target = Phase(args.target)
+            evidence_required = (not bootstrap and kind in {IssueKind.SINGLE, IssueKind.CHILD}
+                                 and target in {Phase.SPECIFICATION, Phase.DESIGN, Phase.READY})
+            root: Path | None = None
+            if evidence_required:
+                if args.phase_evidence_comment_id is None:
+                    raise CLIError("specification, design, and ready transitions require --phase-evidence-comment-id")
+                if args.root is None:
+                    raise CLIError("evidence-gated phase transitions require --root")
+                root = _repo_root(str(args.root)).resolve()
+                verify_phase_evidence(github, root, args.issue, args.phase_evidence_comment_id,
+                                      phase, target, skip_reasons)
             graph_validated = False
             if kind is IssueKind.PARENT and phase is Phase.REQUIREMENTS and target is Phase.READY:
                 validate_native_issue_graph(github, args.issue)
@@ -3397,7 +3482,35 @@ def main(argv: list[str] | None = None) -> int:
             kept = [label for label in labels if not label.startswith(("phase:", "attention:"))]
             kept.append(f"phase:{next_state.phase.value}")
             kept.extend(f"attention:{item.value}" for item in sorted(next_state.attention, key=lambda x: x.value))
-            github.replace_issue_labels(args.issue, kept)
+            if evidence_required and root is not None:
+                verify_phase_evidence(github, root, args.issue, args.phase_evidence_comment_id,
+                                      phase, target, skip_reasons)
+            latest = github.issue(args.issue)
+            if (latest.get("number") != args.issue or latest.get("state") != "open"
+                    or latest.get("pull_request") is not None or latest.get("labels") != label_rows
+                    or latest.get("body") != issue.get("body")
+                    or latest.get("repository_url") != issue.get("repository_url")):
+                raise CLIError("Issue state changed before the phase label write")
+            try:
+                github.replace_issue_labels(args.issue, kept)
+            except GitHubError as write_error:
+                # A lost API response is successful only when a full Issue readback
+                # proves that this exact label set was applied.
+                try:
+                    raced = github.issue(args.issue)
+                    raced_labels = raced.get("labels")
+                    actual = [item.get("name") for item in raced_labels] if isinstance(raced_labels, list) else []
+                    if (raced.get("state") != "open" or len(actual) != len(kept)
+                            or set(actual) != set(kept)):
+                        raise CLIError("phase label write failed and readback differs from the requested state") from write_error
+                except GitHubError as read_error:
+                    raise CLIError(f"phase label write failed and readback is unavailable: {read_error}") from write_error
+            final_issue = github.issue(args.issue)
+            final_labels = final_issue.get("labels")
+            actual = [item.get("name") for item in final_labels] if isinstance(final_labels, list) else []
+            if (final_issue.get("number") != args.issue or final_issue.get("state") != "open"
+                    or len(actual) != len(kept) or set(actual) != set(kept)):
+                raise CLIError("phase label write did not pass complete Issue readback")
             _json({"status": "ADVANCED", "issue": args.issue, "from": phase.value,
                    "to": next_state.phase.value, "attention": sorted(x.value for x in next_state.attention)})
             return 0
@@ -3424,7 +3537,7 @@ def main(argv: list[str] | None = None) -> int:
     except (ADCError, AcceptanceError, AuditError, CheckpointError, ExecutionError,
             DocumentError, DocumentFormatError, EvidenceError, GitError, GitHubError,
             IntegrationError, IssueGraphError, OracleTraceError, PhaseError, PlanError, ProfileError,
-            ReadinessError, UserReviewError, VerificationError,
+            PhaseEvidenceError, ReadinessError, UserReviewError, VerificationError,
             WorkError, CLIError, OSError, UnicodeError, ValueError) as exc:
         if args.namespace in {"verification", "acceptance", "work", "pr", "audit", "delivery", "user-review"}:
             return _blocked_result((str(exc),))

@@ -32,6 +32,7 @@ A row is complete only when each linked stable ID resolves to its owning documen
 | REQ | DES | Oracle | Test | Evidence |
 |---|---|---|---|---|
 | [REQ-WF-001](../specs/workflow-spec.md#req-wf-001) | [DES-WF-001](../design/workflow-design.md#des-wf-001) | [ORA-WF-001](workflow-tests.md#ora-wf-001) | [TST-WF-001](workflow-tests.md#tst-wf-001) | [test source](../../tests/test_issue_phases.py) |
+| [REQ-WF-001](../specs/workflow-spec.md#req-wf-001) | [DES-WF-002](../design/workflow-design.md#des-wf-002) | [ORA-WF-009](workflow-tests.md#ora-wf-009) | [TST-WF-009](workflow-tests.md#tst-wf-009) | [test source](../../tests/test_issue_phases.py) |
 | [REQ-WF-002](../specs/workflow-spec.md#req-wf-002) | [DES-WF-003](../design/workflow-design.md#des-wf-003) | [ORA-WF-002](workflow-tests.md#ora-wf-002) | [TST-WF-002](workflow-tests.md#tst-wf-002) | [test source](../../tests/test_work_execution.py) |
 | [REQ-WF-003](../specs/workflow-spec.md#req-wf-003) | [DES-WF-005](../design/workflow-design.md#des-wf-005) | [ORA-WF-003](workflow-tests.md#ora-wf-003) | [TST-WF-003](workflow-tests.md#tst-wf-003) | [test source](../../tests/test_pr_ensure.py) |
 | [REQ-WF-004](../specs/workflow-spec.md#req-wf-004) | [DES-WF-001](../design/workflow-design.md#des-wf-001) | [ORA-WF-004](workflow-tests.md#ora-wf-004) | [TST-WF-004](workflow-tests.md#tst-wf-004) | [test source](../../tests/test_distribution.py) |

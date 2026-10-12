@@ -11,6 +11,7 @@ Design documents explain decisions that satisfy approved specifications without 
 - Describe context/goals, REQ traceability, architecture, data/control flow, ownership, failures/recovery, and rejected alternatives.
 - Keep test procedures and results in docs/testing and verification evidence rather than repeating them in designs.
 - A material specification change updates its specification before dependent design or implementation.
+- For P-ASES work, use the approved ADC's Design artifact impact and specification decision to determine whether design is required. Commit required design artifacts on the Issue branch before advancing to `design`, and bind the phase receipt to that exact commit. The receipt records verification; it does not approve the design or expand the ADC.
 - Keep unresolved choices visible; do not disguise them as implementation details.
 
 ## Validation

@@ -11,11 +11,12 @@ Owner: runtime/p_ases/execution.py, work.py, git.py, and github.py. Inputs are a
 ## Workflow
 
 1. Run request-intake and verify the exact approved ADC.
-2. Read current context before any branch or workspace action.
-3. For a new binding, resolve the base once, confirm it is the required same-repository ref, and pass that exact SHA to branch/bind operations.
-4. Reuse an existing valid binding without resolving a newer base. Never rebase or replace a conflicting binding.
-5. Implement only approved scope. Keep GitHub requests in github.py and Git subprocesses in git.py.
-6. Run the authorized local checks, then prepare an exact-HEAD PR with one standalone closure line. Do not merge or release.
+2. Complete the required specification/design/test-Oracle decisions and their phase receipts before entering `ready` or editing implementation code.
+3. Read current context before any branch or workspace action.
+4. For a new binding, resolve the base once, confirm it is the required same-repository ref, and pass that exact SHA to branch/bind operations.
+5. Reuse an existing valid binding without resolving a newer base. Never rebase or replace a conflicting binding.
+6. Implement only approved scope. Keep GitHub requests in github.py and Git subprocesses in git.py.
+7. Run the authorized local checks, then prepare an exact-HEAD PR with one standalone closure line. Do not merge or release.
 
 ## CLI
 

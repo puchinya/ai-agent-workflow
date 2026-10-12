@@ -3,17 +3,21 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
+import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
 
-from p_ases.adc import publish_adc
+from p_ases.adc import ADCPointer, VerifiedADC, parse_adc, publish_adc
 from p_ases.execution import ExecutionBinding, ExecutionError, binding_digest, read_binding, write_binding
 from p_ases.github import GitHubError
+from p_ases.gate_policy import ActivationRecord, GateSelection, PASES_POLICY
 from p_ases.issue_graph import (
     ChildPlan,
     IssueGraphError,
@@ -23,6 +27,10 @@ from p_ases.issue_graph import (
     validate_native_issue_graph,
     validate_parent_integration,
     validate_split,
+)
+from p_ases.phase_evidence import (
+    PhaseDecision, PhaseEvidenceError, _check_activation, _collect_payload, _readback,
+    _validate_ready_traceability,
 )
 from p_ases.phases import (
     Attention,
@@ -74,14 +82,26 @@ class FakeGitHub:
         self.sub_issue_ids: dict[int, set[int]] = {1: set()}
         self.blocker_ids: dict[int, set[int]] = {}
         self.create_issue_calls = 0
+        self.lose_create_issue_response = False
         self.sub_issue_calls = 0
         self.fail_sub_issue_call: int | None = None
+        self.label_definitions: dict[str, dict[str, str]] = {}
 
     def issue(self, number: int) -> dict[str, object]:
         return copy.deepcopy(self.records[number])
 
     def issues(self) -> list[dict[str, object]]:
         return [copy.deepcopy(issue) for issue in self.records.values()]
+
+    def repository_labels(self) -> list[dict[str, str]]:
+        return [copy.deepcopy(row) for row in self.label_definitions.values()]
+
+    def create_repository_label(self, name: str, color: str, description: str) -> dict[str, str]:
+        if name in self.label_definitions:
+            raise GitHubError("label already exists")
+        row = {"name": name, "color": color, "description": description}
+        self.label_definitions[name] = row
+        return copy.deepcopy(row)
 
     def create_issue(self, title: str, body: str, labels: list[str] | None = None) -> dict[str, object]:
         number = self.next_issue
@@ -95,10 +115,13 @@ class FakeGitHub:
             "state": "open",
             "body": body,
             "pull_request": None,
-            "labels": labels or [],
+            "labels": [{"name": label} for label in (labels or [])],
         }
         self.records[number] = issue
         self.blocker_ids[number] = set()
+        if self.lose_create_issue_response:
+            self.lose_create_issue_response = False
+            raise GitHubError("simulated lost child Issue create response")
         return copy.deepcopy(issue)
 
     def create_issue_comment(self, number: int, body: str) -> dict[str, object]:
@@ -227,9 +250,43 @@ class IssueGraphTests(unittest.TestCase):
         self.assertEqual(validate_native_issue_graph(github, 1), ("core", "docs"))
         self.assertIn("> - assigned_requirement_ids: REQ-99", github.records[first[0].number]["body"])
         self.assertIn("- core acceptance passes", github.records[first[0].number]["body"])
+        github.records[first[0].number]["labels"] = [
+            {"name": "enhancement"}, {"name": "kind:child"}, {"name": "phase:execution"},
+        ]
         second = split_issue(github, 1, parent_sha, ("REQ-01", "REQ-02"), children)
         self.assertEqual(first, second)
         self.assertEqual(github.create_issue_calls, 2)
+        self.assertIn("phase:execution", [row["name"] for row in github.records[first[0].number]["labels"]])
+        for record in github.records.values():
+            if record.get("number") != 1:
+                names = [row["name"] for row in record["labels"]]
+                self.assertIn("kind:child", names)
+                self.assertIn("phase:execution" if record.get("number") == first[0].number else "phase:requirements", names)
+                self.assertIn("enhancement", names)
+        self.assertEqual(github.label_definitions["kind:child"]["color"], "c5def5")
+
+    def test_split_recovers_a_lost_issue_create_response_by_exact_marker_readback(self):
+        github = FakeGitHub()
+        parent_pointer = publish_adc(github, 1, adc_bytes(issue=1), state="approved", explicitly_approved=True)
+        github.lose_create_issue_response = True
+        result = split_issue(github, 1, parent_pointer.sha256, ("REQ-01",),
+                             (child_plan("core", ("REQ-01",)),))
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].number, 2)
+        self.assertEqual(github.create_issue_calls, 1)
+        names = [row["name"] for row in github.records[2]["labels"]]
+        self.assertEqual(set(names), {"enhancement", "kind:child", "phase:requirements"})
+
+    def test_split_fails_before_child_creation_when_owned_label_definition_conflicts(self):
+        github = FakeGitHub()
+        parent_pointer = publish_adc(github, 1, adc_bytes(issue=1), state="approved", explicitly_approved=True)
+        github.label_definitions["kind:child"] = {
+            "name": "kind:child", "color": "ffffff", "description": "local override",
+        }
+        with self.assertRaisesRegex(IssueGraphError, "conflicts"):
+            split_issue(github, 1, parent_pointer.sha256, ("REQ-01",),
+                        (child_plan("core", ("REQ-01",)),))
+        self.assertEqual(github.create_issue_calls, 0)
 
     def test_partial_native_api_failure_retries_without_duplicate_children_or_adcs(self):
         github = FakeGitHub()
@@ -320,6 +377,13 @@ class PhaseTests(unittest.TestCase):
             "specification": "behavior is unchanged", "design": "no architecture changes",
         })
         self.assertIs(ready.phase, Phase.READY)
+        with self.assertRaisesRegex(PhaseError, "match exactly"):
+            advance(state, Phase.DESIGN, skip_reasons={
+                "specification": "unchanged", "design": "also unchanged",
+            })
+        with self.assertRaisesRegex(PhaseError, "match exactly"):
+            advance(PhaseState(1, IssueKind.CHILD, Phase.EXECUTION), Phase.VERIFICATION,
+                    skip_reasons={"specification": "irrelevant"})
 
     def test_specification_precedes_design_and_review_readiness_gates_user_review(self):
         state = PhaseState(1, IssueKind.CHILD, Phase.REQUIREMENTS)
@@ -373,6 +437,352 @@ class PhaseTests(unittest.TestCase):
             parse_phase_labels(["phase:review"])
         with self.assertRaisesRegex(PhaseError, "at most one"):
             parse_attention_labels(["attention:blocked", "attention:waiting-user"])
+
+
+class PhaseEvidenceSchemaTests(unittest.TestCase):
+    def payload(self):
+        return {
+            "schema": "PASES_PHASE_DECISION_V1",
+            "repository": "octo/repo",
+            "issue_number": 12,
+            "issue_kind": "child",
+            "from_phase": "requirements",
+            "to_phase": "design",
+            "adc_comment_id": 44,
+            "adc_sha256": "a" * 64,
+            "branch_ref": "issues/12",
+            "commit_sha40": "b" * 40,
+            "documents": [{"role": "design", "path": "docs/design/workflow-design.md",
+                           "sha256": "c" * 64}],
+            "skip_reasons": {"specification": "product behavior is unchanged"},
+        }
+
+    def test_phase_decision_uses_canonical_json_and_exact_schema(self):
+        decision = PhaseDecision(self.payload())
+        self.assertEqual(PhaseDecision.from_body(decision.body()), decision)
+        with self.assertRaisesRegex(PhaseEvidenceError, "format|canonical"):
+            PhaseDecision.from_body("PASES_PHASE_DECISION_V1\n" + json.dumps(self.payload(), indent=2) + "\n")
+        unknown = self.payload() | {"approved": True}
+        with self.assertRaisesRegex(PhaseEvidenceError, "unknown or missing"):
+            PhaseDecision(unknown).body()  # Serialization never bypasses model validation below.
+
+    def test_phase_decision_rejects_boolean_numbers_unsafe_paths_and_wrong_skip_edges(self):
+        for change in (
+            {"issue_number": True},
+            {"documents": [{"role": "design", "path": "docs/design/../secret.md", "sha256": "c" * 64}]},
+            {"documents": [{"role": "specification", "path": "docs/design/workflow-design.md", "sha256": "c" * 64}]},
+            {"skip_reasons": {}},
+        ):
+            payload = self.payload() | change
+            with self.subTest(change=change), self.assertRaises(PhaseEvidenceError):
+                PhaseDecision(payload).body()
+
+
+class PhaseEvidenceReadbackTests(unittest.TestCase):
+    def setUp(self):
+        self.decision = PhaseDecision(PhaseEvidenceSchemaTests().payload())
+        self.base = {
+            "id": 88,
+            "body": self.decision.body(),
+            "created_at": "2026-10-12T10:00:00Z",
+            "updated_at": "2026-10-12T10:00:00Z",
+            "issue_url": "https://api.github.com/repos/octo/repo/issues/12",
+            "html_url": "https://github.com/octo/repo/issues/12#issuecomment-88",
+            "url": "https://api.github.com/repos/octo/repo/issues/comments/88",
+            "user": {"id": 101, "login": "octo", "type": "User", "avatar_url": "https://a"},
+        }
+
+    def test_readback_ignores_volatile_profile_urls_and_login_case(self):
+        class Fake:
+            repo = "octo/repo"
+
+            def __init__(self, base):
+                self.rows = []
+                self.base = base
+                self.direct_count = 0
+                self.list_count = 0
+
+            def authenticated_user(self):
+                return {"id": 101, "login": "Octo", "type": "User"}
+
+            def issue_comment(self, _number, _comment_id):
+                self.direct_count += 1
+                row = copy.deepcopy(self.base)
+                row["user"]["avatar_url"] = f"https://profile/{self.direct_count}"
+                if self.direct_count == 2:
+                    row["user"]["login"] = "OCTO"
+                return row
+
+            def issue_comments(self, _number):
+                self.list_count += 1
+                row = copy.deepcopy(self.base)
+                row["user"]["avatar_url"] = "https://profile/list"
+                row["user"]["login"] = "oCtO"
+                return [row]
+
+        parsed = _readback(Fake(self.base), 12, 88, self.decision.body())
+        self.assertEqual(parsed, self.decision)
+
+    def test_readback_rejects_comment_edit_and_duplicate_transition_subject(self):
+        class Fake:
+            repo = "octo/repo"
+
+            def __init__(self, base, *, edit=False, duplicate=False):
+                self.base, self.edit, self.duplicate = base, edit, duplicate
+                self.direct_count = 0
+
+            def authenticated_user(self):
+                return {"id": 101, "login": "octo", "type": "User"}
+
+            def issue_comment(self, _number, _comment_id):
+                self.direct_count += 1
+                row = copy.deepcopy(self.base)
+                if self.edit and self.direct_count == 2:
+                    row["updated_at"] = "2026-10-12T10:01:00Z"
+                return row
+
+            def issue_comments(self, _number):
+                rows = [copy.deepcopy(self.base)]
+                if self.duplicate:
+                    duplicate = copy.deepcopy(self.base)
+                    duplicate["id"] = 89
+                    rows.append(duplicate)
+                return rows
+
+        with self.assertRaisesRegex(PhaseEvidenceError, "edited"):
+            _readback(Fake(self.base, edit=True), 12, 88, self.decision.body())
+        with self.assertRaisesRegex(PhaseEvidenceError, "duplicated or stale"):
+            _readback(Fake(self.base, duplicate=True), 12, 88, self.decision.body())
+
+    def test_readback_requires_authenticated_positive_user_identity(self):
+        class Fake:
+            repo = "octo/repo"
+
+            def __init__(self, user):
+                self.user = user
+
+            def authenticated_user(self):
+                return {"id": 101, "login": "octo", "type": "User"}
+
+            def issue_comment(self, _number, _comment_id):
+                row = copy.deepcopy(self_row)
+                row["user"] = copy.deepcopy(self.user)
+                return row
+
+            def issue_comments(self, _number):
+                row = self.issue_comment(_number, 88)
+                return [row]
+
+        self_row = self.base
+        for user in (
+            {"id": 102, "login": "octo", "type": "User"},
+            {"id": True, "login": "octo", "type": "User"},
+            {"id": 101, "login": "octo", "type": "Bot"},
+        ):
+            with self.subTest(user=user), self.assertRaisesRegex(
+                    PhaseEvidenceError, "authenticated GitHub user"):
+                _readback(Fake(user), 12, 88, self.decision.body())
+
+
+class PhaseEvidenceActivationTests(unittest.TestCase):
+    def setUp(self):
+        self.repo = "puchinya/ai-agent-workflow"
+        child_prs = tuple((issue, issue + 6, f"{issue:040x}") for issue in range(27, 33))
+        self.activation = ActivationRecord(
+            self.repo, tuple(range(27, 33)), child_prs, tuple(range(27, 33)), "a" * 64,
+            300, PASES_POLICY, "b" * 40, 301, "2026-10-11T01:30:00Z",
+        )
+        self.gate = GateSelection(
+            self.repo, 40, PASES_POLICY, "2026-10-11T02:00:00Z", 999, self.activation.sha256,
+        )
+
+        class Fake:
+            repo = self.repo
+
+            def issue(_self, _number):
+                return {"number": 40, "pull_request": None, "created_at": "2026-10-11T01:45:00Z"}
+
+        self.github = Fake()
+
+    def test_requires_gate_selection_bound_to_exact_activation_and_post_activation_issue(self):
+        with patch("p_ases.phase_evidence.read_activation_record", return_value=(self.activation, 999)), \
+                patch("p_ases.phase_evidence.read_gate_selection", return_value=(302, self.gate, "body")):
+            _check_activation(self.github, 40)
+
+        stale_gate = GateSelection(
+            self.repo, 40, PASES_POLICY, "2026-10-11T02:00:00Z", 998, self.activation.sha256,
+        )
+        with patch("p_ases.phase_evidence.read_activation_record", return_value=(self.activation, 999)), \
+                patch("p_ases.phase_evidence.read_gate_selection", return_value=(302, stale_gate, "body")):
+            with self.assertRaisesRegex(PhaseEvidenceError, "exact P-ASES Gate Selection"):
+                _check_activation(self.github, 40)
+
+    def test_rejects_issue_created_before_activation(self):
+        self.github.issue = lambda _number: {
+            "number": 40, "pull_request": None, "created_at": "2026-10-11T01:00:00Z",
+        }
+        with patch("p_ases.phase_evidence.read_activation_record", return_value=(self.activation, 999)), \
+                patch("p_ases.phase_evidence.read_gate_selection", return_value=(302, self.gate, "body")):
+            with self.assertRaisesRegex(PhaseEvidenceError, "exact P-ASES Gate Selection"):
+                _check_activation(self.github, 40)
+
+
+class ReadyTraceabilityTests(unittest.TestCase):
+    def test_ready_requires_linked_design_oracle_test_and_existing_source(self):
+        matrix = (ROOT / "docs/testing/traceability.md").read_bytes()
+
+        class Fake:
+            def regular_content_at_ref(self, path, _commit):
+                if path != "tests/test_issue_phases.py":
+                    raise PhaseEvidenceError("unexpected source")
+                return (ROOT / path).read_bytes()
+
+        _validate_ready_traceability(ROOT, "docs/testing/traceability.md", matrix, Fake(),
+                                     "b" * 40, ("REQ-WF-001",))
+        with self.assertRaisesRegex(PhaseEvidenceError, "does not cover"):
+            _validate_ready_traceability(ROOT, "docs/testing/traceability.md", matrix, Fake(),
+                                         "b" * 40, ("REQ-UNKNOWN-999",))
+
+
+class PhaseEvidenceCollectionTests(unittest.TestCase):
+    def make_repository(self, root: Path) -> tuple[str, VerifiedADC]:
+        repository = "puchinya/ai-agent-workflow"
+        files = {
+            "docs/specs/product.md": b"# Product specification\n",
+            "docs/design/system.md": b"# Technical design\n",
+            "docs/testing/oracle.md": b"# Independent Oracle\n",
+            "docs/testing/traceability.md": b"# Traceability\n",
+        }
+        for relative, content in files.items():
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+        for command in (
+            ["git", "init", "-b", "issues/40"],
+            ["git", "add", "docs"],
+            ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+             "commit", "-m", "phase evidence fixtures"],
+        ):
+            subprocess.run(command, cwd=root, check=True, capture_output=True)
+        adc = adc_bytes(repository, issue=40).replace(
+            b"Runtime and tests are created; product behavior is unchanged.",
+            b"- Specification: docs/specs/product.md\n"
+            b"- Design: docs/design/system.md\n"
+            b"- Testing: docs/testing/oracle.md, docs/testing/traceability.md",
+        )
+        contract = parse_adc(adc, repository, 40)
+        verified = VerifiedADC(contract, ADCPointer(88, contract.sha256, len(adc), "approved"))
+        return repository, verified
+
+    def test_collection_binds_approved_adc_and_artifacts_to_regular_branch_blobs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repository, verified = self.make_repository(root)
+
+            class FakeGitHub:
+                repo = repository
+
+                def issue(_self, number):
+                    return {
+                        "number": number, "state": "open", "pull_request": None,
+                        "repository_url": f"https://api.github.com/repos/{repository}",
+                        "labels": [{"name": "kind:single"}, {"name": "phase:requirements"}],
+                    }
+
+                def branch(_self, branch):
+                    return {"name": branch, "commit": {"sha": commit_sha}}
+
+                def regular_content_at_ref(_self, path, ref):
+                    if ref != commit_sha:
+                        raise GitHubError("wrong commit")
+                    return subprocess.run(
+                        ["git", "show", f"{ref}:{path}"], cwd=root, check=True,
+                        capture_output=True,
+                    ).stdout
+
+            commit_sha = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            with patch("p_ases.phase_evidence._check_activation"), \
+                    patch("p_ases.phase_evidence.verify_adc", return_value=verified):
+                decision, _issue, _adc, branch, commit = _collect_payload(
+                    FakeGitHub(), root, 40, Phase.REQUIREMENTS, Phase.SPECIFICATION, {},
+                )
+            self.assertEqual((branch, commit), ("issues/40", commit_sha))
+            self.assertEqual(decision.payload["adc_sha256"], verified.contract.sha256)
+            self.assertEqual([row["path"] for row in decision.payload["documents"]], [
+                "docs/design/system.md", "docs/specs/product.md", "docs/testing/oracle.md",
+                "docs/testing/traceability.md",
+            ])
+
+    def test_uncommitted_document_change_blocks_phase_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repository, verified = self.make_repository(root)
+            (root / "docs/specs/product.md").write_bytes(b"uncommitted change\n")
+            commit_sha = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True,
+            ).stdout.strip()
+
+            class FakeGitHub:
+                repo = repository
+
+                def issue(_self, number):
+                    return {
+                        "number": number, "state": "open", "pull_request": None,
+                        "repository_url": f"https://api.github.com/repos/{repository}",
+                        "labels": [{"name": "kind:single"}, {"name": "phase:requirements"}],
+                    }
+
+                def branch(_self, branch):
+                    return {"name": branch, "commit": {"sha": commit_sha}}
+
+                def regular_content_at_ref(_self, path, ref):
+                    return subprocess.run(
+                        ["git", "show", f"{ref}:{path}"], cwd=root, check=True,
+                        capture_output=True,
+                    ).stdout
+
+            with patch("p_ases.phase_evidence._check_activation"), \
+                    patch("p_ases.phase_evidence.verify_adc", return_value=verified):
+                with self.assertRaisesRegex(PhaseEvidenceError, "working-tree bytes differ"):
+                    _collect_payload(FakeGitHub(), root, 40, Phase.REQUIREMENTS,
+                                     Phase.SPECIFICATION, {})
+
+
+class ReadmeWorkflowGraphTests(unittest.TestCase):
+    EDGE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)(?:\[[^]]+\])?\s*(-->|-\.->)\s*(?:\|[^|]+\|\s*)?([A-Za-z_][A-Za-z0-9_]*)(?:\[[^]]+\])?\s*$")
+
+    def read_graph(self, name: str):
+        text = (ROOT / name).read_text(encoding="utf-8")
+        blocks = re.findall(r"```mermaid\s*\n(.*?)\n```", text, re.DOTALL)
+        self.assertEqual(len(blocks), 1, name)
+        self.assertTrue(blocks[0].startswith("flowchart TD"))
+        edges = []
+        for line in blocks[0].splitlines():
+            match = self.EDGE.fullmatch(line)
+            if match:
+                edges.append((match.group(1), match.group(3), match.group(2)))
+            elif "-->" in line or "-.->" in line:
+                self.fail(f"unsupported Mermaid edge in {name}: {line}")
+        return edges, blocks[0]
+
+    def test_bilingual_readme_graphs_have_identical_child_topology(self):
+        en, en_text = self.read_graph("README.md")
+        ja, ja_text = self.read_graph("README.ja.md")
+        self.assertEqual({(a, b) for a, b, _ in en}, {(a, b) for a, b, _ in ja})
+        self.assertEqual(sum(kind == "-.->" for _, _, kind in en), 3)
+        self.assertEqual(sum(kind == "-.->" for _, _, kind in ja), 3)
+        edges = {(a, b) for a, b, _ in en}
+        self.assertTrue({("req", "spec"), ("spec", "design"), ("design", "ready"),
+                         ("ready", "exec"), ("exec", "verify"), ("verify", "review"),
+                         ("review", "merge"), ("merge", "closed"), ("req", "design"),
+                         ("spec", "ready"), ("req", "ready"), ("review", "exec"),
+                         ("review", "req")} <= edges)
+        self.assertNotIn("parent_issue", en_text)
+        self.assertNotIn("parent_issue", ja_text)
+        self.assertIn("separate specification and design reasons", en_text)
+        self.assertIn("仕様と設計それぞれの理由", ja_text)
 
 
 class ExecutionBindingTests(unittest.TestCase):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import io
 import sys
 import unittest
@@ -12,6 +13,7 @@ sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases.adc import publish_adc
 from p_ases.cli import CLI_ADVANCE_TARGETS, _parser, main
+from p_ases.github import GitHubError
 from test_adc_intake import FakeGitHub, adc_bytes
 
 
@@ -47,6 +49,121 @@ class PasesCLITests(unittest.TestCase):
         self.assertIn("Review Readiness", help_text)
         self.assertIn("Issues #30 and #31", help_text)
         self.assertNotIn("closed", help_text)
+
+    def test_phase_evidence_route_and_advance_require_explicit_receipt_reference(self):
+        evidence = _parser().parse_args([
+            "issue", "phase-evidence", "12", "requirements", "specification",
+            "--repo", "octo/repo", "--root", str(ROOT),
+        ])
+        self.assertEqual((evidence.namespace, evidence.verb, evidence.issue),
+                         ("issue", "phase-evidence", 12))
+        advance = _parser().parse_args([
+            "issue", "advance", "12", "specification", "--kind", "child",
+            "--phase-evidence-comment-id", "99", "--root", str(ROOT), "--repo", "octo/repo",
+        ])
+        self.assertEqual((advance.phase_evidence_comment_id, advance.root), (99, ROOT))
+
+    def test_advance_refuses_caller_kind_mismatch_without_label_write(self):
+        class GitHub:
+            repo = "octo/repo"
+
+            def __init__(self):
+                self.record = {
+                    "id": 1, "number": 1, "repository_url": "https://api.github.com/repos/octo/repo",
+                    "state": "open", "body": "Issue body", "pull_request": None,
+                    "labels": [{"name": "kind:single"}, {"name": "phase:requirements"}],
+                }
+                self.writes = 0
+
+            def issue(self, _number):
+                return copy.deepcopy(self.record)
+
+            def replace_issue_labels(self, _number, _labels):
+                self.writes += 1
+
+        github = GitHub()
+        stderr = io.StringIO()
+        with patch("p_ases.cli._repo_root", return_value=ROOT), \
+                patch("p_ases.cli.GitHub", return_value=github), \
+                contextlib.redirect_stderr(stderr):
+            status = main(["issue", "advance", "1", "specification", "--kind", "child",
+                           "--phase-evidence-comment-id", "9", "--root", str(ROOT), "--repo", "octo/repo"])
+        self.assertEqual(status, 2)
+        self.assertEqual(github.writes, 0)
+        self.assertIn("verified kind", stderr.getvalue())
+
+    def test_advance_refuses_labels_changed_during_proof_readback_without_write(self):
+        class GitHub:
+            repo = "octo/repo"
+
+            def __init__(self):
+                self.record = {
+                    "id": 1, "number": 1, "repository_url": "https://api.github.com/repos/octo/repo",
+                    "state": "open", "body": "Issue body", "pull_request": None,
+                    "labels": [{"name": "kind:child"}, {"name": "phase:requirements"}],
+                }
+                self.writes = 0
+
+            def issue(self, _number):
+                return copy.deepcopy(self.record)
+
+            def replace_issue_labels(self, _number, _labels):
+                self.writes += 1
+
+        github = GitHub()
+        reads = 0
+
+        def change_after_proof(*_args, **_kwargs):
+            nonlocal reads
+            reads += 1
+            if reads == 2:
+                github.record["labels"] = [
+                    {"name": "kind:child"}, {"name": "phase:design"},
+                ]
+
+        stderr = io.StringIO()
+        with patch("p_ases.cli._repo_root", return_value=ROOT), \
+                patch("p_ases.cli.GitHub", return_value=github), \
+                patch("p_ases.cli.verify_phase_evidence", side_effect=change_after_proof), \
+                contextlib.redirect_stderr(stderr):
+            status = main(["issue", "advance", "1", "specification", "--kind", "child",
+                           "--phase-evidence-comment-id", "9", "--root", str(ROOT), "--repo", "octo/repo"])
+        self.assertEqual(status, 2)
+        self.assertEqual(github.writes, 0)
+        self.assertIn("changed before the phase label write", stderr.getvalue())
+
+    def test_advance_recovers_lost_label_write_response_only_after_exact_readback(self):
+        class GitHub:
+            repo = "octo/repo"
+
+            def __init__(self):
+                self.record = {
+                    "id": 1, "number": 1, "repository_url": "https://api.github.com/repos/octo/repo",
+                    "state": "open", "body": "Issue body", "pull_request": None,
+                    "labels": [{"name": "enhancement"}, {"name": "kind:child"},
+                               {"name": "phase:execution"}, {"name": "priority:high"}],
+                }
+                self.writes = 0
+
+            def issue(self, _number):
+                return copy.deepcopy(self.record)
+
+            def replace_issue_labels(self, _number, labels):
+                self.writes += 1
+                self.record["labels"] = [{"name": label} for label in labels]
+                raise GitHubError("simulated successful write with lost response")
+
+        github = GitHub()
+        stdout = io.StringIO()
+        with patch("p_ases.cli.GitHub", return_value=github), contextlib.redirect_stdout(stdout):
+            status = main(["issue", "advance", "1", "verification", "--kind", "child",
+                           "--repo", "octo/repo"])
+        self.assertEqual(status, 0)
+        self.assertEqual(github.writes, 1)
+        self.assertIn('"status": "ADVANCED"', stdout.getvalue())
+        self.assertEqual({row["name"] for row in github.record["labels"]}, {
+            "enhancement", "kind:child", "phase:verification", "priority:high",
+        })
 
     def test_explicit_repository_lets_github_commands_run_without_local_checkout(self):
         github = FakeGitHub()
