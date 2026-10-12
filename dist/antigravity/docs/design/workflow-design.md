@@ -17,6 +17,7 @@
 - [7 DES-WF-005 Authorization boundary and PR handoff](#7-des-wf-005-authorization-boundary-and-pr-handoff)
 - [8 Alternatives considered](#8-alternatives-considered)
 - [9 Migration gate routing](#9-migration-gate-routing)
+- [10 DES-WF-006 Human review and final delivery](#10-des-wf-006-human-review-and-final-delivery)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -26,6 +27,7 @@
 - [DES-WF-003](#des-wf-003) — 5 DES-WF-003 Workspace execution flow
 - [DES-WF-004](#des-wf-004) — 6 DES-WF-004 Failure handling
 - [DES-WF-005](#des-wf-005) — 7 DES-WF-005 Authorization boundary and PR handoff
+- [DES-WF-006](#des-wf-006) — 10 DES-WF-006 Human review and final delivery
 <!-- heading-map:end -->
 
 
@@ -146,3 +148,12 @@ The approved Issue contract is the authority for routine work through a review-r
 When the Bootstrap evaluator lives on a downstream stacked PR, run its CLI from that evaluator checkout and pass `--root` pointing to a separate clean checkout of the earlier target PR's exact current HEAD. The evaluator fingerprint comes from the evaluator checkout while local checks and cleanliness checks run against the target checkout; do not copy evaluator code into the target branch. For legacy Issue-body ADC pointers, retain the original `## Agent Development Contract` block as the first journal record's predecessor anchor (or record `none` when absent); do not edit or delete the old anchor during migration.
 
 The activation reader validates the fixed six-child set, each merged PR and closed Issue, a separate integration-evidence record covering docs/tests/16 Skills/distribution, and a distinct immutable approval comment. The activation record binds those PR merge SHAs and the integration digest. Policy readers reject duplicates, stale subjects, mismatched byte/digest values, forks, and non-current PR heads. No activation record is issued during child implementation.
+
+<a id="des-wf-006"></a>
+## 10 DES-WF-006 Human review and final delivery
+
+`user_review.py` owns the subject-bound human decision, immutable session start, and feedback snapshots. A new session binds the current ADC, PR HEAD, plan, and Readiness digest; older approvals and change requests cannot satisfy it. `github.py` is the only network boundary and paginates the four REST feedback surfaces plus GraphQL review-thread state. A previously stored snapshot is compared with every complete new read; missing records are retained as deletion tombstones. Review evaluation derives decisions from the authenticated GitHub user or a verified host adapter, never from CLI-supplied identity fields.
+
+`integration.py` owns the fixed parent child set, native dependency DAG, merged PR/Issue readback, main ancestry, and typed Integration Verification/Acceptance evidence. The CLI fetches each record and every referenced source/check artifact through the GitHub Contents API at the exact main SHA, verifies Git blob IDs and artifact digests, then returns a deterministic result for the parent ADC/main/merge-SHA set. `delivery.py` evaluates User Review, GitHub's formal review decision, required Check result, branch protection, and mergeability as separate inputs. Its READY result means only that the review and technical gates are complete and explicit merge authorization may be requested; it always records `merge_authorized=false`.
+
+The CLI performs phase transitions only after re-reading the Issue and confirming its current labels. An in-scope request returns the same Issue to execution; an explicitly triaged new scope returns it to requirements. Finalize is a readback command and has no merge or close mutation. Parent final delivery remains blocked until child Integration and the separate parent review/activation gates are satisfied.

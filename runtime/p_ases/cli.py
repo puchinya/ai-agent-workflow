@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
+import io
 import json
 import os
 import re
@@ -41,7 +43,8 @@ from .audits import (
     read_independent_review, read_self_audit, write_independent_review, write_self_audit,
 )
 from .delivery import (
-    PRReadback, ReadinessError, evaluate_readiness, readiness_path, write_readiness,
+    FinalDeliveryResult, PRReadback, ReadinessError, evaluate_final_delivery,
+    evaluate_readiness, read_readiness, readiness_path, write_readiness,
 )
 from .acceptance import (
     ACCEPTANCE_POLICY_VERSION, ARTIFACT_TYPES, OBSERVATION_KINDS, AcceptanceError,
@@ -73,6 +76,16 @@ from .verification_plan import (
     REQ_ID_PATTERN, PlanEntry, PlanError, VerificationPlan, create_plan, read_plan,
     verify_plan_sources,
 )
+from .user_review import (
+    FeedbackSnapshot, UserReviewError, UserReviewResult, UserReviewSession, UserReviewSubject,
+    capture_authenticated_chat_event, feedback_digest, feedback_snapshot_path,
+    merge_feedback_history, normalize_github_feedback, read_feedback_snapshot,
+    read_review_session, reject_unattested_chat_event, evaluate_user_review,
+    review_session_path, write_feedback_snapshot, write_review_session,
+)
+from .integration import (
+    IntegrationError, IntegrationGateEvidence, evaluate_parent_integration,
+)
 
 
 class CLIError(RuntimeError):
@@ -84,7 +97,10 @@ CLI_ADVANCE_TARGETS = tuple(
 )
 
 # The approved stacked-PR contract for this repository's Verification issue.
-ISSUE_PR_REFS = {29: ("pases/adc-core", "pases/verification")}
+ISSUE_PR_REFS = {
+    29: ("pases/adc-core", "pases/verification"),
+    31: ("main", "pases/user-review-integration"),
+}
 PR_CLOSING_REF = re.compile(r"(?i)\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)\s+#([1-9][0-9]*)\b")
 OWN_PR_CLOSING_LINE = re.compile(r"(?im)^Closes #([1-9][0-9]*)\s*$")
 
@@ -1549,6 +1565,536 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
     return 0 if result.status == "PASS" else 2
 
 
+def _review_payload_from_github(github: GitHub, subject: UserReviewSubject,
+                                *, observed_at: str) -> FeedbackSnapshot:
+    verification_subject = subject.verification_subject
+    issue_comments = github.issue_comments(verification_subject.issue_number)
+    pr_comments = github.pull_conversation_comments(verification_subject.pr_number)
+    pr_reviews = github.pull_reviews(verification_subject.pr_number)
+    diff_comments = github.pull_diff_comments(verification_subject.pr_number)
+    threads = github.pull_review_threads(verification_subject.pr_number)
+    if any(not isinstance(thread, dict) for thread in threads):
+        raise GitHubError("GitHub review thread readback is malformed")
+    unresolved = tuple(sorted(thread["id"] for thread in threads
+                              if thread.get("isResolved") is False and thread.get("isOutdated") is False))
+    events = normalize_github_feedback(issue_comments=issue_comments, pr_comments=pr_comments,
+                                       pr_reviews=pr_reviews, diff_comments=diff_comments)
+    ordered = tuple(sorted(events, key=lambda row: (row.channel, row.event_id)))
+    return FeedbackSnapshot(subject, ordered, unresolved, observed_at).validate()
+
+
+def _latest_review_snapshot(root: Path, subject: UserReviewSubject) -> FeedbackSnapshot | None:
+    folder = Path(root).absolute() / ".p_ases" / "user-review" / str(subject.verification_subject.issue_number) / subject.sha256
+    if path_has_symlink(folder):
+        raise UserReviewError("User Review history path must not traverse a symbolic link")
+    if not folder.exists():
+        return None
+    if not folder.is_dir():
+        raise UserReviewError("User Review history path is not a directory")
+    snapshots: list[FeedbackSnapshot] = []
+    for path in folder.glob("*.json"):
+        if path.name.endswith(".result.json"):
+            continue
+        item = read_feedback_snapshot(path)
+        if item.subject == subject:
+            snapshots.append(item)
+    return max(snapshots, key=lambda item: item.observed_at) if snapshots else None
+
+
+def _review_record_path(root: Path, issue_number: int, subject: UserReviewSubject,
+                        result: UserReviewResult, snapshot_sha256: str) -> Path:
+    return (Path(root).absolute() / ".p_ases" / "user-review" / str(issue_number)
+            / subject.sha256 / f"{result.sha256}-{snapshot_sha256}.result.json")
+
+
+def _read_review_record(path: Path) -> tuple[UserReviewSubject, UserReviewResult, str]:
+    value = _read_json(path, "User Review result")
+    expected = {"result", "result_sha256", "schema", "snapshot_sha256", "subject"}
+    if not isinstance(value, dict) or set(value) != expected or value.get("schema") != "PASES_USER_REVIEW_RESULT_V1":
+        raise UserReviewError("User Review result record has unknown or missing fields")
+    result = UserReviewResult.from_dict(value["result"])
+    if value["subject"] != result.subject.as_dict() or value["result_sha256"] != result.sha256:
+        raise UserReviewError("User Review result record subject/digest does not match")
+    if not isinstance(value["snapshot_sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", value["snapshot_sha256"]):
+        raise UserReviewError("User Review snapshot digest is invalid")
+    return result.subject, result, value["snapshot_sha256"]
+
+
+def _review_phase_transition(github: GitHub, issue_number: int, kind: IssueKind,
+                             result: UserReviewResult, operation: str) -> None:
+    issue = github.issue(issue_number)
+    if issue.get("number") != issue_number or issue.get("state") != "open" or issue.get("pull_request") is not None:
+        raise CLIError("User Review phase update requires the same open Issue")
+    label_rows = issue.get("labels")
+    if not isinstance(label_rows, list) or any(not isinstance(row, dict) for row in label_rows):
+        raise CLIError("Issue phase label readback is invalid")
+    labels = [row.get("name") for row in label_rows]
+    if any(not isinstance(label, str) for label in labels):
+        raise CLIError("Issue phase label readback contains a malformed label")
+    phase, attention = parse_phase_labels(labels), parse_attention_labels(labels)
+    if operation == "start":
+        if phase is Phase.USER_REVIEW:
+            return
+        target = Phase.USER_REVIEW
+        next_state = advance(PhaseState(issue_number, kind, phase, attention), target,
+                             readiness_passed=True)
+    elif result.next_phase == "execution" and phase is Phase.USER_REVIEW:
+        next_state = advance(PhaseState(issue_number, kind, phase, attention), Phase.EXECUTION,
+                             changes_requested=True)
+    elif result.next_phase == "requirements" and phase is Phase.USER_REVIEW:
+        next_state = advance(PhaseState(issue_number, kind, phase, attention), Phase.REQUIREMENTS,
+                             new_requirements=True)
+    else:
+        return
+    current = github.issue(issue_number)
+    current_labels = current.get("labels") if isinstance(current, dict) else None
+    if (current.get("state") != "open" or current.get("number") != issue_number
+            or not isinstance(current_labels, list)
+            or [row.get("name") for row in current_labels if isinstance(row, dict)] != labels):
+        raise CLIError("Issue phase/labels changed during User Review; refusing a stale update")
+    kept = [label for label in labels if not label.startswith(("phase:", "attention:"))]
+    kept.append(f"phase:{next_state.phase.value}")
+    kept.extend(f"attention:{item.value}" for item in sorted(next_state.attention, key=lambda x: x.value))
+    github.replace_issue_labels(issue_number, kept)
+    readback = github.issue(issue_number)
+    rows = readback.get("labels") if isinstance(readback, dict) else None
+    names = [row.get("name") for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+    if readback.get("state") != "open" or f"phase:{next_state.phase.value}" not in names:
+        raise CLIError("GitHub did not confirm the requested User Review phase transition")
+
+
+def _user_review_run(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
+    blockers: list[str] = []
+    result: UserReviewResult | None = None
+    snapshot: FeedbackSnapshot | None = None
+    try:
+        issue_row = github.issue(args.issue)
+        if issue_row.get("number") != args.issue or issue_row.get("state") != "open" or issue_row.get("pull_request") is not None:
+            raise CLIError("User Review requires the same open Issue")
+        _issue, verified_adc = _approved_issue_adc(github, args.issue, repository)
+        plan, _reqs, _oracles, _tests = _load_plan(root, repository, args.issue, args.plan, verified_adc)
+        pr = github.pull_request(args.pr)
+        head = pr.get("head") if isinstance(pr, dict) else None
+        head_sha = head.get("sha") if isinstance(head, dict) else None
+        if head_sha != args.head:
+            raise CLIError("requested HEAD differs from the current GitHub PR HEAD")
+        subject = _subject(repository, args.issue, args.pr, args.head, verified_adc, plan)
+        pr_identity = _readback_current_pr(github, subject)
+        readiness = read_readiness(args.readiness)
+        if (readiness.status != "PASS" or readiness.subject != subject):
+            raise CLIError("User Review cannot start without current exact-subject Review Readiness PASS")
+        user_review_subject = UserReviewSubject(subject, readiness.sha256).validate()
+        session_started_at = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+        session_path = review_session_path(root, UserReviewSession(user_review_subject, session_started_at))
+        if args.verb == "start":
+            session = write_review_session(session_path, UserReviewSession(user_review_subject, session_started_at))
+        else:
+            session = read_review_session(session_path)
+            if session.subject != user_review_subject:
+                raise UserReviewError("User Review session belongs to a stale or different exact subject")
+        observed_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+        current = _review_payload_from_github(github, user_review_subject, observed_at=observed_at)
+        previous = _latest_review_snapshot(root, user_review_subject)
+        snapshot = merge_feedback_history(previous, current)
+        identity = github.authenticated_user()
+        result = evaluate_user_review(
+            user_review_subject, readiness, pr_identity["head_sha"], snapshot.events,
+            allowed_human_user_ids=(identity["id"],), all_feedback_surfaces_read=True,
+            required_after=session.started_at,
+            new_scope_requested=bool(getattr(args, "new_scope", False)),
+            unresolved_thread_ids=snapshot.unresolved_thread_ids,
+        )
+        current_issue = github.issue(args.issue)
+        current_adc = verify_adc(github, args.issue)
+        current_pr_identity = _readback_current_pr(github, subject)
+        current_readiness = read_readiness(args.readiness)
+        current_identity = github.authenticated_user()
+        second_observed = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+        second = _review_payload_from_github(github, user_review_subject, observed_at=second_observed)
+        second = merge_feedback_history(previous, second)
+        if (current_issue.get("state") != "open" or current_adc.pointer != verified_adc.pointer
+                or current_pr_identity != pr_identity or current_readiness != readiness
+                or current_identity.get("id") != identity.get("id")
+                or feedback_digest(second.events) != feedback_digest(snapshot.events)
+                or second.unresolved_thread_ids != snapshot.unresolved_thread_ids):
+            raise CLIError("Issue, ADC, PR, Readiness, identity, or feedback changed during User Review readback")
+        if args.verb != "status":
+            snapshot_path = feedback_snapshot_path(root, snapshot)
+            write_feedback_snapshot(snapshot_path, snapshot)
+            record = {"result": result.as_dict(), "result_sha256": result.sha256,
+                      "schema": "PASES_USER_REVIEW_RESULT_V1", "snapshot_sha256": snapshot.sha256,
+                      "subject": user_review_subject.as_dict()}
+            record_path = _review_record_path(root, args.issue, user_review_subject, result, snapshot.sha256)
+            _write_immutable(record_path, _canonical(record) + b"\n", root=root)
+            if args.verb in {"start", "sync"}:
+                _review_phase_transition(github, args.issue, IssueKind(args.kind), result, args.verb)
+        else:
+            snapshot_path = feedback_snapshot_path(root, snapshot)
+            record_path = _review_record_path(root, args.issue, user_review_subject, result, snapshot.sha256)
+        _json({"status": result.status, "subject": user_review_subject.as_dict(),
+               "subject_sha256": user_review_subject.sha256, "result_sha256": result.sha256,
+               "feedback_sha256": result.feedback_sha256, "next_phase": result.next_phase,
+               "selected_approval_event": result.selected_approval_event,
+               "unresolved_thread_ids": list(result.unresolved_thread_ids),
+               "reasons": list(result.reasons),
+               "evidence_refs": [str(session_path), str(snapshot_path), str(record_path),
+                                 f"pull/{args.pr}", f"issue/{args.issue}"]})
+        return 0 if result.status in {"APPROVED", "CHANGES_REQUESTED"} else 2
+    except (ADCError, PlanError, OracleTraceError, EvidenceError, ReadinessError, UserReviewError,
+            PhaseError, GitHubError, CLIError, OSError, ValueError) as exc:
+        blockers.append(str(exc))
+        return _blocked_result(blockers)
+
+
+def _user_review_record(args: argparse.Namespace) -> int:
+    # A JSON file cannot authenticate a chat author. This command is reserved for a host adapter.
+    try:
+        reject_unattested_chat_event(args.event_file)
+    except UserReviewError as exc:
+        return _blocked_result((str(exc),))
+    return 2
+
+
+def _delivery_final(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
+    blockers: list[str] = []
+    try:
+        _issue, verified_adc = _approved_issue_adc(github, args.issue, repository)
+        plan, _reqs, _oracles, _tests = _load_plan(root, repository, args.issue, args.plan, verified_adc)
+        subject = _subject(repository, args.issue, args.pr, args.head, verified_adc, plan)
+        pr = _readback_current_pr(github, subject)
+        saved_readiness = read_readiness(args.readiness)
+        readiness_args = argparse.Namespace(
+            issue=args.issue, pr=args.pr, head=args.head, plan=args.plan,
+            verification=args.verification, acceptance=args.acceptance,
+            self_audit=args.self_audit, independent_review=args.independent_review,
+        )
+        readiness_output = io.StringIO()
+        with contextlib.redirect_stdout(readiness_output):
+            _readiness_exit = _delivery_readiness(readiness_args, repository, root, github)
+        readiness_record = json.loads(readiness_output.getvalue())
+        readiness_path_value = readiness_record.get("path") if isinstance(readiness_record, dict) else None
+        if not isinstance(readiness_path_value, str):
+            raise CLIError("current Review Readiness could not be recomputed")
+        readiness = read_readiness(Path(readiness_path_value))
+        if readiness != saved_readiness:
+            blockers.append("saved Review Readiness differs from the current full-gate re-evaluation")
+        if readiness.subject != subject or readiness.status != "PASS":
+            blockers.append("Review Readiness is not PASS for the exact current subject")
+        user_subject, saved_review, snapshot_sha = _read_review_record(args.user_review_record)
+        if (user_subject.verification_subject != subject or readiness.status != "PASS"
+                or user_subject.readiness_sha256 != readiness.sha256):
+            blockers.append("saved User Review record belongs to a stale or different exact subject")
+        session_path = review_session_path(root, user_subject)
+        session = read_review_session(session_path)
+        if session.subject != user_subject:
+            blockers.append("User Review session belongs to a stale or different exact subject")
+        saved_snapshot_path = (root / ".p_ases" / "user-review" / str(args.issue)
+                               / user_subject.sha256 / f"{snapshot_sha}.json")
+        saved_snapshot = read_feedback_snapshot(saved_snapshot_path)
+        if (saved_snapshot.sha256 != snapshot_sha or saved_snapshot.subject != user_subject
+                or feedback_digest(saved_snapshot.events) != saved_review.feedback_sha256):
+            blockers.append("saved User Review snapshot is missing or inconsistent")
+        fresh_subject = UserReviewSubject(subject, readiness.sha256).validate()
+        observed_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+        fresh = _review_payload_from_github(github, fresh_subject, observed_at=observed_at)
+        previous = _latest_review_snapshot(root, fresh_subject)
+        fresh = merge_feedback_history(previous, fresh)
+        identity = github.authenticated_user()
+        current_review = evaluate_user_review(
+            fresh_subject, readiness, pr["head_sha"], fresh.events,
+            allowed_human_user_ids=(identity["id"],), required_after=session.started_at,
+            unresolved_thread_ids=fresh.unresolved_thread_ids,
+        )
+        if (saved_review.status != "APPROVED" or current_review != saved_review
+                or feedback_digest(fresh.events) != saved_review.feedback_sha256):
+            blockers.append("current GitHub feedback no longer matches the saved approved User Review")
+        verification = read_verification_result(args.verification)
+        calculated_verification, _refs = _calculate_verification(
+            argparse.Namespace(issue=args.issue, pr=args.pr, head=args.head, plan=args.plan),
+            repository, root, github)
+        if verification != calculated_verification or verification.subject != subject or verification.status != "PASS":
+            blockers.append("#29 Verification is stale or is not PASS for the exact subject")
+        raw_pr = github.pull_request(args.pr)
+        aggregate = github.pull_review_decision(args.pr)
+        protection = github.branch_protection(pr["base_ref"])
+        profile = load_profile(root)
+        required_names = tuple(name for name, _app_id in profile.required_checks)
+        result = evaluate_final_delivery(
+            subject=subject, user_review=current_review, verification=verification,
+            current_pr_head_sha40=aggregate.get("headRefOid"), current_pr_state=pr["state"],
+            current_pr_draft=raw_pr.get("draft"), github_review_decision=aggregate.get("reviewDecision"),
+            github_review_head_sha40=aggregate.get("headRefOid"), branch_protection=protection,
+            required_check_names=required_names, mergeable=raw_pr.get("mergeable"),
+        )
+        if verify_adc(github, args.issue).pointer != verified_adc.pointer:
+            blockers.append("approved ADC pointer changed during Final Delivery")
+        if _readback_current_pr(github, subject) != pr:
+            blockers.append("PR identity/base/head changed during Final Delivery")
+        if github.pull_review_decision(args.pr) != aggregate:
+            blockers.append("GitHub formal review decision or PR HEAD changed during Final Delivery")
+        if github.branch_protection(pr["base_ref"]) != protection:
+            blockers.append("branch protection changed during Final Delivery")
+        final_readiness = read_readiness(args.readiness)
+        final_identity = github.authenticated_user()
+        final_session = read_review_session(session_path)
+        final_observed = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+        final_feedback = _review_payload_from_github(github, fresh_subject, observed_at=final_observed)
+        final_feedback = merge_feedback_history(previous, final_feedback)
+        if (final_readiness != readiness or final_identity.get("id") != identity.get("id")
+                or final_session != session
+                or feedback_digest(final_feedback.events) != feedback_digest(fresh.events)
+                or final_feedback.unresolved_thread_ids != fresh.unresolved_thread_ids):
+            blockers.append("Readiness, authenticated user, or GitHub feedback changed during Final Delivery")
+        final_verification, _final_refs = _calculate_verification(
+            argparse.Namespace(issue=args.issue, pr=args.pr, head=args.head, plan=args.plan),
+            repository, root, github)
+        if final_verification != verification:
+            blockers.append("#29 Verification/Required Check Runs changed during Final Delivery")
+        if blockers:
+            result = FinalDeliveryResult("BLOCKED", subject, result.user_review_sha256,
+                                         result.required_check_result_sha256,
+                                         result.branch_protection_sha256,
+                                         tuple((*result.reasons, *blockers))).validate()
+        path = root / ".p_ases" / "final-delivery" / str(args.issue) / f"{result.sha256}.json"
+        _write_immutable(path, _canonical(result.as_dict()) + b"\n", root=root)
+        _json({**result.as_dict(), "subject_sha256": subject.sha256, "path": str(path),
+               "merge_authorized": False,
+               "evidence_refs": [str(session_path), str(args.readiness), str(args.user_review_record), str(args.verification),
+                                 str(args.acceptance), str(args.self_audit), str(args.independent_review), str(path)]})
+        return 0 if result.status == "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION" else 2
+    except (ADCError, PlanError, OracleTraceError, EvidenceError, ReadinessError, VerificationError,
+            UserReviewError, ProfileError, GitHubError, CLIError, OSError, ValueError) as exc:
+        return _blocked_result((str(exc),))
+
+
+def _delivery_finalize(args: argparse.Namespace, repository: str, github: GitHub) -> int:
+    try:
+        pr = github.pull_request(args.pr)
+        issue = github.issue(args.issue)
+        merge_sha = pr.get("merge_commit_sha") if isinstance(pr, dict) else None
+        main = github.repository_metadata().get("default_branch")
+        main_row = github.branch(main)
+        main_sha = main_row["commit"]["sha"]
+        close_lines = [int(value) for value in OWN_PR_CLOSING_LINE.findall(pr.get("body", ""))]
+        reasons = []
+        if pr.get("state") != "closed" or pr.get("merged_at") is None:
+            reasons.append("PR has not been merged")
+        if close_lines != [args.issue]:
+            reasons.append("PR does not have exactly one standalone Closes #N for the Issue")
+        if issue.get("state") != "closed":
+            reasons.append("GitHub has not closed the Issue after merge")
+        if not isinstance(merge_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", merge_sha):
+            reasons.append("merged PR has no full merge commit SHA")
+        else:
+            comparison = github.compare_commits(merge_sha, main_sha)
+            if comparison.get("status") not in {"ahead", "identical"}:
+                reasons.append("merged PR commit is not contained in current main")
+        value = {"status": "FINALIZED" if not reasons else "BLOCKED", "issue": args.issue,
+                 "pr": args.pr, "merge_sha40": merge_sha, "main_sha40": main_sha,
+                 "reasons": reasons, "issue_state": issue.get("state"),
+                 "note": "readback only; no merge or Issue mutation was performed"}
+        _json(value)
+        return 0 if not reasons else 2
+    except (GitHubError, CLIError, OSError, ValueError) as exc:
+        return _blocked_result((str(exc),))
+
+
+PARENT_CHILD_ISSUES = (27, 28, 29, 30, 31, 32)
+PARENT_CHILD_DAG = {
+    27: (), 28: (27,), 29: (27, 28), 30: (27, 29),
+    31: (29, 30), 32: (27, 28, 29, 30, 31),
+}
+
+
+def _repository_file_reference(value: Path | str) -> str:
+    """Validate a repository-relative file path used for exact-main evidence readback."""
+    path = Path(value)
+    if path.is_absolute() or not path.parts or any(part in {"", ".", ".."} for part in path.parts):
+        raise IntegrationError("parent Integration evidence reference must be repository-relative")
+    reference = path.as_posix()
+    if "\\" in reference or any(char in reference for char in "\x00\r\n?#:"):
+        raise IntegrationError("parent Integration evidence reference is invalid")
+    return reference
+
+
+def _load_parent_gate_evidence_from_github(
+    github: GitHub, reference: Path | str, main_sha40: str, kind: str,
+) -> IntegrationGateEvidence:
+    """Read the typed result and every cited artifact from the exact current main commit."""
+    if not isinstance(main_sha40, str) or not re.fullmatch(r"[0-9a-f]{40}", main_sha40):
+        raise IntegrationError("parent Integration evidence requires an exact main SHA-40")
+    evidence_path = _repository_file_reference(reference)
+    try:
+        raw_evidence = github.content_at_ref(evidence_path, main_sha40)
+        value = json.loads(raw_evidence.decode("utf-8", errors="strict"))
+    except (GitHubError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise IntegrationError("parent Integration typed evidence could not be read from exact main") from exc
+    evidence = IntegrationGateEvidence.from_dict(value)
+    if evidence.kind != kind or evidence.main_sha40 != main_sha40 or raw_evidence != evidence.to_bytes():
+        raise IntegrationError("parent Integration evidence is not canonical or belongs to another main subject")
+    try:
+        source_path = _repository_file_reference(evidence.source_reference)
+        raw_source = github.content_at_ref(source_path, main_sha40)
+        source_value = json.loads(raw_source.decode("utf-8", errors="strict"))
+    except (GitHubError, IntegrationError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise IntegrationError(f"parent Integration {kind} source could not be read from exact main") from exc
+    if hashlib.sha256(raw_source).hexdigest() != evidence.result_sha256:
+        raise IntegrationError(f"parent Integration {kind} source digest does not match its exact-main bytes")
+    required_source = {"schema", "kind", "status", "repository", "parent_issue_number",
+                       "parent_adc_sha256", "main_sha40", "checks"}
+    source_repository = source_value.get("repository") if isinstance(source_value, dict) else None
+    if (not isinstance(source_value, dict) or set(source_value) != required_source
+            or source_value.get("schema") != "PASES_PARENT_INTEGRATION_CHECKS_V1"
+            or source_value.get("kind") != kind or source_value.get("status") != "PASS"
+            or not isinstance(source_repository, str)
+            or source_repository.casefold() != evidence.repository.casefold()
+            or type(source_value.get("parent_issue_number")) is not int
+            or source_value.get("parent_issue_number") != evidence.parent_issue_number
+            or source_value.get("parent_adc_sha256") != evidence.parent_adc_sha256
+            or source_value.get("main_sha40") != main_sha40):
+        raise IntegrationError(f"parent Integration {kind} source has no matching typed PASS subject")
+    checks = source_value["checks"]
+    if not isinstance(checks, list) or any(not isinstance(row, dict) or set(row) != {
+            "check_id", "status", "evidence_sha256", "evidence_reference"} for row in checks):
+        raise IntegrationError(f"parent Integration {kind} source check list is malformed")
+    by_id: dict[str, dict[str, Any]] = {}
+    for row in checks:
+        check_id = row["check_id"]
+        if (not isinstance(check_id, str) or not check_id or check_id in by_id
+                or row["status"] != "PASS" or not isinstance(row["evidence_sha256"], str)
+                or not re.fullmatch(r"[0-9a-f]{64}", row["evidence_sha256"])):
+            raise IntegrationError(f"parent Integration {kind} source contains a failing or duplicate check")
+        try:
+            evidence_reference = _repository_file_reference(row["evidence_reference"])
+            evidence_bytes = github.content_at_ref(evidence_reference, main_sha40)
+        except (GitHubError, IntegrationError) as exc:
+            raise IntegrationError(f"parent Integration {kind} check artifact is unavailable from exact main") from exc
+        if hashlib.sha256(evidence_bytes).hexdigest() != row["evidence_sha256"]:
+            raise IntegrationError(f"parent Integration {kind} check evidence digest does not match its exact-main bytes")
+        by_id[check_id] = row
+    required = ({"compileall", "unit-tests", "docs-validation", "format-check", "required-ci"}
+                if kind == "verification" else
+                {"specification-traceability", "design-traceability", "test-oracle-traceability",
+                 "16-skills-package", "distribution-validation"})
+    if set(by_id) != required:
+        raise IntegrationError(f"parent Integration {kind} evidence does not cover the fixed required check set")
+    return evidence
+
+
+def _read_parent_integration(args: argparse.Namespace, repository: str, root: Path,
+                             github: GitHub) -> tuple[Any, Path, Any, Any]:
+    parent_number = getattr(args, "parent", getattr(args, "issue", None))
+    if parent_number != 26:
+        raise CLIError("native parent integration is fixed to Issue #26 for this migration")
+    def snapshot() -> tuple[Any, Any, Any, Any, Any]:
+        parent_issue = github.issue(parent_number)
+        if parent_issue.get("number") != parent_number or parent_issue.get("state") != "open":
+            raise CLIError("parent Integration requires the same open parent Issue")
+        verified_adc = verify_adc(github, parent_number)
+        if verified_adc.pointer.state != "approved":
+            raise CLIError("parent Integration requires the current approved parent ADC")
+        metadata = github.repository_metadata()
+        main_ref = metadata.get("default_branch")
+        if not isinstance(main_ref, str) or not main_ref:
+            raise GitHubError("repository default branch is unavailable")
+        main_row = github.branch(main_ref)
+        main_commit = main_row.get("commit")
+        main_sha = main_commit.get("sha") if isinstance(main_commit, dict) else None
+        if not isinstance(main_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", main_sha):
+            raise GitHubError("current main branch SHA is invalid")
+        verification_evidence = (None if args.verification is None else
+                                 _load_parent_gate_evidence_from_github(
+                                     github, args.verification, main_sha, "verification"))
+        acceptance_evidence = (None if args.acceptance is None else
+                               _load_parent_gate_evidence_from_github(
+                                   github, args.acceptance, main_sha, "acceptance"))
+        subs = github.sub_issues(parent_number)
+        child_rows = [github.issue(number) for number in PARENT_CHILD_ISSUES]
+        blockers: dict[int, tuple[int, ...]] = {}
+        for number in PARENT_CHILD_ISSUES:
+            rows = github.blocked_by(number)
+            blockers[number] = tuple(sorted(row["id"] for row in rows
+                                             if isinstance(row, dict) and type(row.get("id")) is int))
+        prs = github.pull_requests_all()
+        ancestry: dict[str, bool] = {}
+        for pr in prs:
+            body = pr.get("body") if isinstance(pr, dict) else None
+            if not isinstance(body, str):
+                continue
+            own_closes = [int(value) for value in STANDALONE_CLOSE.findall(body)]
+            if len(own_closes) != 1 or own_closes[0] not in PARENT_CHILD_ISSUES:
+                continue
+            merge_sha = pr.get("merge_commit_sha")
+            if not isinstance(merge_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", merge_sha):
+                continue
+            try:
+                comparison = github.compare_commits(merge_sha, main_sha)
+                ancestry[merge_sha] = comparison.get("status") in {"ahead", "identical"}
+            except GitHubError:
+                ancestry[merge_sha] = False
+        result = evaluate_parent_integration(
+            repository=repository, parent_issue_number=parent_number,
+            parent_adc_sha256=verified_adc.pointer.sha256, main_sha40=main_sha,
+            expected_child_issue_numbers=PARENT_CHILD_ISSUES,
+            native_sub_issues=subs, child_issue_rows=child_rows,
+            actual_blockers_by_issue=blockers, declared_dependencies=PARENT_CHILD_DAG,
+            merged_pr_rows=prs, merge_sha_ancestry=ancestry,
+            integration_verification=verification_evidence,
+            integration_acceptance=acceptance_evidence,
+        )
+        return result, verified_adc, main_ref, verification_evidence, acceptance_evidence
+
+    first, first_adc, first_main_ref, verification_evidence, acceptance_evidence = snapshot()
+    second, second_adc, second_main_ref, second_verification, second_acceptance = snapshot()
+    if (first.sha256 != second.sha256 or first_adc.pointer != second_adc.pointer
+            or first_main_ref != second_main_ref
+            or verification_evidence != second_verification
+            or acceptance_evidence != second_acceptance):
+        raise CLIError("parent children, dependency graph, main SHA, or ADC changed during Integration readback")
+    result_path = root / ".p_ases" / "integration" / str(parent_number) / f"{first.sha256}.json"
+    value = {"integration_sha256": first.sha256, "reasons": list(first.reasons),
+             "schema": "PASES_PARENT_INTEGRATION_RESULT_V1", "status": first.status,
+             "subject": first.subject.as_dict()}
+    _write_immutable(result_path, _canonical(value) + b"\n", root=root)
+    return first, result_path, verification_evidence, acceptance_evidence
+
+
+def _issue_integration_check(args: argparse.Namespace, repository: str, root: Path,
+                             github: GitHub) -> int:
+    try:
+        result, path, verification, acceptance = _read_parent_integration(args, repository, root, github)
+        _json({"status": result.status, "parent_issue": 26,
+               "integration_sha256": result.sha256, "subject": result.subject.as_dict(),
+               "reasons": list(result.reasons),
+               "evidence_refs": [str(path), *(str(value) for value in (args.verification, args.acceptance)
+                                                  if value is not None),
+                                 *(row.source_reference for row in (verification, acceptance)
+                                   if row is not None)]})
+        return 0 if result.status == "PASS" else 2
+    except (ADCError, GitHubError, IntegrationError, CLIError, OSError, ValueError) as exc:
+        return _blocked_result((str(exc),))
+
+
+def _delivery_parent(args: argparse.Namespace, repository: str, root: Path,
+                     github: GitHub) -> int:
+    try:
+        result, path, verification, acceptance = _read_parent_integration(args, repository, root, github)
+        reasons = list(result.reasons)
+        reasons.append("parent User Review evidence is not yet available")
+        reasons.append("parent Activation, merge, and release remain separate user-authorized gates")
+        _json({"status": "BLOCKED", "parent_issue": 26,
+               "integration_status": result.status, "integration_sha256": result.sha256,
+               "parent_user_review": "NOT_EVALUATED", "merge_authorized": False,
+               "activation_issued": False, "reasons": reasons,
+               "evidence_refs": [str(path), *(str(value) for value in (args.verification, args.acceptance)
+                                                  if value is not None),
+                                 *(row.source_reference for row in (verification, acceptance)
+                                   if row is not None)]})
+        return 2
+    except (ADCError, GitHubError, IntegrationError, CLIError, OSError, ValueError) as exc:
+        return _blocked_result((str(exc),))
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m p_ases")
     namespaces = parser.add_subparsers(dest="namespace", required=True)
@@ -1598,6 +2144,14 @@ def _parser() -> argparse.ArgumentParser:
     advance_issue.add_argument("--repo", help="repository owner/name; defaults to origin")
     advance_issue.add_argument("--kind", choices=tuple(kind.value for kind in IssueKind), required=True)
     advance_issue.add_argument("--skip-phase", action="append", default=[], metavar="PHASE=REASON")
+    integration_check = issue_commands.add_parser("integration-check", help="read back all child merges and parent evidence")
+    integration_check.add_argument("parent", type=_positive_number)
+    integration_check.add_argument("--verification", type=Path,
+                                   help="repository-relative typed Verification record in current main")
+    integration_check.add_argument("--acceptance", type=Path,
+                                   help="repository-relative typed Acceptance record in current main")
+    integration_check.add_argument("--repo", help="repository owner/name; defaults to origin")
+    integration_check.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
 
     verification = namespaces.add_parser("verification", help="freeze Plans and collect exact-subject verification")
     verification_commands = verification.add_subparsers(dest="verb", required=True)
@@ -1730,6 +2284,55 @@ def _parser() -> argparse.ArgumentParser:
                            help="host/environment not verified; use 'none' when no host remains unverified")
     bootstrap.add_argument("--repo", help="repository owner/name; defaults to origin")
     bootstrap.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
+    final = delivery_commands.add_parser("final", help="re-read User Review, GitHub review, checks, and branch protection")
+    final.add_argument("issue", type=_positive_number)
+    final.add_argument("pr", type=_positive_number)
+    final.add_argument("head", help="exact current PR HEAD SHA-40")
+    final.add_argument("plan", type=Path)
+    final.add_argument("verification", type=Path)
+    final.add_argument("acceptance", type=Path)
+    final.add_argument("self_audit", type=Path)
+    final.add_argument("independent_review", type=Path)
+    final.add_argument("readiness", type=Path)
+    final.add_argument("user_review_record", type=Path)
+    final.add_argument("--repo", help="repository owner/name; defaults to origin")
+    final.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
+    finalize = delivery_commands.add_parser("finalize", help="read back an already merged PR and closed Issue")
+    finalize.add_argument("issue", type=_positive_number)
+    finalize.add_argument("pr", type=_positive_number)
+    finalize.add_argument("--repo", help="repository owner/name; defaults to origin")
+    finalize.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
+    parent_final = delivery_commands.add_parser("parent", help="evaluate parent integration and its User Review gates")
+    parent_final.add_argument("issue", type=_positive_number)
+    parent_final.add_argument("--verification", type=Path,
+                              help="repository-relative typed Verification record in current main")
+    parent_final.add_argument("--acceptance", type=Path,
+                              help="repository-relative typed Acceptance record in current main")
+    parent_final.add_argument("--repo", help="repository owner/name; defaults to origin")
+    parent_final.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
+
+    user_review = namespaces.add_parser("user-review", help="start, synchronize, or inspect exact-subject human review")
+    user_review_commands = user_review.add_subparsers(dest="verb", required=True)
+    for verb in ("start", "sync", "status"):
+        command = user_review_commands.add_parser(verb)
+        command.add_argument("issue", type=_positive_number)
+        command.add_argument("pr", type=_positive_number)
+        command.add_argument("head", help="exact current PR HEAD SHA-40")
+        command.add_argument("plan", type=Path)
+        command.add_argument("readiness", type=Path)
+        command.add_argument("--kind", choices=tuple(kind.value for kind in IssueKind), default="child")
+        if verb == "sync":
+            command.add_argument("--new-scope", action="store_true",
+                                 help="route explicitly triaged new scope back to requirements")
+        command.add_argument("--repo", help="repository owner/name; defaults to origin")
+        command.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
+    record_chat = user_review_commands.add_parser("record", help="record a host-attested direct chat decision")
+    record_chat.add_argument("issue", type=_positive_number)
+    record_chat.add_argument("pr", type=_positive_number)
+    record_chat.add_argument("event_file", type=Path,
+                             help="host payload is not trusted by the CLI; use a verified host adapter")
+    record_chat.add_argument("--repo", help="repository owner/name; defaults to origin")
+    record_chat.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
 
     docs = namespaces.add_parser("docs", help="validate and deterministically format canonical Markdown docs")
     docs_commands = docs.add_subparsers(dest="verb", required=True)
@@ -1746,7 +2349,7 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        if args.namespace in {"work", "pr", "audit", "delivery"}:
+        if args.namespace in {"work", "pr", "audit", "delivery", "user-review"}:
             root = _runtime_root(args)
             repository = args.repo or discover_repository(root)
             github = GitHub(repository)
@@ -1760,12 +2363,22 @@ def main(argv: list[str] | None = None) -> int:
                 if args.verb == "self":
                     return _audit_self(args, repository, root, github)
                 return _audit_independent(args, repository, root, github)
+            if args.namespace == "user-review":
+                if args.verb == "record":
+                    return _user_review_record(args)
+                return _user_review_run(args, repository, root, github)
             if args.verb == "gate-policy":
                 return _delivery_gate_policy(args, repository, github)
             if args.verb == "bootstrap-check":
                 return _delivery_bootstrap_check(args, repository, root, github)
             if args.verb == "readiness":
                 return _delivery_readiness(args, repository, root, github)
+            if args.verb == "final":
+                return _delivery_final(args, repository, root, github)
+            if args.verb == "finalize":
+                return _delivery_finalize(args, repository, github)
+            if args.verb == "parent":
+                return _delivery_parent(args, repository, root, github)
             raise CLIError("unknown Delivery command")
 
         if args.namespace in {"verification", "acceptance"}:
@@ -1876,6 +2489,10 @@ def main(argv: list[str] | None = None) -> int:
                    "to": next_state.phase.value, "attention": sorted(x.value for x in next_state.attention)})
             return 0
 
+        if args.verb == "integration-check":
+            root = _runtime_root(args)
+            return _issue_integration_check(args, repository, root, GitHub(repository))
+
         parent_issue, parent_sha, requirement_ids, children = load_split_plan(args.plan, repository)
         order = validate_split(parent_issue, parent_sha, requirement_ids, children)
         if args.verb == "validate-split" or getattr(args, "dry_run", False):
@@ -1893,9 +2510,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except (ADCError, AcceptanceError, AuditError, CheckpointError, ExecutionError,
             DocumentError, DocumentFormatError, EvidenceError, GitError, GitHubError,
-            IssueGraphError, OracleTraceError, PhaseError, PlanError, ProfileError, ReadinessError, VerificationError,
+            IntegrationError, IssueGraphError, OracleTraceError, PhaseError, PlanError, ProfileError,
+            ReadinessError, UserReviewError, VerificationError,
             WorkError, CLIError, OSError, UnicodeError, ValueError) as exc:
-        if args.namespace in {"verification", "acceptance", "work", "pr", "audit", "delivery"}:
+        if args.namespace in {"verification", "acceptance", "work", "pr", "audit", "delivery", "user-review"}:
             return _blocked_result((str(exc),))
         print(f"p-ases: {exc}", file=sys.stderr)
         return 2

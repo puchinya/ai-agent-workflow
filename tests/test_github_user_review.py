@@ -61,6 +61,66 @@ class UserReviewGitHubAdapterTests(unittest.TestCase):
                 call(0)
         self.assertEqual(gh.calls, [])
 
+    def test_review_thread_pages_keep_resolution_and_outdated_metadata(self):
+        class GraphQLFake(GitHub):
+            def __init__(self):
+                super().__init__("octo/repo")
+                self.responses = [{"repository": {"pullRequest": {"reviewThreads": {
+                    "nodes": [{"id": "thread-1", "isResolved": False, "isOutdated": False,
+                               "comments": {"nodes": [{"databaseId": 9}],
+                                            "pageInfo": {"hasNextPage": False, "endCursor": None}}}],
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                }}}}]
+
+            def _graphql(self, _query, _variables):
+                return self.responses.pop(0)
+
+        threads = GraphQLFake().pull_review_threads(37)
+        self.assertEqual(threads[0]["id"], "thread-1")
+        self.assertFalse(threads[0]["isResolved"])
+        self.assertFalse(threads[0]["isOutdated"])
+        self.assertEqual(threads[0]["comments"], [{"databaseId": 9}])
+
+    def test_review_threads_and_nested_comments_follow_all_cursors(self):
+        class GraphQLFake(GitHub):
+            def __init__(self):
+                super().__init__("octo/repo")
+                self.calls = []
+                self.responses = [
+                    {"repository": {"pullRequest": {"reviewThreads": {
+                        "nodes": [{"id": "thread-1", "isResolved": False, "isOutdated": False,
+                                   "comments": {"nodes": [{"databaseId": 1}],
+                                                "pageInfo": {"hasNextPage": True, "endCursor": "comment-cursor"}}}],
+                        "pageInfo": {"hasNextPage": True, "endCursor": "thread-cursor"},
+                    }}}},
+                    {"node": {"comments": {"nodes": [{"databaseId": 2}],
+                                               "pageInfo": {"hasNextPage": False, "endCursor": None}}}},
+                    {"repository": {"pullRequest": {"reviewThreads": {
+                        "nodes": [{"id": "thread-2", "isResolved": True, "isOutdated": True,
+                                   "comments": {"nodes": [],
+                                                "pageInfo": {"hasNextPage": False, "endCursor": None}}}],
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    }}}},
+                ]
+
+            def _graphql(self, query, variables):
+                self.calls.append((query, variables))
+                return self.responses.pop(0)
+
+        fake = GraphQLFake()
+        threads = fake.pull_review_threads(37)
+        self.assertEqual([row["id"] for row in threads], ["thread-1", "thread-2"])
+        self.assertEqual([row["databaseId"] for row in threads[0]["comments"]], [1, 2])
+        self.assertEqual(fake.calls[1][1]["threadId"], "thread-1")
+        self.assertEqual(fake.calls[2][1]["cursor"], "thread-cursor")
+
+    def test_authenticated_identity_must_be_a_human_user(self):
+        gh = FakeGitHub(({"id": 42, "login": "puchinya", "type": "User"},))
+        self.assertEqual(gh.authenticated_user()["id"], 42)
+        gh = FakeGitHub(({"id": 42, "login": "runner", "type": "Bot"},))
+        with self.assertRaises(GitHubError):
+            gh.authenticated_user()
+
 
 if __name__ == "__main__":
     unittest.main()

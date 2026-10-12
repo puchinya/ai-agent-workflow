@@ -8,6 +8,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Iterable, Mapping
 
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
@@ -23,6 +24,18 @@ def _canonical(value: Any) -> bytes:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
+def _time(value: Any) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise IntegrationError("child PR merge timestamp is missing")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise IntegrationError("child PR merge timestamp is invalid") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise IntegrationError("child PR merge timestamp must include a timezone")
+    return parsed
+
+
 @dataclass(frozen=True)
 class ChildMerge:
     issue_number: int
@@ -30,7 +43,9 @@ class ChildMerge:
     pr_number: int
     pr_head_sha40: str
     merge_sha40: str
+    merged_at: str
     dependencies: tuple[int, ...]
+    merge_sha_in_main: bool
 
     def validate(self) -> "ChildMerge":
         for value in (self.issue_number, self.issue_id, self.pr_number):
@@ -44,13 +59,81 @@ class ChildMerge:
                 or len(set(self.dependencies)) != len(self.dependencies)
                 or self.issue_number in self.dependencies):
             raise IntegrationError("child dependency list is invalid")
+        _time(self.merged_at)
+        if type(self.merge_sha_in_main) is not bool:
+            raise IntegrationError("child merge ancestry must be a verified boolean")
         return self
 
     def as_dict(self) -> dict[str, Any]:
         self.validate()
         return {"issue_number": self.issue_number, "issue_id": self.issue_id,
                 "pr_number": self.pr_number, "pr_head_sha40": self.pr_head_sha40,
-                "merge_sha40": self.merge_sha40, "dependencies": list(self.dependencies)}
+                "merge_sha40": self.merge_sha40, "merged_at": self.merged_at,
+                "dependencies": list(self.dependencies),
+                "merge_sha_in_main": self.merge_sha_in_main}
+
+
+@dataclass(frozen=True)
+class IntegrationGateEvidence:
+    """Typed immutable evidence bound to the final parent/main integration subject."""
+
+    kind: str
+    repository: str
+    parent_issue_number: int
+    parent_adc_sha256: str
+    main_sha40: str
+    status: str
+    result_sha256: str
+    source_reference: str
+
+    def validate(self) -> "IntegrationGateEvidence":
+        if not isinstance(self.kind, str) or self.kind not in {"verification", "acceptance"}:
+            raise IntegrationError("parent evidence kind must be verification or acceptance")
+        if not isinstance(self.repository, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", self.repository):
+            raise IntegrationError("parent evidence repository is invalid")
+        if type(self.parent_issue_number) is not int or self.parent_issue_number < 1:
+            raise IntegrationError("parent evidence Issue number is invalid")
+        if not isinstance(self.parent_adc_sha256, str) or not SHA256.fullmatch(self.parent_adc_sha256):
+            raise IntegrationError("parent evidence ADC digest is invalid")
+        if not isinstance(self.main_sha40, str) or not SHA40.fullmatch(self.main_sha40):
+            raise IntegrationError("parent evidence main SHA is invalid")
+        if self.status != "PASS" or not isinstance(self.result_sha256, str) or not SHA256.fullmatch(self.result_sha256):
+            raise IntegrationError("parent evidence must be an exact PASS result with a digest")
+        if not isinstance(self.source_reference, str) or not self.source_reference.strip():
+            raise IntegrationError("parent evidence source reference is missing")
+        return self
+
+    def as_dict(self) -> dict[str, Any]:
+        self.validate()
+        return {"kind": self.kind, "repository": self.repository,
+                "parent_issue_number": self.parent_issue_number,
+                "parent_adc_sha256": self.parent_adc_sha256, "main_sha40": self.main_sha40,
+                "status": self.status, "result_sha256": self.result_sha256,
+                "source_reference": self.source_reference}
+
+    def to_bytes(self) -> bytes:
+        value = {**self.as_dict(), "schema": "PASES_PARENT_INTEGRATION_EVIDENCE_V1",
+                 "evidence_sha256": self.sha256}
+        return _canonical(value) + b"\n"
+
+    @classmethod
+    def from_dict(cls, value: Any) -> "IntegrationGateEvidence":
+        expected = {"kind", "repository", "parent_issue_number", "parent_adc_sha256", "main_sha40",
+                    "status", "result_sha256", "source_reference", "schema", "evidence_sha256"}
+        if not isinstance(value, dict) or set(value) != expected:
+            raise IntegrationError("parent integration evidence has unknown or missing fields")
+        if value["schema"] != "PASES_PARENT_INTEGRATION_EVIDENCE_V1":
+            raise IntegrationError("parent integration evidence schema is unknown")
+        evidence = cls(value["kind"], value["repository"], value["parent_issue_number"],
+                       value["parent_adc_sha256"], value["main_sha40"], value["status"],
+                       value["result_sha256"], value["source_reference"]).validate()
+        if value["evidence_sha256"] != evidence.sha256 or evidence.to_bytes() != _canonical(value) + b"\n":
+            raise IntegrationError("parent integration evidence digest or bytes do not match")
+        return evidence
+
+    @property
+    def sha256(self) -> str:
+        return hashlib.sha256(_canonical(self.as_dict())).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -62,6 +145,8 @@ class ParentIntegrationSubject:
     children: tuple[ChildMerge, ...]
     integration_verification_sha256: str | None = None
     integration_acceptance_sha256: str | None = None
+    expected_child_issue_numbers: tuple[int, ...] = ()
+    declared_dependency_graph: tuple[tuple[int, tuple[int, ...]], ...] = ()
 
     def validate(self) -> "ParentIntegrationSubject":
         if not isinstance(self.repository, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", self.repository):
@@ -74,11 +159,36 @@ class ParentIntegrationSubject:
             raise IntegrationError("parent integration main HEAD is invalid")
         if type(self.children) is not tuple:
             raise IntegrationError("parent children must be a canonical tuple")
-        nums = [row.issue_number for row in self.children if isinstance(row, ChildMerge)]
-        if len(nums) != len(self.children) or nums != sorted(set(nums)):
-            raise IntegrationError("parent child set must be canonical, unique and sorted")
+        if any(not isinstance(row, ChildMerge) for row in self.children):
+            raise IntegrationError("parent child merge record is malformed")
         for row in self.children:
             row.validate()
+        nums = [row.issue_number for row in self.children]
+        if nums != sorted(set(nums)):
+            raise IntegrationError("parent child set must be canonical, unique and sorted")
+        if (type(self.expected_child_issue_numbers) is not tuple
+                or not self.expected_child_issue_numbers
+                or any(type(number) is not int or number < 1 for number in self.expected_child_issue_numbers)
+                or self.expected_child_issue_numbers != tuple(sorted(set(self.expected_child_issue_numbers)))
+                or not set(nums).issubset(self.expected_child_issue_numbers)):
+            raise IntegrationError("parent expected child set is invalid or incomplete")
+        if (type(self.declared_dependency_graph) is not tuple
+                or any(type(row) is not tuple or len(row) != 2 or type(row[0]) is not int
+                       for row in self.declared_dependency_graph)
+                or self.declared_dependency_graph != tuple(sorted(self.declared_dependency_graph))
+                or tuple(number for number, _dependencies in self.declared_dependency_graph)
+                != self.expected_child_issue_numbers):
+            raise IntegrationError("parent dependency graph must cover the exact frozen child set")
+        for number, dependencies in self.declared_dependency_graph:
+            if (type(number) is not int or number not in self.expected_child_issue_numbers
+                    or type(dependencies) is not tuple
+                    or any(type(dependency) is not int or dependency < 1 or dependency == number
+                           for dependency in dependencies)
+                    or dependencies != tuple(sorted(set(dependencies)))):
+                raise IntegrationError("parent dependency graph contains invalid edges")
+        merges = [row.merge_sha40 for row in self.children]
+        if len(merges) != len(set(merges)):
+            raise IntegrationError("parent merge SHA set contains duplicate commits")
         for digest in (self.integration_verification_sha256, self.integration_acceptance_sha256):
             if digest is not None and (not isinstance(digest, str) or not SHA256.fullmatch(digest)):
                 raise IntegrationError("integration evidence digest is invalid")
@@ -89,6 +199,11 @@ class ParentIntegrationSubject:
         return {"repository": self.repository, "parent_issue_number": self.parent_issue_number,
                 "parent_adc_sha256": self.parent_adc_sha256, "main_sha40": self.main_sha40,
                 "children": [item.as_dict() for item in self.children],
+                "expected_child_issue_numbers": list(self.expected_child_issue_numbers),
+                "declared_dependency_graph": [
+                    {"issue_number": number, "dependencies": list(dependencies)}
+                    for number, dependencies in self.declared_dependency_graph
+                ],
                 "integration_verification_sha256": self.integration_verification_sha256,
                 "integration_acceptance_sha256": self.integration_acceptance_sha256}
 
@@ -109,6 +224,16 @@ class ParentIntegrationResult:
             raise IntegrationError("parent integration verdict is invalid")
         if (self.status == "PASS" and self.reasons) or (self.status != "PASS" and not self.reasons):
             raise IntegrationError("parent integration verdict/reasons are inconsistent")
+        if self.status == "PASS":
+            actual = tuple(row.issue_number for row in self.subject.children)
+            if (actual != self.subject.expected_child_issue_numbers
+                    or any(not row.merge_sha_in_main for row in self.subject.children)
+                    or self.subject.integration_verification_sha256 is None
+                    or self.subject.integration_acceptance_sha256 is None
+                    or any(dependency not in self.subject.expected_child_issue_numbers
+                           for _number, dependencies in self.subject.declared_dependency_graph
+                           for dependency in dependencies)):
+                raise IntegrationError("parent Integration PASS lacks the exact child/main/evidence subject")
         return self
 
     @property
@@ -132,7 +257,11 @@ def _validate_dependency_graph(expected: tuple[int, ...],
         if number in visited:
             return
         on_stack.add(number)
-        for dep in dependencies[number]:
+        edges = dependencies[number]
+        if (type(edges) is not tuple or any(type(dep) is not int for dep in edges)
+                or len(edges) != len(set(edges))):
+            raise IntegrationError("child dependency graph contains malformed or duplicate edges")
+        for dep in edges:
             if dep not in dependencies or dep == number:
                 raise IntegrationError("child has an unexpected or self dependency")
             visit(dep)
@@ -157,24 +286,22 @@ def evaluate_parent_integration(
     actual_blockers_by_issue: Mapping[int, Iterable[int]],
     declared_dependencies: Mapping[int, tuple[int, ...]],
     merged_pr_rows: Iterable[dict[str, Any]],
-    integration_verification_sha256: str | None = None,
-    integration_acceptance_sha256: str | None = None,
-    integration_verification_pass: bool = False,
-    integration_acceptance_pass: bool = False,
+    merge_sha_ancestry: Mapping[str, bool],
+    integration_verification: IntegrationGateEvidence | None = None,
+    integration_acceptance: IntegrationGateEvidence | None = None,
 ) -> ParentIntegrationResult:
     """Pure validation. Snapshots *must* be read from GitHub and verified adapters.
 
-    PASS additionally requires external immutable Integration Verification and
-    Acceptance PASS artifacts; booleans alone cannot substitute for digests.
+    PASS additionally requires exact typed Integration Verification and
+    Acceptance artifacts; caller-supplied pass booleans cannot substitute.
     """
     expected = tuple(sorted(expected_child_issue_numbers))
     if not expected or any(type(n) is not int or n < 1 for n in expected) or len(set(expected)) != len(expected):
         raise IntegrationError("frozen child set is invalid")
     reasons: list[str] = []
     try:
-        order = _validate_dependency_graph(expected, declared_dependencies)
+        _validate_dependency_graph(expected, declared_dependencies)
     except IntegrationError as exc:
-        order = ()
         reasons.append(str(exc))
     subs = list(native_sub_issues)
     issue_by_number: dict[int, dict[str, Any]] = {}
@@ -235,34 +362,66 @@ def evaluate_parent_integration(
             reasons.append(f"child Issue #{number} does not have exactly one merged matching PR")
             continue
         pr = prs[0]
-        if (pr.get("state") != "closed" or pr.get("merged_at") is None
-                or not isinstance(pr.get("base"), dict) or not isinstance(pr.get("head"), dict)
-                or pr["base"].get("repo", {}).get("full_name", "").casefold() != repository.casefold()
-                or pr["head"].get("repo", {}).get("full_name", "").casefold() != repository.casefold()):
+        base = pr.get("base")
+        head = pr.get("head")
+        base_repo = base.get("repo") if isinstance(base, dict) else None
+        head_repo = head.get("repo") if isinstance(head, dict) else None
+        if (pr.get("state") != "closed" or not isinstance(pr.get("merged_at"), str)
+                or not isinstance(base, dict) or not isinstance(head, dict)
+                or not isinstance(base_repo, dict) or not isinstance(head_repo, dict)
+                or not isinstance(base_repo.get("full_name"), str)
+                or base_repo["full_name"].casefold() != repository.casefold()
+                or base.get("ref") != "main"
+                or not isinstance(head_repo.get("full_name"), str)
+                or head_repo["full_name"].casefold() != repository.casefold()):
             reasons.append(f"child PR for #{number} is unmerged, forked, or not in the repository")
             continue
         pr_number = pr.get("number")
-        headsha = pr["head"].get("sha")
+        headsha = head.get("sha")
         mergesha = pr.get("merge_commit_sha")
         try:
-            child = ChildMerge(number, ids[number], pr_number, headsha, mergesha,
-                               declared_dependencies.get(number, ())).validate()
+            in_main = merge_sha_ancestry.get(mergesha) is True
+            child = ChildMerge(number, ids[number], pr_number, headsha, mergesha, pr["merged_at"],
+                               declared_dependencies.get(number, ()), in_main).validate()
+            if not in_main:
+                reasons.append(f"child PR merge commit for #{number} is not confirmed in final main")
             accepted.append(child)
         except (IntegrationError, KeyError, TypeError):
             reasons.append(f"child PR for #{number} has an invalid identity or merge SHA")
-    if order:
-        # Verified native dependency graph, not guessed ordering.
-        index = {num: pos for pos, num in enumerate(order)}
-        for child in accepted:
-            if any(index.get(dep, len(order)) >= index[child.issue_number] for dep in child.dependencies):
-                reasons.append("child dependency ordering is inconsistent")
-    if (not integration_verification_pass or not integration_verification_sha256
-            or not SHA256.fullmatch(integration_verification_sha256)):
-        reasons.append("parent Integration Verification PASS evidence is missing")
-    if (not integration_acceptance_pass or not integration_acceptance_sha256
-            or not SHA256.fullmatch(integration_acceptance_sha256)):
-        reasons.append("parent Integration Acceptance PASS evidence is missing")
-    subject = ParentIntegrationSubject(repository, parent_issue_number, parent_adc_sha256,
-                                       main_sha40, tuple(sorted(accepted, key=lambda x: x.issue_number)),
-                                       integration_verification_sha256, integration_acceptance_sha256).validate()
+    accepted_by_issue = {child.issue_number: child for child in accepted}
+    for child in accepted:
+        for dependency in child.dependencies:
+            parent_merge = accepted_by_issue.get(dependency)
+            if parent_merge is not None and _time(parent_merge.merged_at) > _time(child.merged_at):
+                reasons.append(f"child PR for #{child.issue_number} merged before dependency #{dependency}")
+    evidence = ((integration_verification, "verification"), (integration_acceptance, "acceptance"))
+    evidence_digests: dict[str, str | None] = {"verification": None, "acceptance": None}
+    for row, kind in evidence:
+        if not isinstance(row, IntegrationGateEvidence):
+            reasons.append(f"parent Integration {kind.title()} typed PASS evidence is missing")
+            continue
+        try:
+            row.validate()
+        except IntegrationError as exc:
+            reasons.append(f"parent Integration {kind.title()} evidence is invalid: {exc}")
+            continue
+        if (row.kind != kind or row.repository.casefold() != repository.casefold()
+                or row.parent_issue_number != parent_issue_number
+                or row.parent_adc_sha256 != parent_adc_sha256 or row.main_sha40 != main_sha40):
+            reasons.append(f"parent Integration {kind.title()} evidence is stale or has a different exact subject")
+        else:
+            evidence_digests[kind] = row.sha256
+    dependency_graph: list[tuple[int, tuple[int, ...]]] = []
+    for number in expected:
+        try:
+            dependencies = tuple(sorted(declared_dependencies.get(number, ())))
+        except (TypeError, ValueError):
+            dependencies = ()
+        dependency_graph.append((number, dependencies))
+    subject = ParentIntegrationSubject(
+        repository, parent_issue_number, parent_adc_sha256, main_sha40,
+        tuple(sorted(accepted, key=lambda x: x.issue_number)), evidence_digests["verification"],
+        evidence_digests["acceptance"], expected,
+        tuple(dependency_graph),
+    ).validate()
     return ParentIntegrationResult("BLOCKED" if reasons else "PASS", subject, tuple(dict.fromkeys(reasons))).validate()

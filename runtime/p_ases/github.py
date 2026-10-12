@@ -143,6 +143,135 @@ class GitHub:
         number = _positive_int(number, "PR number")
         return self.issue_comments(number)
 
+    def authenticated_user(self) -> dict[str, Any]:
+        """Read the authenticated human identity; caller-supplied IDs are never authority."""
+        result = self.request("GET", "user")
+        if (not isinstance(result, dict) or type(result.get("id")) is not int or result["id"] < 1
+                or not isinstance(result.get("login"), str) or result.get("type") != "User"):
+            raise GitHubError("authenticated GitHub identity is missing or is not a human User")
+        return result
+
+    def _graphql(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(query, str) or not query.strip() or not isinstance(variables, dict):
+            raise GitHubError("GitHub GraphQL query inputs are invalid")
+        body = json.dumps({"query": query, "variables": variables}, separators=(",", ":"))
+        try:
+            result = subprocess.run(
+                ["gh", "api", "graphql", "--input", "-"], input=body, text=True,
+                encoding="utf-8", errors="replace", check=False,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+        except OSError as exc:
+            raise GitHubError(f"could not start GitHub GraphQL client: {exc}") from exc
+        if result.returncode:
+            raise GitHubError(f"GitHub GraphQL request failed (gh exit status {result.returncode})")
+        try:
+            value = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise GitHubError("GitHub GraphQL returned invalid JSON") from exc
+        if not isinstance(value, dict) or value.get("errors") or not isinstance(value.get("data"), dict):
+            raise GitHubError("GitHub GraphQL response is incomplete or contains errors")
+        return value["data"]
+
+    def pull_review_threads(self, number: int) -> list[dict[str, Any]]:
+        """Read every review thread/comment, including resolution and outdated state."""
+        number = _positive_int(number, "PR number")
+        owner, name = self.repo.split("/", 1)
+        thread_query = """query($owner:String!,$name:String!,$number:Int!,$cursor:String){
+          repository(owner:$owner,name:$name){pullRequest(number:$number){
+            reviewThreads(first:100,after:$cursor){nodes{id isResolved isOutdated
+              comments(first:100){nodes{databaseId body createdAt updatedAt path author{databaseId login __typename} commit{oid}}
+                pageInfo{hasNextPage endCursor}}
+            } pageInfo{hasNextPage endCursor}
+          }}}
+        }"""
+        comment_query = """query($threadId:ID!,$cursor:String){node(id:$threadId){... on PullRequestReviewThread{
+          comments(first:100,after:$cursor){nodes{databaseId body createdAt updatedAt path author{databaseId login __typename} commit{oid}}
+            pageInfo{hasNextPage endCursor}}}}}"""
+        threads: list[dict[str, Any]] = []
+        cursor: str | None = None
+        while True:
+            data = self._graphql(thread_query, {"owner": owner, "name": name,
+                                                "number": number, "cursor": cursor})
+            repository = data.get("repository")
+            pr = repository.get("pullRequest") if isinstance(repository, dict) else None
+            connection = pr.get("reviewThreads") if isinstance(pr, dict) else None
+            nodes = connection.get("nodes") if isinstance(connection, dict) else None
+            page = connection.get("pageInfo") if isinstance(connection, dict) else None
+            if not isinstance(nodes, list) or any(not isinstance(row, dict) for row in nodes) or not isinstance(page, dict):
+                raise GitHubError("GitHub review-thread page is incomplete")
+            for thread in nodes:
+                if (not isinstance(thread.get("id"), str) or type(thread.get("isResolved")) is not bool
+                        or type(thread.get("isOutdated")) is not bool):
+                    raise GitHubError("GitHub review thread identity/state is incomplete")
+                comments = thread.get("comments")
+                if not isinstance(comments, dict) or not isinstance(comments.get("nodes"), list):
+                    raise GitHubError("GitHub review-thread comments are incomplete")
+                rows = list(comments["nodes"])
+                comment_page = comments.get("pageInfo")
+                while isinstance(comment_page, dict) and comment_page.get("hasNextPage") is True:
+                    next_cursor = comment_page.get("endCursor")
+                    if not isinstance(next_cursor, str) or not next_cursor:
+                        raise GitHubError("GitHub review-thread comment cursor is missing")
+                    more_data = self._graphql(comment_query, {"threadId": thread["id"], "cursor": next_cursor})
+                    node = more_data.get("node")
+                    more = node.get("comments") if isinstance(node, dict) else None
+                    if (not isinstance(more, dict) or not isinstance(more.get("nodes"), list)
+                            or not isinstance(more.get("pageInfo"), dict)):
+                        raise GitHubError("GitHub review-thread comment page is incomplete")
+                    rows.extend(more["nodes"])
+                    comment_page = more["pageInfo"]
+                if any(not isinstance(row, dict) for row in rows):
+                    raise GitHubError("GitHub review-thread comment row is malformed")
+                threads.append({**thread, "comments": rows})
+            if page.get("hasNextPage") is not True:
+                break
+            cursor = page.get("endCursor")
+            if not isinstance(cursor, str) or not cursor:
+                raise GitHubError("GitHub review-thread cursor is missing")
+        return threads
+
+    def pull_review_decision(self, number: int) -> dict[str, Any]:
+        """Read GitHub's aggregate formal review decision from its authoritative PR object."""
+        number = _positive_int(number, "PR number")
+        owner, name = self.repo.split("/", 1)
+        query = """query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){
+          pullRequest(number:$number){number reviewDecision headRefOid baseRefName isDraft state}}}"""
+        data = self._graphql(query, {"owner": owner, "name": name, "number": number})
+        repository = data.get("repository")
+        pr = repository.get("pullRequest") if isinstance(repository, dict) else None
+        if (not isinstance(pr, dict) or pr.get("number") != number
+                or pr.get("reviewDecision") not in {"APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED", None}
+                or not isinstance(pr.get("headRefOid"), str)):
+            raise GitHubError("GitHub aggregate review decision readback is incomplete")
+        return pr
+
+    def branch_protection(self, branch: str) -> dict[str, Any]:
+        if not isinstance(branch, str) or not branch or any(char in branch for char in "\x00\r\n"):
+            raise GitHubError("branch protection lookup requires a branch name")
+        result = self.request("GET", f"{self.prefix}/branches/{quote(branch, safe='')}/protection")
+        if not isinstance(result, dict):
+            raise GitHubError("branch protection response must be an object")
+        return result
+
+    def branch(self, branch: str) -> dict[str, Any]:
+        if not isinstance(branch, str) or not branch or any(char in branch for char in "\x00\r\n"):
+            raise GitHubError("branch lookup requires a branch name")
+        result = self.request("GET", f"{self.prefix}/branches/{quote(branch, safe='')}")
+        if (not isinstance(result, dict) or not isinstance(result.get("commit"), dict)
+                or not isinstance(result["commit"].get("sha"), str)):
+            raise GitHubError("GitHub branch response is incomplete")
+        return result
+
+    def compare_commits(self, base_sha40: str, head_sha40: str) -> dict[str, Any]:
+        if any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40}", value)
+               for value in (base_sha40, head_sha40)):
+            raise GitHubError("commit comparison requires full SHA-40 values")
+        result = self.request("GET", f"{self.prefix}/compare/{base_sha40}...{head_sha40}")
+        if not isinstance(result, dict) or result.get("status") not in {"ahead", "behind", "identical", "diverged"}:
+            raise GitHubError("GitHub commit comparison response is incomplete")
+        return result
+
     def pull_requests_all(self) -> list[dict[str, Any]]:
         """Read full PR set for exact parent-integration merge evidence."""
         return self._paginate(f"{self.prefix}/pulls?state=all")

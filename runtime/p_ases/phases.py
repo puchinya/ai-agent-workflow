@@ -90,6 +90,7 @@ def advance(
     integration_passed: bool = False,
     issue_graph_validated: bool = False,
     changes_requested: bool = False,
+    new_requirements: bool = False,
     user_approved: bool = False,
     merged: bool = False,
     all_children_merged: bool = False,
@@ -142,6 +143,7 @@ def advance(
             (Phase.EXECUTION, Phase.VERIFICATION),
             (Phase.VERIFICATION, Phase.USER_REVIEW),
             (Phase.USER_REVIEW, Phase.EXECUTION),
+            (Phase.USER_REVIEW, Phase.REQUIREMENTS),
             (Phase.USER_REVIEW, Phase.CLOSED),
         })
     if state.kind is IssueKind.PARENT:
@@ -161,6 +163,8 @@ def advance(
         raise PhaseError("parent Integration must pass before User Review")
     if pair == (Phase.USER_REVIEW, Phase.EXECUTION) and changes_requested is not True:
         raise PhaseError("returning to execution requires an in-scope changes_requested decision")
+    if pair == (Phase.USER_REVIEW, Phase.REQUIREMENTS) and new_requirements is not True:
+        raise PhaseError("returning to requirements requires an explicit new-scope decision")
     if pair == (Phase.USER_REVIEW, Phase.CLOSED):
         if user_approved is not True:
             raise PhaseError("closing an Issue requires explicit user approval")

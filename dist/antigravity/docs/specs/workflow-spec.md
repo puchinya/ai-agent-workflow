@@ -21,6 +21,9 @@
 - [5 REQ-WF-007 Error and boundary behavior](#5-req-wf-007-error-and-boundary-behavior)
 - [6 REQ-WF-008 Security and privacy](#6-req-wf-008-security-and-privacy)
 - [7 P-ASES migration Bootstrap gates](#7-p-ases-migration-bootstrap-gates)
+- [8 P-ASES human review and final delivery](#8-p-ases-human-review-and-final-delivery)
+  - [8.1 REQ-WF-009 Exact-subject User Review](#81-req-wf-009-exact-subject-user-review)
+  - [8.2 REQ-WF-010 Parent Integration and Final Delivery](#82-req-wf-010-parent-integration-and-final-delivery)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -33,6 +36,8 @@
 - [REQ-WF-006](#req-wf-006) — 4 REQ-WF-006 Observable behavior
 - [REQ-WF-007](#req-wf-007) — 5 REQ-WF-007 Error and boundary behavior
 - [REQ-WF-008](#req-wf-008) — 6 REQ-WF-008 Security and privacy
+- [REQ-WF-009](#req-wf-009) — 8.1 REQ-WF-009 Exact-subject User Review
+- [REQ-WF-010](#req-wf-010) — 8.2 REQ-WF-010 Parent Integration and Final Delivery
 <!-- heading-map:end -->
 
 
@@ -190,6 +195,23 @@ The workflow never prints or stores credentials in contract payloads, logs, Skil
 The migration from the legacy workflow to P-ASES uses two separately named gates. The fixed Bootstrap cohort is parent Issue #26 and child Issues #27–#32 **in `puchinya/ai-agent-workflow` only**. Repository identity is compared case-insensitively. Those child Issues use `bootstrap-legacy-v1`; no label, issue text, caller flag, or agent decision can add another Issue or repository to that set. Existing non-cohort Issues created before activation remain on the existing legacy workflow and are never migrated automatically. Only a non-cohort Issue created after the verified activation timestamp selects `p-ases-v1`; missing or invalid activation and pre-activation Issues are `UNDETERMINED` in the new router, which never falls back automatically.
 
 Bootstrap reports `BOOTSTRAP_TECHNICAL_READY` or `BOOTSTRAP_BLOCKED` for the fixed migration cohort only. Technical readiness requires the current approved child ADC, exact open/non-draft same-repository PR and current HEAD, standalone `Closes #N`, a clean checkout, executed local tests/static/distribution checks, successful current-head required GitHub CI jobs with provenance, fixed gate selection and evaluator digest, and explicit unverified-environment disclosure. Self-review, independent review, review artifacts, ordinary `PASES_REVIEW_READINESS_V1: PASS`, GitHub approval, and final User Review are not Bootstrap prerequisites. Technical readiness does not claim any of those reviews occurred or passed, does not grant merge permission, and does not cause an Issue phase transition. The #27 legacy ADC approval state and the Issue dependency graph remain required technical gates; #28 acceptance remains a dependency.
+
+<a id="p-ases-human-review-and-final-delivery"></a>
+## 8 P-ASES human review and final delivery
+
+<a id="req-wf-009"></a>
+### 8.1 REQ-WF-009 Exact-subject User Review
+
+Final human User Review begins only after Review Readiness is PASS for the same repository, Issue, PR, approved ADC digest, exact PR HEAD, and Readiness digest. An immutable session start time is created for that exact subject; a prior approval or change request cannot satisfy a newly started session. The runtime reads every page of Issue comments, PR conversation comments, formal PR reviews, and inline diff comments. It records numeric actor identity and type, object ID, creation/update times, body digest, formal review state, target commit, permalink, and deletion/resolution observations. Snapshot history is immutable so removed or edited feedback makes earlier approval evidence stale.
+
+Only a current human identity can decide User Review. GitHub approval requires a formal `APPROVED` review on the exact current HEAD. A direct chat decision is eligible only through a host adapter that attests the current user, direct conversation, explicit decision, and absence of quoted or attached third-party content. A filesystem payload, bot event, PR existence, generic comment text, or unverifiable chat identity cannot approve. Changes requested on the current scope return the same Issue and PR to execution; a separately triaged scope change returns to requirements. Questions, pending reviews, unresolved discussion threads, stale HEAD/ADC/Readiness, and incomplete API reads remain blockers.
+
+<a id="req-wf-010"></a>
+### 8.2 REQ-WF-010 Parent Integration and Final Delivery
+
+Parent Integration uses the declared native child Issue set and dependency DAG. It reads every child Issue, native blocker edge, merged PR, standalone child-closing line, actual merge commit, merge timestamp, and final-main ancestry from GitHub. Each dependency must have merged no later than its dependent child. The child set, dependency graph, main SHA, parent ADC, and typed Integration Verification/Acceptance records form one immutable subject. Each typed record, its source, and every cited check artifact are fetched through GitHub Contents at that exact main SHA and digest-checked; local caller-supplied PASS files are not authoritative. Missing, extra, duplicate, forked, open, unmerged, out-of-main, or cyclic records block Integration.
+
+Final Delivery keeps human User Review, GitHub's required formal review decision, exact-HEAD Required Check evidence, branch protection, explicit merge authorization, merge readback, Issue closure, and parent activation as separate gates. A delivery result never performs a merge, release, Issue close, or parent activation. Finalization only reports what GitHub confirms after a separately authorized merge.
 
 Gate selection is recorded immutably when work starts and remains fixed if the PR HEAD changes or a check becomes blocked. `p-ases-v1` applies only to Issues created after activation. Activation requires all six child PRs to be merged by the repository owner with explicit user authorization, all six Issues closed, parent integration documentation/tests/16 Skills/distribution checks passing, and an explicit activation approval comment authored by the repository owner. A unique `PASES_ACTIVATION_V1` record binds the repository, child Issues and PR merge SHAs, integration-evidence digest, gate version, and activation commit. Missing, stale, duplicated, or mismatched activation evidence blocks new P-ASES work.
 

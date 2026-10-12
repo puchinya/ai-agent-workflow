@@ -581,7 +581,7 @@ class BootstrapPolicyTests(unittest.TestCase):
             _validate_activation_candidate(github, record)
 
         github, record = activation_fixture()
-        with self.assertRaisesRegex(GatePolicyError, "child PR #37 has no matching approved base/head branch contract"):
+        with self.assertRaisesRegex(GatePolicyError, "child PR #38 has no matching approved base/head branch contract"):
             _validate_activation_candidate(github, record)
 
     def test_gate_selection_refuses_comment_readback_from_another_issue(self):
