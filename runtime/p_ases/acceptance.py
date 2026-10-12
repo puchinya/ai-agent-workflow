@@ -13,6 +13,7 @@ from typing import Any, Iterable
 
 from .evidence_store import VerificationSubject
 from .verification import GateResult, VERDICTS
+from .verification_plan import REQ_ID
 
 
 class AcceptanceError(ValueError):
@@ -256,7 +257,7 @@ def evaluate_acceptance(
     required = tuple(required_req_ids)
     mapped = tuple(mapped_req_ids)
     reasons: list[str] = []
-    if not required or any(not isinstance(req, str) or not re.fullmatch(r"REQ-[0-9]+", req) for req in required):
+    if not required or any(not isinstance(req, str) or not REQ_ID.fullmatch(req) for req in required):
         reasons.append("normative requirement set is missing or invalid")
     if len(set(required)) != len(required):
         reasons.append("normative requirement set contains duplicates")

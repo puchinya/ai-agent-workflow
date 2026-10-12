@@ -20,9 +20,12 @@ class PlanError(ValueError):
 
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
-REQ_ID = re.compile(r"^REQ-[0-9]+$")
-ORACLE_ID = re.compile(r"^ORACLE-[A-Za-z0-9][A-Za-z0-9._-]*$")
-TEST_ID = re.compile(r"^TEST-[A-Za-z0-9][A-Za-z0-9._-]*$")
+# Canonical document IDs follow REQ/ORA/TST-AREA-NNN. Keep accepting the
+# original ADC-era forms so existing immutable plans remain readable.
+REQ_ID_PATTERN = r"REQ-(?:[0-9]+|[A-Z][A-Z0-9]*-[0-9]{3})"
+REQ_ID = re.compile(rf"^{REQ_ID_PATTERN}$")
+ORACLE_ID = re.compile(r"^(?:ORACLE-[A-Za-z0-9][A-Za-z0-9._-]*|ORA-[A-Z][A-Z0-9]*-[0-9]{3})$")
+TEST_ID = re.compile(r"^(?:TEST-[A-Za-z0-9][A-Za-z0-9._-]*|TST-[A-Z][A-Z0-9]*-[0-9]{3})$")
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 REQUIRED_SOURCE_KINDS = {"specification", "test_specification", "oracle"}
 

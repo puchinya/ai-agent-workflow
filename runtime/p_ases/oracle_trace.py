@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Iterable, Mapping
 
 from .verification_plan import (
-    ORACLE_ID, REQ_ID, PlanEntry, PlanError, VerificationPlan, entry_key,
+    ORACLE_ID, REQ_ID, TEST_ID, PlanEntry, PlanError, VerificationPlan, entry_key,
     validate_plan_coverage,
 )
 
@@ -32,8 +32,6 @@ class TestDefinition:
     derived_from_implementation: bool = False
 
     def validate(self) -> "TestDefinition":
-        from .verification_plan import TEST_ID
-
         if not isinstance(self.test_id, str) or not TEST_ID.fullmatch(self.test_id):
             raise OracleTraceError("Test ID must use the stable TEST-* form")
         if not isinstance(self.req_id, str) or not REQ_ID.fullmatch(self.req_id):

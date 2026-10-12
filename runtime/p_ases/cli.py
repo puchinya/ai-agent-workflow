@@ -70,7 +70,8 @@ from .verification import (
     required_check_fork_status, verification_result_path, write_verification_result,
 )
 from .verification_plan import (
-    PlanEntry, PlanError, VerificationPlan, create_plan, read_plan, verify_plan_sources,
+    REQ_ID_PATTERN, PlanEntry, PlanError, VerificationPlan, create_plan, read_plan,
+    verify_plan_sources,
 )
 
 
@@ -204,7 +205,11 @@ def _source_path(root: Path, name: Any) -> Path:
     return path
 
 
-_DECLARED_REQ = re.compile(r"^\s*(?:[-*+]\s*)?(REQ-[0-9]+)\s*:", re.MULTILINE)
+_DECLARED_REQ = re.compile(
+    rf"^\s*(?:\|\s*)?(?:#{{1,6}}\s+)?(?:[0-9]+(?:\.[0-9]+)*\s+)?"
+    rf"(?:[-*+]\s*)?\[?({REQ_ID_PATTERN})\]?(?=\s|:|\||\(|$)",
+    re.MULTILINE,
+)
 _ISSUE_REF = re.compile(r"(?:#|issues/)([1-9][0-9]*)\b", re.IGNORECASE)
 
 
