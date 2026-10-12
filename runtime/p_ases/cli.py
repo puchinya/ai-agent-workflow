@@ -1918,6 +1918,32 @@ PARENT_CHILD_DAG = {
 }
 PARENT_ISSUE_CONTRACT_SOURCE = "planning/p-ases/08-migration-contract.md"
 PARENT_ISSUE_CONTRACT_COMMIT = "f34f166f11bbbe6c45b1555827f37f9467b1e49b"
+PARENT_TRUSTED_ACTIONS_APP_ID = 15368
+PARENT_CI_WORKFLOW = ".github/workflows/ci.yml"
+PARENT_ACCEPTANCE_WORKFLOW = ".github/workflows/parent-integration.yml"
+PARENT_REQUIRED_CI_JOBS = (
+    "test (ubuntu-latest, 3.10)", "test (ubuntu-latest, 3.14)",
+    "test (windows-latest, 3.14)", "test (macos-latest, 3.14)",
+)
+PARENT_VERIFICATION_STEPS = {
+    "compileall": "Compile runtime, tools, and tests",
+    "committed-distributions": "Check committed distributions before mutation",
+    "unit-tests": "Unit tests",
+    "docs-validation": "Validate repository documentation",
+    "distribution-build": "Generate distributions",
+    "generated-distributions": "Check generated distributions",
+    "distribution-validation": "Validate distributions",
+    "generated-paths": "Confirm generated paths remain unchanged",
+    "format-check": "Check committed diff whitespace",
+}
+PARENT_ACCEPTANCE_STEPS = {
+    "specification-traceability": "Specification traceability",
+    "design-traceability": "Design traceability",
+    "test-oracle-traceability": "Test-oracle traceability",
+    "16-skills-package": "Check canonical 16-Skill package",
+    "generated-distributions": "Check generated distributions",
+    "distribution-validation": "Validate distributions",
+}
 
 
 def _parent_contract_declaration(content: bytes) -> tuple[str, str, str]:
@@ -1963,7 +1989,7 @@ def _load_parent_gate_evidence_from_github(
     github: GitHub, comment_id: int, main_sha40: str, kind: str,
     repository: str, parent_adc_sha256: str,
 ) -> IntegrationGateEvidence:
-    """Read external parent evidence by pinned Issue comment ID and verify it twice."""
+    """Read the exact comment and independently reconstruct its Actions provenance twice."""
     if not isinstance(main_sha40, str) or not re.fullmatch(r"[0-9a-f]{40}", main_sha40):
         raise IntegrationError("parent Integration evidence requires an exact current main SHA-40")
     if type(comment_id) is not int or comment_id < 1:
@@ -1984,17 +2010,20 @@ def _load_parent_gate_evidence_from_github(
         if len(matches) != 1:
             raise IntegrationError("pinned parent evidence comment is missing or duplicated on Issue #26")
         row = matches[0]
+        bundle = ParentGateEvidenceComment.from_body(row.get("body"))
         subject_comment_ids: list[int] = []
         for candidate in listed:
             candidate_body = candidate.get("body")
-            if not isinstance(candidate_body, str) or not candidate_body.startswith("P-ASES-PARENT-EVIDENCE-V1\n"):
+            if not isinstance(candidate_body, str) or not candidate_body.startswith("P-ASES-PARENT-EVIDENCE-V2\n"):
                 continue
             candidate_bundle = ParentGateEvidenceComment.from_body(candidate_body)
             if (candidate_bundle.kind == kind
                     and candidate_bundle.repository.casefold() == repository.casefold()
                     and candidate_bundle.parent_issue_number == 26
                     and candidate_bundle.parent_adc_sha256 == parent_adc_sha256
-                    and candidate_bundle.main_sha40 == main_sha40):
+                    and candidate_bundle.main_sha40 == main_sha40
+                    and candidate_bundle.workflow_run_id == bundle.workflow_run_id
+                    and candidate_bundle.workflow_run_attempt == bundle.workflow_run_attempt):
                 if candidate.get("updated_at") != candidate.get("created_at"):
                     raise IntegrationError("a parent evidence comment for this subject was edited")
                 candidate_id = candidate.get("id")
@@ -2038,7 +2067,6 @@ def _load_parent_gate_evidence_from_github(
                 or author.get("type") != "User" or author.get("id") != identity.get("id")
                 or identity.get("type") != "User"):
             raise IntegrationError("parent evidence comment author is not the authenticated GitHub user")
-        bundle = ParentGateEvidenceComment.from_body(row.get("body"))
         if (bundle.kind != kind or bundle.repository.casefold() != repository.casefold()
                 or bundle.parent_issue_number != 26 or bundle.parent_adc_sha256 != parent_adc_sha256
                 or bundle.main_sha40 != main_sha40):
@@ -2050,11 +2078,194 @@ def _load_parent_gate_evidence_from_github(
     if (first_row != second_row or first_bundle != second_bundle or first_body != second_body):
         raise IntegrationError("parent evidence comment changed during double-read")
     _validate_parent_gate_bundle(first_bundle, kind, repository, parent_adc_sha256, main_sha40)
+    expected_first = _parent_gate_bundle_from_actions(
+        github, first_bundle.workflow_run_id, kind, repository, parent_adc_sha256, main_sha40)
+    expected_second = _parent_gate_bundle_from_actions(
+        github, first_bundle.workflow_run_id, kind, repository, parent_adc_sha256, main_sha40)
+    if expected_first != expected_second or expected_first != first_bundle:
+        raise IntegrationError("parent evidence is not the current trusted Actions run result")
     raw_source = first_bundle.result_bytes
     source_sha256 = hashlib.sha256(raw_source).hexdigest()
     evidence = IntegrationGateEvidence(kind, repository, 26, parent_adc_sha256, main_sha40,
                                        "PASS", source_sha256, f"issue-comment:{comment_id}").validate()
     return evidence
+
+
+def _check_run_id(job: dict[str, Any], repository: str) -> int:
+    url = job.get("check_run_url")
+    match = re.fullmatch(r"https://api\.github\.com/repos/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/check-runs/([1-9][0-9]*)", url or "")
+    if (not match or f"{match.group(1)}/{match.group(2)}".casefold() != repository.casefold()):
+        raise IntegrationError("GitHub Actions job has an invalid or foreign-repository Check Run URL")
+    return int(match.group(3))
+
+
+def _parent_gate_bundle_from_actions(
+    github: GitHub, run_id: int, kind: str, repository: str,
+    parent_adc_sha256: str, main_sha40: str,
+) -> ParentGateEvidenceComment:
+    """Build parent PASS evidence only from exact-main trusted GitHub Actions records."""
+    if kind not in {"verification", "acceptance"}:
+        raise IntegrationError("parent Actions evidence kind is invalid")
+    workflow_path = PARENT_CI_WORKFLOW if kind == "verification" else PARENT_ACCEPTANCE_WORKFLOW
+    event = "push" if kind == "verification" else "workflow_dispatch"
+    runs = github.workflow_runs_for_ref(main_sha40, workflow_path=workflow_path, event=event)
+    if not isinstance(runs, list) or any(not isinstance(row, dict) for row in runs):
+        raise IntegrationError("GitHub Actions workflow run list is malformed")
+    if not runs:
+        raise IntegrationError(f"no {kind} GitHub Actions run exists on the exact current main SHA")
+    latest_key = max((row.get("run_number", 0), row.get("run_attempt", 0)) for row in runs)
+    latest = [row for row in runs if (row.get("run_number"), row.get("run_attempt")) == latest_key]
+    if len(latest) != 1 or latest[0].get("id") != run_id:
+        raise IntegrationError("parent evidence references a stale or ambiguous Actions run")
+    run = latest[0]
+    if (run.get("id") != run_id or run.get("path") != workflow_path or run.get("event") != event
+            or run.get("head_sha") != main_sha40 or run.get("head_branch") != "main"
+            or run.get("status") != "completed" or run.get("conclusion") != "success"
+            or type(run.get("run_attempt")) is not int or run["run_attempt"] < 1
+            or not isinstance(run.get("head_repository"), dict)
+            or str(run["head_repository"].get("full_name", "")).casefold() != repository.casefold()):
+        raise IntegrationError("parent evidence Actions run is incomplete, unsuccessful, forked, or stale")
+
+    jobs = github.workflow_run_jobs(run_id)
+    if not isinstance(jobs, list) or any(not isinstance(job, dict) for job in jobs):
+        raise IntegrationError("GitHub Actions job response is malformed")
+    required_job_names = set(PARENT_REQUIRED_CI_JOBS) | {"pull-request-metadata"} if kind == "verification" else {"parent-acceptance"}
+    by_name: dict[str, dict[str, Any]] = {}
+    for job in jobs:
+        name = job.get("name")
+        if not isinstance(name, str) or name in by_name or name not in required_job_names:
+            raise IntegrationError("parent Actions run has duplicate or unexpected jobs")
+        by_name[name] = job
+    if set(by_name) != required_job_names:
+        raise IntegrationError("parent Actions run does not contain the complete fixed job set")
+    if kind == "verification" and (by_name["pull-request-metadata"].get("conclusion") != "skipped"
+                                    or by_name["pull-request-metadata"].get("status") != "completed"):
+        raise IntegrationError("push-triggered Verification must have a skipped PR metadata job")
+
+    check_runs = github.check_runs_for_ref(main_sha40)
+    if not isinstance(check_runs, list) or any(not isinstance(row, dict) for row in check_runs):
+        raise IntegrationError("exact-main Check Runs response is malformed")
+    checks_by_id: dict[int, dict[str, Any]] = {}
+    for check in check_runs:
+        app = check.get("app")
+        if (type(check.get("id")) is not int or check["id"] < 1
+                or check.get("head_sha") != main_sha40 or not isinstance(app, dict)
+                or type(app.get("id")) is not int or app["id"] < 1):
+            raise IntegrationError("exact-main Check Run response has incomplete SHA/App provenance")
+        checks_by_id[check["id"]] = check
+
+    job_observations: dict[str, dict[str, Any]] = {}
+    required_action_checks: list[dict[str, Any]] = []
+    for job_name, job in by_name.items():
+        if job.get("status") != "completed":
+            if kind == "verification" and job_name == "pull-request-metadata":
+                continue
+            raise IntegrationError(f"parent Actions job is not completed: {job_name}")
+        if kind == "verification" and job_name == "pull-request-metadata":
+            continue
+        if job.get("conclusion") != "success" or job.get("head_sha") != main_sha40:
+            raise IntegrationError(f"parent Actions job failed or has a stale SHA: {job_name}")
+        check_id = _check_run_id(job, repository)
+        check = checks_by_id.get(check_id)
+        if (check is None or check.get("name") != job_name or check.get("status") != "completed"
+                or check.get("conclusion") != "success"
+                or check.get("app", {}).get("id") != PARENT_TRUSTED_ACTIONS_APP_ID):
+            raise IntegrationError(f"parent Actions job Check Run provenance does not match: {job_name}")
+        required_action_checks.append({
+            "app_id": PARENT_TRUSTED_ACTIONS_APP_ID,
+            "check_run_id": check_id,
+            "conclusion": "success",
+            "head_sha40": main_sha40,
+            "name": job_name,
+            "status": "completed",
+        })
+        steps = job.get("steps")
+        if not isinstance(steps, list) or any(not isinstance(step, dict) for step in steps):
+            raise IntegrationError(f"parent Actions job steps are malformed: {job_name}")
+        step_names = [step.get("name") for step in steps]
+        if any(not isinstance(name, str) for name in step_names) or len(step_names) != len(set(step_names)):
+            raise IntegrationError(f"parent Actions job has ambiguous step names: {job_name}")
+        job_observations[job_name] = {
+            "app_id": PARENT_TRUSTED_ACTIONS_APP_ID,
+            "check_run_id": check_id,
+            "head_sha40": main_sha40,
+            "job_id": job["id"],
+            "name": job_name,
+            "status": job["status"],
+            "conclusion": job["conclusion"],
+            "steps": steps,
+        }
+    if kind == "verification":
+        if set(job_observations) != set(PARENT_REQUIRED_CI_JOBS):
+            raise IntegrationError("parent Verification does not have all four successful matrix jobs")
+        action_check_by_name = {row["name"]: row for row in required_action_checks}
+        if set(action_check_by_name) != set(PARENT_REQUIRED_CI_JOBS):
+            raise IntegrationError("parent Verification Required Check provenance is incomplete")
+        checks: list[dict[str, Any]] = []
+        artifacts: dict[str, bytes] = {}
+        for check_id, step_name in PARENT_VERIFICATION_STEPS.items():
+            selected_steps: list[dict[str, Any]] = []
+            for job_name in PARENT_REQUIRED_CI_JOBS:
+                matches = [step for step in job_observations[job_name]["steps"] if step.get("name") == step_name]
+                if (len(matches) != 1 or matches[0].get("status") != "completed"
+                        or matches[0].get("conclusion") != "success"):
+                    raise IntegrationError(f"exact-main CI step did not pass: {step_name} ({job_name})")
+                selected_steps.append({"job": job_name, "step": matches[0]})
+            reference = f"actions/{check_id}.json"
+            artifact = _canonical({"check_id": check_id, "jobs": selected_steps,
+                                   "main_sha40": main_sha40, "run_id": run_id}) + b"\n"
+            artifacts[reference] = artifact
+            checks.append({"check_id": check_id, "status": "PASS",
+                           "evidence_sha256": hashlib.sha256(artifact).hexdigest(),
+                           "evidence_reference": reference})
+        required_reference = "actions/required-ci.json"
+        required_bytes = _canonical({"check_id": "required-ci", "checks": sorted(required_action_checks, key=lambda row: row["name"]),
+                                     "main_sha40": main_sha40, "run_id": run_id}) + b"\n"
+        artifacts[required_reference] = required_bytes
+        checks.append({"check_id": "required-ci", "status": "PASS",
+                       "evidence_sha256": hashlib.sha256(required_bytes).hexdigest(),
+                       "evidence_reference": required_reference})
+    else:
+        job = job_observations.get("parent-acceptance")
+        if job is None:
+            raise IntegrationError("parent Acceptance job provenance is missing")
+        checks = []
+        artifacts = {}
+        for check_id, step_name in PARENT_ACCEPTANCE_STEPS.items():
+            matches = [step for step in job["steps"] if step.get("name") == step_name]
+            if (len(matches) != 1 or matches[0].get("status") != "completed"
+                    or matches[0].get("conclusion") != "success"):
+                raise IntegrationError(f"exact-main acceptance step did not pass: {step_name}")
+            reference = f"actions/{check_id}.json"
+            artifact = _canonical({"check_id": check_id, "job": job["name"],
+                                   "main_sha40": main_sha40, "run_id": run_id,
+                                   "step": matches[0]}) + b"\n"
+            artifacts[reference] = artifact
+            checks.append({"check_id": check_id, "status": "PASS",
+                           "evidence_sha256": hashlib.sha256(artifact).hexdigest(),
+                           "evidence_reference": reference})
+
+    source = {
+        "schema": "PASES_PARENT_INTEGRATION_CHECKS_V2",
+        "kind": kind,
+        "status": "PASS",
+        "repository": repository,
+        "parent_issue_number": 26,
+        "parent_adc_sha256": parent_adc_sha256,
+        "main_sha40": main_sha40,
+        "workflow_run": {"id": run_id, "attempt": run["run_attempt"], "path": workflow_path,
+                          "event": event, "head_branch": "main", "head_sha40": main_sha40,
+                          "status": "completed", "conclusion": "success"},
+        "checks": sorted(checks, key=lambda row: row["check_id"]),
+    }
+    result_bytes = _canonical(source) + b"\n"
+    bundle = ParentGateEvidenceComment(
+        kind, repository, 26, parent_adc_sha256, main_sha40, run_id,
+        run["run_attempt"], workflow_path, result_bytes,
+        tuple((name, artifacts[name]) for name in sorted(artifacts)),
+    ).validate()
+    _validate_parent_gate_bundle(bundle, kind, repository, parent_adc_sha256, main_sha40)
+    return bundle
 
 
 def _validate_parent_gate_bundle(
@@ -2068,10 +2279,10 @@ def _validate_parent_gate_bundle(
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise IntegrationError(f"parent Integration {kind} result bytes are invalid JSON") from exc
     required_source = {"schema", "kind", "status", "repository", "parent_issue_number",
-                       "parent_adc_sha256", "main_sha40", "checks"}
+                       "parent_adc_sha256", "main_sha40", "workflow_run", "checks"}
     source_repository = source_value.get("repository") if isinstance(source_value, dict) else None
     if (not isinstance(source_value, dict) or set(source_value) != required_source
-            or source_value.get("schema") != "PASES_PARENT_INTEGRATION_CHECKS_V1"
+            or source_value.get("schema") != "PASES_PARENT_INTEGRATION_CHECKS_V2"
             or source_value.get("kind") != kind or source_value.get("status") != "PASS"
             or not isinstance(source_repository, str)
             or source_repository.casefold() != repository.casefold()
@@ -2079,6 +2290,13 @@ def _validate_parent_gate_bundle(
             or source_value.get("parent_issue_number") != 26
             or source_value.get("parent_adc_sha256") != parent_adc_sha256
             or source_value.get("main_sha40") != main_sha40
+            or source_value.get("workflow_run") != {
+                "id": bundle.workflow_run_id, "attempt": bundle.workflow_run_attempt,
+                "path": bundle.workflow_path,
+                "event": "push" if kind == "verification" else "workflow_dispatch",
+                "head_branch": "main", "head_sha40": main_sha40,
+                "status": "completed", "conclusion": "success",
+            }
             or bundle.kind != kind or bundle.parent_issue_number != 26
             or bundle.parent_adc_sha256 != parent_adc_sha256 or bundle.main_sha40 != main_sha40
             or bundle.repository.casefold() != repository.casefold()
@@ -2108,10 +2326,12 @@ def _validate_parent_gate_bundle(
         by_id[check_id] = row
     if set(artifacts) != expected_artifacts:
         raise IntegrationError(f"parent Integration {kind} comment has missing or unreferenced artifact bytes")
-    required = ({"compileall", "unit-tests", "docs-validation", "format-check", "required-ci"}
+    required = ({"compileall", "committed-distributions", "unit-tests", "docs-validation",
+                 "distribution-build", "generated-distributions", "distribution-validation",
+                 "generated-paths", "format-check", "required-ci"}
                 if kind == "verification" else
                 {"specification-traceability", "design-traceability", "test-oracle-traceability",
-                 "16-skills-package", "distribution-validation"})
+                 "16-skills-package", "generated-distributions", "distribution-validation"})
     if set(by_id) != required:
         raise IntegrationError(f"parent Integration {kind} evidence does not cover the fixed required check set")
     return source_value
@@ -2128,50 +2348,6 @@ def _parent_current_main_sha(github: GitHub) -> str:
     if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
         raise GitHubError("current main branch SHA is invalid")
     return sha
-
-
-def _parent_gate_bundle_from_file(
-    result_path: Path, root: Path, repository: str, parent_adc_sha256: str,
-    main_sha40: str, kind: str,
-) -> ParentGateEvidenceComment:
-    if path_has_symlink(result_path):
-        raise CLIError("parent evidence result path must not traverse a symbolic link")
-    try:
-        result_bytes = result_path.read_bytes()
-        value = json.loads(result_bytes.decode("utf-8", errors="strict"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise CLIError("parent evidence result file is unreadable or invalid JSON") from exc
-    if result_bytes != _canonical(value) + b"\n" or not isinstance(value, dict):
-        raise CLIError("parent evidence result must use canonical JSON bytes")
-    checks = value.get("checks")
-    if not isinstance(checks, list):
-        raise CLIError("parent evidence result does not contain a check list")
-    base = Path(root).resolve()
-    artifacts: dict[str, bytes] = {}
-    for check in checks:
-        if not isinstance(check, dict) or not isinstance(check.get("evidence_reference"), str):
-            raise CLIError("parent evidence result check reference is malformed")
-        reference = _repository_file_reference(check["evidence_reference"])
-        path = base.joinpath(*reference.split("/"))
-        if path_has_symlink(path):
-            raise CLIError("parent evidence artifact path must not traverse a symbolic link")
-        try:
-            resolved = path.resolve(strict=True)
-            resolved.relative_to(base)
-            if not resolved.is_file():
-                raise OSError("artifact is not a regular file")
-            content = resolved.read_bytes()
-        except (OSError, ValueError) as exc:
-            raise CLIError(f"parent evidence artifact is missing or outside the repository: {reference}") from exc
-        if reference in artifacts:
-            raise CLIError("parent evidence result repeats an artifact reference")
-        artifacts[reference] = content
-    bundle = ParentGateEvidenceComment(
-        kind, repository, 26, parent_adc_sha256, main_sha40, result_bytes,
-        tuple((reference, artifacts[reference]) for reference in sorted(artifacts)),
-    ).validate()
-    _validate_parent_gate_bundle(bundle, kind, repository, parent_adc_sha256, main_sha40)
-    return bundle
 
 
 def _publish_parent_gate_evidence(args: argparse.Namespace, repository: str, root: Path,
@@ -2193,8 +2369,8 @@ def _publish_parent_gate_evidence(args: argparse.Namespace, repository: str, roo
         parent_body_sha = hashlib.sha256(parent_body.encode("utf-8")).hexdigest()
         adc_sha256, adc_pointer = _parent_adc_authority(github)
         main_sha40 = _parent_current_main_sha(github)
-        bundle = _parent_gate_bundle_from_file(args.result, root, repository, adc_sha256,
-                                               main_sha40, args.kind)
+        bundle = _parent_gate_bundle_from_actions(
+            github, args.run_id, args.kind, repository, adc_sha256, main_sha40)
         expected_body = bundle.to_body()
         identity = github.authenticated_user()
         if not isinstance(identity, dict) or identity.get("type") != "User" or type(identity.get("id")) is not int:
@@ -2207,14 +2383,16 @@ def _publish_parent_gate_evidence(args: argparse.Namespace, repository: str, roo
             raise IntegrationError("parent Issue comment list is malformed")
         for row in existing_comments:
             body = row.get("body")
-            if not isinstance(body, str) or not body.startswith("P-ASES-PARENT-EVIDENCE-V1\n"):
+            if not isinstance(body, str) or not body.startswith("P-ASES-PARENT-EVIDENCE-V2\n"):
                 continue
             if row.get("updated_at") != row.get("created_at"):
                 raise IntegrationError("an existing parent evidence comment was edited")
             existing = ParentGateEvidenceComment.from_body(body)
             if (existing.kind == args.kind and existing.repository.casefold() == repository.casefold()
                     and existing.parent_issue_number == 26 and existing.parent_adc_sha256 == adc_sha256
-                    and existing.main_sha40 == main_sha40):
+                    and existing.main_sha40 == main_sha40
+                    and existing.workflow_run_id == bundle.workflow_run_id
+                    and existing.workflow_run_attempt == bundle.workflow_run_attempt):
                 author = row.get("user")
                 if (not isinstance(author, dict) or author.get("id") != identity["id"]
                         or author.get("type") != "User"):
@@ -2910,10 +3088,11 @@ def _parser() -> argparse.ArgumentParser:
     parent_final.add_argument("--repo", help="repository owner/name; defaults to origin")
     parent_final.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
     parent_evidence = delivery_commands.add_parser(
-        "parent-evidence", help="publish current-main Verification or Acceptance bytes to Issue #26")
+        "parent-evidence", help="publish exact-main GitHub Actions provenance to Issue #26")
     parent_evidence.add_argument("issue", type=_positive_number)
     parent_evidence.add_argument("kind", choices=("verification", "acceptance"))
-    parent_evidence.add_argument("result", type=Path, help="canonical PASS result JSON with cited artifact references")
+    parent_evidence.add_argument("run_id", type=_positive_number,
+                                 help="completed trusted GitHub Actions run ID for the current main SHA")
     parent_evidence.add_argument("--repo", help="repository owner/name; defaults to origin")
     parent_evidence.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
     parent_labels = delivery_commands.add_parser(

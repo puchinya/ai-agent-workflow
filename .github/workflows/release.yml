@@ -53,6 +53,8 @@ jobs:
             python-version: "3.14"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
@@ -62,6 +64,10 @@ jobs:
         run: python tools/build_dist.py --check
       - name: Unit tests
         run: python -m unittest discover -s tests -p "test_*.py"
+      - name: Validate repository documentation
+        env:
+          PYTHONPATH: runtime
+        run: python -m agent_workflow validate-docs
       - name: Generate distributions
         run: python tools/build_dist.py
       - name: Check generated distributions
@@ -70,8 +76,8 @@ jobs:
         run: python tools/validate_dist.py
       - name: Confirm generated paths remain unchanged
         run: git diff --exit-code -- dist .agents/plugins/marketplace.json .claude-plugin/marketplace.json
-      - name: Check whitespace
-        run: git diff --check
+      - name: Check committed diff whitespace
+        run: git diff --check HEAD^1 HEAD
 
   publish:
     needs: verify

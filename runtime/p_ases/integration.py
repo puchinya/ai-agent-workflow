@@ -30,8 +30,9 @@ class ParentGateEvidenceComment:
     """Canonical external evidence payload posted to the fixed parent Issue.
 
     The Issue comment is outside the main commit it names, avoiding a Git
-    self-reference. Its comment ID and GitHub author are verified by the API
-    adapter; this payload binds the exact result and cited artifact bytes.
+    self-reference. It binds an exact Actions run ID/attempt; the runtime
+    reconstructs its bytes from GitHub job, step, and Check Run responses.
+    The comment itself remains mutable GitHub storage and is double-read.
     """
 
     kind: str
@@ -39,6 +40,9 @@ class ParentGateEvidenceComment:
     parent_issue_number: int
     parent_adc_sha256: str
     main_sha40: str
+    workflow_run_id: int
+    workflow_run_attempt: int
+    workflow_path: str
     result_bytes: bytes
     artifacts: tuple[tuple[str, bytes], ...]
 
@@ -53,6 +57,14 @@ class ParentGateEvidenceComment:
             raise IntegrationError("parent evidence comment ADC digest is invalid")
         if not isinstance(self.main_sha40, str) or not SHA40.fullmatch(self.main_sha40):
             raise IntegrationError("parent evidence comment main SHA is invalid")
+        if type(self.workflow_run_id) is not int or self.workflow_run_id < 1:
+            raise IntegrationError("parent evidence comment workflow run ID is invalid")
+        if type(self.workflow_run_attempt) is not int or self.workflow_run_attempt < 1:
+            raise IntegrationError("parent evidence comment workflow attempt is invalid")
+        expected_workflow = (".github/workflows/ci.yml" if self.kind == "verification"
+                             else ".github/workflows/parent-integration.yml")
+        if self.workflow_path != expected_workflow:
+            raise IntegrationError("parent evidence comment workflow path is not trusted for this evidence kind")
         if not isinstance(self.result_bytes, bytes) or not self.result_bytes:
             raise IntegrationError("parent evidence comment result bytes are missing")
         if type(self.artifacts) is not tuple or not self.artifacts:
@@ -86,28 +98,32 @@ class ParentGateEvidenceComment:
             "repository": self.repository,
             "result_base64": base64.b64encode(self.result_bytes).decode("ascii"),
             "result_sha256": hashlib.sha256(self.result_bytes).hexdigest(),
-            "schema": "PASES_PARENT_GATE_EVIDENCE_COMMENT_V1",
+            "workflow_path": self.workflow_path,
+            "workflow_run_attempt": self.workflow_run_attempt,
+            "workflow_run_id": self.workflow_run_id,
+            "schema": "PASES_PARENT_GATE_EVIDENCE_COMMENT_V2",
         }
 
     def to_body(self) -> str:
         payload = self.payload()
         payload["payload_sha256"] = hashlib.sha256(_canonical(payload)).hexdigest()
-        return "P-ASES-PARENT-EVIDENCE-V1\n" + _canonical(payload).decode("utf-8") + "\n"
+        return "P-ASES-PARENT-EVIDENCE-V2\n" + _canonical(payload).decode("utf-8") + "\n"
 
     @classmethod
     def from_body(cls, body: Any) -> "ParentGateEvidenceComment":
-        if not isinstance(body, str) or not body.startswith("P-ASES-PARENT-EVIDENCE-V1\n"):
+        if not isinstance(body, str) or not body.startswith("P-ASES-PARENT-EVIDENCE-V2\n"):
             raise IntegrationError("Issue comment is not a parent evidence record")
-        raw = body[len("P-ASES-PARENT-EVIDENCE-V1\n"):].encode("utf-8")
+        raw = body[len("P-ASES-PARENT-EVIDENCE-V2\n"):].encode("utf-8")
         try:
             value = json.loads(raw.decode("utf-8", errors="strict"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise IntegrationError("parent evidence comment is not valid canonical JSON") from exc
         expected = {"artifacts", "kind", "main_sha40", "parent_adc_sha256", "parent_issue_number",
-                    "repository", "result_base64", "result_sha256", "schema", "payload_sha256"}
+                    "repository", "result_base64", "result_sha256", "workflow_path",
+                    "workflow_run_attempt", "workflow_run_id", "schema", "payload_sha256"}
         if not isinstance(value, dict) or set(value) != expected:
             raise IntegrationError("parent evidence comment has unknown or missing fields")
-        if value["schema"] != "PASES_PARENT_GATE_EVIDENCE_COMMENT_V1":
+        if value["schema"] != "PASES_PARENT_GATE_EVIDENCE_COMMENT_V2":
             raise IntegrationError("parent evidence comment schema is unknown")
         digest_payload = {key: item for key, item in value.items() if key != "payload_sha256"}
         if (value["payload_sha256"] != hashlib.sha256(_canonical(digest_payload)).hexdigest()
@@ -134,8 +150,9 @@ class ParentGateEvidenceComment:
                 raise IntegrationError("parent evidence artifact digest does not match its bytes")
             artifacts.append((row["reference"], content))
         return cls(value["kind"], value["repository"], value["parent_issue_number"],
-                   value["parent_adc_sha256"], value["main_sha40"], result_bytes,
-                   tuple(artifacts)).validate()
+                   value["parent_adc_sha256"], value["main_sha40"],
+                   value["workflow_run_id"], value["workflow_run_attempt"], value["workflow_path"],
+                   result_bytes, tuple(artifacts)).validate()
 
 
 def _time(value: Any) -> datetime:

@@ -5690,10 +5690,11 @@ class DistributionTests(unittest.TestCase):
         runs = re.findall(r"^        run: (.+)$", workflow, re.M)
         self.assertEqual(runs, [
             "python -m compileall runtime tools tests", "python tools/build_dist.py --check",
-            'python -m unittest discover -s tests -p "test_*.py"', "python tools/build_dist.py",
+            'python -m unittest discover -s tests -p "test_*.py"',
+            "python -m agent_workflow validate-docs", "python tools/build_dist.py",
             "python tools/build_dist.py --check", "python tools/validate_dist.py",
             "git diff --exit-code -- dist .agents/plugins/marketplace.json .claude-plugin/marketplace.json",
-            "git diff --check",
+            "git diff --check HEAD^1 HEAD",
         ])
 
     def test_build_is_deterministic_separated_and_check_detects_drift(self):

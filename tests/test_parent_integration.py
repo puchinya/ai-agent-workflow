@@ -21,10 +21,13 @@ from p_ases.integration import (
 )
 from p_ases.github import GitHub, GitHubError
 from p_ases.cli import (
+    PARENT_ACCEPTANCE_STEPS, PARENT_ACCEPTANCE_WORKFLOW, PARENT_CI_WORKFLOW,
+    PARENT_REQUIRED_CI_JOBS, PARENT_TRUSTED_ACTIONS_APP_ID, PARENT_VERIFICATION_STEPS,
     PARENT_ISSUE_CONTRACT_COMMIT, PARENT_ISSUE_CONTRACT_SOURCE,
     CLIError, _advance_parent_to_user_review, _delivery_parent, _delivery_parent_label_migration,
     _require_parent_user_review_phase, _load_parent_gate_evidence_from_github, _parent_adc_authority,
-    _parent_contract_declaration, _parent_review_subject_from_integration, _publish_parent_gate_evidence,
+    _parent_contract_declaration, _parent_gate_bundle_from_actions, _parent_review_subject_from_integration,
+    _publish_parent_gate_evidence,
 )
 
 EXPECTED = (27, 28, 29, 30, 31, 32)
@@ -38,6 +41,68 @@ DAG = {
 }
 PR_NUMBER = {27: 33, 28: 36, 29: 34, 30: 35, 31: 37, 32: 38}
 MAIN = "a" * 40
+
+
+def trusted_actions_fixture(main_sha: str, kind: str = "verification", run_id: int = 500):
+    workflow_path = PARENT_CI_WORKFLOW if kind == "verification" else PARENT_ACCEPTANCE_WORKFLOW
+    event = "push" if kind == "verification" else "workflow_dispatch"
+    names = (*PARENT_REQUIRED_CI_JOBS, "pull-request-metadata") if kind == "verification" else ("parent-acceptance",)
+    jobs = []
+    check_runs = []
+    for index, name in enumerate(names, 1):
+        job_id = 8000 + index
+        check_id = 9000 + index
+        steps_by_name = PARENT_VERIFICATION_STEPS if kind == "verification" else PARENT_ACCEPTANCE_STEPS
+        if name == "pull-request-metadata":
+            status, conclusion, steps = "completed", "skipped", []
+        else:
+            status, conclusion = "completed", "success"
+            required_step_names = (tuple(steps_by_name.values()) if kind == "acceptance"
+                                   else tuple(steps_by_name.values()))
+            steps = [{"number": step_num, "name": step_name, "status": "completed", "conclusion": "success"}
+                     for step_num, step_name in enumerate(required_step_names, 1)]
+            if kind == "verification":
+                steps.extend([
+                    {"number": 20, "name": "Set up job", "status": "completed", "conclusion": "success"},
+                    {"number": 21, "name": "Complete job", "status": "completed", "conclusion": "success"},
+                ])
+        jobs.append({
+            "id": job_id, "run_id": run_id, "head_sha": main_sha, "name": name,
+            "status": status, "conclusion": conclusion,
+            "check_run_url": f"https://api.github.com/repos/octo/repo/check-runs/{check_id}",
+            "steps": steps,
+        })
+        check_runs.append({
+            "id": check_id, "name": name, "head_sha": main_sha, "status": status,
+            "conclusion": conclusion, "app": {"id": PARENT_TRUSTED_ACTIONS_APP_ID},
+        })
+    run = {
+        "id": run_id, "run_number": run_id, "run_attempt": 1,
+        "path": workflow_path, "event": event, "head_branch": "main", "head_sha": main_sha,
+        "status": "completed", "conclusion": "success",
+        "head_repository": {"full_name": "octo/repo"},
+    }
+
+    class ActionsGitHub:
+        def __init__(self):
+            self.run = run
+            self.jobs = jobs
+            self.checks = check_runs
+
+        def workflow_runs_for_ref(self, _sha, *, workflow_path, event):
+            if workflow_path != self.run["path"] or event != self.run["event"]:
+                return []
+            return [dict(self.run)]
+
+        def workflow_run_jobs(self, requested_run_id):
+            if requested_run_id != self.run["id"]:
+                return []
+            return [dict(job, steps=[dict(step) for step in job["steps"]]) for job in self.jobs]
+
+        def check_runs_for_ref(self, _sha):
+            return [dict(row, app=dict(row["app"])) for row in self.checks]
+
+    return ActionsGitHub()
 
 
 def integration_fixture():
@@ -71,6 +136,14 @@ def integration_fixture():
 
 
 class ParentIntegrationTests(unittest.TestCase):
+    def test_parent_gate_step_contract_matches_committed_workflows(self):
+        ci = (ROOT / PARENT_CI_WORKFLOW).read_text(encoding="utf-8")
+        acceptance = (ROOT / PARENT_ACCEPTANCE_WORKFLOW).read_text(encoding="utf-8")
+        for step_name in PARENT_VERIFICATION_STEPS.values():
+            self.assertIn(f"- name: {step_name}", ci)
+        for step_name in PARENT_ACCEPTANCE_STEPS.values():
+            self.assertIn(f"- name: {step_name}", acceptance)
+
     def test_parent_review_subject_is_exact_integration_pass_and_phase_transition_is_guarded(self):
         passed = evaluate_parent_integration(**integration_fixture())
         subject = _parent_review_subject_from_integration(passed)
@@ -425,30 +498,14 @@ class ParentIntegrationTests(unittest.TestCase):
             subprocess.run(["git", "init", "-q", str(repo)], check=True)
             subprocess.run(["git", "-C", str(repo), "config", "user.name", "P-ASES test"], check=True)
             subprocess.run(["git", "-C", str(repo), "config", "user.email", "pases@example.invalid"], check=True)
-            check_ids = ("compileall", "unit-tests", "docs-validation", "format-check", "required-ci")
-            checks = []
-            artifacts = []
-            for check_id in check_ids:
-                reference = f"evidence/{check_id}.txt"
-                content = f"verified {check_id}\n".encode()
-                path = repo / reference
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(content)
-                artifacts.append((reference, content))
-                checks.append({"check_id": check_id, "status": "PASS",
-                               "evidence_sha256": hashlib.sha256(content).hexdigest(),
-                               "evidence_reference": reference})
-            subprocess.run(["git", "-C", str(repo), "add", "evidence"], check=True)
-            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "add verification artifacts"], check=True)
+            (repo / "README.md").write_text("real target commit\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "record target main"], check=True)
             main_sha = subprocess.check_output(
                 ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
-            source = {"schema": "PASES_PARENT_INTEGRATION_CHECKS_V1", "kind": "verification",
-                      "status": "PASS", "repository": "octo/repo", "parent_issue_number": 26,
-                      "parent_adc_sha256": "b" * 64, "main_sha40": main_sha, "checks": checks}
-            source_bytes = json.dumps(source, sort_keys=True, separators=(",", ":")).encode() + b"\n"
-            artifacts.sort(key=lambda row: row[0])
-            bundle = ParentGateEvidenceComment("verification", "octo/repo", 26, "b" * 64,
-                                               main_sha, source_bytes, tuple(artifacts))
+            github = trusted_actions_fixture(main_sha)
+            bundle = _parent_gate_bundle_from_actions(github, 500, "verification", "octo/repo",
+                                                      "b" * 64, main_sha)
             comment_id = 9876
             comment = {
                 "id": comment_id, "body": bundle.to_body(),
@@ -460,11 +517,14 @@ class ParentIntegrationTests(unittest.TestCase):
             }
 
             class CommentGitHub:
-                def __init__(self):
+                def __init__(self, actions):
+                    self.actions = actions
                     self.row = comment
                     self.reads = 0
                     self.duplicate = False
                     self.extra = None
+                def __getattr__(self, name):
+                    return getattr(self.actions, name)
                 def issue_comment(self, _issue, _comment):
                     self.reads += 1
                     if self.row is None:
@@ -479,12 +539,29 @@ class ParentIntegrationTests(unittest.TestCase):
                 def authenticated_user(self):
                     return {"id": 42, "login": "octocat", "type": "User"}
 
-            github = CommentGitHub()
+            github = CommentGitHub(github)
             evidence = _load_parent_gate_evidence_from_github(
                 github, comment_id, main_sha, "verification", "octo/repo", "b" * 64)
             self.assertEqual(evidence.source_reference, f"issue-comment:{comment_id}")
             self.assertEqual(evidence.main_sha40, main_sha)
             self.assertEqual(github.reads, 4)
+
+            payload = json.loads(bundle.result_bytes)
+            check = payload["checks"][0]
+            fake_reference = check["evidence_reference"]
+            fake_content = b"verified by handwritten PASS data\n"
+            check["evidence_sha256"] = hashlib.sha256(fake_content).hexdigest()
+            fake_bundle = replace(
+                bundle,
+                result_bytes=json.dumps(payload, sort_keys=True, separators=(",", ":")).encode() + b"\n",
+                artifacts=tuple((name, fake_content if name == fake_reference else content)
+                                for name, content in bundle.artifacts),
+            )
+            github.row = {**comment, "body": fake_bundle.to_body()}
+            with self.assertRaisesRegex(IntegrationError, "trusted Actions run result"):
+                _load_parent_gate_evidence_from_github(
+                    github, comment_id, main_sha, "verification", "octo/repo", "b" * 64)
+            github.row = comment
 
             with self.assertRaisesRegex(IntegrationError, "exact current main/ADC subject"):
                 _load_parent_gate_evidence_from_github(
@@ -523,15 +600,69 @@ class ParentIntegrationTests(unittest.TestCase):
                 _load_parent_gate_evidence_from_github(
                     github, comment_id, main_sha, "verification", "octo/repo", "b" * 64)
 
+    def test_parent_evidence_blocks_failed_or_stale_actions_and_acceptance_steps(self):
+        main_sha = "1" * 40
+        github = trusted_actions_fixture(main_sha)
+        github.jobs[0]["steps"][0]["conclusion"] = "failure"
+        with self.assertRaisesRegex(IntegrationError, "did not pass"):
+            _parent_gate_bundle_from_actions(github, 500, "verification", "octo/repo", "b" * 64, main_sha)
+
+        github = trusted_actions_fixture(main_sha)
+        with self.assertRaisesRegex(IntegrationError, "stale or ambiguous"):
+            _parent_gate_bundle_from_actions(github, 499, "verification", "octo/repo", "b" * 64, main_sha)
+
+        github = trusted_actions_fixture(main_sha)
+        original_reader = github.workflow_runs_for_ref
+
+        def superseded_run(sha, *, workflow_path, event):
+            return [*original_reader(sha, workflow_path=workflow_path, event=event),
+                    {**github.run, "id": 501, "run_number": 501, "conclusion": "failure"}]
+
+        github.workflow_runs_for_ref = superseded_run
+        with self.assertRaisesRegex(IntegrationError, "stale or ambiguous"):
+            _parent_gate_bundle_from_actions(github, 500, "verification", "octo/repo", "b" * 64, main_sha)
+
+        github = trusted_actions_fixture(main_sha)
+        github.checks[0]["app"]["id"] = 1
+        with self.assertRaisesRegex(IntegrationError, "Check Run provenance"):
+            _parent_gate_bundle_from_actions(github, 500, "verification", "octo/repo", "b" * 64, main_sha)
+
+        github = trusted_actions_fixture(main_sha)
+        github.jobs[0]["check_run_url"] = "https://api.github.com/repos/attacker/repo/check-runs/9001"
+        with self.assertRaisesRegex(IntegrationError, "foreign-repository Check Run URL"):
+            _parent_gate_bundle_from_actions(github, 500, "verification", "octo/repo", "b" * 64, main_sha)
+
+        github = trusted_actions_fixture(main_sha)
+        github.jobs.pop(0)
+        with self.assertRaisesRegex(IntegrationError, "complete fixed job set"):
+            _parent_gate_bundle_from_actions(github, 500, "verification", "octo/repo", "b" * 64, main_sha)
+
+        acceptance = trusted_actions_fixture(main_sha, "acceptance", 700)
+        acceptance.jobs[0]["steps"][-1]["conclusion"] = "skipped"
+        with self.assertRaisesRegex(IntegrationError, "acceptance step did not pass"):
+            _parent_gate_bundle_from_actions(acceptance, 700, "acceptance", "octo/repo", "b" * 64, main_sha)
+
+        acceptance = trusted_actions_fixture(main_sha, "acceptance", 700)
+        generated_distribution = next(step for step in acceptance.jobs[0]["steps"]
+                                      if step["name"] == "Check generated distributions")
+        generated_distribution["conclusion"] = "failure"
+        with self.assertRaisesRegex(IntegrationError, "acceptance step did not pass"):
+            _parent_gate_bundle_from_actions(acceptance, 700, "acceptance", "octo/repo", "b" * 64, main_sha)
+
     def test_parent_evidence_publish_reuses_exact_comment_and_rejects_conflict(self):
         main_sha = "1" * 40
         pointer = object()
+        actions = trusted_actions_fixture(main_sha)
 
         class PublishGitHub:
             def __init__(self):
+                self.actions = actions
                 self.comments = []
                 self.posts = 0
                 self.issue_body = "parent contract"
+
+            def __getattr__(self, name):
+                return getattr(self.actions, name)
 
             def issue(self, _number):
                 return {"number": 26, "state": "open", "pull_request": None,
@@ -559,59 +690,38 @@ class ParentIntegrationTests(unittest.TestCase):
             def issue_comment(self, _number, comment_id):
                 return next(dict(row) for row in self.comments if row["id"] == comment_id)
 
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            artifact_path = root / "evidence" / "unit-tests.txt"
-            artifact_path.parent.mkdir()
-            artifact_path.write_bytes(b"unit test result\n")
-            source = {"schema": "PASES_PARENT_INTEGRATION_CHECKS_V1", "kind": "verification",
-                      "status": "PASS", "repository": "octo/repo", "parent_issue_number": 26,
-                      "parent_adc_sha256": "b" * 64, "main_sha40": main_sha,
-                      "checks": [{"check_id": name, "status": "PASS", "evidence_sha256": "0" * 64,
-                                  "evidence_reference": f"evidence/{name}.txt"}
-                                 for name in ("compileall", "unit-tests", "docs-validation",
-                                              "format-check", "required-ci")]}
-            for check in source["checks"]:
-                path = root / check["evidence_reference"]
-                path.parent.mkdir(exist_ok=True)
-                path.write_bytes((check["check_id"] + "\n").encode())
-                check["evidence_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
-            result_path = root / "verification.json"
-            result_path.write_bytes(json.dumps(source, sort_keys=True, separators=(",", ":")).encode() + b"\n")
-            github = PublishGitHub()
-            args = SimpleNamespace(issue=26, kind="verification", result=result_path)
-            patches = (patch("p_ases.cli._parent_adc_authority", return_value=("b" * 64, pointer)),
-                       patch("p_ases.cli._parent_current_main_sha", return_value=main_sha))
+        github = PublishGitHub()
+        args = SimpleNamespace(issue=26, kind="verification", run_id=500)
+        patches = (patch("p_ases.cli._parent_adc_authority", return_value=("b" * 64, pointer)),
+                   patch("p_ases.cli._parent_current_main_sha", return_value=main_sha))
+        for active in patches:
+            active.start()
+        try:
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = _publish_parent_gate_evidence(args, "octo/repo", ROOT, github)
+            self.assertEqual(status, 0)
+            first = json.loads(output.getvalue())
+            self.assertEqual(first["status"], "PUBLISHED")
+            self.assertEqual(github.posts, 1)
+
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = _publish_parent_gate_evidence(args, "octo/repo", ROOT, github)
+            self.assertEqual(status, 0)
+            self.assertEqual(json.loads(output.getvalue())["status"], "REUSED")
+            self.assertEqual(github.posts, 1)
+
+            github.actions.jobs[0]["steps"][0]["conclusion"] = "failure"
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = _publish_parent_gate_evidence(args, "octo/repo", ROOT, github)
+            self.assertEqual(status, 2)
+            self.assertIn("did not pass", json.loads(output.getvalue())["reasons"][0])
+            self.assertEqual(github.posts, 1)
+        finally:
             for active in patches:
-                active.start()
-            try:
-                output = io.StringIO()
-                with contextlib.redirect_stdout(output):
-                    status = _publish_parent_gate_evidence(args, "octo/repo", root, github)
-                self.assertEqual(status, 0)
-                first = json.loads(output.getvalue())
-                self.assertEqual(first["status"], "PUBLISHED")
-                self.assertEqual(github.posts, 1)
-
-                output = io.StringIO()
-                with contextlib.redirect_stdout(output):
-                    status = _publish_parent_gate_evidence(args, "octo/repo", root, github)
-                self.assertEqual(status, 0)
-                self.assertEqual(json.loads(output.getvalue())["status"], "REUSED")
-                self.assertEqual(github.posts, 1)
-
-                source["checks"][0]["evidence_sha256"] = hashlib.sha256(b"changed bytes\n").hexdigest()
-                (root / "evidence/compileall.txt").write_bytes(b"changed bytes\n")
-                result_path.write_bytes(json.dumps(source, sort_keys=True, separators=(",", ":")).encode() + b"\n")
-                output = io.StringIO()
-                with contextlib.redirect_stdout(output):
-                    status = _publish_parent_gate_evidence(args, "octo/repo", root, github)
-                self.assertEqual(status, 2)
-                self.assertIn("different parent evidence comment", json.loads(output.getvalue())["reasons"][0])
-                self.assertEqual(github.posts, 1)
-            finally:
-                for active in patches:
-                    active.stop()
+                active.stop()
 
     def test_github_parent_label_definition_adapter_is_readback_checked(self):
         github = GitHub("octo/repo")

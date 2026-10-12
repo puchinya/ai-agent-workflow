@@ -66,10 +66,11 @@ class PasesCLITests(unittest.TestCase):
         ])
         self.assertFalse(migration.apply)
         evidence = _parser().parse_args([
-            "delivery", "parent-evidence", "26", "verification", "result.json",
+            "delivery", "parent-evidence", "26", "verification", "600",
             "--repo", "octo/repo", "--root", str(ROOT),
         ])
         self.assertEqual((evidence.verb, evidence.kind), ("parent-evidence", "verification"))
+        self.assertEqual(evidence.run_id, 600)
         stdout = io.StringIO()
         with patch("p_ases.cli._repo_root", return_value=ROOT), contextlib.redirect_stdout(stdout):
             status = main(["user-review", "record", "31", "37", "untrusted.json",

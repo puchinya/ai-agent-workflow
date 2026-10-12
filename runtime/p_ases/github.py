@@ -335,17 +335,22 @@ class GitHub:
                 return items
             page += 1
 
-    def workflow_runs_for_ref(self, head_sha40: str, *, workflow_path: str = ".github/workflows/ci.yml") -> list[dict[str, Any]]:
-        """Read all pull_request workflow runs for an exact SHA and workflow path."""
+    def workflow_runs_for_ref(
+        self, head_sha40: str, *, workflow_path: str = ".github/workflows/ci.yml",
+        event: str = "pull_request",
+    ) -> list[dict[str, Any]]:
+        """Read all runs for an exact SHA, workflow path, and GitHub event."""
         if not isinstance(head_sha40, str) or not re.fullmatch(r"[0-9a-f]{40}", head_sha40):
             raise GitHubError("workflow run ref must be a full lowercase commit SHA")
         if (not isinstance(workflow_path, str) or not workflow_path.startswith(".github/workflows/")
                 or any(char in workflow_path for char in "\x00\r\n?#")):
             raise GitHubError("workflow path is invalid")
+        if not isinstance(event, str) or event not in {"pull_request", "push", "workflow_dispatch"}:
+            raise GitHubError("workflow event is not supported for evidence readback")
         from urllib.parse import quote, urlencode
         workflow_id = workflow_path.rsplit("/", 1)[-1]
         encoded_path = quote(workflow_id, safe="._-")
-        query = urlencode({"head_sha": head_sha40, "event": "pull_request", "per_page": 100})
+        query = urlencode({"head_sha": head_sha40, "event": event, "per_page": 100})
         endpoint = f"{self.prefix}/actions/workflows/{encoded_path}/runs?{query}"
         items: list[dict[str, Any]] = []
         page = 1
@@ -368,13 +373,13 @@ class GitHub:
                         or type(run.get("run_number")) is not int or run["run_number"] < 1
                         or type(run.get("run_attempt")) is not int or run["run_attempt"] < 1
                         or run.get("path") != workflow_path or run.get("head_sha") != head_sha40
-                        or run.get("event") != "pull_request"
+                        or run.get("event") != event
                         or not isinstance(run.get("status"), str)
                         or (run.get("conclusion") is not None and not isinstance(run.get("conclusion"), str))
                         or not isinstance(run.get("head_branch"), str) or not run["head_branch"]
                         or not isinstance(head_repo, dict)
                         or not isinstance(head_repo.get("full_name"), str)
-                        or not isinstance(run.get("pull_requests"), list)):
+                        or (event == "pull_request" and not isinstance(run.get("pull_requests"), list))):
                     raise GitHubError(f"GitHub workflow run page {page} contains incomplete identity data")
             items.extend(runs)
             if len(runs) < 100:
@@ -383,6 +388,52 @@ class GitHub:
                 ids = [run["id"] for run in items]
                 if len(ids) != len(set(ids)):
                     raise GitHubError("GitHub workflow run pagination contains duplicate IDs")
+                return items
+            page += 1
+
+    def workflow_run_jobs(self, run_id: int) -> list[dict[str, Any]]:
+        """Read every job and step outcome attached to one Actions run."""
+        run_id = _positive_int(run_id, "Workflow run ID")
+        items: list[dict[str, Any]] = []
+        page = 1
+        total_count: int | None = None
+        while True:
+            result = self.request(
+                "GET", f"{self.prefix}/actions/runs/{run_id}/jobs?page={page}&per_page=100",
+            )
+            if not isinstance(result, dict):
+                raise GitHubError(f"GitHub workflow jobs page {page} must be an object")
+            count, jobs = result.get("total_count"), result.get("jobs")
+            if (type(count) is not int or count < 0 or not isinstance(jobs, list)
+                    or any(not isinstance(job, dict) for job in jobs)):
+                raise GitHubError(f"GitHub workflow jobs page {page} has an invalid response shape")
+            if total_count is None:
+                total_count = count
+            elif total_count != count:
+                raise GitHubError("GitHub workflow jobs total_count changed during pagination")
+            for job in jobs:
+                steps = job.get("steps")
+                if (type(job.get("id")) is not int or job["id"] < 1
+                        or not isinstance(job.get("name"), str) or not job["name"]
+                        or job.get("run_id") != run_id
+                        or not isinstance(job.get("status"), str)
+                        or (job.get("conclusion") is not None and not isinstance(job.get("conclusion"), str))
+                        or not isinstance(job.get("check_run_url"), str)
+                        or not isinstance(steps, list) or any(not isinstance(step, dict) for step in steps)):
+                    raise GitHubError(f"GitHub workflow jobs page {page} contains incomplete identity data")
+                for step in steps:
+                    if (type(step.get("number")) is not int or step["number"] < 1
+                            or not isinstance(step.get("name"), str) or not step["name"]
+                            or not isinstance(step.get("status"), str)
+                            or (step.get("conclusion") is not None and not isinstance(step.get("conclusion"), str))):
+                        raise GitHubError(f"GitHub workflow job {job['id']} has an incomplete step")
+            items.extend(jobs)
+            if len(jobs) < 100:
+                if len(items) != total_count:
+                    raise GitHubError("GitHub workflow jobs pagination count does not match total_count")
+                ids = [job["id"] for job in items]
+                if len(ids) != len(set(ids)):
+                    raise GitHubError("GitHub workflow jobs pagination contains duplicate IDs")
                 return items
             page += 1
 
