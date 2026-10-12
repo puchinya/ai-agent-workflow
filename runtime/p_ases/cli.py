@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from .adc import ADCError, parse_adc, publish_adc, restore_adc, verify_adc
+from .document_format import DocumentFormatError, format_tree
+from .documents import DocumentError, validate_documents
 from .git import GitError, discover_repository
 from .github import GitHub, GitHubError
 from .issue_graph import (
@@ -101,12 +103,34 @@ def _parser() -> argparse.ArgumentParser:
     advance_issue.add_argument("--repo", help="repository owner/name; defaults to origin")
     advance_issue.add_argument("--kind", choices=tuple(kind.value for kind in IssueKind), required=True)
     advance_issue.add_argument("--skip-phase", action="append", default=[], metavar="PHASE=REASON")
+
+    docs = namespaces.add_parser("docs", help="validate and deterministically format canonical Markdown docs")
+    docs_commands = docs.add_subparsers(dest="verb", required=True)
+    docs_validate = docs_commands.add_parser("validate", help="validate document structure, links, and traceability")
+    docs_validate.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
+    docs_format = docs_commands.add_parser("format", help="number headings and refresh contents maps")
+    mode = docs_format.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--write", action="store_true", help="atomically write deterministic formatting")
+    mode.add_argument("--check", action="store_true", help="report formatting drift without writing")
+    docs_format.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        if args.namespace == "docs":
+            root = (args.root or _repo_root(None)).resolve()
+            if args.verb == "validate":
+                errors = validate_documents(root)
+                _json({"status": "VALID" if not errors else "INVALID", "root": str(root),
+                       "errors": errors})
+                return 0 if not errors else 2
+            changed = format_tree(root, write=args.write)
+            status = "FORMATTED" if args.write else ("CLEAN" if not changed else "DRIFT")
+            _json({"status": status, "root": str(root), "changed_paths": list(changed)})
+            return 0 if args.write or not changed else 2
+
         if args.repo:
             repository = args.repo
         else:
@@ -192,6 +216,7 @@ def main(argv: list[str] | None = None) -> int:
                              "issue_id": child.issue_id, "adc_sha256": child.adc_sha256}
                             for child in created]})
         return 0
-    except (ADCError, GitError, GitHubError, IssueGraphError, PhaseError, CLIError, OSError, UnicodeError) as exc:
+    except (ADCError, DocumentError, DocumentFormatError, GitError, GitHubError,
+            IssueGraphError, PhaseError, CLIError, OSError, UnicodeError) as exc:
         print(f"p-ases: {exc}", file=sys.stderr)
         return 2

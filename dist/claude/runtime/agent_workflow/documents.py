@@ -18,13 +18,16 @@ MARKERS = {
 }
 REQUIRED_HEADINGS = {
     "specification": {"purpose", "scope", "normative requirements", "observable behavior",
-                      "error and boundary behavior", "security and privacy", "verification strategy"},
+                      "error and boundary behavior", "security and privacy"},
     "design": {"context and goals", "requirements traceability", "architecture", "data flow and ownership",
-                "failure handling", "alternatives considered", "verification strategy"},
+                "failure handling", "alternatives considered"},
 }
 _LINK = re.compile(r"(?<!!)\[[^\]]*\]\((?:<([^>]+)>|([^\s)]+))(?:\s+[^)]*)?\)")
 _REF = re.compile(r"^\s*\[[^\]]+\]:\s*(?:<([^>]+)>|(\S+))", re.M)
 _REF_USE = re.compile(r"(?<!!)\[([^\]]+)\]\s*\[([^\]]*)\]")
+_HTML_ANCHOR = re.compile(r"<a\s+[^>]*\bid\s*=\s*['\"]([^'\"]+)['\"][^>]*>\s*</a\s*>", re.I)
+_HEADING_NUMBER = re.compile(r"^\d+(?:\.\d+)*\.?\s+")
+_HEADING_ID = re.compile(r"^(?:REQ|DES|TST|ORA)-[A-Z0-9]+-\d{3}\s+")
 
 
 def without_fenced_blocks(text: str) -> str:
@@ -61,10 +64,17 @@ def _slug(heading: str) -> str:
     return re.sub(r"\s+", "-", value)
 
 
+def _heading_text(value: str) -> str:
+    value = _HEADING_NUMBER.sub("", value.strip())
+    value = _HEADING_ID.sub("", value)
+    return value.strip()
+
+
 def _anchors(text: str) -> set[str]:
     seen: dict[str, int] = {}
-    result = set()
-    for line in without_fenced_blocks(text).splitlines():
+    clean = without_fenced_blocks(text)
+    result = {value.casefold() for value in _HTML_ANCHOR.findall(clean)}
+    for line in clean.splitlines():
         match = re.match(r"^#{1,6}\s+(.+?)\s*#*\s*$", line)
         if not match:
             continue
@@ -111,7 +121,7 @@ def validate_markdown_file(path: Path, repo: Path) -> list[str]:
             errors.append(f"{rel}: missing Schema-2 {doc_type} marker")
         if "<!-- agent-doc-schema: 2 -->" not in text.splitlines()[:3]:
             errors.append(f"{rel}: missing agent-doc-schema: 2 marker")
-        headings = {m.group(1).strip().lower() for line in text.splitlines()
+        headings = {_heading_text(m.group(1)).casefold() for line in text.splitlines()
                     if (m := re.match(r"^#{1,6}\s+(.+?)\s*#*\s*$", line))}
         for required in sorted(REQUIRED_HEADINGS[doc_type] - headings):
             errors.append(f"{rel}: missing required heading {required!r}")
@@ -172,7 +182,7 @@ def section_body(markdown: str, title: str) -> str | None:
     fences = _without_fences(markdown).splitlines()
     for index, line in enumerate(fences):
         match = re.match(r"^(#{1,6})\s+(.+?)\s*#*\s*$", line)
-        if match and match.group(2).casefold().strip() == wanted:
+        if match and _heading_text(match.group(2)).casefold().strip() == wanted:
             start, level = index + 1, len(match.group(1))
             break
     if start is None:
