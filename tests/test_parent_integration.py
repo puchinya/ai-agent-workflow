@@ -881,6 +881,33 @@ class ParentIntegrationTests(unittest.TestCase):
             _load_parent_gate_evidence_from_github(
                 github, comment_id, main_sha, "verification", "octo/repo", "b" * 64)
 
+        for invalid_id in (0, -1, True):
+            with self.subTest(author_invalid_id=invalid_id):
+                github = CommentGitHub()
+                github.overrides[("direct", 0)] = {"user": {"id": invalid_id}}
+                with self.assertRaises(IntegrationError):
+                    _load_parent_gate_evidence_from_github(
+                        github, comment_id, main_sha, "verification", "octo/repo", "b" * 64)
+            with self.subTest(authenticated_invalid_id=invalid_id):
+                github = CommentGitHub()
+                github.authenticated = {"id": invalid_id, "login": "octocat", "type": "User"}
+                with self.assertRaises(IntegrationError):
+                    _load_parent_gate_evidence_from_github(
+                        github, comment_id, main_sha, "verification", "octo/repo", "b" * 64)
+
+        github = CommentGitHub()
+        github.row = {**comment, "user": {key: value for key, value in comment["user"].items()
+                                           if key != "id"}}
+        with self.assertRaises(IntegrationError):
+            _load_parent_gate_evidence_from_github(
+                github, comment_id, main_sha, "verification", "octo/repo", "b" * 64)
+
+        github = CommentGitHub()
+        github.authenticated = {"login": "octocat", "type": "User"}
+        with self.assertRaises(IntegrationError):
+            _load_parent_gate_evidence_from_github(
+                github, comment_id, main_sha, "verification", "octo/repo", "b" * 64)
+
     def test_parent_evidence_comment_rejects_changes_to_each_stable_comment_field(self):
         main_sha = "d" * 40
         actions = trusted_actions_fixture(main_sha)

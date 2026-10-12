@@ -2109,7 +2109,7 @@ def _parent_gate_comment_security_fingerprint(row: dict[str, Any]) -> tuple[Any,
     if updated_at != created_at:
         raise IntegrationError("parent evidence comment was edited")
     user = row.get("user")
-    if (not isinstance(user, dict) or type(user.get("id")) is not int
+    if (not isinstance(user, dict) or type(user.get("id")) is not int or user["id"] < 1
             or not isinstance(user.get("login"), str) or not user["login"]
             or user.get("type") != "User"):
         raise IntegrationError("parent evidence comment stable author identity is malformed")
@@ -2186,6 +2186,7 @@ def _load_parent_gate_evidence_from_github(
             raise IntegrationError("parent evidence comment repository or Issue identity does not match")
         identity = github.authenticated_user()
         if (not isinstance(identity, dict) or type(identity.get("id")) is not int
+                or identity["id"] < 1
                 or not isinstance(identity.get("login"), str) or not identity["login"]
                 or identity.get("type") != "User"
                 or listed_fingerprint[-1] !=
