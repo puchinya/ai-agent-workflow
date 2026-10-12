@@ -89,9 +89,9 @@ WAIVED_REVIEW_MODE = "WAIVED_BOOTSTRAP"
 WAIVED_INDEPENDENCE_ASSURANCE = "NOT_APPLICABLE_REVIEW_WAIVED"
 EXPECTED_BRANCH_PAIRS = {
     27: ("main", "pases/adc-core"),
+    28: ("main", "pases/documentation"),
     # PR #33 is merged into main, so PR #34 was retargeted from its stacked
     # parent branch. Its old exact-subject evidence is invalid after this move.
-    28: ("main", "pases/documentation"),
     29: ("main", "pases/verification"),
     30: ("pases/verification", "pases/work-readiness"),
 }
