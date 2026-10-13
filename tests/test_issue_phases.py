@@ -763,7 +763,7 @@ class PhaseEvidenceCollectionTests(unittest.TestCase):
             path.write_bytes(content)
         test_source = root / "tests/test_dummy.py"
         test_source.parent.mkdir(parents=True, exist_ok=True)
-        test_source.write_text("def test_dummy():\n    assert True\n", encoding="utf-8")
+        test_source.write_bytes(b"def test_dummy():\n    assert True\n")
         for command in (
             ["git", "init", "-b", "issues/40"],
             ["git", "add", "docs", "tests"],

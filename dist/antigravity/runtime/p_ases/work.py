@@ -92,7 +92,7 @@ def ensure_pull_request(repository_root: Path, github: GitHub, *, repository: st
                         issue_number: int, binding: ExecutionBinding,
                         branch_ref: str, base_ref: str, title: str, body: str) -> PREnsureResult:
     """Reuse one exact eligible PR or create once, then read it back before binding."""
-    root = Path(repository_root).absolute()
+    root = Path(repository_root).resolve()
     branch_ref, base_ref = validate_ref(branch_ref), validate_ref(base_ref)
     _validate_pr_body(body, issue_number)
     binding.validate()
@@ -388,7 +388,7 @@ def bind_work(repository_root: Path, *, repository: str, issue_number: int, adc_
 
 def recover_work(repository_root: Path, *, repository: str, issue_number: int,
                  adc_comment_id: int, adc_sha256: str, expected_branch_ref: str) -> WorkResult:
-    root = Path(repository_root).absolute()
+    root = Path(repository_root).resolve()
     path = execution_binding_path(root, issue_number)
     _reject_symlink_path(path, "ExecutionBinding path")
     try:
