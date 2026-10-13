@@ -6,6 +6,7 @@ import io
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,6 +17,17 @@ from p_ases.cli import CLI_ADVANCE_TARGETS, _parser, main
 from p_ases.github import GitHubError
 from p_ases.phase_evidence import PhaseEvidenceError
 from test_adc_intake import FakeGitHub, adc_bytes
+
+
+def verified_adc(comment_id: int = 77, digest: str = "a" * 64):
+    return SimpleNamespace(
+        pointer=SimpleNamespace(comment_id=comment_id, sha256=digest, byte_length=1, state="approved"),
+        contract=SimpleNamespace(sha256=digest),
+    )
+
+
+def ordinary_context(github, adc=None):
+    return (copy.deepcopy(github.record), adc or verified_adc(), None, "pases/issue-1", "b" * 40)
 
 
 class PasesCLITests(unittest.TestCase):
@@ -125,7 +137,8 @@ class PasesCLITests(unittest.TestCase):
         stderr = io.StringIO()
         with patch("p_ases.cli._repo_root", return_value=ROOT), \
                 patch("p_ases.cli.GitHub", return_value=github), \
-                patch("p_ases.cli.verify_ordinary_issue_context"), \
+                patch("p_ases.cli.verify_ordinary_issue_context",
+                      side_effect=lambda *_args, **_kwargs: ordinary_context(github)), \
                 patch("p_ases.cli.verify_phase_evidence", side_effect=change_after_proof), \
                 contextlib.redirect_stderr(stderr):
             status = main(["issue", "advance", "1", "specification", "--kind", "child",
@@ -158,7 +171,8 @@ class PasesCLITests(unittest.TestCase):
         github = GitHub()
         stdout = io.StringIO()
         with patch("p_ases.cli.GitHub", return_value=github), \
-                patch("p_ases.cli.verify_ordinary_issue_context"), \
+                patch("p_ases.cli.verify_ordinary_issue_context",
+                      side_effect=lambda *_args, **_kwargs: ordinary_context(github)), \
                 contextlib.redirect_stdout(stdout):
             status = main(["issue", "advance", "1", "verification", "--kind", "child",
                            "--root", str(ROOT), "--repo", "octo/repo"])
@@ -168,6 +182,114 @@ class PasesCLITests(unittest.TestCase):
         self.assertEqual({row["name"] for row in github.record["labels"]}, {
             "enhancement", "kind:child", "phase:verification", "priority:high",
         })
+
+    def test_advance_blocks_successful_put_when_postwrite_issue_identity_or_body_changes(self):
+        for changed_field in ("body", "repository_url"):
+            class GitHub:
+                repo = "octo/repo"
+
+                def __init__(self):
+                    self.record = {
+                        "id": 1, "number": 1, "repository_url": "https://api.github.com/repos/octo/repo",
+                        "state": "open", "body": "Issue body", "pull_request": None,
+                        "labels": [{"name": "kind:child"}, {"name": "phase:execution"}],
+                    }
+                    self.writes = 0
+
+                def issue(self, _number):
+                    return copy.deepcopy(self.record)
+
+                def replace_issue_labels(self, _number, labels):
+                    self.writes += 1
+                    self.record["labels"] = [{"name": label} for label in labels]
+                    self.record[changed_field] = (
+                        "changed after PUT" if changed_field == "body"
+                        else "https://api.github.com/repos/other/repo"
+                    )
+
+            github = GitHub()
+            stderr = io.StringIO()
+            with self.subTest(changed_field=changed_field), \
+                    patch("p_ases.cli.GitHub", return_value=github), \
+                    patch("p_ases.cli.verify_ordinary_issue_context",
+                          side_effect=lambda *_args, **_kwargs: ordinary_context(github)), \
+                    contextlib.redirect_stderr(stderr):
+                status = main(["issue", "advance", "1", "verification", "--kind", "child",
+                               "--root", str(ROOT), "--repo", "octo/repo"])
+            self.assertEqual(status, 2)
+            self.assertEqual(github.writes, 1)
+            self.assertIn("BLOCKED after phase label write", stderr.getvalue())
+            self.assertIn("label PUT may already have applied", stderr.getvalue())
+
+    def test_advance_blocks_lost_put_response_when_body_changes_after_write(self):
+        class GitHub:
+            repo = "octo/repo"
+
+            def __init__(self):
+                self.record = {
+                    "id": 1, "number": 1, "repository_url": "https://api.github.com/repos/octo/repo",
+                    "state": "open", "body": "Issue body", "pull_request": None,
+                    "labels": [{"name": "kind:child"}, {"name": "phase:execution"}],
+                }
+                self.writes = 0
+
+            def issue(self, _number):
+                return copy.deepcopy(self.record)
+
+            def replace_issue_labels(self, _number, labels):
+                self.writes += 1
+                self.record["labels"] = [{"name": label} for label in labels]
+                self.record["body"] = "ADC pointer changed after label PUT"
+                raise GitHubError("simulated lost response")
+
+        github = GitHub()
+        stderr = io.StringIO()
+        with patch("p_ases.cli.GitHub", return_value=github), \
+                patch("p_ases.cli.verify_ordinary_issue_context",
+                      side_effect=lambda *_args, **_kwargs: ordinary_context(github)), \
+                contextlib.redirect_stderr(stderr):
+            status = main(["issue", "advance", "1", "verification", "--kind", "child",
+                           "--root", str(ROOT), "--repo", "octo/repo"])
+        self.assertEqual(status, 2)
+        self.assertEqual(github.writes, 1)
+        self.assertIn("BLOCKED after phase label write", stderr.getvalue())
+        self.assertIn("label PUT may already have applied", stderr.getvalue())
+
+    def test_advance_blocks_when_approved_adc_generation_changes_after_put(self):
+        class GitHub:
+            repo = "octo/repo"
+
+            def __init__(self):
+                self.record = {
+                    "id": 1, "number": 1, "repository_url": "https://api.github.com/repos/octo/repo",
+                    "state": "open", "body": "Issue body", "pull_request": None,
+                    "labels": [{"name": "kind:child"}, {"name": "phase:execution"}],
+                }
+
+            def issue(self, _number):
+                return copy.deepcopy(self.record)
+
+            def replace_issue_labels(self, _number, labels):
+                self.record["labels"] = [{"name": label} for label in labels]
+
+        github = GitHub()
+        context_calls = 0
+
+        def context_after_current_read(*_args, **_kwargs):
+            nonlocal context_calls
+            context_calls += 1
+            adc = verified_adc() if context_calls < 3 else verified_adc(88, "c" * 64)
+            return ordinary_context(github, adc)
+
+        stderr = io.StringIO()
+        with patch("p_ases.cli.GitHub", return_value=github), \
+                patch("p_ases.cli.verify_ordinary_issue_context", side_effect=context_after_current_read), \
+                contextlib.redirect_stderr(stderr):
+            status = main(["issue", "advance", "1", "verification", "--kind", "child",
+                           "--root", str(ROOT), "--repo", "octo/repo"])
+        self.assertEqual(status, 2)
+        self.assertIn("approved ADC pointer or generation changed after the phase label write", stderr.getvalue())
+        self.assertNotIn("ADVANCED", stderr.getvalue())
 
     def test_ordinary_phase_advance_blocks_missing_activation_adc_or_binding(self):
         class GitHub:
@@ -222,7 +344,8 @@ class PasesCLITests(unittest.TestCase):
         github = GitHub()
         stderr = io.StringIO()
         with patch("p_ases.cli.GitHub", return_value=github), \
-                patch("p_ases.cli.verify_ordinary_issue_context"), \
+                patch("p_ases.cli.verify_ordinary_issue_context",
+                      side_effect=lambda *_args, **_kwargs: ordinary_context(github)), \
                 patch("p_ases.cli.verify_ready_preparation",
                       side_effect=PhaseEvidenceError("ready receipt is stale")), \
                 contextlib.redirect_stderr(stderr):
