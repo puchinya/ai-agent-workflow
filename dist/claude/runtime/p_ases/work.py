@@ -342,7 +342,7 @@ def ensure_branch(repository_root: Path, base_ref: str, base_sha40: str, branch_
 def bind_work(repository_root: Path, *, repository: str, issue_number: int, adc_comment_id: int,
               adc_sha256: str, base_ref: str, branch_ref: str,
               expected_base_sha40: str | None = None) -> WorkResult:
-    root = Path(repository_root).absolute()
+    root = Path(repository_root).resolve()
     base_ref, branch_ref = validate_ref(base_ref), validate_ref(branch_ref)
     path = execution_binding_path(root, issue_number)
     _reject_symlink_path(path, "ExecutionBinding path")
