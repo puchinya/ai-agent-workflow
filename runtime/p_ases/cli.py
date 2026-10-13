@@ -66,6 +66,8 @@ from .phase_evidence import (
     BOOTSTRAP_ISSUES as PHASE_EVIDENCE_BOOTSTRAP_ISSUES,
     PhaseEvidenceError,
     publish_phase_evidence,
+    verify_ordinary_issue_context,
+    verify_ready_preparation,
     verify_phase_evidence,
 )
 from .oracle_trace import (
@@ -3075,7 +3077,8 @@ def _parser() -> argparse.ArgumentParser:
     advance_issue.add_argument("--repo", help="repository owner/name; defaults to origin")
     advance_issue.add_argument("--kind", choices=tuple(kind.value for kind in IssueKind), required=True)
     advance_issue.add_argument("--skip-phase", action="append", default=[], metavar="PHASE=REASON")
-    advance_issue.add_argument("--root", type=Path, help="repository root; required for evidence-gated phases")
+    advance_issue.add_argument("--root", type=Path,
+                               help="repository root; required for ordinary Issue phase transitions")
     advance_issue.add_argument("--phase-evidence-comment-id", type=_positive_number,
                                help="exact PASES_PHASE_DECISION_V1 comment ID for specification/design/ready")
     phase_evidence = issue_commands.add_parser(
@@ -3464,13 +3467,21 @@ def main(argv: list[str] | None = None) -> int:
             target = Phase(args.target)
             evidence_required = (not bootstrap and kind in {IssueKind.SINGLE, IssueKind.CHILD}
                                  and target in {Phase.SPECIFICATION, Phase.DESIGN, Phase.READY})
+            ordinary_issue = (not bootstrap and kind in {IssueKind.SINGLE, IssueKind.CHILD})
             root: Path | None = None
+            if ordinary_issue:
+                if args.root is None:
+                    raise CLIError("ordinary Issue phase transitions require --root for Activation and ADC verification")
+                root = _repo_root(str(args.root)).resolve()
+                verify_ordinary_issue_context(
+                    github, root, args.issue, kind,
+                    require_binding=target in {Phase.EXECUTION, Phase.VERIFICATION},
+                )
+                if target is Phase.EXECUTION:
+                    verify_ready_preparation(github, root, args.issue, kind)
             if evidence_required:
                 if args.phase_evidence_comment_id is None:
                     raise CLIError("specification, design, and ready transitions require --phase-evidence-comment-id")
-                if args.root is None:
-                    raise CLIError("evidence-gated phase transitions require --root")
-                root = _repo_root(str(args.root)).resolve()
                 verify_phase_evidence(github, root, args.issue, args.phase_evidence_comment_id,
                                       phase, target, skip_reasons)
             graph_validated = False
@@ -3482,6 +3493,13 @@ def main(argv: list[str] | None = None) -> int:
             kept = [label for label in labels if not label.startswith(("phase:", "attention:"))]
             kept.append(f"phase:{next_state.phase.value}")
             kept.extend(f"attention:{item.value}" for item in sorted(next_state.attention, key=lambda x: x.value))
+            if ordinary_issue and root is not None:
+                verify_ordinary_issue_context(
+                    github, root, args.issue, kind,
+                    require_binding=target in {Phase.EXECUTION, Phase.VERIFICATION},
+                )
+                if target is Phase.EXECUTION:
+                    verify_ready_preparation(github, root, args.issue, kind)
             if evidence_required and root is not None:
                 verify_phase_evidence(github, root, args.issue, args.phase_evidence_comment_id,
                                       phase, target, skip_reasons)

@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / "runtime"))
 from p_ases.adc import publish_adc
 from p_ases.cli import CLI_ADVANCE_TARGETS, _parser, main
 from p_ases.github import GitHubError
+from p_ases.phase_evidence import PhaseEvidenceError
 from test_adc_intake import FakeGitHub, adc_bytes
 
 
@@ -124,6 +125,7 @@ class PasesCLITests(unittest.TestCase):
         stderr = io.StringIO()
         with patch("p_ases.cli._repo_root", return_value=ROOT), \
                 patch("p_ases.cli.GitHub", return_value=github), \
+                patch("p_ases.cli.verify_ordinary_issue_context"), \
                 patch("p_ases.cli.verify_phase_evidence", side_effect=change_after_proof), \
                 contextlib.redirect_stderr(stderr):
             status = main(["issue", "advance", "1", "specification", "--kind", "child",
@@ -155,15 +157,80 @@ class PasesCLITests(unittest.TestCase):
 
         github = GitHub()
         stdout = io.StringIO()
-        with patch("p_ases.cli.GitHub", return_value=github), contextlib.redirect_stdout(stdout):
+        with patch("p_ases.cli.GitHub", return_value=github), \
+                patch("p_ases.cli.verify_ordinary_issue_context"), \
+                contextlib.redirect_stdout(stdout):
             status = main(["issue", "advance", "1", "verification", "--kind", "child",
-                           "--repo", "octo/repo"])
+                           "--root", str(ROOT), "--repo", "octo/repo"])
         self.assertEqual(status, 0)
         self.assertEqual(github.writes, 1)
         self.assertIn('"status": "ADVANCED"', stdout.getvalue())
         self.assertEqual({row["name"] for row in github.record["labels"]}, {
             "enhancement", "kind:child", "phase:verification", "priority:high",
         })
+
+    def test_ordinary_phase_advance_blocks_missing_activation_adc_or_binding(self):
+        class GitHub:
+            repo = "octo/repo"
+
+            def __init__(self):
+                self.record = {
+                    "id": 40, "number": 40, "repository_url": "https://api.github.com/repos/octo/repo",
+                    "state": "open", "body": "Issue body", "pull_request": None,
+                    "labels": [{"name": "kind:child"}, {"name": "phase:ready"}],
+                }
+                self.writes = 0
+
+            def issue(self, _number):
+                return copy.deepcopy(self.record)
+
+            def replace_issue_labels(self, _number, _labels):
+                self.writes += 1
+
+        for failure in ("Activation missing", "approved ADC missing", "frozen binding missing"):
+            github = GitHub()
+            stderr = io.StringIO()
+            with self.subTest(failure=failure), \
+                    patch("p_ases.cli.GitHub", return_value=github), \
+                    patch("p_ases.cli.verify_ordinary_issue_context",
+                          side_effect=PhaseEvidenceError(failure)), \
+                    contextlib.redirect_stderr(stderr):
+                status = main(["issue", "advance", "40", "execution", "--kind", "child",
+                               "--root", str(ROOT), "--repo", "octo/repo"])
+            self.assertEqual(status, 2)
+            self.assertEqual(github.writes, 0)
+            self.assertIn(failure, stderr.getvalue())
+
+    def test_ready_to_execution_requires_current_ready_receipt_before_label_write(self):
+        class GitHub:
+            repo = "octo/repo"
+
+            def __init__(self):
+                self.record = {
+                    "id": 40, "number": 40, "repository_url": "https://api.github.com/repos/octo/repo",
+                    "state": "open", "body": "Issue body", "pull_request": None,
+                    "labels": [{"name": "kind:child"}, {"name": "phase:ready"}],
+                }
+                self.writes = 0
+
+            def issue(self, _number):
+                return copy.deepcopy(self.record)
+
+            def replace_issue_labels(self, _number, _labels):
+                self.writes += 1
+
+        github = GitHub()
+        stderr = io.StringIO()
+        with patch("p_ases.cli.GitHub", return_value=github), \
+                patch("p_ases.cli.verify_ordinary_issue_context"), \
+                patch("p_ases.cli.verify_ready_preparation",
+                      side_effect=PhaseEvidenceError("ready receipt is stale")), \
+                contextlib.redirect_stderr(stderr):
+            status = main(["issue", "advance", "40", "execution", "--kind", "child",
+                           "--root", str(ROOT), "--repo", "octo/repo"])
+        self.assertEqual(status, 2)
+        self.assertEqual(github.writes, 0)
+        self.assertIn("ready receipt is stale", stderr.getvalue())
 
     def test_explicit_repository_lets_github_commands_run_without_local_checkout(self):
         github = FakeGitHub()

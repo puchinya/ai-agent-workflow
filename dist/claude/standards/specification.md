@@ -12,7 +12,7 @@ Specifications own durable, testable product behavior. Each normative rule has o
 - Use MUST/SHOULD/MAY only when the obligation is intentional and testable.
 - Link to the owning Issue and design. Separate confirmed behavior from open questions.
 - Keep examples illustrative and label them; do not let examples silently become policy.
-- For P-ASES work, the approved ADC is the authority for whether specification is required or explicitly unchanged. When required, commit the specification on the Issue branch before advancing to `specification`; publish the phase receipt for that exact commit. The workflow specification owns the lifecycle and receipt rules.
+- For P-ASES work, the approved ADC is the authority for whether specification is required or explicitly unchanged. Establish the dedicated Issue branch and frozen work binding before committing phase artifacts. When required, commit the specification on the Issue branch before advancing to `specification`; publish the phase receipt for that exact commit. A downstream receipt must verify the specification receipt and preserve its document hashes. The workflow specification owns the lifecycle and receipt rules.
 - Settle the product behavior before dependent design decisions are approved. File-edit chronology is flexible when the final decisions remain traceable and consistent.
 
 ## Validation

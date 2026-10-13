@@ -66,8 +66,8 @@ def validate(root: Path, scope: str) -> tuple[str, ...]:
             errors.append(f"traceability row {line_number} has columns out of canonical order")
             continue
         evidence_links = re.findall(r"\[[^\]]+\]\(([^)]+)\)", cells[4])
-        if len(evidence_links) != 1:
-            errors.append(f"traceability row {line_number} must link one executable evidence source")
+        if not evidence_links:
+            errors.append(f"traceability row {line_number} must link at least one executable evidence source")
         for label, url in links:
             category = label.split("-", 1)[0]
             refs.setdefault(category, []).append((label.upper(), matrix, url))

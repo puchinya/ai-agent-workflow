@@ -49,6 +49,7 @@ def _release_gate_fixture(root: Path) -> None:
     (root / "tests").mkdir()
     (root / "tools").mkdir()
     (root / "tests/evidence.py").write_text("# executable evidence\n", encoding="utf-8")
+    (root / "tests/evidence_cli.py").write_text("# executable CLI evidence\n", encoding="utf-8")
     (root / "docs/specs/spec.md").write_text(
         """<!-- agent-doc-type: specification -->
 <!-- agent-doc-schema: 2 -->
@@ -101,7 +102,7 @@ A boundary violation returns nonzero.
 
 | REQ | DES | Oracle | Test | Evidence |
 |---|---|---|---|---|
-| [REQ-DEMO-001](../specs/spec.md#req-demo-001) | [DES-DEMO-001](../design/design.md#des-demo-001) | [ORA-DEMO-001](oracle.md#ora-demo-001) | [TST-DEMO-001](oracle.md#tst-demo-001) | [test source](../../tests/evidence.py) |
+| [REQ-DEMO-001](../specs/spec.md#req-demo-001) | [DES-DEMO-001](../design/design.md#des-demo-001) | [ORA-DEMO-001](oracle.md#ora-demo-001) | [TST-DEMO-001](oracle.md#tst-demo-001) | [phase tests](../../tests/evidence.py), [CLI tests](../../tests/evidence_cli.py) |
 """, encoding="utf-8")
     shutil.copyfile(ROOT / "tools/validate_pases_traceability.py",
                     root / "tools/validate_pases_traceability.py")

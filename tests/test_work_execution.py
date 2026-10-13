@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import json
 import sys
 import tempfile
 import unittest
@@ -10,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases.checkpoint import read_checkpoint
-from p_ases.execution import binding_digest, read_binding
+from p_ases.execution import binding_digest, read_binding, read_binding_history
 from p_ases.git import head_sha40, run_git
 from p_ases.work import WorkError, bind_work, ensure_branch, latest_checkpoint, recover_work
 
@@ -54,6 +55,42 @@ class WorkExecutionTests(unittest.TestCase):
             self.assertEqual(resumed.binding.base_sha, base)
             self.assertEqual(read_binding(work / ".p_ases/state/30/execution-binding.json"), result.binding)
             self.assertEqual(read_checkpoint(resumed.checkpoint_path).sha256, resumed.checkpoint_sha256)
+
+    def test_reapproved_adc_appends_binding_generation_without_changing_issue_branch_or_base(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            work, _bare, base = self._repo(Path(temporary))
+            first = bind_work(
+                work, repository="owner/repo", issue_number=30, adc_comment_id=123,
+                adc_sha256="a" * 64, base_ref="main", branch_ref="pases/work",
+                expected_base_sha40=base,
+            )
+            second = bind_work(
+                work, repository="owner/repo", issue_number=30, adc_comment_id=124,
+                adc_sha256="b" * 64, base_ref="main", branch_ref="pases/work",
+                expected_base_sha40=base,
+            )
+            history = read_binding_history(work / ".p_ases/state/30/execution-binding.json")
+            self.assertEqual(history, (first.binding, second.binding))
+            self.assertEqual(second.binding.base_sha, base)
+            self.assertEqual(second.binding.branch_ref, "pases/work")
+
+    def test_explicit_bind_upgrades_legacy_binding_with_the_selected_issue_branch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            work, _bare, base = self._repo(Path(temporary))
+            path = work / ".p_ases/state/30/execution-binding.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps({
+                "repository": "owner/repo", "issue_number": 30, "adc_comment_id": 123,
+                "adc_sha256": "a" * 64, "base_ref": "main", "base_sha": base,
+                "work_directory": str(work.resolve()), "initial_head_sha": base,
+            }), encoding="utf-8")
+            result = bind_work(
+                work, repository="owner/repo", issue_number=30, adc_comment_id=123,
+                adc_sha256="a" * 64, base_ref="main", branch_ref="pases/work",
+                expected_base_sha40=base,
+            )
+            self.assertEqual(result.binding.branch_ref, "pases/work")
+            self.assertEqual(len(read_binding_history(path)), 1)
 
     def test_remote_base_drift_blocks_recovery_without_rewriting_binding_or_checkpoint(self):
         with tempfile.TemporaryDirectory() as temporary:

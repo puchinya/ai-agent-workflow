@@ -15,7 +15,7 @@ Owner: runtime/p_ases/issue_graph.py and runtime/p_ases/phases.py. Inputs are th
 3. Validate every child has measurable acceptance conditions, an owner, and verification obligations.
 4. Review the proposed Issue set with the user before creation. Native Issue creation must preserve exact links and read back each result.
 5. New children start with verified `kind:child` and `phase:requirements` labels. Reused children retain their current phase; never reset them to requirements.
-6. Ordinary specification, design, and ready transitions require a `PASES_PHASE_DECISION_V1` receipt from `issue phase-evidence`, then the exact returned comment ID on `issue advance`. The receipt proves bytes and identity only; the approved ADC remains the decision authority.
+6. For an ordinary Issue, establish the dedicated branch and frozen work binding before committing phase artifacts. Every ordinary phase change verifies the actual kind, current approved ADC, and Activation/Gate Selection. Specification, design, and ready transitions also require a `PASES_PHASE_DECISION_V1` receipt from `issue phase-evidence`, then the exact returned comment ID on `issue advance`. Each later receipt validates the predecessor receipt and preserves its completed artifact hashes. Ready-to-execution revalidates the current ready receipt and binding. The receipt proves bytes and identity only; the approved ADC remains the decision authority.
 
 ## CLI
 

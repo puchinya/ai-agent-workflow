@@ -8,15 +8,17 @@ import posixpath
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from pathlib import PurePosixPath
 from typing import Any, Mapping
+from urllib.parse import urlsplit
 
 from .adc import ADCError, VerifiedADC, verify_adc
 from .gate_policy import GatePolicyError, read_activation_record, read_gate_selection, select_gate
 from .github import GitHub, GitHubError
-from .git import GitError, current_branch, head_sha40
+from .execution import ExecutionError, read_binding
+from .git import GitError, current_branch, head_sha40, is_ancestor
 from .path_safety import path_has_symlink
 from .phases import IssueKind, Phase, parse_phase_labels
+from .work import execution_binding_path
 
 
 class PhaseEvidenceError(ValueError):
@@ -219,66 +221,192 @@ def _kind_from_issue(issue: dict[str, Any]) -> tuple[IssueKind, list[str]]:
     return kind, labels
 
 
+def _verify_frozen_binding(github: GitHub, root: Path, issue_number: int, verified: VerifiedADC,
+                           branch_ref: str, commit_sha: str) -> None:
+    try:
+        binding = read_binding(execution_binding_path(root.resolve(), issue_number))
+        if (binding.repository.casefold() != github.repo.casefold()
+                or binding.issue_number != issue_number
+                or binding.adc_comment_id != verified.pointer.comment_id
+                or binding.adc_sha256 != verified.contract.sha256
+                or binding.branch_ref != branch_ref
+                or binding.base_ref == branch_ref
+                or Path(binding.work_directory).resolve() != root.resolve()):
+            raise PhaseEvidenceError("frozen ExecutionBinding does not match this Issue, approved ADC, branch, and worktree")
+        if not is_ancestor(root, binding.base_sha, commit_sha):
+            raise PhaseEvidenceError("current Issue branch does not descend from its frozen ExecutionBinding base")
+    except (ExecutionError, GitError) as exc:
+        raise PhaseEvidenceError(f"a valid frozen Issue ExecutionBinding is required: {exc}") from exc
+
+
+def verify_ordinary_issue_context(github: GitHub, root: Path, issue_number: int,
+                                 expected_kind: IssueKind | None = None, *, require_binding: bool = False
+                                 ) -> tuple[dict[str, Any], VerifiedADC, IssueKind, str, str]:
+    _check_activation(github, issue_number)
+    try:
+        issue = github.issue(issue_number)
+        if issue.get("number") != issue_number or issue.get("state") != "open" or issue.get("pull_request") is not None:
+            raise PhaseEvidenceError("ordinary phase transition requires the exact open GitHub Issue")
+        repository_url = issue.get("repository_url")
+        if (not isinstance(repository_url, str)
+                or repository_url.casefold() != f"https://api.github.com/repos/{github.repo}".casefold()):
+            raise PhaseEvidenceError("ordinary phase transition Issue belongs to a different repository")
+        kind, _labels = _kind_from_issue(issue)
+        if expected_kind is not None and kind is not expected_kind:
+            raise PhaseEvidenceError("caller Issue kind differs from the actual kind:* label")
+        verified = verify_adc(github, issue_number)
+        if verified.pointer.state != "approved":
+            raise PhaseEvidenceError("ordinary phase transitions require the current approved ADC")
+        branch_ref = current_branch(root)
+        local_sha = head_sha40(root)
+        branch = github.branch(branch_ref)
+        remote_sha = branch.get("commit", {}).get("sha") if isinstance(branch.get("commit"), dict) else None
+        if branch.get("name") != branch_ref or remote_sha != local_sha:
+            raise PhaseEvidenceError("local Git HEAD does not match the Issue branch commit on GitHub")
+        if require_binding:
+            _verify_frozen_binding(github, root, issue_number, verified, branch_ref, local_sha)
+        return issue, verified, kind, branch_ref, local_sha
+    except (ADCError, GitHubError, GitError) as exc:
+        raise PhaseEvidenceError(str(exc)) from exc
+
+
+def _markdown_anchors(content: bytes) -> set[str]:
+    try:
+        text = content.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise PhaseEvidenceError("traceability target must be valid UTF-8 Markdown") from exc
+    visible_lines: list[str] = []
+    in_fence = False
+    fence_marker = ""
+    for line in text.splitlines():
+        marker = re.match(r"^\s{0,3}(```+|~~~+)", line)
+        if marker:
+            candidate = marker.group(1)[0]
+            if not in_fence:
+                in_fence, fence_marker = True, candidate
+            elif candidate == fence_marker:
+                in_fence, fence_marker = False, ""
+            continue
+        if not in_fence:
+            visible_lines.append(line)
+    visible = re.sub(r"<!--.*?-->", "", "\n".join(visible_lines), flags=re.DOTALL)
+    anchors = {value.casefold() for value in re.findall(
+        r"(?i)<a\b[^>]*\b(?:id|name)\s*=\s*['\"]([^'\"]+)['\"]", visible)}
+    counts: dict[str, int] = {}
+    for line in visible.splitlines():
+        match = re.match(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$", line)
+        if not match:
+            continue
+        title = re.sub(r"`([^`]*)`", r"\1", match.group(1))
+        title = re.sub(r"!?(?:\[([^]]*)\])\([^)]*\)", r"\1", title)
+        slug = re.sub(r"[^\w -]", "", title.casefold(), flags=re.UNICODE)
+        slug = re.sub(r"\s+", "-", slug.strip())
+        if not slug:
+            continue
+        duplicate = counts.get(slug, 0)
+        counts[slug] = duplicate + 1
+        anchors.add(slug if duplicate == 0 else f"{slug}-{duplicate}")
+    return anchors
+
+
+def _traceability_target(root: Path, github: GitHub, commit_sha: str, source_path: str,
+                         destination: str, expected_root: str, label: str,
+                         allowed_paths: tuple[str, ...], skipped: bool,
+                         cache: dict[str, bytes]) -> tuple[str, bytes]:
+    if (not isinstance(destination, str) or not destination or "\\" in destination
+            or any(char in destination for char in "\x00\r\n?:%")):
+        raise PhaseEvidenceError(f"traceability link for {label} has an unsafe target")
+    parts = urlsplit(destination)
+    if parts.scheme or parts.netloc or parts.query or parts.path.startswith("/"):
+        raise PhaseEvidenceError(f"traceability link for {label} must be a repository-relative Markdown link")
+    linked_path, marker, fragment = destination.partition("#")
+    if not marker or not fragment or parts.fragment != fragment:
+        raise PhaseEvidenceError(f"traceability link for {label} must name an existing anchor")
+    target = posixpath.normpath(posixpath.join(posixpath.dirname(source_path), linked_path))
+    if (target.startswith("../") or target == ".." or not target.startswith(expected_root)
+            or target not in allowed_paths and not skipped):
+        raise PhaseEvidenceError(f"traceability link for {label} is outside its approved {expected_root} artifacts")
+    if target not in cache:
+        local = root / target
+        if path_has_symlink(local, root=root) or not local.is_file():
+            raise PhaseEvidenceError(f"traceability target is missing or unsafe: {target}")
+        try:
+            committed = github.regular_content_at_ref(target, commit_sha)
+        except GitHubError as exc:
+            raise PhaseEvidenceError(f"traceability target is absent from the branch commit: {target}: {exc}") from exc
+        if local.read_bytes() != committed:
+            raise PhaseEvidenceError(f"traceability target differs from the branch commit: {target}")
+        cache[target] = committed
+    if fragment.casefold() not in _markdown_anchors(cache[target]):
+        raise PhaseEvidenceError(f"traceability anchor #{fragment} does not exist in {target}")
+    if not (fragment.casefold() == label.casefold()
+            or fragment.casefold().startswith(label.casefold() + "-")):
+        raise PhaseEvidenceError(f"traceability anchor #{fragment} does not identify {label}")
+    return target, cache[target]
+
+
 def _validate_ready_traceability(root: Path, path: str, content: bytes, github: GitHub,
-                                 commit_sha: str, requirements: tuple[str, ...]) -> None:
+                                 commit_sha: str, requirements: tuple[str, ...],
+                                 declared_paths: Mapping[str, tuple[str, ...]],
+                                 skip_reasons: Mapping[str, str]) -> dict[str, tuple[str, bytes]]:
     if path != "docs/testing/traceability.md":
-        return
+        return {}
     try:
         text = content.decode("utf-8", errors="strict")
     except UnicodeDecodeError as exc:
         raise PhaseEvidenceError("test/Oracle traceability matrix must be valid UTF-8") from exc
     rows = [line.strip() for line in text.splitlines() if line.lstrip().startswith("|")]
+    cache: dict[str, bytes] = {path: content}
+    verified_targets: dict[str, tuple[str, bytes]] = {}
+    identities = (
+        ("specification", "docs/specs/", lambda label: label.startswith("REQ-")),
+        ("design", "docs/design/", lambda label: re.fullmatch(r"DES-[A-Z0-9-]+", label) is not None),
+        ("test-oracle", "docs/testing/", lambda label: re.fullmatch(r"(?:ORA|ORACLE|TST|TEST)-[A-Z0-9._-]+", label) is not None),
+    )
     for requirement in requirements:
         matches = [row for row in rows if re.search(rf"\[{re.escape(requirement)}\]", row)]
         if not matches:
             raise PhaseEvidenceError(f"ready traceability matrix does not cover {requirement}")
         for row in matches:
             links = re.findall(r"\[([^]]+)\]\(([^)]+)\)", row)
-
-            def linked_target(label: str, destination: str, root_prefix: str) -> bool:
-                linked_path, marker, fragment = destination.partition("#")
-                if (not marker or not fragment or linked_path.startswith("/") or "\\" in destination
-                        or any(char in destination for char in "\x00\r\n?:")):
-                    return False
-                resolved = posixpath.normpath(posixpath.join("docs/testing", linked_path))
-                anchor = fragment.casefold()
-                normalized_label = label.casefold()
-                return (resolved.startswith(root_prefix) and not resolved.startswith("../")
-                        and (anchor == normalized_label or anchor.startswith(normalized_label + "-")))
-
-            req_links = [(label, dest) for label, dest in links if label == requirement]
-            des_links = [(label, dest) for label, dest in links
-                         if re.fullmatch(r"DES-[A-Z0-9-]+", label)]
-            ora_links = [(label, dest) for label, dest in links
-                         if re.fullmatch(r"(?:ORA|ORACLE)-[A-Z0-9._-]+", label)]
-            tst_links = [(label, dest) for label, dest in links
-                         if re.fullmatch(r"(?:TST|TEST)-[A-Z0-9._-]+", label)]
-            if not (len(req_links) == 1 and linked_target(req_links[0][0], req_links[0][1], "docs/specs/")
-                    and len(des_links) == 1 and linked_target(des_links[0][0], des_links[0][1], "docs/design/")
-                    and len(ora_links) == 1 and linked_target(ora_links[0][0], ora_links[0][1], "docs/testing/")
-                    and len(tst_links) == 1 and linked_target(tst_links[0][0], tst_links[0][1], "docs/testing/")):
-                raise PhaseEvidenceError(f"ready traceability row for {requirement} is missing linked REQ/DES/Oracle/Test anchors")
-            source_links = [dest for _label, dest in links]
-            source_link = next((item for item in source_links if item.startswith("../../tests/")), None)
-            if source_link is None:
-                raise PhaseEvidenceError(f"ready traceability row for {requirement} has no executable test source")
-            relative = PurePosixPath(source_link)
-            if relative.is_absolute() or "\\" in source_link or any(char in source_link for char in "\x00\r\n?#:"):
-                raise PhaseEvidenceError(f"ready traceability test source path for {requirement} is unsafe")
-            normalized = posixpath.normpath(posixpath.join("docs/testing", source_link))
-            if normalized.startswith("../") or normalized == "..":
-                raise PhaseEvidenceError(f"ready traceability test source path for {requirement} is unsafe")
-            if not normalized.startswith("tests/"):
-                raise PhaseEvidenceError(f"ready traceability test source for {requirement} is outside tests/")
-            local_path = root / normalized
-            if path_has_symlink(local_path, root=root) or not local_path.is_file():
-                raise PhaseEvidenceError(f"ready traceability test source is missing or unsafe: {normalized}")
-            try:
-                committed = github.regular_content_at_ref(normalized, commit_sha)
-            except GitHubError as exc:
-                raise PhaseEvidenceError(f"ready traceability source read failed for {requirement}: {exc}") from exc
-            if local_path.read_bytes() != committed:
-                raise PhaseEvidenceError(f"ready traceability source differs from its branch commit: {normalized}")
+            for role, expected_root, accepts in identities:
+                selected = [(label, destination) for label, destination in links if accepts(label)]
+                if role == "specification":
+                    selected = [(label, destination) for label, destination in selected if label == requirement]
+                elif role == "test-oracle":
+                    oracles = [(label, destination) for label, destination in selected if label.startswith(("ORA-", "ORACLE-"))]
+                    tests = [(label, destination) for label, destination in selected if label.startswith(("TST-", "TEST-"))]
+                    if len(oracles) != 1 or len(tests) != 1:
+                        raise PhaseEvidenceError(f"ready traceability row for {requirement} needs one linked Oracle and Test")
+                    selected = [*oracles, *tests]
+                if len(selected) != 1 and role != "test-oracle":
+                    raise PhaseEvidenceError(f"ready traceability row for {requirement} needs one linked {role}")
+                for label, destination in selected:
+                    target, target_content = _traceability_target(
+                        root, github, commit_sha, path, destination, expected_root, label,
+                        declared_paths.get(role, ()), role in skip_reasons, cache,
+                    )
+                    verified_targets[target] = (role, target_content)
+            source_links = [destination for _label, destination in links
+                            if destination.startswith("../../tests/")]
+            if not source_links:
+                raise PhaseEvidenceError(f"ready traceability row for {requirement} needs an executable test source")
+            for source_link in source_links:
+                if any(char in source_link for char in "\\\x00\r\n?#:%"):
+                    raise PhaseEvidenceError(f"ready traceability test source path for {requirement} is unsafe")
+                normalized = posixpath.normpath(posixpath.join("docs/testing", source_link))
+                if not normalized.startswith("tests/") or normalized.startswith("../"):
+                    raise PhaseEvidenceError(f"ready traceability test source for {requirement} is outside tests/")
+                local = root / normalized
+                if path_has_symlink(local, root=root) or not local.is_file():
+                    raise PhaseEvidenceError(f"ready traceability source is missing or unsafe: {normalized}")
+                try:
+                    committed = github.regular_content_at_ref(normalized, commit_sha)
+                except GitHubError as exc:
+                    raise PhaseEvidenceError(f"ready traceability source is absent from the branch commit: {normalized}") from exc
+                if local.read_bytes() != committed:
+                    raise PhaseEvidenceError(f"ready traceability source differs from the branch commit: {normalized}")
+    return verified_targets
 
 
 def _check_activation(github: GitHub, issue_number: int) -> None:
@@ -306,87 +434,234 @@ def _check_activation(github: GitHub, issue_number: int) -> None:
         raise PhaseEvidenceError(f"ordinary Issue phase evidence requires verified P-ASES Activation: {exc}") from exc
 
 
+def _receipt_subject(payload: Mapping[str, Any]) -> tuple[Any, ...]:
+    return tuple(payload[key] for key in (
+        "repository", "issue_number", "from_phase", "to_phase", "adc_comment_id", "adc_sha256",
+    ))
+
+
+def _find_receipt(github: GitHub, issue_number: int, *, source: Phase, target: Phase,
+                  adc_comment_id: int, adc_sha256: str) -> tuple[int, PhaseDecision]:
+    try:
+        comments = github.issue_comments(issue_number)
+    except GitHubError as exc:
+        raise PhaseEvidenceError(f"prior phase receipt history is unavailable: {exc}") from exc
+    matches: list[dict[str, Any]] = []
+    for row in comments:
+        body = row.get("body") if isinstance(row, dict) else None
+        if isinstance(body, str) and body.startswith(SENTINEL + "\n"):
+            candidate = PhaseDecision.from_body(body)
+            if _receipt_subject(candidate.payload) == (
+                    github.repo, issue_number, source.value, target.value, adc_comment_id, adc_sha256):
+                matches.append(row)
+    if len(matches) != 1:
+        reason = "missing" if not matches else "duplicated"
+        raise PhaseEvidenceError(f"required predecessor phase receipt is {reason} for this approved ADC generation")
+    comment_id = matches[0].get("id")
+    if type(comment_id) is not int or comment_id < 1:
+        raise PhaseEvidenceError("predecessor phase receipt has an invalid comment ID")
+    body = matches[0].get("body")
+    parsed = _readback(github, issue_number, comment_id, body)
+    return comment_id, parsed
+
+
+def _predecessor_chain(source: Phase, target: Phase, adc_reasons: Mapping[str, str]
+                       ) -> tuple[tuple[Phase, Phase], ...]:
+    if source is Phase.SPECIFICATION and target is Phase.DESIGN:
+        return ((Phase.REQUIREMENTS, Phase.SPECIFICATION),)
+    if target is Phase.READY and source is Phase.SPECIFICATION:
+        return ((Phase.REQUIREMENTS, Phase.SPECIFICATION),)
+    if target is Phase.READY and source is Phase.DESIGN:
+        if "specification" in adc_reasons:
+            return ((Phase.REQUIREMENTS, Phase.DESIGN),)
+        return (
+            (Phase.REQUIREMENTS, Phase.SPECIFICATION),
+            (Phase.SPECIFICATION, Phase.DESIGN),
+        )
+    return ()
+
+
+def _verify_predecessor_receipt(github: GitHub, root: Path, issue_number: int,
+                                edge: tuple[Phase, Phase], verified: VerifiedADC,
+                                kind: IssueKind, branch_ref: str, current_sha: str,
+                                declared_paths: Mapping[str, tuple[str, ...]],
+                                adc_reasons: Mapping[str, str],
+                                documents_by_path: Mapping[str, Mapping[str, str]],
+                                previous_sha: str | None) -> tuple[PhaseDecision, str]:
+    source, target = edge
+    _comment_id, prior = _find_receipt(
+        github, issue_number, source=source, target=target,
+        adc_comment_id=verified.pointer.comment_id, adc_sha256=verified.contract.sha256,
+    )
+    payload = prior.payload
+    if (payload["branch_ref"] != branch_ref or payload["issue_kind"] != kind.value
+            or payload["repository"].casefold() != github.repo.casefold()
+            or payload["adc_comment_id"] != verified.pointer.comment_id
+            or payload["adc_sha256"] != verified.contract.sha256
+            or not is_ancestor(root, payload["commit_sha40"], current_sha)
+            or (previous_sha is not None and not is_ancestor(root, previous_sha, payload["commit_sha40"]))):
+        raise PhaseEvidenceError("predecessor receipt chain does not belong to this Issue branch history")
+
+    if target is Phase.SPECIFICATION:
+        expected_roles = {"specification"}
+    elif target is Phase.DESIGN and source is Phase.REQUIREMENTS:
+        expected_roles = {"design"}
+    elif target is Phase.DESIGN:
+        expected_roles = {"specification", "design"}
+    else:
+        expected_roles = set()
+    expected_paths = {
+        path: role
+        for role in expected_roles
+        for path in declared_paths.get(role, ())
+    }
+    rows = {row["path"]: row for row in payload["documents"]}
+    if set(rows) != set(expected_paths) or any(rows[path]["role"] != role for path, role in expected_paths.items()):
+        raise PhaseEvidenceError("predecessor receipt artifact set does not match the approved ADC")
+
+    expected_skips = ({"specification": adc_reasons["specification"]}
+                      if source is Phase.REQUIREMENTS and target is Phase.DESIGN else {})
+    if payload["skip_reasons"] != expected_skips:
+        raise PhaseEvidenceError("predecessor receipt skip reason does not match the approved ADC")
+    for path, role in expected_paths.items():
+        current = documents_by_path.get(path)
+        if (current is None or current["role"] != role
+                or current["sha256"] != rows[path]["sha256"]):
+            raise PhaseEvidenceError(
+                "a previously completed specification/design artifact changed; "
+                "return to requirements and reapprove the ADC",
+            )
+    return prior, payload["commit_sha40"]
+
+
 def _collect_payload(github: GitHub, root: Path, issue_number: int, source: Phase, target: Phase,
-                     skips: Mapping[str, str]) -> tuple[PhaseDecision, dict[str, Any], VerifiedADC, str, str]:
+                     skips: Mapping[str, str], *, check_source_phase: bool = True
+                     ) -> tuple[PhaseDecision, dict[str, Any], VerifiedADC, str, str]:
     if type(issue_number) is not int or issue_number < 1:
         raise PhaseEvidenceError("Issue number must be a positive integer")
-    _check_activation(github, issue_number)
-    try:
-        issue = github.issue(issue_number)
-        if issue.get("number") != issue_number or issue.get("state") != "open" or issue.get("pull_request") is not None:
-            raise PhaseEvidenceError("phase evidence requires the exact open GitHub Issue")
-        repository_url = issue.get("repository_url")
-        if (not isinstance(repository_url, str)
-                or repository_url.casefold() != f"https://api.github.com/repos/{github.repo}".casefold()):
-            raise PhaseEvidenceError("phase evidence Issue belongs to a different repository")
-        kind, labels = _kind_from_issue(issue)
-        current_phase = parse_phase_labels(labels)
-        if current_phase is not source:
-            raise PhaseEvidenceError("Issue phase label differs from the requested evidence source phase")
-        verified = verify_adc(github, issue_number)
-        if verified.pointer.state != "approved":
-            raise PhaseEvidenceError("phase evidence requires the current approved ADC")
-        branch_ref = current_branch(root)
-        local_sha = head_sha40(root)
-        branch = github.branch(branch_ref)
-        remote_sha = branch.get("commit", {}).get("sha") if isinstance(branch.get("commit"), dict) else None
-        if branch.get("name") != branch_ref or remote_sha != local_sha:
-            raise PhaseEvidenceError("local Git HEAD does not match the Issue branch commit on GitHub")
-        declared_paths, adc_reasons = _artifact_impacts(verified)
-        skip_reasons = _expected_skip_reasons(source, target, skips, adc_reasons)
-        if source is Phase.REQUIREMENTS and target is Phase.DESIGN and "specification" not in skip_reasons:
-            raise PhaseEvidenceError("requirements to design requires an approved specification skip reason")
-        if source is Phase.REQUIREMENTS and target is Phase.READY and set(skip_reasons) != {"specification", "design"}:
-            raise PhaseEvidenceError("requirements to ready requires independent specification and design skip reasons")
-        roles = {role: paths for role, paths in declared_paths.items() if paths}
-        if target is Phase.SPECIFICATION and not roles.get("specification"):
-            raise PhaseEvidenceError("approved ADC has no specification artifact for this phase")
-        if target is Phase.DESIGN and not roles.get("design"):
-            raise PhaseEvidenceError("approved ADC has no design artifact for this phase")
-        if target is Phase.READY:
-            if not roles.get("test-oracle"):
-                raise PhaseEvidenceError("approved ADC has no committed test/Oracle artifact for ready")
-            if "docs/testing/traceability.md" not in roles["test-oracle"]:
-                raise PhaseEvidenceError("ready requires the committed canonical test/Oracle traceability matrix")
-            if "specification" not in skip_reasons and not roles.get("specification"):
-                raise PhaseEvidenceError("ready requires the ADC's declared specification artifact")
-            if "design" not in skip_reasons and not roles.get("design"):
-                raise PhaseEvidenceError("ready requires the ADC's declared design artifact")
-        documents: list[dict[str, str]] = []
-        for role, paths in roles.items():
-            for path in paths:
-                local_path = Path(root) / path
-                if path_has_symlink(local_path, root=Path(root)) or not local_path.is_file():
-                    raise PhaseEvidenceError(f"phase artifact must be a regular file without symlinks: {path}")
-                content = github.regular_content_at_ref(path, local_sha)
-                if local_path.read_bytes() != content:
-                    raise PhaseEvidenceError(f"working-tree bytes differ from the committed phase artifact: {path}")
-                documents.append({"role": role, "path": path, "sha256": hashlib.sha256(content).hexdigest()})
-                if target is Phase.READY and path == "docs/testing/traceability.md":
-                    _validate_ready_traceability(Path(root), path, content, github, local_sha,
-                                                 verified.contract.requirement_ids)
-        documents.sort(key=lambda row: row["path"])
-        payload = {
-            "schema": SENTINEL,
-            "repository": github.repo,
-            "issue_number": issue_number,
-            "issue_kind": kind.value,
-            "from_phase": source.value,
-            "to_phase": target.value,
-            "adc_comment_id": verified.pointer.comment_id,
-            "adc_sha256": verified.contract.sha256,
-            "branch_ref": branch_ref,
-            "commit_sha40": local_sha,
-            "documents": documents,
-            "skip_reasons": skip_reasons,
-        }
-        decision = PhaseDecision(_validate_payload(payload))
-        return decision, issue, verified, branch_ref, local_sha
-    except (ADCError, GitHubError, GitError) as exc:
-        raise PhaseEvidenceError(str(exc)) from exc
+    issue, verified, kind, branch_ref, local_sha = verify_ordinary_issue_context(
+        github, root, issue_number, require_binding=True,
+    )
+    labels = [row.get("name") for row in issue.get("labels", []) if isinstance(row, dict)]
+    if check_source_phase and parse_phase_labels(labels) is not source:
+        raise PhaseEvidenceError("Issue phase label differs from the requested evidence source phase")
+    declared_paths, adc_reasons = _artifact_impacts(verified)
+    skip_reasons = _expected_skip_reasons(source, target, skips, adc_reasons)
+    if source is Phase.REQUIREMENTS and target is Phase.DESIGN and "specification" not in skip_reasons:
+        raise PhaseEvidenceError("requirements to design requires an approved specification skip reason")
+    if source is Phase.REQUIREMENTS and target is Phase.READY and set(skip_reasons) != {"specification", "design"}:
+        raise PhaseEvidenceError("requirements to ready requires independent specification and design skip reasons")
+
+    required_roles: set[str] = set()
+    if target is Phase.SPECIFICATION:
+        required_roles.add("specification")
+    elif target is Phase.DESIGN:
+        required_roles.add("design")
+        if source is Phase.SPECIFICATION:
+            required_roles.add("specification")
+    elif target is Phase.READY:
+        required_roles.add("test-oracle")
+        if source is Phase.SPECIFICATION:
+            required_roles.add("specification")
+        elif source is Phase.DESIGN:
+            required_roles.add("design")
+            if declared_paths.get("specification"):
+                required_roles.add("specification")
+    roles = {role: declared_paths[role] for role in required_roles if declared_paths.get(role)}
+    if "specification" in required_roles and not roles.get("specification"):
+        raise PhaseEvidenceError("approved ADC has no specification artifact for this phase")
+    if "design" in required_roles and not roles.get("design"):
+        raise PhaseEvidenceError("approved ADC has no design artifact for this phase")
+    if "test-oracle" in required_roles:
+        if not roles.get("test-oracle"):
+            raise PhaseEvidenceError("approved ADC has no committed test/Oracle artifact for ready")
+        if "docs/testing/traceability.md" not in roles["test-oracle"]:
+            raise PhaseEvidenceError("ready requires the committed canonical test/Oracle traceability matrix")
+
+    documents_by_path: dict[str, dict[str, str]] = {}
+    contents: dict[str, bytes] = {}
+    for role, paths in roles.items():
+        for path in paths:
+            local_path = Path(root) / path
+            if path_has_symlink(local_path, root=Path(root)) or not local_path.is_file():
+                raise PhaseEvidenceError(f"phase artifact must be a regular file without symlinks: {path}")
+            content = github.regular_content_at_ref(path, local_sha)
+            if local_path.read_bytes() != content:
+                raise PhaseEvidenceError(f"working-tree bytes differ from the committed phase artifact: {path}")
+            contents[path] = content
+            documents_by_path[path] = {"role": role, "path": path,
+                                       "sha256": hashlib.sha256(content).hexdigest()}
+
+    if target is Phase.READY:
+        trace_targets = _validate_ready_traceability(
+            Path(root), "docs/testing/traceability.md", contents["docs/testing/traceability.md"],
+            github, local_sha, verified.contract.requirement_ids, declared_paths,
+            {role: reason for role, reason in adc_reasons.items() if not declared_paths.get(role)},
+        )
+        for path, (role, content) in trace_targets.items():
+            contents[path] = content
+            documents_by_path[path] = {"role": role, "path": path,
+                                       "sha256": hashlib.sha256(content).hexdigest()}
+
+    previous_sha: str | None = None
+    for edge in _predecessor_chain(source, target, adc_reasons):
+        _prior, previous_sha = _verify_predecessor_receipt(
+            github, Path(root), issue_number, edge, verified, kind, branch_ref, local_sha,
+            declared_paths, adc_reasons, documents_by_path, previous_sha,
+        )
+
+    documents = sorted(documents_by_path.values(), key=lambda row: row["path"])
+    payload = {
+        "schema": SENTINEL,
+        "repository": github.repo,
+        "issue_number": issue_number,
+        "issue_kind": kind.value,
+        "from_phase": source.value,
+        "to_phase": target.value,
+        "adc_comment_id": verified.pointer.comment_id,
+        "adc_sha256": verified.contract.sha256,
+        "branch_ref": branch_ref,
+        "commit_sha40": local_sha,
+        "documents": documents,
+        "skip_reasons": skip_reasons,
+    }
+    decision = PhaseDecision(_validate_payload(payload))
+    return decision, issue, verified, branch_ref, local_sha
 
 
-def _identity(comment: Any, *, issue_number: int, authenticated: dict[str, Any]) -> tuple[Any, ...]:
+def verify_ready_preparation(github: GitHub, root: Path, issue_number: int,
+                             expected_kind: IssueKind) -> PhaseDecision:
+    """Rebuild and reread the exact ready receipt before entering implementation."""
+    issue, verified, kind, _branch_ref, _local_sha = verify_ordinary_issue_context(
+        github, root, issue_number, expected_kind, require_binding=True,
+    )
+    labels = [row.get("name") for row in issue.get("labels", []) if isinstance(row, dict)]
+    if parse_phase_labels(labels) is not Phase.READY:
+        raise PhaseEvidenceError("execution requires the Issue to be in the ready phase")
+    declared_paths, adc_reasons = _artifact_impacts(verified)
+    if declared_paths.get("specification") and declared_paths.get("design"):
+        source, skips = Phase.DESIGN, {}
+    elif declared_paths.get("design"):
+        source, skips = Phase.DESIGN, {}
+    elif declared_paths.get("specification"):
+        source, skips = Phase.SPECIFICATION, {"design": adc_reasons.get("design", "")}
+    else:
+        source = Phase.REQUIREMENTS
+        skips = {key: adc_reasons.get(key, "") for key in ("specification", "design")}
+    decision, _issue, _adc, _branch, _commit = _collect_payload(
+        github, root, issue_number, source, Phase.READY, skips, check_source_phase=False,
+    )
+    _comment_id, stored = _find_receipt(
+        github, issue_number, source=source, target=Phase.READY,
+        adc_comment_id=verified.pointer.comment_id, adc_sha256=verified.contract.sha256,
+    )
+    if stored.body() != decision.body():
+        raise PhaseEvidenceError("ready preparation receipt is stale for the current Issue branch HEAD")
+    return stored
+
+
+def _identity(comment: Any, *, repository: str, issue_number: int,
+              authenticated: dict[str, Any]) -> tuple[Any, ...]:
     if not isinstance(comment, dict):
         raise PhaseEvidenceError("phase evidence comment readback is malformed")
     user = comment.get("user")
@@ -401,8 +676,14 @@ def _identity(comment: Any, *, issue_number: int, authenticated: dict[str, Any])
         raise PhaseEvidenceError("phase evidence author is not the authenticated GitHub user")
     if type(comment.get("id")) is not int or comment["id"] < 1:
         raise PhaseEvidenceError("phase evidence comment ID is invalid")
-    if comment.get("issue_url") != f"https://api.github.com/repos/{authenticated['repository']}/issues/{issue_number}":
-        raise PhaseEvidenceError("phase evidence comment belongs to a different repository or Issue")
+    expected_urls = {
+        "issue_url": f"https://api.github.com/repos/{repository}/issues/{issue_number}",
+        "html_url": f"https://github.com/{repository}/issues/{issue_number}#issuecomment-{comment['id']}",
+        "url": f"https://api.github.com/repos/{repository}/issues/comments/{comment['id']}",
+    }
+    for key, expected in expected_urls.items():
+        if comment.get(key) != expected:
+            raise PhaseEvidenceError(f"phase evidence {key} does not identify this repository, Issue, and comment")
     created, updated = comment.get("created_at"), comment.get("updated_at")
     if not isinstance(created, str) or updated != created:
         raise PhaseEvidenceError("phase evidence comment was edited or has incomplete timestamps")
@@ -414,35 +695,43 @@ def _identity(comment: Any, *, issue_number: int, authenticated: dict[str, Any])
 
 
 def _readback(github: GitHub, issue_number: int, comment_id: int, expected_body: str) -> PhaseDecision:
+    parsed = PhaseDecision.from_body(expected_body)
+    if (parsed.payload["repository"].casefold() != github.repo.casefold()
+            or parsed.payload["issue_number"] != issue_number):
+        raise PhaseEvidenceError("phase evidence payload belongs to a different repository or Issue")
     try:
         authenticated = github.authenticated_user()
-        authenticated["repository"] = github.repo
-        first = github.issue_comment(issue_number, comment_id)
-        listed = [row for row in github.issue_comments(issue_number)
-                  if isinstance(row, dict) and row.get("id") == comment_id]
-        second = github.issue_comment(issue_number, comment_id)
+        snapshots: list[tuple[Any, ...]] = []
+        for _ in range(2):
+            first = github.issue_comment(issue_number, comment_id)
+            comments = github.issue_comments(issue_number)
+            if not isinstance(comments, list):
+                raise PhaseEvidenceError("phase evidence Issue comment history is malformed")
+            listed = [row for row in comments if isinstance(row, dict) and row.get("id") == comment_id]
+            second = github.issue_comment(issue_number, comment_id)
+            if len(listed) != 1:
+                raise PhaseEvidenceError("phase evidence comment is missing or duplicated in Issue history")
+            identities = [_identity(row, repository=github.repo, issue_number=issue_number,
+                                    authenticated=authenticated)
+                          for row in (first, listed[0], second)]
+            if identities[0] != identities[1] or identities[1] != identities[2]:
+                raise PhaseEvidenceError("phase evidence comment identity changed during readback")
+            if identities[0][1] != expected_body:
+                raise PhaseEvidenceError("phase evidence comment body does not match its verified payload")
+            subjects: list[int] = []
+            for row in comments:
+                body = row.get("body") if isinstance(row, dict) else None
+                if isinstance(body, str) and body.startswith(SENTINEL + "\n"):
+                    candidate = PhaseDecision.from_body(body)
+                    if _receipt_subject(candidate.payload) == _receipt_subject(parsed.payload):
+                        subjects.append(row.get("id"))
+            if subjects != [comment_id]:
+                raise PhaseEvidenceError("phase evidence subject is duplicated or stale in Issue history")
+            snapshots.append(identities[1])
     except GitHubError as exc:
         raise PhaseEvidenceError(f"phase evidence GitHub readback failed: {exc}") from exc
-    if len(listed) != 1:
-        raise PhaseEvidenceError("phase evidence comment is missing or duplicated in Issue history")
-    identities = [_identity(row, issue_number=issue_number, authenticated=authenticated)
-                  for row in (first, listed[0], second)]
-    if identities[0] != identities[1] or identities[1] != identities[2]:
-        raise PhaseEvidenceError("phase evidence comment identity changed during readback")
-    if identities[0][1] != expected_body:
-        raise PhaseEvidenceError("phase evidence comment body does not match its verified payload")
-    parsed = PhaseDecision.from_body(identities[0][1])
-    comments = github.issue_comments(issue_number)
-    same_subject: list[dict[str, Any]] = []
-    for row in comments:
-        body = row.get("body") if isinstance(row, dict) else None
-        if isinstance(body, str) and body.startswith(SENTINEL + "\n"):
-            candidate = PhaseDecision.from_body(body)
-            if (candidate.payload["from_phase"] == parsed.payload["from_phase"]
-                    and candidate.payload["to_phase"] == parsed.payload["to_phase"]):
-                same_subject.append(row)
-    if len(same_subject) != 1 or same_subject[0].get("id") != comment_id:
-        raise PhaseEvidenceError("phase evidence transition record is duplicated or stale")
+    if snapshots[0] != snapshots[1]:
+        raise PhaseEvidenceError("phase evidence changed between complete readback snapshots")
     return parsed
 
 
@@ -462,8 +751,7 @@ def publish_phase_evidence(github: GitHub, root: Path, issue_number: int,
         text = row.get("body") if isinstance(row, dict) else None
         if isinstance(text, str) and text.startswith(SENTINEL + "\n"):
             existing = PhaseDecision.from_body(text)
-            if (existing.payload["from_phase"] == source.value
-                    and existing.payload["to_phase"] == target.value):
+            if _receipt_subject(existing.payload) == _receipt_subject(decision.payload):
                 matching.append((row, existing))
     if len(matching) > 1:
         raise PhaseEvidenceError("phase evidence transition record is duplicated")

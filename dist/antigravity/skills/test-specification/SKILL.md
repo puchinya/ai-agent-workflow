@@ -15,7 +15,7 @@ Owner: workflow/standards/test-specification.md, workflow/templates/test-spec-te
 3. Cover positive and negative cases, including stale subjects, changed pointers, missing authority, partial failure, and unsafe paths.
 4. Map each test ID to one or more requirements and Oracles without using implementation details as the expected answer.
 5. Keep OS and host-smoke-test coverage explicit. An unrun platform is unverified.
-6. Commit the independent test/Oracle specification before `ready`; the phase receipt must bind its bytes together with the specification/design paths required by the approved ADC.
+6. Commit the independent test/Oracle specification before `ready`; the phase receipt must bind its bytes together with the exact links, anchors, specification/design paths, and predecessor receipt chain required by the approved ADC.
 
 ## CLI
 

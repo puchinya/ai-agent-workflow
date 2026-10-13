@@ -128,7 +128,7 @@ git diff --check
 
 ## 現在の制約
 
-通常のphase経路は、specification・design・readyへの遷移で`PASES_PHASE_DECISION_V1`証跡を記録します。この証跡は現行の承認済みADC、Issue種別、ブランチのコミット、ADCが宣言した文書パスとコミット済みの文書バイト列を照合します。文書内容の正しさを判定したり、人間の承認に代わったりはしません。親Issue #26とBootstrap Issue #27〜#32は移行専用のゲートを維持します。通常Issueへの機能適用には検証済みActivationが必要です。ホスト上の実動作確認はリポジトリCIと各ホストのスモークテストで確認します。
+通常のphase経路は、specification・design・readyへの遷移で`PASES_PHASE_DECISION_V1`証跡を記録します。各段階ではその時点までに必要な成果物だけを照合し、後続証跡では先行receipt chain全体と完了済み成果物のhashを再検証します。証跡は現行の承認済みADC世代をIssue専用ブランチと凍結済みbase/worktreeに結び付けます。readyでは正規リンク、同じcommit内のリンク先ファイルとanchor、ADCの成果物パスまたはskip理由、実行可能なテストソースを確認します。通常Issueのphase変更はすべてIssue種別・承認済みADC・Activation・Gate Selectionも検証し、`ready → execution`ではラベル変更前にready証跡を再読込します。これらの検査はidentityとバイト列を検証し、文書内容の正しさを判断したり人間の承認に代わったりはしません。親Issue #26とBootstrap Issue #27〜#32は移行専用のゲートを維持します。ホスト上の実動作確認はリポジトリCIと各ホストのスモークテストで確認します。
 
 P-ASESは不明・失効した証跡について**fail-closed**で判定します。移行時の親Integration・Activationの進行状況は[Issue #26](https://github.com/puchinya/ai-agent-workflow/issues/26)を参照してください。
 
