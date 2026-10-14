@@ -555,7 +555,7 @@ class ParentIntegrationTests(unittest.TestCase):
                 return b"pinned migration contract source\n"
 
         github = ContentGitHub()
-        with patch("p_ases.cli.verify_adc", return_value=approved_adc) as verify:
+        with patch("p_ases.parent_gate.verify_adc", return_value=approved_adc) as verify:
             parent_digest, child_pointer = _parent_adc_authority(github)
         verify.assert_called_once_with(github, 31)
         self.assertEqual(parent_digest, "f" * 64)
@@ -593,7 +593,7 @@ class ParentIntegrationTests(unittest.TestCase):
                     def content_at_ref(self, path, ref):
                         return source
 
-                with patch("p_ases.cli.verify_adc", return_value=adc):
+                with patch("p_ases.parent_gate.verify_adc", return_value=adc):
                     with self.assertRaises(IntegrationError):
                         _parent_adc_authority(ContentGitHub())
 
@@ -759,7 +759,7 @@ class ParentIntegrationTests(unittest.TestCase):
                 github, comment_id, main_sha, "verification", "octo/repo", "b" * 64)
             self.assertEqual(evidence.source_reference, f"issue-comment:{comment_id}")
             self.assertEqual(evidence.main_sha40, main_sha)
-            self.assertEqual(github.reads, 4)
+            self.assertEqual(github.reads, 6)
 
             payload = json.loads(bundle.result_bytes)
             check = payload["checks"][0]
@@ -1177,8 +1177,8 @@ class ParentIntegrationTests(unittest.TestCase):
         self.assertEqual(len(result["integration_sha256"]), 64)
         self.assertIn("issue-comment:801", result["evidence_refs"])
         self.assertIn("issue-comment:802", result["evidence_refs"])
-        self.assertEqual(integration_github.direct_comment_ids.count(801), 8)
-        self.assertEqual(integration_github.direct_comment_ids.count(802), 8)
+        self.assertEqual(integration_github.direct_comment_ids.count(801), 12)
+        self.assertEqual(integration_github.direct_comment_ids.count(802), 12)
         self.assertEqual(integration_github.sub_issue_reads, 2)
         self.assertEqual(integration_github.blocked_by_calls, [*EXPECTED, *EXPECTED])
 

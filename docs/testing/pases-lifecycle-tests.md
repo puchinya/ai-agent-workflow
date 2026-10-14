@@ -19,6 +19,8 @@
     - [2.4.1 ORA-UR-004 Expected result](#241-ora-ur-004-expected-result)
   - [2.5 TST-UR-005 Parent User Review](#25-tst-ur-005-parent-user-review)
     - [2.5.1 ORA-UR-005 Expected result](#251-ora-ur-005-expected-result)
+  - [2.6 TST-UR-006 Parent Activation provenance and comment history](#26-tst-ur-006-parent-activation-provenance-and-comment-history)
+    - [2.6.1 ORA-UR-006 Expected result](#261-ora-ur-006-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -33,6 +35,8 @@
 - [ORA-UR-004](#ora-ur-004) — 2.4.1 ORA-UR-004 Expected result
 - [TST-UR-005](#tst-ur-005) — 2.5 TST-UR-005 Parent User Review
 - [ORA-UR-005](#ora-ur-005) — 2.5.1 ORA-UR-005 Expected result
+- [TST-UR-006](#tst-ur-006) — 2.6 TST-UR-006 Parent Activation provenance and comment history
+- [ORA-UR-006](#ora-ur-006) — 2.6.1 ORA-UR-006 Expected result
 <!-- heading-map:end -->
 
 
@@ -93,3 +97,13 @@ Each gate must be checked separately. Final Delivery never authorizes or perform
 #### 2.5.1 ORA-UR-005 Expected result
 
 Parent User Review starts only after exact Integration PASS. Only a new whole-body `P-ASES-DECISION: APPROVED` plus `P-ASES-SUBJECT: <SHA-256>` parent Issue comment from the authenticated human can approve. Stale, edited, deleted, incomplete, or changed-subject decisions fail closed. Approval leaves parent close, activation, merge, and release as separate gates.
+
+<a id="tst-ur-006"></a>
+### 2.6 TST-UR-006 Parent Activation provenance and comment history
+
+**Setup and action:** Build a fixed #26 Activation fixture with six closed child Issues, six merged same-repository PRs, the V1 integration envelope, V2 Verification and Acceptance comments, Actions runs/jobs/steps/Check Runs, an owner approval, and an Activation record. Verify a valid fixture passes after reconstructing both typed V2 comments from GitHub APIs. Then independently vary each V1 PASS flag, digest, HTTPS ref, comment ID, run ID, parent ADC, activation SHA, child merge SHA, Actions App ID, workflow/job/step/check identity, and run status; include nonexistent Actions references and self-asserted PASS with fabricated matching hashes. Add missing, duplicated, edited, deleted, wrong-Issue, wrong-URL, wrong-ID, wrong-owner-ID/login/type, and timestamp-edited approval, Activation, V1 integration, and V2 evidence comments. Change a target comment between direct/list/direct reads. Vary avatar/profile URLs and login casing without changing stable author identity. Finally advance current main to a descendant commit after successful Activation and verify the original Activation remains valid; move the Activation commit off main and verify it blocks.
+
+<a id="ora-ur-006"></a>
+#### 2.6.1 ORA-UR-006 Expected result
+
+Activation passes only when the complete exact-SHA Verification and Acceptance evidence is reconstructed from trusted GitHub Actions API records (App ID 15368), the approved parent ADC and all six real child merge SHAs match, and current main contains the activation commit. Caller PASS flags, digests, or URLs alone never establish Activation. Approval, Activation, and referenced evidence comments pass only when each is unique and direct/list/direct identity matches across ID, exact body, `created_at == updated_at`, Issue/HTML/API URLs, and stable owner User ID/login/type. Edited, deleted, duplicated, misattributed, misbound, or changing records and any API failure block. Avatar/profile-only differences and login casing are tolerated. Advancing main preserves a valid historical activation as long as its commit remains on main.
