@@ -92,14 +92,15 @@ def ensure_pull_request(repository_root: Path, github: GitHub, *, repository: st
                         issue_number: int, binding: ExecutionBinding,
                         branch_ref: str, base_ref: str, title: str, body: str) -> PREnsureResult:
     """Reuse one exact eligible PR or create once, then read it back before binding."""
-    root = Path(repository_root).absolute()
+    root = Path(repository_root).resolve()
     branch_ref, base_ref = validate_ref(branch_ref), validate_ref(base_ref)
     _validate_pr_body(body, issue_number)
     binding.validate()
     if (binding.repository != repository or binding.issue_number != issue_number
-            or binding.base_ref != base_ref or Path(binding.work_directory) != root):
-        raise WorkError("ExecutionBinding does not match the requested PR repository, Issue, base, or worktree")
-    if not worktree_clean(root) or current_branch(root) != branch_ref:
+            or binding.base_ref != base_ref or binding.branch_ref != branch_ref
+            or Path(binding.work_directory) != root):
+        raise WorkError("ExecutionBinding does not match the requested PR repository, Issue, base, branch, or worktree")
+    if not worktree_clean(root) or current_branch(root) != branch_ref or binding.branch_ref != branch_ref:
         raise WorkError("PR ensure requires a clean worktree on the exact bound branch")
     local_head = head_sha40(root)
     if not is_ancestor(root, binding.base_sha, local_head):
@@ -293,7 +294,8 @@ def _save_checkpoint(work_directory: Path, issue_number: int, binding: Execution
             candidate = WorkCheckpoint(digest, current_head, clean, stage, artifact_digests, old.step).validate()
             if candidate == old:
                 return previous
-            raise WorkError("retry conflicts with the immutable checkpoint for this stage and HEAD")
+            if stage != "bind" or old.execution_binding_sha256 == digest:
+                raise WorkError("retry conflicts with the immutable checkpoint for this stage and HEAD")
     checkpoint = WorkCheckpoint(digest, current_head, clean, stage, artifact_digests, step).validate()
     path = checkpoint_path(work_directory, issue_number, step)
     write_checkpoint(path, checkpoint)
@@ -340,7 +342,7 @@ def ensure_branch(repository_root: Path, base_ref: str, base_sha40: str, branch_
 def bind_work(repository_root: Path, *, repository: str, issue_number: int, adc_comment_id: int,
               adc_sha256: str, base_ref: str, branch_ref: str,
               expected_base_sha40: str | None = None) -> WorkResult:
-    root = Path(repository_root).absolute()
+    root = Path(repository_root).resolve()
     base_ref, branch_ref = validate_ref(base_ref), validate_ref(branch_ref)
     path = execution_binding_path(root, issue_number)
     _reject_symlink_path(path, "ExecutionBinding path")
@@ -349,22 +351,31 @@ def bind_work(repository_root: Path, *, repository: str, issue_number: int, adc_
         raise WorkError("ExecutionBinding requires a clean worktree")
     if before_branch != branch_ref:
         raise WorkError("current branch differs from the requested bound branch")
-    base_sha = resolve_base(root, base_ref, expected_sha40=expected_base_sha40)
+    prior = read_binding(path, legacy_branch_ref=branch_ref) if path.exists() else None
+    if prior is not None and (prior.repository != repository or prior.issue_number != issue_number
+                              or prior.base_ref != base_ref or prior.branch_ref != branch_ref
+                              or Path(prior.work_directory) != root):
+        raise WorkError("existing ExecutionBinding conflicts in repository, Issue, base, branch, or worktree")
+    if prior is not None and prior.adc_comment_id != adc_comment_id:
+        base_sha = prior.base_sha
+        if expected_base_sha40 is not None and expected_base_sha40 != base_sha:
+            raise WorkError("ADC supersession must retain the frozen ExecutionBinding base SHA")
+    else:
+        base_sha = resolve_base(root, base_ref, expected_sha40=expected_base_sha40)
     if before_head != base_sha and not is_ancestor(root, base_sha, before_head):
         raise WorkError("current branch is not a descendant of the selected frozen base")
-    if path.exists():
-        binding = read_binding(path)
-        expected = ExecutionBinding(repository, issue_number, adc_comment_id, adc_sha256,
-                                    base_ref, base_sha, str(root), base_sha).validate()
-        if binding != expected:
-            raise WorkError("existing ExecutionBinding conflicts; it is never replaced")
-    else:
-        binding = ExecutionBinding(repository, issue_number, adc_comment_id, adc_sha256,
-                                   base_ref, base_sha, str(root), base_sha).validate()
+    expected = ExecutionBinding(repository, issue_number, adc_comment_id, adc_sha256,
+                                base_ref, base_sha, branch_ref, str(root), base_sha).validate()
+    if prior == expected:
+        binding = prior
         write_binding(path, binding)
-    remote_after = resolve_base(root, base_ref)
+    else:
+        binding = expected
+        write_binding(path, binding)
+    remote_after = base_sha if prior is not None and prior.adc_comment_id != adc_comment_id else resolve_base(root, base_ref)
     after_head, after_branch, after_clean = head_sha40(root), current_branch(root), worktree_clean(root)
-    if (remote_after != base_sha or after_head != before_head or after_branch != before_branch
+    if (((prior is None or prior.adc_comment_id == adc_comment_id) and remote_after != base_sha)
+            or after_head != before_head or after_branch != before_branch
             or not after_clean):
         raise WorkError("worktree or remote base changed during binding; frozen evidence was retained")
     context = WorkContext(binding, after_head, after_branch, after_clean, binding_digest(binding)).validate()
@@ -377,7 +388,7 @@ def bind_work(repository_root: Path, *, repository: str, issue_number: int, adc_
 
 def recover_work(repository_root: Path, *, repository: str, issue_number: int,
                  adc_comment_id: int, adc_sha256: str, expected_branch_ref: str) -> WorkResult:
-    root = Path(repository_root).absolute()
+    root = Path(repository_root).resolve()
     path = execution_binding_path(root, issue_number)
     _reject_symlink_path(path, "ExecutionBinding path")
     try:
@@ -391,7 +402,7 @@ def recover_work(repository_root: Path, *, repository: str, issue_number: int,
     if not worktree_clean(root):
         raise WorkError("recover requires a clean worktree; existing owner files are preserved")
     branch, current = current_branch(root), head_sha40(root)
-    if branch != validate_ref(expected_branch_ref):
+    if branch != validate_ref(expected_branch_ref) or branch != binding.branch_ref:
         raise WorkError("current branch differs from the explicitly expected work branch")
     if current != binding.base_sha and not is_ancestor(root, binding.base_sha, current):
         raise WorkError("current HEAD diverges from the frozen base; no reset or new base is selected")

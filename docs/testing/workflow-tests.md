@@ -25,6 +25,8 @@
     - [2.7.1 ORA-WF-007 Expected result](#271-ora-wf-007-expected-result)
   - [2.8 TST-WF-008 Security boundary](#28-tst-wf-008-security-boundary)
     - [2.8.1 ORA-WF-008 Expected result](#281-ora-wf-008-expected-result)
+  - [2.9 TST-WF-009 Phase evidence and Issue phase safety](#29-tst-wf-009-phase-evidence-and-issue-phase-safety)
+    - [2.9.1 ORA-WF-009 Expected result](#291-ora-wf-009-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -45,6 +47,8 @@
 - [ORA-WF-007](#ora-wf-007) — 2.7.1 ORA-WF-007 Expected result
 - [TST-WF-008](#tst-wf-008) — 2.8 TST-WF-008 Security boundary
 - [ORA-WF-008](#ora-wf-008) — 2.8.1 ORA-WF-008 Expected result
+- [TST-WF-009](#tst-wf-009) — 2.9 TST-WF-009 Phase evidence and Issue phase safety
+- [ORA-WF-009](#ora-wf-009) — 2.9.1 ORA-WF-009 Expected result
 <!-- heading-map:end -->
 
 
@@ -151,3 +155,15 @@ Each invalid case fails closed before hooks or unrelated mutation and reports it
 #### 2.8.1 ORA-WF-008 Expected result
 
 Paths cannot escape the repo, credentials are not printed, and no network/service fallback is introduced.
+
+<a id="tst-wf-009"></a>
+<a id="tst-wf-009-phase-evidence-and-issue-phase-safety"></a>
+### 2.9 TST-WF-009 Phase evidence and Issue phase safety
+
+**Setup and action:** Exercise canonical `PASES_PHASE_DECISION_V1` payloads and a fake GitHub Issue/branch/ADC whose labels, actor, document bytes, and current commit can be varied. Create a split child and read back its initial labels. Commit only the specification, issue its receipt, then commit design and test/Oracle documents in later commits and advance each phase. Change the completed specification before design; vary the current approved ADC generation, frozen branch binding, base ancestry, link path, target file, actual anchor, source file, and ready receipt. Change the phase evidence comment during the second full direct/list/direct snapshot; vary author ID, login casing, type, editable timestamps, exact repository/Issue/comment URLs, exact JSON form, document path/role/hash, ADC pointer, branch SHA, and the full Issue label set. Advance a ready Issue with missing authority, a stale ready receipt, or invalid binding. Simulate an Issue change immediately before the label write and an API error after a successful write.
+
+<a id="ora-wf-009"></a>
+<a id="ora-wf-009-expected-result"></a>
+#### 2.9.1 ORA-WF-009 Expected result
+
+Only a canonical receipt matching the current approved ADC generation, authenticated author, actual Issue kind, dedicated branch binding, current branch commit, and stage-appropriate committed artifact set can authorize a specification/design/ready label transition. Each downstream receipt must read back exactly one valid predecessor for the same ADC generation and preserve the predecessor's completed artifact hashes. A changed specification or design blocks the next stage until a newly approved ADC generation receives a new requirements-to-specification receipt. Ready requires real canonical links and anchors in the same committed tree, approved artifact paths (or explicit unchanged decisions), and every executable source link. Every ordinary single/child phase change also verifies the current Activation/Gate Selection and approved ADC; ready-to-execution requires the current ready receipt and binding. Two complete direct/list/direct snapshots must have identical stable comment identity and URLs tied to the exact repository, Issue, and comment. Missing, edited, deleted, duplicated, stale, non-canonical, or mismatched evidence leaves the full Issue label set unchanged. A lost label-write response succeeds only after exact complete-state readback. New children receive verified `kind:child` and `phase:requirements`; reused children retain their existing phase.

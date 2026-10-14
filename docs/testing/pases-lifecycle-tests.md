@@ -39,7 +39,7 @@
 <a id="test-purpose"></a>
 ## 1 Test purpose
 
-Verify human User Review, child Integration, and final merge gates as independent exact-subject records.
+Verify human User Review, child Integration, and final merge gates as independent exact-subject records. The normal child phase evidence and initial kind/phase labels are covered by [TST-WF-009](workflow-tests.md#tst-wf-009); these parent migration tests continue to exercise the fixed #26–#32 exception boundary.
 
 <a id="test-conditions-and-oracles"></a>
 ## 2 Test conditions and oracles

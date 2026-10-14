@@ -157,6 +157,10 @@ class FakeGitHub:
 
 
 class ADCValidationTests(unittest.TestCase):
+    def test_area_scoped_requirement_ids_are_preserved_for_traceability(self):
+        contract = parse_adc(adc_bytes(requirement_id="REQ-WF-001"), "octo/repo", 1)
+        self.assertEqual(contract.requirement_ids, ("REQ-WF-001",))
+
     def test_exact_bytes_and_crlf_are_preserved(self):
         payload = adc_bytes(newline="\r\n")
         contract = parse_adc(payload, "octo/repo", 1)

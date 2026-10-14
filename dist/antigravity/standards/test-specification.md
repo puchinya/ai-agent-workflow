@@ -14,6 +14,8 @@ Record setup, action, expected result, failure boundaries, and evidence source. 
 
 The traceability matrix in docs/testing/traceability.md provides a complete path REQ to DES to ORA/Test to Evidence. Do not describe an implementation detail as an Oracle.
 
+For P-ASES phase evidence, commit test and Oracle artifacts before entering `ready`. The ready receipt verifies that every linked canonical document and anchor exists in the same branch commit, matches the approved ADC artifact path or explicit unchanged decision, and names an existing executable test source. That source may be a failing scaffold awaiting implementation: `ready` binds its path and bytes but does not claim a passing test result. Execution may implement or extend the source; Verification establishes the outcome. If the source file does not yet exist in the branch commit, `ready` remains blocked. Earlier specification and design receipts bind only the artifacts complete at their respective stages; later receipts must preserve their hashes and validate the predecessor chain.
+
 ## Related resources
 
 Use the [test specification template](../templates/test-spec-template.md), [product specification standard](product-specification.md), and [technical design standard](technical-design.md).

@@ -62,6 +62,14 @@ from .issue_graph import (
     validate_native_issue_graph,
     validate_split,
 )
+from .phase_evidence import (
+    BOOTSTRAP_ISSUES as PHASE_EVIDENCE_BOOTSTRAP_ISSUES,
+    PhaseEvidenceError,
+    publish_phase_evidence,
+    verify_ordinary_issue_context,
+    verify_ready_preparation,
+    verify_phase_evidence,
+)
 from .oracle_trace import (
     OracleDefinition, OracleTraceError, TestDefinition, validate_plan_oracles,
     validate_plan_tests,
@@ -72,6 +80,42 @@ from .verification import (
     build_verification_result, evaluate_required_checks, read_verification_result,
     required_check_fork_status, verification_result_path, write_verification_result,
 )
+
+
+def _validate_issue_advance_readback(issue: Any, *, original_issue: dict[str, Any],
+                                    repository: str, issue_number: int,
+                                    expected_labels: list[str], kind: IssueKind,
+                                    target: Phase, attention: set[Any], ordinary: bool) -> None:
+    """Require the post-write Issue to retain its identity and exact intended labels."""
+    if not isinstance(issue, dict):
+        raise CLIError("post-write Issue readback is not an object")
+    expected_repository_url = f"https://api.github.com/repos/{repository}"
+    repository_url = issue.get("repository_url")
+    if (issue.get("number") != issue_number or issue.get("state") != "open"
+            or issue.get("pull_request") is not None
+            or not isinstance(repository_url, str)
+            or repository_url.casefold() != expected_repository_url.casefold()
+            or repository_url != original_issue.get("repository_url")
+            or issue.get("body") != original_issue.get("body")):
+        raise CLIError("Issue number, repository, PR identity, open state, or body changed after the label write")
+
+    rows = issue.get("labels")
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise CLIError("post-write Issue labels are malformed")
+    names = [row.get("name") for row in rows]
+    if (any(not isinstance(name, str) for name in names)
+            or len(names) != len(set(names)) or set(names) != set(expected_labels)):
+        raise CLIError("post-write Issue labels differ from the complete intended label set")
+    if names.count(f"phase:{target.value}") != 1 or any(
+            name.startswith("phase:") and name != f"phase:{target.value}" for name in names):
+        raise CLIError("post-write Issue phase label does not match the requested transition")
+    actual_kinds = [name for name in names if name.startswith("kind:")]
+    if ordinary and actual_kinds != [f"kind:{kind.value}"]:
+        raise CLIError("post-write Issue kind label changed during the phase transition")
+    actual_attention = {name for name in names if name.startswith("attention:")}
+    expected_attention = {f"attention:{item.value}" for item in attention}
+    if actual_attention != expected_attention:
+        raise CLIError("post-write Issue attention labels differ from the intended state")
 from .verification_plan import (
     REQ_ID_PATTERN, PlanEntry, PlanError, VerificationPlan, create_plan, read_plan,
     verify_plan_sources,
@@ -130,6 +174,16 @@ def _positive_number(value: str) -> int:
     if not value.isdigit() or int(value) < 1:
         raise argparse.ArgumentTypeError("Issue number must be a positive integer")
     return int(value)
+
+
+def _phase_skip_reasons(values: list[str]) -> dict[str, str]:
+    reasons: dict[str, str] = {}
+    for raw in values:
+        name, separator, reason = raw.partition("=")
+        if not separator or not reason.strip() or name in reasons or name not in {"specification", "design"}:
+            raise CLIError("--skip-phase must be a unique specification=reason or design=reason")
+        reasons[name] = reason.strip()
+    return reasons
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -3059,6 +3113,20 @@ def _parser() -> argparse.ArgumentParser:
     advance_issue.add_argument("--repo", help="repository owner/name; defaults to origin")
     advance_issue.add_argument("--kind", choices=tuple(kind.value for kind in IssueKind), required=True)
     advance_issue.add_argument("--skip-phase", action="append", default=[], metavar="PHASE=REASON")
+    advance_issue.add_argument("--root", type=Path,
+                               help="repository root; required for ordinary Issue phase transitions")
+    advance_issue.add_argument("--phase-evidence-comment-id", type=_positive_number,
+                               help="exact PASES_PHASE_DECISION_V1 comment ID for specification/design/ready")
+    phase_evidence = issue_commands.add_parser(
+        "phase-evidence", help="publish an ADC- and commit-bound specification/design/ready receipt"
+    )
+    phase_evidence.add_argument("issue", type=_positive_number)
+    phase_evidence.add_argument("from_phase", choices=tuple(phase.value for phase in Phase))
+    phase_evidence.add_argument("to_phase", choices=(Phase.SPECIFICATION.value, Phase.DESIGN.value, Phase.READY.value))
+    phase_evidence.add_argument("--repo", help="repository owner/name; defaults to origin")
+    phase_evidence.add_argument("--root", type=Path, required=True,
+                                help="repository root containing the committed documents")
+    phase_evidence.add_argument("--skip-phase", action="append", default=[], metavar="PHASE=REASON")
     integration_check = issue_commands.add_parser("integration-check", help="read back all child merges and parent evidence")
     integration_check.add_argument("parent", type=_positive_number)
     integration_check.add_argument("--verification-comment-id", type=_positive_number,
@@ -3395,6 +3463,22 @@ def main(argv: list[str] | None = None) -> int:
                    "byte_length": verified.pointer.byte_length})
             return 0
 
+        if args.verb == "phase-evidence":
+            root = _repo_root(str(args.root)).resolve()
+            github = GitHub(repository)
+            source, target = Phase(args.from_phase), Phase(args.to_phase)
+            skips = _phase_skip_reasons(args.skip_phase)
+            comment_id, decision = publish_phase_evidence(
+                github, root, args.issue, source, target, skips)
+            _json({"status": "PUBLISHED", "issue": args.issue, "comment_id": comment_id,
+                   "schema": decision.payload["schema"], "from": source.value, "to": target.value,
+                   "adc_comment_id": decision.payload["adc_comment_id"],
+                   "adc_sha256": decision.payload["adc_sha256"],
+                   "branch_ref": decision.payload["branch_ref"],
+                   "commit_sha40": decision.payload["commit_sha40"],
+                   "documents": decision.payload["documents"]})
+            return 0
+
         if args.verb == "advance":
             github = GitHub(repository)
             issue = github.issue(args.issue)
@@ -3408,14 +3492,35 @@ def main(argv: list[str] | None = None) -> int:
                 raise CLIError("Issue label readback contains an invalid name")
             phase = parse_phase_labels(labels)
             attention = parse_attention_labels(labels)
-            skip_reasons: dict[str, str] = {}
-            for raw in args.skip_phase:
-                name, separator, reason = raw.partition("=")
-                if not separator or name in skip_reasons or name not in {"specification", "design"}:
-                    raise CLIError("--skip-phase must be a unique specification=reason or design=reason")
-                skip_reasons[name] = reason
+            skip_reasons = _phase_skip_reasons(args.skip_phase)
             kind = IssueKind(args.kind)
+            bootstrap = args.issue in PHASE_EVIDENCE_BOOTSTRAP_ISSUES
+            kind_labels = [label.removeprefix("kind:") for label in labels if label.startswith("kind:")]
+            if not bootstrap and (len(kind_labels) != 1 or kind_labels[0] != kind.value):
+                raise CLIError("--kind must match the Issue's unique verified kind:* label")
+            if bootstrap and kind_labels and (len(kind_labels) != 1 or kind_labels[0] != kind.value):
+                raise CLIError("Bootstrap Issue kind label conflicts with --kind")
             target = Phase(args.target)
+            evidence_required = (not bootstrap and kind in {IssueKind.SINGLE, IssueKind.CHILD}
+                                 and target in {Phase.SPECIFICATION, Phase.DESIGN, Phase.READY})
+            ordinary_issue = (not bootstrap and kind in {IssueKind.SINGLE, IssueKind.CHILD})
+            root: Path | None = None
+            approved_adc = None
+            if ordinary_issue:
+                if args.root is None:
+                    raise CLIError("ordinary Issue phase transitions require --root for Activation and ADC verification")
+                root = _repo_root(str(args.root)).resolve()
+                _context_issue, approved_adc, _actual_kind, _branch_ref, _local_sha = verify_ordinary_issue_context(
+                    github, root, args.issue, kind,
+                    require_binding=target in {Phase.EXECUTION, Phase.VERIFICATION},
+                )
+                if target is Phase.EXECUTION:
+                    verify_ready_preparation(github, root, args.issue, kind)
+            if evidence_required:
+                if args.phase_evidence_comment_id is None:
+                    raise CLIError("specification, design, and ready transitions require --phase-evidence-comment-id")
+                verify_phase_evidence(github, root, args.issue, args.phase_evidence_comment_id,
+                                      phase, target, skip_reasons)
             graph_validated = False
             if kind is IssueKind.PARENT and phase is Phase.REQUIREMENTS and target is Phase.READY:
                 validate_native_issue_graph(github, args.issue)
@@ -3425,7 +3530,60 @@ def main(argv: list[str] | None = None) -> int:
             kept = [label for label in labels if not label.startswith(("phase:", "attention:"))]
             kept.append(f"phase:{next_state.phase.value}")
             kept.extend(f"attention:{item.value}" for item in sorted(next_state.attention, key=lambda x: x.value))
-            github.replace_issue_labels(args.issue, kept)
+            if ordinary_issue and root is not None:
+                _context_issue, latest_adc, _actual_kind, _branch_ref, _local_sha = verify_ordinary_issue_context(
+                    github, root, args.issue, kind,
+                    require_binding=target in {Phase.EXECUTION, Phase.VERIFICATION},
+                )
+                if (approved_adc is None or latest_adc.pointer != approved_adc.pointer
+                        or latest_adc.contract.sha256 != approved_adc.contract.sha256):
+                    raise CLIError("approved ADC pointer or generation changed before the phase label write")
+                if target is Phase.EXECUTION:
+                    verify_ready_preparation(github, root, args.issue, kind)
+            if evidence_required and root is not None:
+                verify_phase_evidence(github, root, args.issue, args.phase_evidence_comment_id,
+                                      phase, target, skip_reasons)
+            latest = github.issue(args.issue)
+            if (latest.get("number") != args.issue or latest.get("state") != "open"
+                    or latest.get("pull_request") is not None or latest.get("labels") != label_rows
+                    or latest.get("body") != issue.get("body")
+                    or latest.get("repository_url") != issue.get("repository_url")):
+                raise CLIError("Issue state changed before the phase label write")
+            write_error: GitHubError | None = None
+            try:
+                github.replace_issue_labels(args.issue, kept)
+            except GitHubError as exc:
+                # The same complete readback is required after both a normal response
+                # and a lost/failed response; the exception alone cannot establish whether
+                # GitHub applied the PUT.
+                write_error = exc
+            try:
+                final_issue = github.issue(args.issue)
+                _validate_issue_advance_readback(
+                    final_issue, original_issue=issue, repository=repository,
+                    issue_number=args.issue, expected_labels=kept, kind=kind,
+                    target=next_state.phase, attention=next_state.attention,
+                    ordinary=ordinary_issue,
+                )
+                if ordinary_issue and root is not None:
+                    context_issue, final_adc, _actual_kind, _branch_ref, _local_sha = verify_ordinary_issue_context(
+                        github, root, args.issue, kind,
+                        require_binding=target in {Phase.EXECUTION, Phase.VERIFICATION},
+                    )
+                    _validate_issue_advance_readback(
+                        context_issue, original_issue=issue, repository=repository,
+                        issue_number=args.issue, expected_labels=kept, kind=kind,
+                        target=next_state.phase, attention=next_state.attention,
+                        ordinary=True,
+                    )
+                    if (approved_adc is None or final_adc.pointer != approved_adc.pointer
+                            or final_adc.contract.sha256 != approved_adc.contract.sha256):
+                        raise CLIError("approved ADC pointer or generation changed after the phase label write")
+            except (ADCError, GitHubError, PhaseEvidenceError, CLIError, OSError, UnicodeError, ValueError) as exc:
+                raise CLIError(
+                    f"BLOCKED after phase label write: {exc}; the label PUT may already have applied; "
+                    "no automatic rollback or retry was attempted"
+                ) from (write_error or exc)
             _json({"status": "ADVANCED", "issue": args.issue, "from": phase.value,
                    "to": next_state.phase.value, "attention": sorted(x.value for x in next_state.attention)})
             return 0
@@ -3452,7 +3610,7 @@ def main(argv: list[str] | None = None) -> int:
     except (ADCError, AcceptanceError, AuditError, CheckpointError, ExecutionError,
             DocumentError, DocumentFormatError, EvidenceError, GitError, GitHubError,
             IntegrationError, IssueGraphError, OracleTraceError, PhaseError, PlanError, ProfileError,
-            ReadinessError, UserReviewError, VerificationError,
+            PhaseEvidenceError, ReadinessError, UserReviewError, VerificationError,
             WorkError, CLIError, OSError, UnicodeError, ValueError) as exc:
         if args.namespace in {"verification", "acceptance", "work", "pr", "audit", "delivery", "user-review"}:
             return _blocked_result((str(exc),))

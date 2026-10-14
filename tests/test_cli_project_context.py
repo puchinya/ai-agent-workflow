@@ -108,7 +108,7 @@ class ProjectContextCLITests(unittest.TestCase):
             root = Path(tmp).resolve()
             digest = "a" * 64
             binding = ExecutionBinding("owner/repo", 32, 99, digest, "main", "b" * 40,
-                                       str(root), "b" * 40)
+                                       "pases/issue-32", str(root), "b" * 40)
             write_binding(execution_binding_path(root, 32), binding)
             github = SimpleNamespace(issue=lambda number: {"number": number, "state": "open"})
             with patch("p_ases.cli.GitHub", return_value=github), \
@@ -125,7 +125,7 @@ class ProjectContextCLITests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             binding = ExecutionBinding("owner/repo", 32, 99, "c" * 64, "main", "b" * 40,
-                                       str(root), "b" * 40)
+                                       "pases/issue-32", str(root), "b" * 40)
             write_binding(execution_binding_path(root, 32), binding)
             github = SimpleNamespace(issue=lambda number: {"number": number, "state": "open"})
             with patch("p_ases.cli.GitHub", return_value=github), \

@@ -31,7 +31,7 @@ def setup(*, draft=False, fork=False, stale=False, unresolved=False):
     binding = ExecutionBinding(
         repository="octo/repo", issue_number=30, adc_comment_id=123, adc_sha256=ADC_SHA,
         base_ref="main", base_sha=BASE, work_directory=str(Path(tempfile.gettempdir()) / "pases-30"),
-        initial_head_sha=BASE,
+        branch_ref="pases/work-readiness", initial_head_sha=BASE,
     ).validate()
     context = WorkContext(binding, subject.pr_head_sha40, "pases/work-readiness", True,
                           binding_digest(binding)).validate()

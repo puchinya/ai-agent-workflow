@@ -21,9 +21,9 @@ Record fixed module/data ownership, runtime boundaries, and any decisions that c
 
 ## Artifact impact
 
-- Specification: <create/update links or unchanged/not applicable with reason>
-- Design: <create/update links or unchanged/not applicable with reason>
-- Testing: <create/update links or unchanged/not applicable with reason>
+- Specification: <create/update docs/specs/<file>.md; or unchanged/not applicable: <reason>>
+- Design: <create/update docs/design/<file>.md; or unchanged/not applicable: <reason>>
+- Testing: <create/update docs/testing/<file>.md; or unchanged/not applicable: <reason>>
 - Status: <create/update links or evidence-only/unchanged/not applicable with reason>
 
 ## Exact change set

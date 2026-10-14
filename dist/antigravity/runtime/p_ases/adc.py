@@ -21,7 +21,7 @@ class ADCError(ValueError):
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 ISSUE_NUMBER = re.compile(r"^(?:#)?([1-9][0-9]*)$")
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
-REQ_ID = re.compile(r"(?m)^ {0,3}[-*+]\s+(REQ-[0-9]+):\s*\S.*$")
+REQ_ID = re.compile(r"(?m)^ {0,3}[-*+]\s+(REQ-(?:[0-9]+|[A-Z][A-Z0-9]*-[0-9]{3})):\s*\S.*$")
 CHECKLIST_ITEM = re.compile(r"^ {0,3}[-*+]\s+\[[ xX]\]\s+\S.*$")
 SECRET_VALUE = re.compile(
     r"(?i)(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"

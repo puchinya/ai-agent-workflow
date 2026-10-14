@@ -11,6 +11,7 @@ from typing import Any, Iterable
 
 from .adc import ADCError, parse_adc, parse_pointer, publish_adc, verify_adc
 from .github import GitHub, GitHubError
+from .phases import IssueKind, Phase, PhaseError, parse_attention_labels, parse_phase_labels
 
 
 class IssueGraphError(ValueError):
@@ -19,7 +20,7 @@ class IssueGraphError(ValueError):
 
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 CHILD_KEY = re.compile(r"^[a-z][a-z0-9-]{1,63}$")
-REQ_ID = re.compile(r"^REQ-[0-9]+$")
+REQ_ID = re.compile(r"^REQ-(?:[0-9]+|[A-Z][A-Z0-9]*-[0-9]{3})$")
 SECRET_TEXT = re.compile(
     r"(?i)(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
     r"AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{16,}|"
@@ -341,6 +342,85 @@ def _child_issue_body(parent_issue: int, parent_sha: str, child: ChildPlan) -> s
     )
 
 
+CHILD_LABELS = {
+    "kind:child": ("c5def5", "P-ASES Issue kind: child"),
+    "phase:requirements": ("0e8a16", "Workflow phase: requirements"),
+}
+LEGACY_BOOTSTRAP_CHILDREN = frozenset({27, 28, 29, 30, 31, 32})
+
+
+def _ensure_child_label_definitions(github: GitHub) -> None:
+    try:
+        rows = github.repository_labels()
+    except GitHubError as exc:
+        raise IssueGraphError(f"could not verify child label definitions: {exc}") from exc
+    if not isinstance(rows, list) or any(not isinstance(row, dict) or not isinstance(row.get("name"), str)
+                                         for row in rows):
+        raise IssueGraphError("repository label definitions are malformed")
+    for name, (color, description) in CHILD_LABELS.items():
+        matching = [row for row in rows if row.get("name") == name]
+        if len(matching) > 1:
+            raise IssueGraphError(f"repository label definition {name} is duplicated")
+        if matching:
+            row = matching[0]
+            if (not isinstance(row.get("color"), str) or row["color"].casefold() != color
+                    or row.get("description") != description):
+                raise IssueGraphError(f"repository label definition {name} conflicts with the P-ASES contract")
+            continue
+        try:
+            github.create_repository_label(name, color, description)
+        except GitHubError as write_error:
+            # A duplicate-name race is recoverable only if the complete
+            # definition now matches the fixed contract.
+            try:
+                reread = [row for row in github.repository_labels() if row.get("name") == name]
+            except GitHubError as read_error:
+                raise IssueGraphError(f"label definition write/readback failed: {read_error}") from write_error
+            if (len(reread) != 1 or not isinstance(reread[0].get("color"), str)
+                    or reread[0]["color"].casefold() != color
+                    or reread[0].get("description") != description):
+                raise IssueGraphError(f"repository label definition {name} could not be verified") from write_error
+        try:
+            reread = [row for row in github.repository_labels() if row.get("name") == name]
+        except GitHubError as exc:
+            raise IssueGraphError(f"repository label definition readback failed: {exc}") from exc
+        if (len(reread) != 1 or not isinstance(reread[0].get("color"), str)
+                or reread[0]["color"].casefold() != color
+                or reread[0].get("description") != description):
+            raise IssueGraphError(f"repository label definition {name} failed exact readback")
+
+
+def _verify_child_labels(issue: dict[str, Any], *, created_now: bool = False) -> tuple[str, ...]:
+    number = issue.get("number")
+    raw = issue.get("labels")
+    if number in LEGACY_BOOTSTRAP_CHILDREN and not created_now:
+        if not isinstance(raw, list) or any(not isinstance(row, dict) or not isinstance(row.get("name"), str)
+                                            for row in raw):
+            raise IssueGraphError("legacy Bootstrap child Issue labels are malformed")
+        names = [row["name"] for row in raw]
+        if len(names) != len(set(names)):
+            raise IssueGraphError("legacy Bootstrap child Issue has duplicate labels")
+        return tuple(sorted(names))
+    if not isinstance(raw, list) or any(not isinstance(row, dict) for row in raw):
+        raise IssueGraphError("existing child Issue labels are malformed")
+    labels = [row.get("name") for row in raw]
+    if any(not isinstance(label, str) for label in labels) or len(labels) != len(set(labels)):
+        raise IssueGraphError("existing child Issue labels are malformed or duplicated")
+    kinds = [label.removeprefix("kind:") for label in labels if label.startswith("kind:")]
+    if kinds != [IssueKind.CHILD.value]:
+        raise IssueGraphError("existing child Issue must have exactly one kind:child label")
+    try:
+        phase = parse_phase_labels(labels)
+        parse_attention_labels(labels)
+    except PhaseError as exc:
+        raise IssueGraphError(str(exc)) from exc
+    if phase is Phase.CLOSED:
+        raise IssueGraphError("open child Issue cannot carry an internal closed phase")
+    if created_now and ("enhancement" not in labels or phase is not Phase.REQUIREMENTS):
+        raise IssueGraphError("new child Issue did not retain enhancement and initial requirements labels")
+    return tuple(sorted(labels))
+
+
 def split_issue(github: GitHub, parent_issue: int, parent_adc_sha256: str,
                 requirement_ids: Iterable[str], children: Iterable[ChildPlan]) -> tuple[ChildIssue, ...]:
     """Create/reuse child Issues and ADCs, then attach native Sub-issues and dependency edges."""
@@ -371,19 +451,36 @@ def split_issue(github: GitHub, parent_issue: int, parent_adc_sha256: str,
     except (ADCError, GitHubError) as exc:
         raise IssueGraphError(str(exc)) from exc
 
+    if any(find_existing_child(existing_issues, child.key, parent_issue,
+                               parent_adc_sha256, child.adc_sha256) is None for child in rows):
+        _ensure_child_label_definitions(github)
+
     resolved: dict[str, ChildIssue] = {}
     for key in order:
         child = by_key[key]
         existing = find_existing_child(existing_issues, key, parent_issue, parent_adc_sha256, child.adc_sha256)
+        created_now = existing is None
         if existing is None:
             try:
                 created = github.create_issue(
-                    child.title, _child_issue_body(parent_issue, parent_adc_sha256, child), ["enhancement"]
+                    child.title, _child_issue_body(parent_issue, parent_adc_sha256, child),
+                    ["enhancement", "kind:child", "phase:requirements"]
                 )
                 number = created["number"]
                 issue_record = github.issue(number)
             except GitHubError as exc:
-                raise IssueGraphError(f"could not create child Issue {key}: {exc}") from exc
+                # Recover a lost create response only from one exact child
+                # marker on a current repository Issue; never retry blindly.
+                try:
+                    reread_issues = github.issues()
+                    recovered = find_existing_child(
+                        reread_issues, key, parent_issue, parent_adc_sha256, child.adc_sha256)
+                except (GitHubError, IssueGraphError) as read_error:
+                    raise IssueGraphError(f"child Issue creation failed and readback is unavailable: {read_error}") from exc
+                if recovered is None:
+                    raise IssueGraphError(f"could not create child Issue {key}: {exc}") from exc
+                issue_record = recovered
+                number = issue_record.get("number")
         else:
             issue_record = existing
             number = issue_record.get("number")
@@ -391,17 +488,27 @@ def split_issue(github: GitHub, parent_issue: int, parent_adc_sha256: str,
                 raise IssueGraphError(f"existing child Issue {key} has an invalid number")
             if issue_record.get("state") != "open":
                 raise IssueGraphError(f"existing child Issue {key} is not open")
+            try:
+                issue_record = github.issue(number)
+            except GitHubError as exc:
+                raise IssueGraphError(f"existing child Issue {key} readback failed: {exc}") from exc
+            if issue_record.get("number") != number or issue_record.get("state") != "open":
+                raise IssueGraphError(f"existing child Issue {key} changed or closed before reuse")
         issue_id = issue_record.get("id")
         if type(issue_id) is not int or issue_id < 1 or issue_record.get("pull_request") is not None:
             raise IssueGraphError(f"child {key} readback is not a GitHub Issue")
         marker = _child_marker(key, parent_issue, parent_adc_sha256, child.adc_sha256)
         if not _has_marker(issue_record.get("body") or "", marker):
             raise IssueGraphError(f"child {key} Issue marker failed readback")
+        verified_labels = _verify_child_labels(issue_record, created_now=created_now)
         pointer = parse_pointer(issue_record.get("body") or "")
         if pointer is None:
             try:
                 publish_adc(github, number, child.adc_bytes, state="approved", explicitly_approved=True)
                 issue_record = github.issue(number)
+                if (_verify_child_labels(issue_record, created_now=created_now) != verified_labels
+                        or issue_record.get("state") != "open"):
+                    raise IssueGraphError(f"child {key} Issue labels or state changed while publishing its ADC")
             except (ADCError, GitHubError) as exc:
                 raise IssueGraphError(f"could not publish child ADC {key}: {exc}") from exc
         else:
@@ -412,6 +519,13 @@ def split_issue(github: GitHub, parent_issue: int, parent_adc_sha256: str,
             if (verified_child.contract.sha256 != child.adc_sha256
                     or verified_child.pointer.state != "approved"):
                 raise IssueGraphError(f"existing child ADC {key} differs from the approved split plan")
+            try:
+                latest_child = github.issue(number)
+            except GitHubError as exc:
+                raise IssueGraphError(f"existing child Issue {key} readback failed: {exc}") from exc
+            if (_verify_child_labels(latest_child) != verified_labels or latest_child.get("state") != "open"):
+                raise IssueGraphError(f"existing child {key} Issue labels or state changed during ADC verification")
+            issue_record = latest_child
         resolved[key] = ChildIssue(key, number, issue_id, child.adc_sha256)
         # Update the in-memory collection so a later retry within this invocation sees the new child.
         existing_issues = [item for item in existing_issues if item.get("number") != number] + [issue_record]

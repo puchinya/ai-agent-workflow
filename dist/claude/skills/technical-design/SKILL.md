@@ -15,6 +15,7 @@ Owner: workflow/standards/technical-design.md, workflow/templates/technical-desi
 3. Explain data flow, failure behavior, idempotency, migration impact, and any security-relevant alternatives.
 4. Link designs to the exact specification and keep existing DES identifiers stable.
 5. Validate links and traceability before the design is presented for approval.
+6. Commit the design on the bound Issue branch after the approved specification receipt. Publish the design receipt against that exact commit; it must verify the predecessor receipt and unchanged specification hashes. Use the ADC's unchanged reason when specification is intentionally skipped.
 
 ## CLI
 

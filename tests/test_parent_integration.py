@@ -12,6 +12,7 @@ import contextlib
 import shlex
 from types import SimpleNamespace
 from unittest.mock import patch
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -493,8 +494,10 @@ class ParentIntegrationTests(unittest.TestCase):
 
         passed = evaluate_parent_integration(**integration_fixture())
         review_subject = _parent_review_subject_from_integration(passed)
+        review_comment_time = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(
+            timespec="seconds").replace("+00:00", "Z")
         comment_row = {
-            "id": 811, "created_at": "2026-10-13T00:00:00Z", "updated_at": "2026-10-13T00:00:00Z",
+            "id": 811, "created_at": review_comment_time, "updated_at": review_comment_time,
             "body": f"P-ASES-DECISION: APPROVED\nP-ASES-SUBJECT: {review_subject.sha256}",
             "user": {"id": 42, "login": "octocat", "type": "User"},
             "html_url": "https://github.com/octo/repo/issues/26#issuecomment-811",

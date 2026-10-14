@@ -115,8 +115,9 @@ def advance(
         raise PhaseError("only optional specification and design phases may be skipped")
     if any(not value.strip() for value in skips.values()):
         raise PhaseError("a skipped optional phase requires a non-empty reason")
-
     if state.kind is IssueKind.PARENT and state.phase is Phase.REQUIREMENTS and target is Phase.READY:
+        if skips:
+            raise PhaseError("parent lifecycle does not use optional specification/design skip reasons")
         if issue_graph_validated is not True:
             raise PhaseError("parent issue graph must be validated before the parent enters ready")
         return replace(state, phase=target)
@@ -124,15 +125,24 @@ def advance(
     if state.kind in {IssueKind.SINGLE, IssueKind.CHILD} and target is Phase.READY and state.phase is Phase.REQUIREMENTS:
         if not all(skips.get(name, "").strip() for name in ("specification", "design")):
             raise PhaseError("skipping specification and design requires a reason for each phase")
+        if set(skips) != {"specification", "design"}:
+            raise PhaseError("skip reasons must match exactly the optional phases skipped by this transition")
         return replace(state, phase=target)
     if state.kind in {IssueKind.SINGLE, IssueKind.CHILD} and target is Phase.DESIGN and state.phase is Phase.REQUIREMENTS:
         if not skips.get("specification", "").strip():
             raise PhaseError("design cannot be finalized before specification without a reason that specification is unchanged")
+        if set(skips) != {"specification"}:
+            raise PhaseError("skip reasons must match exactly the optional phases skipped by this transition")
         return replace(state, phase=target)
     if state.kind in {IssueKind.SINGLE, IssueKind.CHILD} and target is Phase.READY and state.phase is Phase.SPECIFICATION:
         if not skips.get("design", "").strip():
             raise PhaseError("skipping design requires an explicit reason")
+        if set(skips) != {"design"}:
+            raise PhaseError("skip reasons must match exactly the optional phases skipped by this transition")
         return replace(state, phase=target)
+
+    if skips:
+        raise PhaseError("skip reasons must match exactly the optional phases skipped by this transition")
 
     allowed = {(Phase.READY, Phase.EXECUTION)}
     if state.kind in {IssueKind.SINGLE, IssueKind.CHILD}:
