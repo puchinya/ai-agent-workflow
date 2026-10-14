@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import sys
 from dataclasses import dataclass, replace
@@ -1540,7 +1541,9 @@ def _activation_evidence_references(refs: Any, repository: str) -> tuple[tuple[i
     return tuple(action_runs), tuple(evidence_comments)
 
 
-def _validate_activation_candidate(github: GitHub, record: ActivationRecord) -> dict[str, Any]:
+def _validate_activation_candidate(
+    github: GitHub, record: ActivationRecord, *, historical: bool = False,
+) -> dict[str, Any]:
     try:
         record.validate()
         if github.repo.casefold() != record.repository.casefold():
@@ -1593,7 +1596,8 @@ def _validate_activation_candidate(github: GitHub, record: ActivationRecord) -> 
                 raise GatePolicyError("parent Actions evidence does not match the activation SHA, ADC, or run reference")
             _load_parent_gate_evidence_from_github(
                 github, comment_id, record.activation_commit_sha40, kind, record.repository,
-                parent_adc_sha256, require_authenticated_author=False)
+                parent_adc_sha256, require_authenticated_author=False,
+                use_recorded_attempt=historical)
             parent_evidence_rows[kind] = (bundle, row, fingerprint, comment_id)
         if (set(parent_evidence_rows) != {"verification", "acceptance"}
                 or {item[0].workflow_run_id for item in parent_evidence_rows.values()} != set(action_runs)):
@@ -1681,6 +1685,7 @@ def _require_repository_owner_actor(actor: Any, repository: str, label: str) -> 
 
 def read_activation_record(github: GitHub, repository: str) -> tuple[ActivationRecord, int] | None:
     """Read and validate the unique activation, its evidence, child merges, and user approval."""
+    metrics_before = getattr(github, "api_metrics", None)
     try:
         comments = github.issue_comments(BOOTSTRAP_PARENT)
         if not isinstance(comments, list) or any(not isinstance(row, dict) for row in comments):
@@ -1704,7 +1709,7 @@ def read_activation_record(github: GitHub, repository: str) -> tuple[ActivationR
             "<!-- PASES_ACTIVATION_V1\n", "Activation record")
         if initial_fingerprint != named_fingerprint or named.get("body") != comment.get("body"):
             raise GatePolicyError("activation record changed after the Issue list snapshot")
-        validated_snapshots = _validate_activation_candidate(github, record)
+        validated_snapshots = _validate_activation_candidate(github, record, historical=True)
         created_at = _parse_time(comment.get("created_at"), "Activation record")
         final_comment, final_comment_fingerprint = _read_activation_comment(
             github, comment_id, repository, owner_identity,
@@ -1735,6 +1740,18 @@ def read_activation_record(github: GitHub, repository: str) -> tuple[ActivationR
         return record, comment_id
     except (GitHubError, IntegrationError, ADCError, KeyError, TypeError) as exc:
         raise GatePolicyError(f"activation GitHub readback failed: {exc}") from exc
+    finally:
+        metrics_after = getattr(github, "api_metrics", None)
+        if (isinstance(metrics_before, dict) and isinstance(metrics_after, dict)
+                and type(metrics_before.get("api_calls")) is int
+                and type(metrics_after.get("api_calls")) is int
+                and isinstance(metrics_before.get("elapsed_ms"), (int, float))
+                and isinstance(metrics_after.get("elapsed_ms"), (int, float))):
+            logging.getLogger(__name__).debug(
+                "Activation history GitHub API metrics: api_calls=%d elapsed_ms=%.3f",
+                metrics_after["api_calls"] - metrics_before["api_calls"],
+                metrics_after["elapsed_ms"] - metrics_before["elapsed_ms"],
+            )
 
 
 def publish_activation_record(github: GitHub, record: ActivationRecord) -> tuple[int, str]:

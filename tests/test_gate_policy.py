@@ -202,9 +202,9 @@ def activation_trust_patches(record, *, current_main=None, loader_error=None):
     calls = []
 
     def load_evidence(github, comment_id, main_sha40, kind, repository, parent_adc_sha256,
-                      *, require_authenticated_author=True):
+                      *, require_authenticated_author=True, use_recorded_attempt=False):
         calls.append((comment_id, main_sha40, kind, repository, parent_adc_sha256,
-                      require_authenticated_author))
+                      require_authenticated_author, use_recorded_attempt))
         if loader_error is not None:
             raise IntegrationError(loader_error)
         if (main_sha40 != record.activation_commit_sha40 or repository.casefold() != record.repository.casefold()
@@ -717,6 +717,15 @@ class BootstrapPolicyTests(unittest.TestCase):
         self.assertEqual({row[0] for row in calls}, {VERIFY_COMMENT, ACCEPTANCE_COMMENT})
         self.assertTrue(all(row[1] == record.activation_commit_sha40 for row in calls))
         self.assertTrue(all(row[4] == PARENT_ADC for row in calls))
+        self.assertTrue(all(row[6] is True for row in calls))
+
+    def test_activation_issuance_uses_current_latest_attempt_policy(self):
+        github, record = activation_fixture()
+        patches, calls = activation_trust_patches(record)
+        with patches:
+            _validate_activation_candidate(github, record)
+        self.assertTrue(calls)
+        self.assertTrue(all(row[6] is False for row in calls))
 
     def test_activation_rejects_self_asserted_pass_and_nonexistent_actions_refs(self):
         github, record = activation_fixture()

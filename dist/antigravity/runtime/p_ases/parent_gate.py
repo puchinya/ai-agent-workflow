@@ -142,6 +142,7 @@ def _parent_gate_comment_security_fingerprint(row: dict[str, Any]) -> tuple[Any,
 def _load_parent_gate_evidence_from_github(
     github: GitHub, comment_id: int, main_sha40: str, kind: str,
     repository: str, parent_adc_sha256: str, *, require_authenticated_author: bool = True,
+    use_recorded_attempt: bool = False,
 ) -> IntegrationGateEvidence:
     """Read the exact comment and independently reconstruct its Actions provenance twice.
 
@@ -230,9 +231,11 @@ def _load_parent_gate_evidence_from_github(
         raise IntegrationError("parent evidence comment changed during double-read")
     _validate_parent_gate_bundle(first_bundle, kind, repository, parent_adc_sha256, main_sha40)
     expected_first = _parent_gate_bundle_from_actions(
-        github, first_bundle.workflow_run_id, kind, repository, parent_adc_sha256, main_sha40)
+        github, first_bundle.workflow_run_id, kind, repository, parent_adc_sha256, main_sha40,
+        recorded_attempt=(first_bundle.workflow_run_attempt if use_recorded_attempt else None))
     expected_second = _parent_gate_bundle_from_actions(
-        github, first_bundle.workflow_run_id, kind, repository, parent_adc_sha256, main_sha40)
+        github, first_bundle.workflow_run_id, kind, repository, parent_adc_sha256, main_sha40,
+        recorded_attempt=(first_bundle.workflow_run_attempt if use_recorded_attempt else None))
     _third_row, third_bundle, third_body, third_fingerprint = read_comment()
     if (expected_first != expected_second or expected_first != first_bundle
             or second_fingerprint != third_fingerprint or second_bundle != third_bundle
@@ -255,32 +258,41 @@ def _check_run_id(job: dict[str, Any], repository: str) -> int:
 
 def _parent_gate_bundle_from_actions(
     github: GitHub, run_id: int, kind: str, repository: str,
-    parent_adc_sha256: str, main_sha40: str,
+    parent_adc_sha256: str, main_sha40: str, *, recorded_attempt: int | None = None,
 ) -> ParentGateEvidenceComment:
-    """Build parent PASS evidence only from exact-main trusted GitHub Actions records."""
+    """Reconstruct latest issuance evidence or one exact historical Actions attempt."""
     if kind not in {"verification", "acceptance"}:
         raise IntegrationError("parent Actions evidence kind is invalid")
     workflow_path = PARENT_CI_WORKFLOW if kind == "verification" else PARENT_ACCEPTANCE_WORKFLOW
     event = "push" if kind == "verification" else "workflow_dispatch"
-    runs = github.workflow_runs_for_ref(main_sha40, workflow_path=workflow_path, event=event)
-    if not isinstance(runs, list) or any(not isinstance(row, dict) for row in runs):
-        raise IntegrationError("GitHub Actions workflow run list is malformed")
-    if not runs:
-        raise IntegrationError(f"no {kind} GitHub Actions run exists on the exact main SHA")
-    latest_key = max((row.get("run_number", 0), row.get("run_attempt", 0)) for row in runs)
-    latest = [row for row in runs if (row.get("run_number"), row.get("run_attempt")) == latest_key]
-    if len(latest) != 1 or latest[0].get("id") != run_id:
-        raise IntegrationError("parent evidence references a stale or ambiguous Actions run")
-    run = latest[0]
+    if recorded_attempt is None:
+        runs = github.workflow_runs_for_ref(main_sha40, workflow_path=workflow_path, event=event)
+        if not isinstance(runs, list) or any(not isinstance(row, dict) for row in runs):
+            raise IntegrationError("GitHub Actions workflow run list is malformed")
+        if not runs:
+            raise IntegrationError(f"no {kind} GitHub Actions run exists on the exact main SHA")
+        latest_key = max((row.get("run_number", 0), row.get("run_attempt", 0)) for row in runs)
+        latest = [row for row in runs if (row.get("run_number"), row.get("run_attempt")) == latest_key]
+        if len(latest) != 1 or latest[0].get("id") != run_id:
+            raise IntegrationError("parent evidence references a stale or ambiguous Actions run")
+        run = latest[0]
+    else:
+        if type(recorded_attempt) is not int or recorded_attempt < 1:
+            raise IntegrationError("parent evidence recorded Actions attempt is invalid")
+        run = github.workflow_run_attempt(run_id, recorded_attempt)
+        if not isinstance(run, dict):
+            raise IntegrationError("GitHub Actions historical attempt response is malformed")
     if (run.get("id") != run_id or run.get("path") != workflow_path or run.get("event") != event
             or run.get("head_sha") != main_sha40 or run.get("head_branch") != "main"
             or run.get("status") != "completed" or run.get("conclusion") != "success"
             or type(run.get("run_attempt")) is not int or run["run_attempt"] < 1
+            or (recorded_attempt is not None and run.get("run_attempt") != recorded_attempt)
             or not isinstance(run.get("head_repository"), dict)
             or str(run["head_repository"].get("full_name", "")).casefold() != repository.casefold()):
         raise IntegrationError("parent evidence Actions run is incomplete, unsuccessful, forked, or stale")
 
-    jobs = github.workflow_run_jobs(run_id)
+    jobs = (github.workflow_run_jobs(run_id, recorded_attempt) if recorded_attempt is not None
+            else github.workflow_run_jobs(run_id))
     if not isinstance(jobs, list) or any(not isinstance(job, dict) for job in jobs):
         raise IntegrationError("GitHub Actions job response is malformed")
     required_job_names = set(PARENT_REQUIRED_CI_JOBS) | {"pull-request-metadata"} if kind == "verification" else {"parent-acceptance"}
