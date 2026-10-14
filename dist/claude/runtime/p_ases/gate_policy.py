@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import sys
 from dataclasses import dataclass, replace
@@ -20,6 +21,11 @@ from urllib.parse import unquote, urlparse
 from .adc import ADC, ADCPointer, ADCError, parse_adc, verify_adc
 from .git import GitError, run_git
 from .github import GitHub, GitHubError
+from .integration import IntegrationError, ParentGateEvidenceComment
+from .parent_gate import (
+    _load_parent_gate_evidence_from_github, _parent_adc_authority,
+    _parent_current_main_sha,
+)
 from .process import ProcessError, run_process
 
 
@@ -83,7 +89,7 @@ RESULTS = {"BOOTSTRAP_TECHNICAL_READY", "BOOTSTRAP_REVIEW_READY", "BOOTSTRAP_BLO
            "PASES_GATE_REQUIRED", "UNDETERMINED"}
 REQUIRED_LOCAL_CHECKS = ("compileall", "unittest", "dist-build-check", "dist-validation", "diff-check")
 BOOTSTRAP_REQUIRED_JOBS = ("pull-request-metadata",)
-BOOTSTRAP_POLICY_FILES = ("gate_policy.py", "cli.py", "github.py", "adc.py", "git.py", "process.py", "profile.py")
+BOOTSTRAP_POLICY_FILES = ("gate_policy.py", "parent_gate.py", "integration.py", "cli.py", "github.py", "adc.py", "git.py", "process.py", "profile.py")
 INDEPENDENCE_ASSURANCE = "reviewer-attested; the host/session identity is not cryptographically verified"
 WAIVED_REVIEW_MODE = "WAIVED_BOOTSTRAP"
 WAIVED_INDEPENDENCE_ASSURANCE = "NOT_APPLICABLE_REVIEW_WAIVED"
@@ -1423,78 +1429,242 @@ def publish_immutable_record(github: GitHub, issue_number: int, sentinel: str, p
         raise GatePolicyError(f"GitHub {sentinel} readback/publication failed: {exc}") from exc
 
 
-def _validate_activation_candidate(github: GitHub, record: ActivationRecord) -> None:
-    record.validate()
-    integration = _issue_comment_readback(github, BOOTSTRAP_PARENT, record.integration_evidence_comment_id)
-    integration_payload = _decode_record_comment(integration.get("body"), "PASES_INTEGRATION_EVIDENCE_V1")
-    expected_integration_fields = {"documentation_pass", "distribution_pass", "evidence_refs", "integration_commit_sha40",
-                                   "repository", "schema", "skills_count", "status", "tests_pass", "child_prs"}
-    if set(integration_payload) != expected_integration_fields or integration_payload.get("schema") != "PASES_INTEGRATION_EVIDENCE_V1":
-        raise GatePolicyError("parent integration evidence record has unknown or missing fields")
-    digest = hashlib.sha256(_canonical(integration_payload)).hexdigest()
-    expected_child_prs = [{"issue_number": issue, "pr_number": pr, "merge_sha40": sha}
-                          for issue, pr, sha in record.child_prs]
-    refs = integration_payload.get("evidence_refs")
-    integration_repo = integration_payload.get("repository")
-    if (digest != record.integration_evidence_sha256
-            or not isinstance(integration_repo, str)
-            or integration_repo.casefold() != record.repository.casefold()
-            or integration_payload.get("status") != "PASS"
-            or integration_payload.get("documentation_pass") is not True
-            or integration_payload.get("tests_pass") is not True
-            or integration_payload.get("distribution_pass") is not True
-            or integration_payload.get("skills_count") != 16
-            or integration_payload.get("integration_commit_sha40") != record.activation_commit_sha40
-            or integration_payload.get("child_prs") != expected_child_prs
-            or not isinstance(refs, list) or not refs
-            or any(not isinstance(ref, str) or not ref.startswith("https://") for ref in refs)):
-        raise GatePolicyError("parent integration evidence is incomplete or mismatched")
+def _activation_owner_identity(github: GitHub, repository: str) -> tuple[int, str, str]:
+    metadata = github.repository_metadata()
+    owner = metadata.get("owner") if isinstance(metadata, dict) else None
+    expected_login = repository.split("/", 1)[0]
+    if (not isinstance(owner, dict) or type(owner.get("id")) is not int or owner["id"] < 1
+            or not isinstance(owner.get("login"), str)
+            or owner["login"].casefold() != expected_login.casefold()
+            or owner.get("type") != "User"):
+        raise GatePolicyError("repository owner must resolve to a stable GitHub User identity")
+    return owner["id"], owner["login"].casefold(), owner["type"]
 
-    approval = _issue_comment_readback(github, BOOTSTRAP_PARENT, record.approval_comment_id)
-    approval_payload = _decode_record_comment(approval.get("body"), "PASES_ACTIVATION_APPROVAL_V1")
-    expected_approval = {"approved": True, "activation_commit_sha40": record.activation_commit_sha40,
-                         "child_issue_numbers": list(record.child_issue_numbers), "child_prs": expected_child_prs,
-                         "integration_evidence_sha256": record.integration_evidence_sha256,
-                         "repository": record.repository, "schema": "PASES_ACTIVATION_APPROVAL_V1"}
-    if approval_payload != expected_approval:
-        raise GatePolicyError("activation approval record is missing or mismatched")
-    _require_repository_owner_actor(approval.get("user"), record.repository, "Activation approval")
-    integration_created = _parse_time(integration.get("created_at"), "Integration evidence")
-    approval_created = _parse_time(approval.get("created_at"), "Activation approval")
-    if integration_created > approval_created:
-        raise GatePolicyError("activation approval predates the integration evidence")
-    activation_at = _parse_time(record.activated_at, "Activation")
-    now = datetime.now(timezone.utc)
-    if activation_at < approval_created or activation_at > now:
-        raise GatePolicyError("activation timestamp is outside the explicit approval window")
 
-    for issue_number, pr_number, merge_sha in record.child_prs:
-        issue = github.issue(issue_number)
-        pr = github.pull_request(pr_number)
-        if issue.get("state") != "closed":
-            raise GatePolicyError(f"child Issue #{issue_number} is not closed")
-        if (pr.get("state") != "closed" or pr.get("merged") is not True
-                or pr.get("merge_commit_sha") != merge_sha):
-            raise GatePolicyError(f"child PR #{pr_number} is not merged at the activation SHA")
-        _require_repository_owner_actor(pr.get("merged_by"), record.repository,
-                                        f"child PR #{pr_number} merge")
-        base = pr.get("base")
-        head = pr.get("head")
-        base_repo = base.get("repo") if isinstance(base, dict) else None
-        head_repo = head.get("repo") if isinstance(head, dict) else None
-        base_name = base_repo.get("full_name") if isinstance(base_repo, dict) else None
-        head_name = head_repo.get("full_name") if isinstance(head_repo, dict) else None
-        if (not isinstance(base_name, str) or base_name.casefold() != record.repository.casefold()
-                or not isinstance(head_name, str) or head_name.casefold() != record.repository.casefold()):
-            raise GatePolicyError(f"child PR #{pr_number} did not use same-repository branches")
-        expected_pair = EXPECTED_BRANCH_PAIRS.get(issue_number)
-        if expected_pair is None or (base.get("ref"), head.get("ref")) != expected_pair:
-            raise GatePolicyError(f"child PR #{pr_number} has no matching approved base/head branch contract")
-        body = pr.get("body")
-        if (not isinstance(body, str)
-                or [int(value) for value in _CLOSES_ANY.findall(body)] != [issue_number]
-                or [int(value) for value in _CLOSES_LINE.findall(body)] != [issue_number]):
-            raise GatePolicyError(f"child PR #{pr_number} does not have its standalone Closes association")
+def _activation_comment_fingerprint(
+    row: Any, comment_id: int, repository: str, owner_identity: tuple[int, str, str], label: str,
+) -> tuple[Any, ...]:
+    if not isinstance(row, dict):
+        raise GatePolicyError(f"{label} comment readback is malformed")
+    if (type(row.get("id")) is not int or row["id"] != comment_id
+            or not isinstance(row.get("body"), str)):
+        raise GatePolicyError(f"{label} comment ID or body is invalid")
+    created_at, updated_at = row.get("created_at"), row.get("updated_at")
+    if not isinstance(created_at, str) or not isinstance(updated_at, str):
+        raise GatePolicyError(f"{label} comment timestamps are missing")
+    _parse_time(created_at, f"{label} creation")
+    _parse_time(updated_at, f"{label} update")
+    if created_at != updated_at:
+        raise GatePolicyError(f"{label} comment was edited after creation")
+    user = row.get("user")
+    if (not isinstance(user, dict) or type(user.get("id")) is not int or user["id"] < 1
+            or not isinstance(user.get("login"), str) or not user["login"]
+            or user.get("type") != "User"):
+        raise GatePolicyError(f"{label} comment author identity is malformed")
+    actor_identity = (user["id"], user["login"].casefold(), user["type"])
+    if actor_identity != owner_identity:
+        raise GatePolicyError(f"{label} comment is not authored by the repository owner")
+    expected_issue = f"https://api.github.com/repos/{repository}/issues/{BOOTSTRAP_PARENT}"
+    expected_html = (f"https://github.com/{repository}/issues/{BOOTSTRAP_PARENT}"
+                     f"#issuecomment-{comment_id}")
+    expected_api = f"https://api.github.com/repos/{repository}/issues/comments/{comment_id}"
+    urls = (row.get("issue_url"), row.get("html_url"), row.get("url"))
+    if (not all(isinstance(value, str) for value in urls)
+            or tuple(value.casefold() for value in urls)
+            != tuple(value.casefold() for value in (expected_issue, expected_html, expected_api))):
+        raise GatePolicyError(f"{label} comment repository or Issue URL does not match")
+    # Display name, avatar and profile URLs may change without changing author identity.
+    return (comment_id, row["body"], created_at, updated_at, *urls, actor_identity)
+
+
+def _read_activation_comment(
+    github: GitHub, comment_id: int, repository: str, owner_identity: tuple[int, str, str],
+    marker: str, label: str, *, unique_marker: bool = True,
+) -> tuple[dict[str, Any], tuple[Any, ...]]:
+    try:
+        direct = github.issue_comment(BOOTSTRAP_PARENT, comment_id)
+        listed = github.issue_comments(BOOTSTRAP_PARENT)
+        if not isinstance(listed, list) or any(not isinstance(item, dict) for item in listed):
+            raise GatePolicyError(f"{label} Issue comment list is malformed")
+        matches = [row for row in listed if row.get("id") == comment_id]
+        if len(matches) != 1:
+            raise GatePolicyError(f"{label} comment is missing or duplicated on Issue #26")
+        if unique_marker:
+            marked = [row for row in listed if isinstance(row.get("body"), str)
+                      and row["body"].startswith(marker)]
+            if len(marked) != 1 or marked[0].get("id") != comment_id:
+                raise GatePolicyError(f"{label} marker is missing, duplicated, or attached to another ID")
+        listed_row = matches[0]
+        direct_fp = _activation_comment_fingerprint(direct, comment_id, repository, owner_identity, label)
+        listed_fp = _activation_comment_fingerprint(listed_row, comment_id, repository, owner_identity, label)
+        if not listed_fp[1].startswith(marker):
+            raise GatePolicyError(f"{label} comment has the wrong schema marker")
+        after = github.issue_comment(BOOTSTRAP_PARENT, comment_id)
+        after_fp = _activation_comment_fingerprint(after, comment_id, repository, owner_identity, label)
+        if direct_fp != listed_fp or listed_fp != after_fp:
+            raise GatePolicyError(f"{label} comment changed during direct/list/direct readback")
+        return listed_row, listed_fp
+    except GitHubError as exc:
+        raise GatePolicyError(f"{label} comment readback failed: {exc}") from exc
+
+
+def _activation_evidence_references(refs: Any, repository: str) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    if not isinstance(refs, list) or len(refs) != 4 or any(not isinstance(ref, str) for ref in refs):
+        raise GatePolicyError("parent integration evidence must reference exactly two Actions runs and two evidence comments")
+    if len(set(refs)) != 4:
+        raise GatePolicyError("parent integration evidence references are duplicated")
+    expected_prefix = f"https://github.com/{repository}"
+    action_runs: list[int] = []
+    evidence_comments: list[int] = []
+    for ref in refs:
+        parsed = urlparse(ref)
+        if parsed.scheme != "https" or parsed.netloc.casefold() != "github.com" or parsed.query:
+            raise GatePolicyError("parent integration evidence reference is not a canonical GitHub URL")
+        full = f"https://{parsed.netloc}{parsed.path}"
+        if not full.casefold().startswith(expected_prefix.casefold() + "/"):
+            raise GatePolicyError("parent integration evidence reference belongs to another repository")
+        suffix = full[len(expected_prefix):]
+        action_match = re.fullmatch(r"/actions/runs/([1-9][0-9]*)", suffix, re.IGNORECASE)
+        comment_match = re.fullmatch(r"/issues/26", suffix, re.IGNORECASE)
+        if action_match and not parsed.fragment:
+            action_runs.append(int(action_match.group(1)))
+        elif comment_match:
+            comment = re.fullmatch(r"issuecomment-([1-9][0-9]*)", parsed.fragment)
+            if not comment:
+                raise GatePolicyError("parent integration evidence comment reference is malformed")
+            evidence_comments.append(int(comment.group(1)))
+        else:
+            raise GatePolicyError("parent integration evidence has an unsupported or malformed reference")
+    if (len(action_runs) != 2 or len(set(action_runs)) != 2
+            or len(evidence_comments) != 2 or len(set(evidence_comments)) != 2):
+        raise GatePolicyError("parent integration evidence must name two distinct Actions runs and evidence comments")
+    return tuple(action_runs), tuple(evidence_comments)
+
+
+def _validate_activation_candidate(
+    github: GitHub, record: ActivationRecord, *, historical: bool = False,
+) -> dict[str, Any]:
+    try:
+        record.validate()
+        if github.repo.casefold() != record.repository.casefold():
+            raise GatePolicyError("activation record belongs to a different repository")
+        owner_identity = _activation_owner_identity(github, record.repository)
+        integration, _integration_fingerprint = _read_activation_comment(
+            github, record.integration_evidence_comment_id, record.repository, owner_identity,
+            "<!-- PASES_INTEGRATION_EVIDENCE_V1\n", "Parent integration evidence")
+        integration_payload = _decode_record_comment(integration.get("body"), "PASES_INTEGRATION_EVIDENCE_V1")
+        expected_integration_fields = {"documentation_pass", "distribution_pass", "evidence_refs", "integration_commit_sha40",
+                                       "repository", "schema", "skills_count", "status", "tests_pass", "child_prs"}
+        if (set(integration_payload) != expected_integration_fields
+                or integration_payload.get("schema") != "PASES_INTEGRATION_EVIDENCE_V1"):
+            raise GatePolicyError("parent integration evidence record has unknown or missing fields")
+        digest = hashlib.sha256(_canonical(integration_payload)).hexdigest()
+        expected_child_prs = [{"issue_number": issue, "pr_number": pr, "merge_sha40": sha}
+                              for issue, pr, sha in record.child_prs]
+        if (digest != record.integration_evidence_sha256
+                or not isinstance(integration_payload.get("repository"), str)
+                or integration_payload["repository"].casefold() != record.repository.casefold()
+                or integration_payload.get("status") != "PASS"
+                or integration_payload.get("documentation_pass") is not True
+                or integration_payload.get("tests_pass") is not True
+                or integration_payload.get("distribution_pass") is not True
+                or integration_payload.get("skills_count") != 16
+                or integration_payload.get("integration_commit_sha40") != record.activation_commit_sha40
+                or integration_payload.get("child_prs") != expected_child_prs):
+            raise GatePolicyError("parent integration evidence is incomplete or mismatched")
+
+        parent_adc_sha256, _adc_pointer = _parent_adc_authority(github)
+        current_main_sha40 = _parent_current_main_sha(github)
+        if github.compare_commits(record.activation_commit_sha40, current_main_sha40).get("status") not in {"ahead", "identical"}:
+            raise GatePolicyError("activation commit is no longer contained in current main")
+        action_runs, evidence_comments = _activation_evidence_references(
+            integration_payload.get("evidence_refs"), record.repository)
+        parent_evidence_rows: dict[str, tuple[ParentGateEvidenceComment, dict[str, Any], tuple[Any, ...], int]] = {}
+        for comment_id in evidence_comments:
+            row, fingerprint = _read_activation_comment(
+                github, comment_id, record.repository, owner_identity,
+                "P-ASES-PARENT-EVIDENCE-V2\n", "Parent Actions evidence", unique_marker=False)
+            bundle = ParentGateEvidenceComment.from_body(row.get("body"))
+            kind = bundle.kind
+            if kind not in {"verification", "acceptance"} or kind in parent_evidence_rows:
+                raise GatePolicyError("parent evidence comments do not identify one Verification and one Acceptance")
+            if (bundle.repository.casefold() != record.repository.casefold()
+                    or bundle.parent_issue_number != BOOTSTRAP_PARENT
+                    or bundle.parent_adc_sha256 != parent_adc_sha256
+                    or bundle.main_sha40 != record.activation_commit_sha40
+                    or bundle.workflow_run_id not in action_runs):
+                raise GatePolicyError("parent Actions evidence does not match the activation SHA, ADC, or run reference")
+            _load_parent_gate_evidence_from_github(
+                github, comment_id, record.activation_commit_sha40, kind, record.repository,
+                parent_adc_sha256, require_authenticated_author=False,
+                use_recorded_attempt=historical)
+            parent_evidence_rows[kind] = (bundle, row, fingerprint, comment_id)
+        if (set(parent_evidence_rows) != {"verification", "acceptance"}
+                or {item[0].workflow_run_id for item in parent_evidence_rows.values()} != set(action_runs)):
+            raise GatePolicyError("parent integration evidence references do not match the Verification and Acceptance runs")
+
+        approval, approval_fingerprint = _read_activation_comment(
+            github, record.approval_comment_id, record.repository, owner_identity,
+            "<!-- PASES_ACTIVATION_APPROVAL_V1\n", "Activation approval")
+        approval_payload = _decode_record_comment(approval.get("body"), "PASES_ACTIVATION_APPROVAL_V1")
+        expected_approval = {"approved": True, "activation_commit_sha40": record.activation_commit_sha40,
+                             "child_issue_numbers": list(record.child_issue_numbers), "child_prs": expected_child_prs,
+                             "integration_evidence_sha256": record.integration_evidence_sha256,
+                             "repository": record.repository, "schema": "PASES_ACTIVATION_APPROVAL_V1"}
+        if approval_payload != expected_approval:
+            raise GatePolicyError("activation approval record is missing or mismatched")
+
+        integration_created = _parse_time(integration.get("created_at"), "Integration evidence")
+        approval_created = _parse_time(approval.get("created_at"), "Activation approval")
+        if integration_created > approval_created:
+            raise GatePolicyError("activation approval predates the integration evidence")
+        for kind, (_bundle, row, _fingerprint, _comment_id) in parent_evidence_rows.items():
+            if _parse_time(row.get("created_at"), f"Parent {kind} evidence") > integration_created:
+                raise GatePolicyError("parent Actions evidence postdates the integration evidence envelope")
+        activation_at = _parse_time(record.activated_at, "Activation")
+        if activation_at < approval_created or activation_at > datetime.now(timezone.utc):
+            raise GatePolicyError("activation timestamp is outside the explicit approval window")
+
+        for issue_number, pr_number, merge_sha in record.child_prs:
+            issue = github.issue(issue_number)
+            pr = github.pull_request(pr_number)
+            if issue.get("state") != "closed":
+                raise GatePolicyError(f"child Issue #{issue_number} is not closed")
+            if (pr.get("state") != "closed" or pr.get("merged") is not True
+                    or pr.get("merge_commit_sha") != merge_sha):
+                raise GatePolicyError(f"child PR #{pr_number} is not merged at the activation SHA")
+            _require_repository_owner_actor(pr.get("merged_by"), record.repository,
+                                            f"child PR #{pr_number} merge")
+            base = pr.get("base")
+            head = pr.get("head")
+            base_repo = base.get("repo") if isinstance(base, dict) else None
+            head_repo = head.get("repo") if isinstance(head, dict) else None
+            base_name = base_repo.get("full_name") if isinstance(base_repo, dict) else None
+            head_name = head_repo.get("full_name") if isinstance(head_repo, dict) else None
+            if (not isinstance(base_name, str) or base_name.casefold() != record.repository.casefold()
+                    or not isinstance(head_name, str) or head_name.casefold() != record.repository.casefold()):
+                raise GatePolicyError(f"child PR #{pr_number} did not use same-repository branches")
+            expected_pair = EXPECTED_BRANCH_PAIRS.get(issue_number)
+            if expected_pair is None or (base.get("ref"), head.get("ref")) != expected_pair:
+                raise GatePolicyError(f"child PR #{pr_number} has no matching approved base/head branch contract")
+            body = pr.get("body")
+            if (not isinstance(body, str)
+                    or [int(value) for value in _CLOSES_ANY.findall(body)] != [issue_number]
+                    or [int(value) for value in _CLOSES_LINE.findall(body)] != [issue_number]):
+                raise GatePolicyError(f"child PR #{pr_number} does not have its standalone Closes association")
+            if github.compare_commits(merge_sha, record.activation_commit_sha40).get("status") not in {"ahead", "identical"}:
+                raise GatePolicyError(f"child PR #{pr_number} merge SHA is not present in the activation commit")
+        return {
+            "integration": _integration_fingerprint,
+            "approval": approval_fingerprint,
+            "parent_evidence": {kind: (comment_id, fingerprint)
+                                for kind, (_bundle, _row, fingerprint, comment_id)
+                                in parent_evidence_rows.items()},
+        }
+    except (IntegrationError, ADCError) as exc:
+        raise GatePolicyError(f"activation Actions evidence validation failed: {exc}") from exc
+    except GitHubError as exc:
+        raise GatePolicyError(f"activation GitHub evidence readback failed: {exc}") from exc
 
 
 def _issue_comment_readback(github: GitHub, issue_number: int, comment_id: int) -> dict[str, Any]:
@@ -1515,9 +1685,12 @@ def _require_repository_owner_actor(actor: Any, repository: str, label: str) -> 
 
 def read_activation_record(github: GitHub, repository: str) -> tuple[ActivationRecord, int] | None:
     """Read and validate the unique activation, its evidence, child merges, and user approval."""
+    metrics_before = getattr(github, "api_metrics", None)
     try:
         comments = github.issue_comments(BOOTSTRAP_PARENT)
-        rows = [row for row in comments if isinstance(row, dict) and isinstance(row.get("body"), str)
+        if not isinstance(comments, list) or any(not isinstance(row, dict) for row in comments):
+            raise GatePolicyError("Activation Issue comment list is malformed")
+        rows = [row for row in comments if isinstance(row.get("body"), str)
                 and row["body"].startswith("<!-- PASES_ACTIVATION_V1\n")]
         if not rows:
             return None
@@ -1527,26 +1700,58 @@ def read_activation_record(github: GitHub, repository: str) -> tuple[ActivationR
         record = ActivationRecord.from_payload(_decode_record_comment(comment["body"], "PASES_ACTIVATION_V1"))
         if record.repository.casefold() != repository.casefold():
             raise GatePolicyError("activation record belongs to a different repository")
-        _validate_activation_candidate(github, record)
+        owner_identity = _activation_owner_identity(github, repository)
         comment_id = _positive(comment.get("id"), "Activation Comment ID")
-        named = _issue_comment_readback(github, BOOTSTRAP_PARENT, comment_id)
-        expected_issue_url = f"/repos/{github.repo}/issues/{BOOTSTRAP_PARENT}"
-        if (named.get("id") != comment_id or named.get("body") != comment.get("body")
-                or not isinstance(named.get("issue_url"), str)
-                or not named["issue_url"].endswith(expected_issue_url)):
-            raise GatePolicyError("activation record exact-body readback failed")
+        initial_fingerprint = _activation_comment_fingerprint(
+            comment, comment_id, repository, owner_identity, "Activation record")
+        named, named_fingerprint = _read_activation_comment(
+            github, comment_id, repository, owner_identity,
+            "<!-- PASES_ACTIVATION_V1\n", "Activation record")
+        if initial_fingerprint != named_fingerprint or named.get("body") != comment.get("body"):
+            raise GatePolicyError("activation record changed after the Issue list snapshot")
+        validated_snapshots = _validate_activation_candidate(github, record, historical=True)
         created_at = _parse_time(comment.get("created_at"), "Activation record")
-        approved = _issue_comment_readback(github, BOOTSTRAP_PARENT, record.approval_comment_id)
-        integration = _issue_comment_readback(github, BOOTSTRAP_PARENT, record.integration_evidence_comment_id)
-        approved_at = _parse_time(approved.get("created_at"), "Activation approval")
+        final_comment, final_comment_fingerprint = _read_activation_comment(
+            github, comment_id, repository, owner_identity,
+            "<!-- PASES_ACTIVATION_V1\n", "Activation record")
+        approval, approval_fingerprint = _read_activation_comment(
+            github, record.approval_comment_id, repository, owner_identity,
+            "<!-- PASES_ACTIVATION_APPROVAL_V1\n", "Activation approval")
+        integration, integration_fingerprint = _read_activation_comment(
+            github, record.integration_evidence_comment_id, repository, owner_identity,
+            "<!-- PASES_INTEGRATION_EVIDENCE_V1\n", "Parent integration evidence")
+        if (final_comment_fingerprint != initial_fingerprint
+                or approval_fingerprint != validated_snapshots["approval"]
+                or integration_fingerprint != validated_snapshots["integration"]
+                or final_comment.get("body") != comment.get("body")):
+            raise GatePolicyError("activation history changed during full evidence validation")
+        for kind, (parent_comment_id, initial_parent_fingerprint) in validated_snapshots["parent_evidence"].items():
+            _parent_row, parent_fingerprint = _read_activation_comment(
+                github, parent_comment_id, repository, owner_identity,
+                "P-ASES-PARENT-EVIDENCE-V2\n", f"Parent {kind} evidence", unique_marker=False)
+            if parent_fingerprint != initial_parent_fingerprint:
+                raise GatePolicyError("parent Actions evidence changed during full activation validation")
+        approved_at = _parse_time(approval.get("created_at"), "Activation approval")
         integration_at = _parse_time(integration.get("created_at"), "Integration evidence")
         activated_at = _parse_time(record.activated_at, "Activation")
         if (integration_at > approved_at or approved_at > created_at
                 or activated_at < approved_at or activated_at > created_at.replace(microsecond=0)):
             raise GatePolicyError("activation record was not created after integration evidence and explicit approval")
         return record, comment_id
-    except (GitHubError, KeyError, TypeError) as exc:
+    except (GitHubError, IntegrationError, ADCError, KeyError, TypeError) as exc:
         raise GatePolicyError(f"activation GitHub readback failed: {exc}") from exc
+    finally:
+        metrics_after = getattr(github, "api_metrics", None)
+        if (isinstance(metrics_before, dict) and isinstance(metrics_after, dict)
+                and type(metrics_before.get("api_calls")) is int
+                and type(metrics_after.get("api_calls")) is int
+                and isinstance(metrics_before.get("elapsed_ms"), (int, float))
+                and isinstance(metrics_after.get("elapsed_ms"), (int, float))):
+            logging.getLogger(__name__).debug(
+                "Activation history GitHub API metrics: api_calls=%d elapsed_ms=%.3f",
+                metrics_after["api_calls"] - metrics_before["api_calls"],
+                metrics_after["elapsed_ms"] - metrics_before["elapsed_ms"],
+            )
 
 
 def publish_activation_record(github: GitHub, record: ActivationRecord) -> tuple[int, str]:

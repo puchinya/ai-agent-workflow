@@ -91,19 +91,70 @@ def trusted_actions_fixture(main_sha: str, kind: str = "verification", run_id: i
             self.run = run
             self.jobs = jobs
             self.checks = check_runs
+            self.requested_attempts = []
+            self.requested_job_attempts = []
+            self.attempt_snapshots = {
+                run["run_attempt"]: (dict(run), list(jobs), list(check_runs)),
+            }
 
         def workflow_runs_for_ref(self, _sha, *, workflow_path, event):
             if workflow_path != self.run["path"] or event != self.run["event"]:
                 return []
             return [dict(self.run)]
 
-        def workflow_run_jobs(self, requested_run_id):
+        def workflow_run_attempt(self, requested_run_id, attempt_number):
+            self.requested_attempts.append((requested_run_id, attempt_number))
+            snapshot = self.attempt_snapshots.get(attempt_number)
+            if requested_run_id != self.run["id"] or snapshot is None:
+                raise GitHubError("historical workflow attempt is unavailable")
+            return dict(snapshot[0])
+
+        def workflow_run_jobs(self, requested_run_id, attempt_number=None):
+            self.requested_job_attempts.append((requested_run_id, attempt_number))
             if requested_run_id != self.run["id"]:
                 return []
-            return [dict(job, steps=[dict(step) for step in job["steps"]]) for job in self.jobs]
+            selected_jobs = (self.attempt_snapshots[attempt_number][1]
+                             if attempt_number is not None and attempt_number in self.attempt_snapshots
+                             else self.jobs if attempt_number is None else None)
+            if selected_jobs is None:
+                raise GitHubError("historical workflow attempt jobs are unavailable")
+            return [dict(job, steps=[dict(step) for step in job["steps"]]) for job in selected_jobs]
 
         def check_runs_for_ref(self, _sha):
             return [dict(row, app=dict(row["app"])) for row in self.checks]
+
+        def add_attempt(self, attempt_number, *, conclusion="success", fail_step=False):
+            next_run = {**self.run, "run_attempt": attempt_number, "conclusion": conclusion}
+            next_jobs = []
+            next_checks = []
+            for index, job in enumerate(self.jobs, 1):
+                next_check_id = job["id"] + 10000
+                job_conclusion = ("skipped" if job["name"] == "pull-request-metadata"
+                                  else conclusion)
+                next_job = {
+                    **job, "id": job["id"] + 10000, "run_id": self.run["id"],
+                    "check_run_url": f"https://api.github.com/repos/octo/repo/check-runs/{next_check_id}",
+                    "conclusion": job_conclusion,
+                    "steps": [dict(step) for step in job["steps"]],
+                }
+                if conclusion == "success":
+                    next_job["steps"] = [
+                        {**step, "conclusion": "success"}
+                        if step.get("status") == "completed" and step.get("conclusion") == "failure"
+                        else step for step in next_job["steps"]
+                    ]
+                if fail_step and next_job["steps"]:
+                    next_job["steps"][0] = {**next_job["steps"][0], "conclusion": "failure"}
+                next_check = {
+                    "id": next_check_id, "name": job["name"], "head_sha": job["head_sha"],
+                    "status": "completed", "conclusion": job_conclusion,
+                    "app": {"id": PARENT_TRUSTED_ACTIONS_APP_ID},
+                }
+                next_jobs.append(next_job)
+                next_checks.append(next_check)
+            self.attempt_snapshots[attempt_number] = (next_run, next_jobs, next_checks)
+            self.run, self.jobs = next_run, next_jobs
+            self.checks.extend(next_checks)
 
     return ActionsGitHub()
 
@@ -555,7 +606,7 @@ class ParentIntegrationTests(unittest.TestCase):
                 return b"pinned migration contract source\n"
 
         github = ContentGitHub()
-        with patch("p_ases.cli.verify_adc", return_value=approved_adc) as verify:
+        with patch("p_ases.parent_gate.verify_adc", return_value=approved_adc) as verify:
             parent_digest, child_pointer = _parent_adc_authority(github)
         verify.assert_called_once_with(github, 31)
         self.assertEqual(parent_digest, "f" * 64)
@@ -593,7 +644,7 @@ class ParentIntegrationTests(unittest.TestCase):
                     def content_at_ref(self, path, ref):
                         return source
 
-                with patch("p_ases.cli.verify_adc", return_value=adc):
+                with patch("p_ases.parent_gate.verify_adc", return_value=adc):
                     with self.assertRaises(IntegrationError):
                         _parent_adc_authority(ContentGitHub())
 
@@ -759,7 +810,7 @@ class ParentIntegrationTests(unittest.TestCase):
                 github, comment_id, main_sha, "verification", "octo/repo", "b" * 64)
             self.assertEqual(evidence.source_reference, f"issue-comment:{comment_id}")
             self.assertEqual(evidence.main_sha40, main_sha)
-            self.assertEqual(github.reads, 4)
+            self.assertEqual(github.reads, 6)
 
             payload = json.loads(bundle.result_bytes)
             check = payload["checks"][0]
@@ -814,6 +865,86 @@ class ParentIntegrationTests(unittest.TestCase):
             with self.assertRaisesRegex(GitHubError, "comment deleted"):
                 _load_parent_gate_evidence_from_github(
                     github, comment_id, main_sha, "verification", "octo/repo", "b" * 64)
+
+    def test_historical_activation_reconstructs_the_recorded_attempt_after_rerun(self):
+        main_sha = "c" * 40
+        actions = trusted_actions_fixture(main_sha)
+        original_bundle = _parent_gate_bundle_from_actions(
+            actions, 500, "verification", "octo/repo", "b" * 64, main_sha)
+        actions.add_attempt(2, conclusion="failure", fail_step=True)
+        actions.add_attempt(3, conclusion="success")
+        comment_id = 9876
+        comment = {
+            "id": comment_id, "body": original_bundle.to_body(),
+            "created_at": "2026-10-12T00:00:00Z", "updated_at": "2026-10-12T00:00:00Z",
+            "issue_url": "https://api.github.com/repos/octo/repo/issues/26",
+            "html_url": f"https://github.com/octo/repo/issues/26#issuecomment-{comment_id}",
+            "url": f"https://api.github.com/repos/octo/repo/issues/comments/{comment_id}",
+            "user": {"id": 42, "login": "octocat", "type": "User"},
+        }
+
+        class HistoricalCommentGitHub:
+            def __init__(self, actions):
+                self.actions = actions
+                self.row = comment
+                self.direct_reads = 0
+                self.list_reads = 0
+            def __getattr__(self, name):
+                return getattr(self.actions, name)
+            def issue_comment(self, _issue, _comment_id):
+                self.direct_reads += 1
+                return dict(self.row)
+            def issue_comments(self, _issue):
+                self.list_reads += 1
+                return [dict(self.row)]
+            @staticmethod
+            def authenticated_user():
+                return {"id": 42, "login": "octocat", "type": "User"}
+
+        github = HistoricalCommentGitHub(actions)
+        # New evidence must use the latest successful attempt; an old comment cannot be relabeled.
+        latest_bundle = _parent_gate_bundle_from_actions(
+            actions, 500, "verification", "octo/repo", "b" * 64, main_sha)
+        self.assertEqual(latest_bundle.workflow_run_attempt, 3)
+        with self.assertRaisesRegex(IntegrationError, "not the current trusted Actions run result"):
+            _load_parent_gate_evidence_from_github(
+                github, comment_id, main_sha, "verification", "octo/repo", "b" * 64)
+
+        # Activation history pins attempt 1 and remains verifiable despite a failed retry.
+        evidence = _load_parent_gate_evidence_from_github(
+            github, comment_id, main_sha, "verification", "octo/repo", "b" * 64,
+            require_authenticated_author=False, use_recorded_attempt=True)
+        self.assertEqual(evidence.source_reference, f"issue-comment:{comment_id}")
+        self.assertEqual(actions.requested_attempts, [(500, 1), (500, 1)])
+        self.assertEqual(actions.requested_job_attempts[-2:], [(500, 1), (500, 1)])
+
+        # A missing attempt-specific API response fails closed; no comment-cache fallback exists.
+        class MissingAttemptGitHub(HistoricalCommentGitHub):
+            def workflow_run_attempt(self, _run_id, _attempt_number):
+                raise GitHubError("historical attempt unavailable")
+        with self.assertRaisesRegex(GitHubError, "historical attempt unavailable"):
+            _load_parent_gate_evidence_from_github(
+                MissingAttemptGitHub(actions), comment_id, main_sha, "verification", "octo/repo", "b" * 64,
+                require_authenticated_author=False, use_recorded_attempt=True)
+
+        # The requested attempt number and reconstructed API records remain authoritative.
+        for mutation, message in (
+            (lambda snapshot: snapshot[0].update(run_attempt=2), "unsuccessful, forked, or stale"),
+            (lambda snapshot: snapshot[1][0]["steps"][0].update(conclusion="failure"), "did not pass"),
+            (lambda snapshot: snapshot[2][0]["app"].update(id=42), "Check Run provenance"),
+        ):
+            fresh = trusted_actions_fixture(main_sha)
+            bundle = _parent_gate_bundle_from_actions(
+                fresh, 500, "verification", "octo/repo", "b" * 64, main_sha)
+            fresh.add_attempt(2, conclusion="failure", fail_step=True)
+            row = {**comment, "body": bundle.to_body()}
+            reader = HistoricalCommentGitHub(fresh)
+            reader.row = row
+            mutation(fresh.attempt_snapshots[1])
+            with self.subTest(message=message), self.assertRaisesRegex(IntegrationError, message):
+                _load_parent_gate_evidence_from_github(
+                    reader, comment_id, main_sha, "verification", "octo/repo", "b" * 64,
+                    require_authenticated_author=False, use_recorded_attempt=True)
 
     def test_parent_evidence_comment_rejects_stable_author_identity_changes_in_each_read(self):
         main_sha = "c" * 40
@@ -1177,8 +1308,8 @@ class ParentIntegrationTests(unittest.TestCase):
         self.assertEqual(len(result["integration_sha256"]), 64)
         self.assertIn("issue-comment:801", result["evidence_refs"])
         self.assertIn("issue-comment:802", result["evidence_refs"])
-        self.assertEqual(integration_github.direct_comment_ids.count(801), 8)
-        self.assertEqual(integration_github.direct_comment_ids.count(802), 8)
+        self.assertEqual(integration_github.direct_comment_ids.count(801), 12)
+        self.assertEqual(integration_github.direct_comment_ids.count(802), 12)
         self.assertEqual(integration_github.sub_issue_reads, 2)
         self.assertEqual(integration_github.blocked_by_calls, [*EXPECTED, *EXPECTED])
 

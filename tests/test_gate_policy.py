@@ -24,6 +24,7 @@ from p_ases.gate_policy import (
     run_local_bootstrap_checks_bound,
 )
 from p_ases.github import GitHubError
+from p_ases.integration import IntegrationError, ParentGateEvidenceComment
 
 
 REPO = "puchinya/ai-agent-workflow"
@@ -66,44 +67,85 @@ def canonical(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-def activation_fixture(*, approval_author="puchinya", merged_by="puchinya", open_child=None):
+PARENT_ADC = "f" * 64
+OWNER_ID = 3744776
+ACTIVATION_SHA = "b" * 40
+VERIFY_RUN = 500
+ACCEPTANCE_RUN = 501
+VERIFY_COMMENT = 302
+ACCEPTANCE_COMMENT = 303
+ACTIVATION_COMMENT = 304
+
+
+def _activation_comment_row(comment_id, body, created_at, *, login="puchinya", user_id=OWNER_ID,
+                            user_type="User", updated_at=None):
+    issue_url = f"https://api.github.com/repos/{REPO}/issues/26"
+    return {
+        "id": comment_id, "body": body, "created_at": created_at,
+        "updated_at": created_at if updated_at is None else updated_at,
+        "issue_url": issue_url,
+        "html_url": f"https://github.com/{REPO}/issues/26#issuecomment-{comment_id}",
+        "url": f"https://api.github.com/repos/{REPO}/issues/comments/{comment_id}",
+        "user": {"id": user_id, "login": login, "type": user_type,
+                 "name": "Owner", "avatar_url": "https://avatars.example/owner"},
+    }
+
+
+def activation_fixture(*, approval_author="puchinya", merged_by="puchinya", open_child=None,
+                       evidence_refs=None, integration_overrides=None):
     child_prs = tuple((issue, issue + 6, f"{issue:040x}") for issue in range(27, 33))
     expected_child_prs = [{"issue_number": issue, "pr_number": pr, "merge_sha40": sha}
                           for issue, pr, sha in child_prs]
+    refs = evidence_refs or [
+        f"https://github.com/{REPO}/actions/runs/{VERIFY_RUN}",
+        f"https://github.com/{REPO}/actions/runs/{ACCEPTANCE_RUN}",
+        f"https://github.com/{REPO}/issues/26#issuecomment-{VERIFY_COMMENT}",
+        f"https://github.com/{REPO}/issues/26#issuecomment-{ACCEPTANCE_COMMENT}",
+    ]
     integration = {
         "documentation_pass": True, "distribution_pass": True,
-        "evidence_refs": ["https://github.com/octo/repo/actions/runs/1"],
-        "integration_commit_sha40": "b" * 40, "repository": REPO,
+        "evidence_refs": refs,
+        "integration_commit_sha40": ACTIVATION_SHA, "repository": REPO,
         "schema": "PASES_INTEGRATION_EVIDENCE_V1", "skills_count": 16,
         "status": "PASS", "tests_pass": True, "child_prs": expected_child_prs,
     }
+    if integration_overrides:
+        integration.update(integration_overrides)
     integration_sha = hashlib.sha256(canonical(integration).encode()).hexdigest()
     approval = {
-        "approved": True, "activation_commit_sha40": "b" * 40,
+        "approved": True, "activation_commit_sha40": ACTIVATION_SHA,
         "child_issue_numbers": list(range(27, 33)), "child_prs": expected_child_prs,
         "integration_evidence_sha256": integration_sha, "repository": REPO,
         "schema": "PASES_ACTIVATION_APPROVAL_V1",
     }
     record = ActivationRecord(
         REPO, tuple(range(27, 33)), child_prs, tuple(range(27, 33)), integration_sha,
-        300, "p-ases-v1", "b" * 40, 301, "2026-10-11T01:30:00Z",
+        300, "p-ases-v1", ACTIVATION_SHA, 301, "2026-10-11T01:30:00Z",
     )
-    comments = {
-        300: {"id": 300, "issue_url": f"https://api.github.com/repos/{REPO}/issues/26",
-              "created_at": "2026-10-11T00:00:00Z",
-              "body": f"<!-- PASES_INTEGRATION_EVIDENCE_V1\n{canonical(integration)}\n-->"},
-        301: {"id": 301, "issue_url": f"https://api.github.com/repos/{REPO}/issues/26",
-              "created_at": "2026-10-11T01:00:00Z", "user": {"login": approval_author},
-              "body": f"<!-- PASES_ACTIVATION_APPROVAL_V1\n{canonical(approval)}\n-->"},
-    }
+    integration_body = f"<!-- PASES_INTEGRATION_EVIDENCE_V1\n{canonical(integration)}\n-->"
+    approval_body = f"<!-- PASES_ACTIVATION_APPROVAL_V1\n{canonical(approval)}\n-->"
+    verify_bundle = ParentGateEvidenceComment(
+        "verification", REPO, 26, PARENT_ADC, ACTIVATION_SHA, VERIFY_RUN, 1,
+        ".github/workflows/ci.yml", b"{}\n", (("actions/fixture.json", b"verification"),),
+    ).validate()
+    acceptance_bundle = ParentGateEvidenceComment(
+        "acceptance", REPO, 26, PARENT_ADC, ACTIVATION_SHA, ACCEPTANCE_RUN, 1,
+        ".github/workflows/parent-integration.yml", b"{}\n", (("actions/fixture.json", b"acceptance"),),
+    ).validate()
+    activation_body = f"<!-- PASES_ACTIVATION_V1\n{canonical(record.payload())}\n-->"
+    comments = [
+        _activation_comment_row(VERIFY_COMMENT, verify_bundle.to_body(), "2026-10-11T00:10:00Z"),
+        _activation_comment_row(ACCEPTANCE_COMMENT, acceptance_bundle.to_body(), "2026-10-11T00:20:00Z"),
+        _activation_comment_row(300, integration_body, "2026-10-11T00:30:00Z"),
+        _activation_comment_row(301, approval_body, "2026-10-11T01:00:00Z", login=approval_author),
+        _activation_comment_row(ACTIVATION_COMMENT, activation_body, "2026-10-11T01:30:00Z"),
+    ]
     prs = {}
     for issue, pr_number, merge_sha in child_prs:
         pair = {
             27: ("main", "pases/adc-core"), 28: ("main", "pases/documentation"),
-            29: ("main", "pases/verification"),
-            30: ("main", "pases/work-readiness"),
-            31: ("main", "pases/user-review-integration"),
-            32: ("main", "pases/distribution-migration"),
+            29: ("main", "pases/verification"), 30: ("main", "pases/work-readiness"),
+            31: ("main", "pases/user-review-integration"), 32: ("main", "pases/distribution-migration"),
         }[issue]
         prs[pr_number] = {
             "number": pr_number, "state": "closed", "merged": True,
@@ -114,8 +156,37 @@ def activation_fixture(*, approval_author="puchinya", merged_by="puchinya", open
         }
 
     class ActivationGitHub(FakeGitHub):
+        def __init__(self):
+            super().__init__()
+            self.rows = comments
+            self.main_sha = ACTIVATION_SHA
+            self.activation_is_ancestor = True
+
         def issue_comment(self, issue_number, comment_id):
-            return comments[comment_id]
+            if issue_number != 26:
+                raise GitHubError("wrong Issue")
+            for row in self.rows:
+                if row["id"] == comment_id:
+                    return row
+            raise GitHubError("comment deleted")
+
+        def issue_comments(self, issue_number):
+            return list(self.rows) if issue_number == 26 else []
+
+        def repository_metadata(self):
+            return {"default_branch": "main", "owner": {"id": OWNER_ID, "login": "puchinya", "type": "User"}}
+
+        def branch(self, branch_name):
+            if branch_name != "main":
+                raise GitHubError("wrong branch")
+            return {"commit": {"sha": self.main_sha}}
+
+        def compare_commits(self, base_sha40, head_sha40):
+            if base_sha40 == head_sha40:
+                return {"status": "identical"}
+            if base_sha40 == ACTIVATION_SHA and head_sha40 == self.main_sha:
+                return {"status": "ahead" if self.activation_is_ancestor else "diverged"}
+            return {"status": "ahead" if head_sha40 == ACTIVATION_SHA else "identical"}
 
         def issue(self, issue_number):
             state = "open" if issue_number == open_child else "closed"
@@ -126,6 +197,38 @@ def activation_fixture(*, approval_author="puchinya", merged_by="puchinya", open
 
     return ActivationGitHub(), record
 
+
+def activation_trust_patches(record, *, current_main=None, loader_error=None):
+    calls = []
+
+    def load_evidence(github, comment_id, main_sha40, kind, repository, parent_adc_sha256,
+                      *, require_authenticated_author=True, use_recorded_attempt=False):
+        calls.append((comment_id, main_sha40, kind, repository, parent_adc_sha256,
+                      require_authenticated_author, use_recorded_attempt))
+        if loader_error is not None:
+            raise IntegrationError(loader_error)
+        if (main_sha40 != record.activation_commit_sha40 or repository.casefold() != record.repository.casefold()
+                or parent_adc_sha256 != PARENT_ADC or require_authenticated_author is not False):
+            raise IntegrationError("wrong activation evidence subject")
+        matching = []
+        for row in github.issue_comments(26):
+            body = row.get("body")
+            if not isinstance(body, str) or not body.startswith("P-ASES-PARENT-EVIDENCE-V2\n"):
+                continue
+            bundle = ParentGateEvidenceComment.from_body(body)
+            if (bundle.kind == kind and bundle.repository.casefold() == repository.casefold()
+                    and bundle.parent_issue_number == 26 and bundle.parent_adc_sha256 == parent_adc_sha256
+                    and bundle.main_sha40 == main_sha40):
+                matching.append(row.get("id"))
+        if matching != [comment_id]:
+            raise IntegrationError("duplicate or mismatched parent evidence comment")
+
+    return unittest.mock.patch.multiple(
+        "p_ases.gate_policy",
+        _parent_adc_authority=unittest.mock.Mock(return_value=(PARENT_ADC, None)),
+        _parent_current_main_sha=unittest.mock.Mock(return_value=current_main or record.activation_commit_sha40),
+        _load_parent_gate_evidence_from_github=unittest.mock.Mock(side_effect=load_evidence),
+    ), calls
 
 def pr_readback(**overrides):
     value = {
@@ -596,16 +699,193 @@ class BootstrapPolicyTests(unittest.TestCase):
 
     def test_activation_readback_requires_owner_approval_and_owner_merges(self):
         github, record = activation_fixture(approval_author="automation-bot")
-        with self.assertRaisesRegex(GatePolicyError, "Activation approval must be explicitly performed"):
+        patches, _calls = activation_trust_patches(record)
+        with patches, self.assertRaisesRegex(GatePolicyError, "Activation approval comment is not authored"):
             _validate_activation_candidate(github, record)
 
         github, record = activation_fixture(merged_by="automation-bot")
-        with self.assertRaisesRegex(GatePolicyError, "child PR #33 merge must be explicitly performed"):
+        patches, _calls = activation_trust_patches(record)
+        with patches, self.assertRaisesRegex(GatePolicyError, "child PR #33 merge must be explicitly performed"):
             _validate_activation_candidate(github, record)
+
+    def test_activation_reconstructs_both_trusted_parent_actions_records(self):
+        github, record = activation_fixture()
+        patches, calls = activation_trust_patches(record)
+        with patches:
+            self.assertEqual(read_activation_record(github, REPO), (record, ACTIVATION_COMMENT))
+        self.assertEqual({row[2] for row in calls}, {"verification", "acceptance"})
+        self.assertEqual({row[0] for row in calls}, {VERIFY_COMMENT, ACCEPTANCE_COMMENT})
+        self.assertTrue(all(row[1] == record.activation_commit_sha40 for row in calls))
+        self.assertTrue(all(row[4] == PARENT_ADC for row in calls))
+        self.assertTrue(all(row[6] is True for row in calls))
+
+    def test_activation_issuance_uses_current_latest_attempt_policy(self):
+        github, record = activation_fixture()
+        patches, calls = activation_trust_patches(record)
+        with patches:
+            _validate_activation_candidate(github, record)
+        self.assertTrue(calls)
+        self.assertTrue(all(row[6] is False for row in calls))
+
+    def test_activation_rejects_self_asserted_pass_and_nonexistent_actions_refs(self):
+        github, record = activation_fixture()
+        patches, _calls = activation_trust_patches(record, loader_error="no trusted Actions run")
+        with patches, self.assertRaisesRegex(GatePolicyError, "no trusted Actions run"):
+            _validate_activation_candidate(github, record)
+
+        github, record = activation_fixture(evidence_refs=[
+            f"https://github.com/{REPO}/actions/runs/998",
+            f"https://github.com/{REPO}/actions/runs/999",
+            f"https://github.com/{REPO}/issues/26#issuecomment-{VERIFY_COMMENT}",
+            f"https://github.com/{REPO}/issues/26#issuecomment-{ACCEPTANCE_COMMENT}",
+        ])
+        patches, _calls = activation_trust_patches(record)
+        with patches, self.assertRaisesRegex(GatePolicyError, "activation SHA, ADC, or run reference"):
+            _validate_activation_candidate(github, record)
+
+        github, record = activation_fixture(integration_overrides={"tests_pass": False})
+        patches, _calls = activation_trust_patches(record)
+        with patches, self.assertRaisesRegex(GatePolicyError, "parent integration evidence is incomplete"):
+            _validate_activation_candidate(github, record)
+
+    def test_activation_after_main_advances_preserves_the_historical_record(self):
+        advanced_main = "c" * 40
+        github, record = activation_fixture()
+        github.main_sha = advanced_main
+        patches, calls = activation_trust_patches(record, current_main=advanced_main)
+        with patches:
+            self.assertEqual(read_activation_record(github, REPO), (record, ACTIVATION_COMMENT))
+        self.assertEqual({row[1] for row in calls}, {record.activation_commit_sha40})
+
+        github.activation_is_ancestor = False
+        patches, _calls = activation_trust_patches(record, current_main=advanced_main)
+        with patches, self.assertRaisesRegex(GatePolicyError, "no longer contained in current main"):
+            _validate_activation_candidate(github, record)
+
+    def test_activation_comments_reject_edits_duplicates_and_author_changes(self):
+        mutations = (
+            (301, {"updated_at": "2026-10-11T01:00:01Z"}, "edited after creation"),
+            (ACTIVATION_COMMENT, {"updated_at": "2026-10-11T01:30:01Z"}, "edited after creation"),
+            (ACTIVATION_COMMENT, {"issue_url": f"https://api.github.com/repos/{REPO}/issues/27"},
+             "Issue URL does not match"),
+            (301, {"id": 9999}, "comment readback failed"),
+            (300, {"user": {"id": OWNER_ID + 1, "login": "puchinya", "type": "User"}},
+             "not authored by the repository owner"),
+            (301, {"user": {"id": OWNER_ID, "login": "automation-bot", "type": "User"}},
+             "not authored by the repository owner"),
+            (ACTIVATION_COMMENT, {"user": {"id": OWNER_ID, "login": "puchinya", "type": "Bot"}},
+             "author identity is malformed"),
+        )
+        for comment_id, updates, message in mutations:
+            with self.subTest(comment_id=comment_id, message=message):
+                github, record = activation_fixture()
+                row = next(item for item in github.rows if item["id"] == comment_id)
+                row.update(updates)
+                patches, _calls = activation_trust_patches(record)
+                with patches, self.assertRaisesRegex(GatePolicyError, message):
+                    read_activation_record(github, REPO)
+
+        for duplicate_id in (300, 301, ACTIVATION_COMMENT, VERIFY_COMMENT):
+            with self.subTest(duplicate_id=duplicate_id):
+                github, record = activation_fixture()
+                duplicate = dict(next(item for item in github.rows if item["id"] == duplicate_id))
+                duplicate["id"] = 900 + duplicate_id
+                duplicate["html_url"] = f"https://github.com/{REPO}/issues/26#issuecomment-{duplicate['id']}"
+                duplicate["url"] = f"https://api.github.com/repos/{REPO}/issues/comments/{duplicate['id']}"
+                github.rows.append(duplicate)
+                patches, _calls = activation_trust_patches(record)
+                with patches, self.assertRaises(GatePolicyError):
+                    read_activation_record(github, REPO)
+
+        github, record = activation_fixture()
+        github.rows = [row for row in github.rows if row["id"] != 301]
+        patches, _calls = activation_trust_patches(record)
+        with patches, self.assertRaisesRegex(GatePolicyError, "comment readback failed"):
+            read_activation_record(github, REPO)
+
+    def test_activation_readback_rejects_a_change_between_direct_list_direct(self):
+        github, record = activation_fixture()
+        original = github.issue_comment
+        calls = 0
+
+        def mutate_activation_between_reads(issue_number, comment_id):
+            nonlocal calls
+            row = dict(original(issue_number, comment_id))
+            if comment_id == ACTIVATION_COMMENT:
+                calls += 1
+                if calls == 2:
+                    row["body"] = row["body"].replace('"gate_version":"p-ases-v1"',
+                                                       '"gate_version":"changed"')
+            return row
+
+        github.issue_comment = mutate_activation_between_reads
+        patches, _calls = activation_trust_patches(record)
+        with patches, self.assertRaisesRegex(GatePolicyError, "changed during direct/list/direct"):
+            read_activation_record(github, REPO)
+
+        github, record = activation_fixture()
+        original = github.issue_comment
+        calls = 0
+
+        def mutate_approval_between_reads(issue_number, comment_id):
+            nonlocal calls
+            row = dict(original(issue_number, comment_id))
+            if comment_id == 301:
+                calls += 1
+                if calls == 2:
+                    row["body"] = row["body"].replace('"approved":true', '"approved":false')
+            return row
+
+        github.issue_comment = mutate_approval_between_reads
+        patches, _calls = activation_trust_patches(record)
+        with patches, self.assertRaisesRegex(GatePolicyError, "changed during direct/list/direct"):
+            read_activation_record(github, REPO)
+
+    def test_activation_readback_rechecks_history_after_actions_and_child_apis(self):
+        github, record = activation_fixture()
+        original_pull_request = github.pull_request
+        changed = False
+
+        def mutate_approval_during_child_readback(pr_number):
+            nonlocal changed
+            result = original_pull_request(pr_number)
+            if pr_number == 38 and not changed:
+                approval = next(row for row in github.rows if row["id"] == 301)
+                approval["body"] = approval["body"].replace('"approved":true', '"approved":false')
+                approval["updated_at"] = "2026-10-11T01:00:01Z"
+                changed = True
+            return result
+
+        github.pull_request = mutate_approval_during_child_readback
+        patches, _calls = activation_trust_patches(record)
+        with patches, self.assertRaisesRegex(GatePolicyError, "edited after creation"):
+            read_activation_record(github, REPO)
+
+    def test_activation_readback_ignores_profile_fields_and_login_casing(self):
+        github, record = activation_fixture()
+        original = github.issue_comment
+        calls = 0
+
+        def vary_profile_and_case(issue_number, comment_id):
+            nonlocal calls
+            row = dict(original(issue_number, comment_id))
+            row["user"] = dict(row["user"])
+            calls += 1
+            row["user"].update({"login": "PUCHINYA" if calls % 2 else "puchinya",
+                                "name": f"Owner {calls}",
+                                "avatar_url": f"https://avatars.example/{calls}",
+                                "html_url": f"https://github.com/user-{calls}"})
+            return row
+
+        github.issue_comment = vary_profile_and_case
+        patches, _calls = activation_trust_patches(record)
+        with patches:
+            self.assertEqual(read_activation_record(github, REPO), (record, ACTIVATION_COMMENT))
 
     def test_activation_refuses_open_child_and_mismatched_branch_pair(self):
         github, record = activation_fixture(open_child=27)
-        with self.assertRaisesRegex(GatePolicyError, "child Issue #27 is not closed"):
+        patches, _calls = activation_trust_patches(record)
+        with patches, self.assertRaisesRegex(GatePolicyError, "child Issue #27 is not closed"):
             _validate_activation_candidate(github, record)
 
         github, record = activation_fixture()
@@ -618,7 +898,8 @@ class BootstrapPolicyTests(unittest.TestCase):
             return result
 
         github.pull_request = wrong_child_base
-        with self.assertRaisesRegex(GatePolicyError, "child PR #38 has no matching approved base/head branch contract"):
+        patches, _calls = activation_trust_patches(record)
+        with patches, self.assertRaisesRegex(GatePolicyError, "child PR #38 has no matching approved base/head branch contract"):
             _validate_activation_candidate(github, record)
 
     def test_gate_selection_refuses_comment_readback_from_another_issue(self):

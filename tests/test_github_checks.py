@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import unittest
+from unittest.mock import patch
 
 ROOT = __import__("pathlib").Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
@@ -41,6 +42,16 @@ class FakeGitHub(GitHub):
 
 
 class GitHubCheckRunTests(unittest.TestCase):
+    def test_api_metrics_count_requests_and_measure_client_latency(self):
+        github = GitHub("octo/repo")
+        completed = __import__("subprocess").CompletedProcess(
+            ["gh", "api"], 0, "{}", "")
+        with patch("p_ases.github.subprocess.run", return_value=completed):
+            github.request("GET", "repos/octo/repo/issues/26")
+            metrics = github.api_metrics
+        self.assertEqual(metrics["api_calls"], 1)
+        self.assertGreaterEqual(metrics["elapsed_ms"], 0)
+
     def test_pull_request_readback_uses_exact_numbered_api_resource(self):
         row = {"number": 54, "state": "open", "draft": False}
         github = FakeGitHub((row,))
@@ -145,6 +156,36 @@ class GitHubCheckRunTests(unittest.TestCase):
         truncated = FakeGitHub(({"total_count": 2, "jobs": [job(1)]},))
         with self.assertRaisesRegex(GitHubError, "pagination count"):
             truncated.workflow_run_jobs(30)
+
+    def test_historical_workflow_attempt_and_jobs_use_attempt_specific_endpoints(self):
+        run = {"id": 30, "run_number": 8, "run_attempt": 1,
+               "path": ".github/workflows/ci.yml", "event": "push",
+               "head_sha": HEAD, "head_branch": "main", "status": "completed",
+               "conclusion": "success", "head_repository": {"full_name": "octo/repo"}}
+        job = {"id": 500, "run_id": 30, "head_sha": HEAD, "name": "test (ubuntu-latest, 3.10)",
+               "status": "completed", "conclusion": "success",
+               "check_run_url": "https://api.github.com/repos/octo/repo/check-runs/700",
+               "steps": [{"number": 1, "name": "Unit tests", "status": "completed",
+                          "conclusion": "success"}]}
+        github = FakeGitHub((run, {"total_count": 1, "jobs": [job]}))
+        self.assertEqual(github.workflow_run_attempt(30, 1), run)
+        self.assertEqual(github.workflow_run_jobs(30, 1), [job])
+        self.assertEqual(github.calls, [
+            ("GET", "repos/octo/repo/actions/runs/30/attempts/1", None),
+            ("GET", "repos/octo/repo/actions/runs/30/attempts/1/jobs?page=1&per_page=100", None),
+        ])
+
+    def test_historical_workflow_attempt_rejects_missing_or_mismatched_records(self):
+        run = {"id": 30, "run_number": 8, "run_attempt": 2,
+               "path": ".github/workflows/ci.yml", "event": "push",
+               "head_sha": HEAD, "head_branch": "main", "status": "completed",
+               "conclusion": "success", "head_repository": {"full_name": "octo/repo"}}
+        with self.assertRaisesRegex(GitHubError, "attempt response"):
+            FakeGitHub((run,)).workflow_run_attempt(30, 1)
+        with self.assertRaises(GitHubError):
+            FakeGitHub((GitHubError("HTTP 404"),)).workflow_run_attempt(30, 1)
+        with self.assertRaises(GitHubError):
+            FakeGitHub(()).workflow_run_jobs(30, 0)
 
 
 if __name__ == "__main__":

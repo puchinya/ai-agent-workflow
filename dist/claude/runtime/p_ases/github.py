@@ -7,7 +7,8 @@ import hashlib
 import json
 import re
 import subprocess
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote, urlencode
 
@@ -25,6 +26,13 @@ def _positive_int(value: Any, label: str) -> int:
 @dataclass
 class GitHub:
     repo: str
+    _api_request_count: int = field(default=0, init=False, repr=False)
+    _api_elapsed_ms: float = field(default=0.0, init=False, repr=False)
+
+    @property
+    def api_metrics(self) -> dict[str, int | float]:
+        """Return in-process API call count and cumulative client-observed latency."""
+        return {"api_calls": self._api_request_count, "elapsed_ms": round(self._api_elapsed_ms, 3)}
 
     def __post_init__(self) -> None:
         if not isinstance(self.repo, str) or not re.fullmatch(
@@ -51,6 +59,8 @@ class GitHub:
                 raise GitHubError("GitHub API payload must be an object")
             argv.extend(["--input", "-"])
             input_text = json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
+        started = time.perf_counter()
+        self._api_request_count += 1
         try:
             result = subprocess.run(
                 argv, input=input_text, text=True, encoding="utf-8", errors="replace",
@@ -58,6 +68,8 @@ class GitHub:
             )
         except OSError as exc:
             raise GitHubError(f"could not start GitHub API client: {exc}") from exc
+        finally:
+            self._api_elapsed_ms += (time.perf_counter() - started) * 1000
         if result.returncode:
             # gh stderr may include credentials or payload values; never return it.
             raise GitHubError(f"GitHub API {verb} {endpoint} failed (gh exit status {result.returncode})")
@@ -391,15 +403,44 @@ class GitHub:
                 return items
             page += 1
 
-    def workflow_run_jobs(self, run_id: int) -> list[dict[str, Any]]:
-        """Read every job and step outcome attached to one Actions run."""
+    def workflow_run_attempt(self, run_id: int, attempt_number: int) -> dict[str, Any]:
+        """Read one exact historical or current attempt for a workflow run."""
         run_id = _positive_int(run_id, "Workflow run ID")
+        attempt_number = _positive_int(attempt_number, "Workflow run attempt")
+        result = self.request(
+            "GET", f"{self.prefix}/actions/runs/{run_id}/attempts/{attempt_number}",
+        )
+        repository = result.get("head_repository") if isinstance(result, dict) else None
+        if (not isinstance(result, dict) or type(result.get("id")) is not int or result["id"] != run_id
+                or type(result.get("run_number")) is not int or result["run_number"] < 1
+                or type(result.get("run_attempt")) is not int
+                or result["run_attempt"] != attempt_number
+                or not isinstance(result.get("path"), str) or not result["path"].startswith(".github/workflows/")
+                or result.get("event") not in {"push", "workflow_dispatch", "pull_request"}
+                or not isinstance(result.get("head_sha"), str)
+                or not re.fullmatch(r"[0-9a-f]{40}", result["head_sha"])
+                or not isinstance(result.get("head_branch"), str) or not result["head_branch"]
+                or not isinstance(result.get("status"), str)
+                or (result.get("conclusion") is not None and not isinstance(result.get("conclusion"), str))
+                or not isinstance(repository, dict)
+                or not isinstance(repository.get("full_name"), str) or not repository["full_name"]):
+            raise GitHubError("GitHub workflow attempt response has incomplete or mismatched identity data")
+        return result
+
+    def workflow_run_jobs(self, run_id: int, attempt_number: int | None = None) -> list[dict[str, Any]]:
+        """Read every job and step for the latest run or one exact attempt."""
+        run_id = _positive_int(run_id, "Workflow run ID")
+        if attempt_number is not None:
+            attempt_number = _positive_int(attempt_number, "Workflow run attempt")
+            endpoint = f"{self.prefix}/actions/runs/{run_id}/attempts/{attempt_number}/jobs"
+        else:
+            endpoint = f"{self.prefix}/actions/runs/{run_id}/jobs"
         items: list[dict[str, Any]] = []
         page = 1
         total_count: int | None = None
         while True:
             result = self.request(
-                "GET", f"{self.prefix}/actions/runs/{run_id}/jobs?page={page}&per_page=100",
+                "GET", f"{endpoint}?page={page}&per_page=100",
             )
             if not isinstance(result, dict):
                 raise GitHubError(f"GitHub workflow jobs page {page} must be an object")
