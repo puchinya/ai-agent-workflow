@@ -489,5 +489,3 @@ def _validate_parent_gate_bundle(
     if set(by_id) != required:
         raise IntegrationError(f"parent Integration {kind} evidence does not cover the fixed required check set")
     return source_value
-
-
