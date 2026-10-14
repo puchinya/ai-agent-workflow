@@ -2,7 +2,7 @@
 <!-- agent-doc-schema: 2 -->
 # P-ASES Human Review and Integration Test Specification
 
-- Status: Approved for Issue #31
+- Status: Approved for Issues #31 and #42
 - Owning specification: ../specs/workflow-spec.md
 
 <!-- contents:start -->
@@ -21,6 +21,20 @@
     - [2.5.1 ORA-UR-005 Expected result](#251-ora-ur-005-expected-result)
   - [2.6 TST-UR-006 Parent Activation provenance and comment history](#26-tst-ur-006-parent-activation-provenance-and-comment-history)
     - [2.6.1 ORA-UR-006 Expected result](#261-ora-ur-006-expected-result)
+  - [2.7 TST-F01-001 Fixed migration and consumer routing separation](#27-tst-f01-001-fixed-migration-and-consumer-routing-separation)
+    - [2.7.1 ORA-F01-001 Expected result](#271-ora-f01-001-expected-result)
+  - [2.8 TST-F01-002 Automatic Activation setup](#28-tst-f01-002-automatic-activation-setup)
+    - [2.8.1 ORA-F01-002 Expected result](#281-ora-f01-002-expected-result)
+  - [2.9 TST-F01-003 Immutable Activation evidence](#29-tst-f01-003-immutable-activation-evidence)
+    - [2.9.1 ORA-F01-003 Expected result](#291-ora-f01-003-expected-result)
+  - [2.10 TST-F01-004 Prompt and approval boundary](#210-tst-f01-004-prompt-and-approval-boundary)
+    - [2.10.1 ORA-F01-004 Expected result](#2101-ora-f01-004-expected-result)
+  - [2.11 TST-F01-005 Strict new-Issue timing](#211-tst-f01-005-strict-new-issue-timing)
+    - [2.11.1 ORA-F01-005 Expected result](#2111-ora-f01-005-expected-result)
+  - [2.12 TST-F01-006 Historical pin preservation](#212-tst-f01-006-historical-pin-preservation)
+    - [2.12.1 ORA-F01-006 Expected result](#2121-ora-f01-006-expected-result)
+  - [2.13 TST-F01-007 Successor/reapproval](#213-tst-f01-007-successor-reapproval)
+    - [2.13.1 ORA-F01-007 Expected result](#2131-ora-f01-007-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -37,6 +51,20 @@
 - [ORA-UR-005](#ora-ur-005) — 2.5.1 ORA-UR-005 Expected result
 - [TST-UR-006](#tst-ur-006) — 2.6 TST-UR-006 Parent Activation provenance and comment history
 - [ORA-UR-006](#ora-ur-006) — 2.6.1 ORA-UR-006 Expected result
+- [TST-F01-001](#tst-f01-001) — 2.7 TST-F01-001 Fixed migration and consumer routing separation
+- [ORA-F01-001](#ora-f01-001) — 2.7.1 ORA-F01-001 Expected result
+- [TST-F01-002](#tst-f01-002) — 2.8 TST-F01-002 Automatic Activation setup
+- [ORA-F01-002](#ora-f01-002) — 2.8.1 ORA-F01-002 Expected result
+- [TST-F01-003](#tst-f01-003) — 2.9 TST-F01-003 Immutable Activation evidence
+- [ORA-F01-003](#ora-f01-003) — 2.9.1 ORA-F01-003 Expected result
+- [TST-F01-004](#tst-f01-004) — 2.10 TST-F01-004 Prompt and approval boundary
+- [ORA-F01-004](#ora-f01-004) — 2.10.1 ORA-F01-004 Expected result
+- [TST-F01-005](#tst-f01-005) — 2.11 TST-F01-005 Strict new-Issue timing
+- [ORA-F01-005](#ora-f01-005) — 2.11.1 ORA-F01-005 Expected result
+- [TST-F01-006](#tst-f01-006) — 2.12 TST-F01-006 Historical pin preservation
+- [ORA-F01-006](#ora-f01-006) — 2.12.1 ORA-F01-006 Expected result
+- [TST-F01-007](#tst-f01-007) — 2.13 TST-F01-007 Successor/reapproval
+- [ORA-F01-007](#ora-f01-007) — 2.13.1 ORA-F01-007 Expected result
 <!-- heading-map:end -->
 
 
@@ -107,3 +135,73 @@ Parent User Review starts only after exact Integration PASS. Only a new whole-bo
 #### 2.6.1 ORA-UR-006 Expected result
 
 Activation passes only when the complete exact-SHA Verification and Acceptance evidence is reconstructed from trusted GitHub Actions API records (App ID 15368), the approved parent ADC and all six real child merge SHAs match, and current main contains the activation commit. New evidence issuance requires the latest successful matching run and attempt. Historical Activation validation pins the run ID/attempt recorded in each V2 comment and rebuilds that attempt using GitHub's attempt-specific run and jobs APIs; a newer run/attempt does not invalidate it. A missing/unavailable historical attempt, changed run metadata, or altered job/step/Check Run must block without fallback to comment PASS fields or cache. Caller PASS flags, digests, or URLs alone never establish Activation. Approval, Activation, and referenced evidence comments pass only when each is unique and direct/list/direct identity matches across ID, exact body, `created_at == updated_at`, Issue/HTML/API URLs, and stable owner User ID/login/type. Edited, deleted, duplicated, misattributed, misbound, or changing records and any API failure block. Avatar/profile-only differences and login casing are tolerated. Advancing main preserves a valid historical activation as long as its commit remains on main.
+
+<a id="tst-f01-001"></a>
+### 2.7 TST-F01-001 Fixed migration and consumer routing separation
+
+**Setup and action:** Keep the existing #26–#32 fixed-cohort fixtures. Route ordinary Issue #27 in a distinct owner/repository through consumer Activation. Vary repository case, missing locator, wrong repository URL, PR resource, pre-Activation creation time, and a same-number Issue in a different repository.
+
+<a id="ora-f01-001"></a>
+#### 2.7.1 ORA-F01-001 Expected result
+
+Only exact P-ASES repository/cohort pairs use migration Bootstrap. A consumer Issue numbered #27 has no migration authority; it receives a consumer Gate Selection only when its repository-specific Activation record is valid and its creation time is later.
+
+<a id="tst-f01-002"></a>
+### 2.8 TST-F01-002 Automatic Activation setup
+
+**Setup and action:** Run setup with no profile and no marked Issue, with a valid profile and no Activation locator, with an existing unique marker/open PR, and with duplicate Issue/PR markers. Verify the default ADC is a draft proposal, only `activation.issue_number` is written, and no approval/Activation comment exists before merge. Reject malformed/unknown project fields before any GitHub API or label write. Re-run exact setup and verify it reuses the same Issue/PR.
+
+<a id="ora-f01-002"></a>
+#### 2.8.1 ORA-F01-002 Expected result
+
+The direct prompt needs no Issue number. One marked Activation Issue and one exact setup PR are created or reused. The PR is reviewable; setup alone cannot activate or relabel Issues. Duplicate or conflicting state blocks.
+
+<a id="tst-f01-003"></a>
+### 2.9 TST-F01-003 Immutable Activation evidence
+
+**Setup and action:** Verify an admin-merged setup PR with exact `.agent/project.json`, approved ADC pointer, one successful required check per trusted App ID, and merge SHA on current main. Vary missing/malformed ADC pointer, comment deletion/edit, duplicate approval/record, wrong user ID/login/type, non-admin merger, wrong PR file/base/head/repository, failed or duplicate Check Run, wrong merge SHA, and a mutation between direct/list/direct reads. Append a successor and verify its predecessor.
+
+<a id="ora-f01-003"></a>
+#### 2.9.1 ORA-F01-003 Expected result
+
+Activation is recorded only from the exact verified merge by the authenticated current admin. Every approval/record pair binds ADC proposal and approval, canonical profile digest, PR identity, merge, actor, and predecessor. Any edit, deletion, duplicate, ambiguous history, API failure, or mid-read change fails closed. Exact retries do not append duplicate history.
+
+<a id="tst-f01-004"></a>
+### 2.10 TST-F01-004 Prompt and approval boundary
+
+**Setup and action:** Execute the exact prompt `P-ASESを有効化して。` from a consumer repository. Confirm the first command creates only the Issue, proposed ADC, project config branch, and PR. Try verification before merge, by a non-admin, under another authenticated user, with a caller-supplied identity, stale ADC, and without a successful trusted check. Then merge the exact setup PR as an admin and retry verification.
+
+<a id="ora-f01-004"></a>
+#### 2.10.1 ORA-F01-004 Expected result
+
+The prompt requests setup only. The exact admin merge is explicit policy approval; post-merge verification appends one approval and record only after reconstructing all evidence. ADC publication, ownership metadata, caller identity, or PASS text alone never activates.
+
+<a id="tst-f01-005"></a>
+### 2.11 TST-F01-005 Strict new-Issue timing
+
+**Setup and action:** Compare Issue creation times before, equal to, and after Activation comment `created_at`. Vary repository identity and PR status. Verify old Issues and existing labels remain unchanged and that an eligible Issue receives one immutable Gate Selection containing Activation Issue number, record ID, and digest.
+
+<a id="ora-f01-005"></a>
+#### 2.11.1 ORA-F01-005 Expected result
+
+Only same-repository non-PR Issues created strictly after the Activation record comment time select `p-ases-v1`. All others remain `UNDETERMINED` without label side effects.
+
+<a id="tst-f01-006"></a>
+### 2.12 TST-F01-006 Historical pin preservation
+
+**Setup and action:** Create a Gate Selection against an Activation, append a successor Activation, and re-read the Issue's phase evidence. Vary the pinned comment ID/digest, predecessor chain, current Issue ADC, kind/phase labels, work binding, receipts, and exact-subject evidence.
+
+<a id="ora-f01-006"></a>
+#### 2.12.1 ORA-F01-006 Expected result
+
+The existing selection remains bound to its exact historical record while the complete chain validates and its merge commit remains on main. A successor cannot rewrite the selection or bypass any ordinary phase checks.
+
+<a id="tst-f01-007"></a>
+### 2.13 TST-F01-007 Successor/reapproval
+
+**Setup and action:** Supersede the Activation ADC or remove/restore the profile locator. Attempt selection before the successor merge, replay an old setup PR, and append a valid successor after a new admin merge.
+
+<a id="ora-f01-007"></a>
+#### 2.13.1 ORA-F01-007 Expected result
+
+Policy or locator changes require a new setup PR and explicit admin merge. The successor links the previous record, governs only later-created Issues, and leaves earlier Activation records and Gate Selections unchanged. Removing the locator blocks new selections.

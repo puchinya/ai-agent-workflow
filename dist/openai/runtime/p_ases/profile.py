@@ -31,6 +31,7 @@ class ProjectProfile:
     project_name: str
     branch_prefix: str
     required_checks: tuple[tuple[str, int | None], ...]
+    activation_issue_number: int | None = None
 
     def required_check_policy(self) -> RequiredCheckPolicy:
         if any(app_id is None for _, app_id in self.required_checks):
@@ -54,7 +55,8 @@ def load_profile(repository_root: Path) -> ProjectProfile:
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ProfileError("project configuration is unreadable JSON") from exc
     expected = {"schema_version", "initialized", "project_name", "components", "branch", "workspace", "milestones", "hooks"}
-    if not isinstance(value, dict) or set(value) != expected:
+    if (not isinstance(value, dict) or not expected.issubset(value)
+            or set(value) - expected - {"activation"}):
         raise ProfileError("project configuration has unknown or missing top-level fields")
     if value["schema_version"] != 2 or value["initialized"] is not True:
         raise ProfileError("project configuration schema is unknown or not initialized")
@@ -69,8 +71,8 @@ def load_profile(repository_root: Path) -> ProjectProfile:
     if not isinstance(prefix, str) or not prefix.strip() or any(c in prefix for c in "\x00\r\n /\\"):
         raise ProfileError("branch.prefix is invalid")
     rows = branch["required_checks"]
-    if not isinstance(rows, list) or not rows:
-        raise ProfileError("branch.required_checks must be a non-empty list")
+    if not isinstance(rows, list):
+        raise ProfileError("branch.required_checks must be a list")
     checks: list[tuple[str, int | None]] = []
     for index, row in enumerate(rows):
         if not isinstance(row, dict) or set(row) not in ({"name"}, {"name", "trusted_app_id"}):
@@ -86,4 +88,11 @@ def load_profile(repository_root: Path) -> ProjectProfile:
     for key in ("components", "workspace", "milestones", "hooks"):
         if not isinstance(value[key], (dict, list)):
             raise ProfileError(f"project {key} configuration has an invalid type")
-    return ProjectProfile(root, project_name.strip(), prefix, tuple(checks))
+    activation_issue_number = None
+    if "activation" in value:
+        activation = value["activation"]
+        if (not isinstance(activation, dict) or set(activation) != {"issue_number"}
+                or type(activation.get("issue_number")) is not int or activation["issue_number"] < 1):
+            raise ProfileError("activation configuration must contain only a positive issue_number")
+        activation_issue_number = activation["issue_number"]
+    return ProjectProfile(root, project_name.strip(), prefix, tuple(checks), activation_issue_number)

@@ -312,9 +312,9 @@ class BootstrapPolicyTests(unittest.TestCase):
         self.assertEqual(select_gate(upper, 27, selected_at="2026-10-11T00:00:00Z").policy_version,
                          "bootstrap-legacy-v1")
         self.assertEqual(subject(repository=upper).validate().repository, upper)
-        with self.assertRaisesRegex(GatePolicyError, "approved repository"):
-            select_gate("another-owner/another-repo", 27, selected_at="2026-10-11T00:00:00Z")
-        with self.assertRaisesRegex(GatePolicyError, "approved repository"):
+        self.assertIsNone(select_gate("another-owner/another-repo", 27,
+                                      selected_at="2026-10-11T00:00:00Z"))
+        with self.assertRaisesRegex(GatePolicyError, "non-cohort"):
             type(select_gate(REPO, 27, selected_at="2026-10-11T00:00:00Z"))(
                 "another-owner/another-repo", 27, "bootstrap-legacy-v1", "2026-10-11T00:00:00Z").validate()
         with self.assertRaisesRegex(GatePolicyError, "fixed cohort repository"):

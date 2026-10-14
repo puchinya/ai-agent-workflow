@@ -262,3 +262,16 @@ Bootstrap evidence remains append-only and binds its exact ADC, PR, HEAD, CI, lo
 The Bootstrap evaluator may live on a downstream PR while an earlier stacked PR is being evaluated. Run its CLI from the evaluator checkout, with `--root` set to a separate clean checkout of the target PR at its exact current HEAD. The evaluator code and fingerprint come from the evaluator checkout; local checks and branch/HEAD cleanliness checks run against the target checkout. Never copy downstream evaluator changes into the target branch or claim a result for a target HEAD different from the PR's current GitHub HEAD.
 
 When migrating a legacy Issue-body ADC pointer to the append-only journal, retain the original `## Agent Development Contract` pointer block unchanged. The first journal record names the old pointer Comment ID as its predecessor (or `none` if there was no old pointer). Do not remove or edit that anchor unless a separately approved migration format records its exact prior bytes and predecessor.
+
+Consumer Activation is separate from the fixed migration Activation. The consumer repository's approved Activation Issue ADC and append-only approval/record comments authorize only later-created non-PR Issues in that repository. New Gate Selections carry the exact Activation record identity; successor policy keeps prior selections pinned.
+
+<a id="req-f01-workflow-consumer-activation"></a>
+## Consumer Activation workflow contract
+
+- REQ-F01-001: Migration issue numbers, child sets, branch pairs, and parent evidence MUST NOT supply authority in another repository.
+- REQ-F01-002: The Activation Issue is one marked same-repository Issue; `.agent/project.json` stores only its positive `activation.issue_number` locator. The agent resolves it automatically and rejects duplicate or conflicting marker state.
+- REQ-F01-003: Consumer approval and Activation history are append-only comments. A record identifies the exact approved ADC, canonical Activation profile digest, PR merge, admin, and predecessor; its Issue-comment creation time is the effective Activation time.
+- REQ-F01-004: `P-ASESを有効化して。` requests setup only. It creates/reuses the Activation Issue, proposes the default ADC if absent, prepares `project.json`, and opens/reuses a reviewable PR. The authenticated repository admin's merge is explicit approval. Only post-merge verification can append Activation evidence.
+- REQ-F01-005: New P-ASES work is eligible only for same-repository non-PR Issues created strictly after verified Activation. Pre-Activation Issues remain untouched.
+- REQ-F01-006: Existing Gate Selections remain bound to their historical Activation through later activations. Ordinary phase transitions continue to enforce current Issue ADC, labels, frozen binding, receipts, and exact-subject evidence.
+- REQ-F01-007: Policy or locator changes require a new setup PR and merge, append a successor Activation, and preserve prior records and selections.

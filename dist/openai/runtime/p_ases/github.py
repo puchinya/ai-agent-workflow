@@ -145,6 +145,22 @@ class GitHub:
             raise GitHubError("GitHub PR readback is missing or has a mismatched number")
         return result
 
+    def pull_request_files(self, number: int) -> list[dict[str, Any]]:
+        return self._paginate(f"{self.prefix}/pulls/{_positive_int(number, 'PR number')}/files")
+
+    def collaborator_permission(self, login: str) -> dict[str, Any]:
+        if not isinstance(login, str) or not re.fullmatch(r"[A-Za-z0-9-]+", login):
+            raise GitHubError("collaborator login is invalid")
+        result = self.request("GET", f"{self.prefix}/collaborators/{quote(login, safe='')}/permission")
+        user = result.get("user") if isinstance(result, dict) else None
+        if (not isinstance(result, dict) or result.get("permission") not in
+                {"admin", "maintain", "write", "triage", "read"}
+                or not isinstance(user, dict) or type(user.get("id")) is not int or user["id"] < 1
+                or not isinstance(user.get("login"), str) or user["login"].casefold() != login.casefold()
+                or user.get("type") != "User"):
+            raise GitHubError("collaborator permission response is incomplete or mismatched")
+        return result
+
     def create_pull_request(self, *, title: str, body: str, head_ref: str, base_ref: str) -> dict[str, Any]:
         if not isinstance(title, str) or not title.strip() or any(c in title for c in "\x00\r\n"):
             raise GitHubError("new PR title must be a non-empty single line")

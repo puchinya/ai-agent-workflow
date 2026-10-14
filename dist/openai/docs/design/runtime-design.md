@@ -113,6 +113,30 @@ The implementation Skill resolves the selected base ref and exact SHA before eva
 
 `gate_policy.py` owns repository-scoped fixed-cohort routing, `PASES_GATE_SELECTION_V1`, Bootstrap subjects/results, append-only Bootstrap evidence, and activation validation. Each result fingerprints the gate evaluator and its CLI, GitHub, ADC, Git, process, and profile adapters so a tool update appends a new evidence attempt without changing the pinned Issue gate. It is not called by `delivery.evaluate_readiness` or phase advancement. `cli.py` runs `delivery gate-policy` and `delivery bootstrap-check`; the latter executes the repository's fixed bounded local verification set and reads the exact current PR, ADC, Actions workflow run, and Check Runs through `github.py`. Bootstrap review artifacts remain parseable for historical records, but current technical evaluation neither reads nor requires self-review, independent-review, or separate-context artifacts. New evidence sets `review_mode=WAIVED_BOOTSTRAP` and reports technical success as `BOOTSTRAP_TECHNICAL_READY` without claiming review evidence or final-user-review eligibility. The clean checkout, complete PR identity/body, ADC pointer, and pinned gate selection are re-read before and after evidence publication. If publication races with a subject change, a newer BLOCKED observation is appended and read back as latest. Activation is read-only until all child merges, closed Issues, parent integration evidence, and a distinct explicit approval comment can be verified; no implementation command transitions an Issue or merges a PR. Ordinary P-ASES review gates are unchanged, and this policy does not grant permission to merge a PR.
 
+<a id="des-f01-runtime-consumer-activation"></a>
+## DES-F01 Consumer Activation setup
+
+<a id="des-f01-001"></a>
+Fixed migration dispatch requires both the exact P-ASES repository and its approved #26–#32 cohort. Other repositories use the consumer path even when their Issue numbers overlap.
+
+<a id="des-f01-002"></a>
+`profile.py` accepts the optional `activation.issue_number` locator, with no policy or approval fields. The setup CLI validates the local profile before GitHub API calls, resolves one stable Issue marker in the active repository, and uses the existing ADC journal to publish a proposed default Activation ADC only when the Issue has none. It adds the Issue number to `.agent/project.json` on a dedicated branch and opens/reuses a PR. The generated Required Check list is empty when no project profile exists; an administrator must configure trusted Required Checks in the PR before merge. Empty or untrusted checks can never activate.
+
+<a id="des-f01-003"></a>
+The post-merge verifier reconstructs the exact setup PR, its sole `.agent/project.json` change, trusted App-ID check runs on the PR HEAD, ADC proposal and pointer history, admin merger identity/permission, and default-branch ancestry. A draft ADC is promoted through the append-only ADC publication API only after that merge is verified. Approval and Activation comments bind proposal and approved ADC IDs/digests, SHA-256 of canonical `{"issue_number": N}`, setup PR ID/number, merge SHA/time, merger ID/login/type, and predecessor record ID. `consumer_activation.py` validates each comment with direct/list/direct readback, unchanged timestamps, stable identity, and exact URLs. The record's GitHub comment `created_at` is the effective Activation time.
+
+<a id="des-f01-004"></a>
+Only an exact setup PR merge by a current repository admin approves policy. The post-merge verifier independently reconstructs the PR, project profile, ADC, trusted Required Checks, and default-branch ancestry before publishing evidence; setup and verification do not change Issue labels or authorization outside the recorded policy.
+
+<a id="des-f01-005"></a>
+`delivery gate-policy` reads the profile locator only after local schema validation. Only same-repository non-PR Issues created strictly after the Activation record comment time receive a consumer Gate Selection. Existing Issues are not relabeled.
+
+<a id="des-f01-006"></a>
+Consumer `PASES_GATE_SELECTION_V1` records the Activation Issue number, record Comment ID, and record digest. Phase validation resolves that exact historical record from the full append-only chain, even after a successor Activation.
+
+<a id="des-f01-007"></a>
+Changing the Activation ADC or locator requires a successor setup PR and admin merge. Removing the locator blocks new Gate Selections; restoring it requires a successor. Existing records and selections are not edited. `issue_graph.py` remains unchanged because it validates caller-supplied decomposition plans and has no fixed migration cohort routing.
+
 The fixed policy names each accepted child base/head pair. Merging an upstream PR and retargeting a child changes its subject, so prior evidence is invalidated; add the new pair explicitly and cover it with a strict regression test before evaluating the retargeted PR. Missing pairs fail closed rather than being guessed from the dependency graph.
 
 <a id="alternatives-considered"></a>

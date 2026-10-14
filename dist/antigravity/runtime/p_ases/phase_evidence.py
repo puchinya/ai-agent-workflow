@@ -12,7 +12,8 @@ from typing import Any, Mapping
 from urllib.parse import urlsplit
 
 from .adc import ADCError, VerifiedADC, verify_adc
-from .gate_policy import GatePolicyError, read_activation_record, read_gate_selection, select_gate
+from .gate_policy import BOOTSTRAP_REPOSITORY, GatePolicyError, read_gate_selection, select_gate
+from .consumer_activation import ConsumerActivationError, read_consumer_activation_history
 from .github import GitHub, GitHubError
 from .execution import ExecutionError, read_binding
 from .git import GitError, current_branch, head_sha40, is_ancestor
@@ -410,27 +411,31 @@ def _validate_ready_traceability(root: Path, path: str, content: bytes, github: 
 
 
 def _check_activation(github: GitHub, issue_number: int) -> None:
-    if issue_number in BOOTSTRAP_ISSUES:
+    if github.repo.casefold() == BOOTSTRAP_REPOSITORY.casefold() and issue_number in BOOTSTRAP_ISSUES:
         raise PhaseEvidenceError("fixed Bootstrap and parent Issues do not use ordinary phase evidence")
     try:
-        activation_row = read_activation_record(github, github.repo)
-        if activation_row is None:
-            raise PhaseEvidenceError("ordinary Issue phase evidence requires verified P-ASES Activation")
-        activation, activation_comment_id = activation_row
         issue = github.issue(issue_number)
         if (issue.get("number") != issue_number or issue.get("pull_request") is not None
                 or not isinstance(issue.get("created_at"), str)):
             raise PhaseEvidenceError("P-ASES gate selection requires the exact GitHub Issue resource")
         gate_comment_id, pinned, _body = read_gate_selection(github, issue_number)
+        activation_issue_number = pinned.activation_issue_number
+        if activation_issue_number is None:
+            raise PhaseEvidenceError("Gate Selection does not name its consumer Activation Issue")
+        history = read_consumer_activation_history(github, github.repo, activation_issue_number)
+        activation_row = next((row for row in history if row[1] == pinned.activation_comment_id), None)
+        if activation_row is None:
+            raise PhaseEvidenceError("Gate Selection does not point to a valid historical consumer Activation")
+        activation, activation_comment_id = activation_row
         expected = select_gate(
             github.repo, issue_number, selected_at=pinned.selected_at, activation=activation,
             activation_comment_id=activation_comment_id, activation_sha256=activation.sha256,
-            issue_created_at=issue["created_at"],
+            issue_created_at=issue["created_at"], activation_issue_number=activation_issue_number,
         )
         if (expected is None or expected.payload() != pinned.payload()
                 or gate_comment_id < 1):
             raise PhaseEvidenceError("Issue does not have the exact P-ASES Gate Selection bound to current Activation")
-    except (GitHubError, GatePolicyError) as exc:
+    except (GitHubError, GatePolicyError, ConsumerActivationError) as exc:
         raise PhaseEvidenceError(f"ordinary Issue phase evidence requires verified P-ASES Activation: {exc}") from exc
 
 

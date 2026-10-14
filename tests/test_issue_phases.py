@@ -20,7 +20,8 @@ from p_ases.execution import (
     ExecutionBinding, ExecutionError, binding_digest, read_binding, read_binding_history, write_binding,
 )
 from p_ases.github import GitHubError
-from p_ases.gate_policy import ActivationRecord, GateSelection, PASES_POLICY
+from p_ases.consumer_activation import ConsumerActivationRecord
+from p_ases.gate_policy import GateSelection, PASES_POLICY
 from p_ases.issue_graph import (
     ChildPlan,
     IssueGraphError,
@@ -627,13 +628,14 @@ class PhaseEvidenceReadbackTests(unittest.TestCase):
 class PhaseEvidenceActivationTests(unittest.TestCase):
     def setUp(self):
         self.repo = "puchinya/ai-agent-workflow"
-        child_prs = tuple((issue, issue + 6, f"{issue:040x}") for issue in range(27, 33))
-        self.activation = ActivationRecord(
-            self.repo, tuple(range(27, 33)), child_prs, tuple(range(27, 33)), "a" * 64,
-            300, PASES_POLICY, "b" * 40, 301, "2026-10-11T01:30:00Z",
+        self.activation = ConsumerActivationRecord(
+            self.repo, 25, 300, "c" * 64, "draft", 301, "c" * 64,
+            "d" * 64, 44, 445, "b" * 40, "2026-10-11T01:29:00Z", 9,
+            "repo-admin", "User", 302, None, "2026-10-11T01:30:00Z",
         )
         self.gate = GateSelection(
-            self.repo, 40, PASES_POLICY, "2026-10-11T02:00:00Z", 999, self.activation.sha256,
+            self.repo, 40, PASES_POLICY, "2026-10-11T02:00:00Z", 999,
+            self.activation.sha256, 25,
         )
 
         class Fake:
@@ -645,25 +647,26 @@ class PhaseEvidenceActivationTests(unittest.TestCase):
         self.github = Fake()
 
     def test_requires_gate_selection_bound_to_exact_activation_and_post_activation_issue(self):
-        with patch("p_ases.phase_evidence.read_activation_record", return_value=(self.activation, 999)), \
+        with patch("p_ases.phase_evidence.read_consumer_activation_history", return_value=[(self.activation, 999)]), \
                 patch("p_ases.phase_evidence.read_gate_selection", return_value=(302, self.gate, "body")):
             _check_activation(self.github, 40)
 
         stale_gate = GateSelection(
-            self.repo, 40, PASES_POLICY, "2026-10-11T02:00:00Z", 998, self.activation.sha256,
+            self.repo, 40, PASES_POLICY, "2026-10-11T02:00:00Z", 998,
+            self.activation.sha256, 25,
         )
-        with patch("p_ases.phase_evidence.read_activation_record", return_value=(self.activation, 999)), \
+        with patch("p_ases.phase_evidence.read_consumer_activation_history", return_value=[(self.activation, 999)]), \
                 patch("p_ases.phase_evidence.read_gate_selection", return_value=(302, stale_gate, "body")):
-            with self.assertRaisesRegex(PhaseEvidenceError, "exact P-ASES Gate Selection"):
+            with self.assertRaisesRegex(PhaseEvidenceError, "Gate Selection"):
                 _check_activation(self.github, 40)
 
     def test_rejects_issue_created_before_activation(self):
         self.github.issue = lambda _number: {
             "number": 40, "pull_request": None, "created_at": "2026-10-11T01:00:00Z",
         }
-        with patch("p_ases.phase_evidence.read_activation_record", return_value=(self.activation, 999)), \
+        with patch("p_ases.phase_evidence.read_consumer_activation_history", return_value=[(self.activation, 999)]), \
                 patch("p_ases.phase_evidence.read_gate_selection", return_value=(302, self.gate, "body")):
-            with self.assertRaisesRegex(PhaseEvidenceError, "exact P-ASES Gate Selection"):
+            with self.assertRaisesRegex(PhaseEvidenceError, "Gate Selection"):
                 _check_activation(self.github, 40)
 
 

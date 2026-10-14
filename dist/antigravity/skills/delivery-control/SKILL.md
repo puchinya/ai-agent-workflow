@@ -16,6 +16,30 @@ Owner: runtime/p_ases/delivery.py and gate_policy.py. Inputs are current PR iden
 4. Verify an already merged PR and closed Issue only with the finalize command.
 5. Present PR number, exact HEAD, technical checks, risks, and intended order before any merge request. A successful check is not user merge permission.
 
+## Consumer Activation request
+
+When the user directly says `P-ASESを有効化して。` in a consumer repository, run setup from that active repository context:
+
+```sh
+python -m p_ases delivery consumer-activation-setup
+```
+
+The command resolves the repository from the workspace, creates or reuses one marked Activation Issue, publishes a proposed default Activation ADC only if none exists, adds `activation.issue_number` to `.agent/project.json` on a setup branch, and opens or reuses the reviewable PR. Do not ask the user to supply an Issue number. Setup does not activate the repository and does not change phase labels.
+
+Present the Issue and PR. The authenticated repository admin reviews the proposed ADC and the exact `.agent/project.json` change, configures `branch.required_checks` with the repository's real check names and trusted App IDs if the generated list is empty, then merges the setup PR. The agent must not merge it on this prompt alone. After the admin confirms the merge, run:
+
+```sh
+python -m p_ases delivery consumer-activation-verify PR
+```
+
+Run the verifier as the same authenticated human who merged the PR. It reconstructs the merge, required checks, ADC journal, admin identity, and default-branch ancestry before it appends Activation history. If verification blocks, report the exact reason and do not claim Activation. Once verified, a later Issue can be selected with:
+
+```sh
+python -m p_ases delivery gate-policy ISSUE
+```
+
+Pre-Activation Issues remain untouched. Subsequent policy approval uses a successor setup PR; existing Gate Selections remain pinned to their original Activation record.
+
 ## CLI
 
 ~~~sh

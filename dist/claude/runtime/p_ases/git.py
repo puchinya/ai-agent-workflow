@@ -95,6 +95,43 @@ def branch_exists(repo: Path, branch_ref: str) -> bool:
     return bool(run_git(repo, "for-each-ref", "--format=%(refname:short)", f"refs/heads/{branch_ref}"))
 
 
+def remote_branch_exists(repo: Path, branch_ref: str, remote: str = "origin") -> bool:
+    if (not isinstance(branch_ref, str) or not branch_ref or branch_ref.startswith("-")
+            or any(char in branch_ref for char in "\x00\r\n ~^:?*[\\")):
+        raise GitError("Git branch ref is invalid")
+    if not isinstance(remote, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", remote):
+        raise GitError("Git remote name is invalid")
+    output = run_git(repo, "ls-remote", "--heads", remote, f"refs/heads/{branch_ref}")
+    rows = [line.split() for line in output.splitlines() if line.strip()]
+    if not rows:
+        return False
+    if (len(rows) != 1 or len(rows[0]) != 2 or rows[0][1] != f"refs/heads/{branch_ref}"
+            or not re.fullmatch(r"[0-9a-f]{40}", rows[0][0])):
+        raise GitError("remote branch readback is ambiguous or malformed")
+    return True
+
+
+def commit_and_push_one_path(repo: Path, branch_ref: str, path: str, message: str) -> str:
+    if path != ".agent/project.json" or not isinstance(message, str) or not message.strip():
+        raise GitError("Activation setup may commit only .agent/project.json with a message")
+    if current_branch(repo) != branch_ref or not worktree_clean(repo):
+        raise GitError("Activation setup branch or worktree changed before commit")
+    run_git(repo, "add", "--", path)
+    staged = run_git(repo, "diff", "--cached", "--name-only", "--diff-filter=ACDMRTUXB")
+    if staged.splitlines() != [path]:
+        raise GitError("Activation setup must stage exactly .agent/project.json")
+    run_git(repo, "commit", "-m", message)
+    sha = head_sha40(repo)
+    run_git(repo, "push", "origin", f"HEAD:refs/heads/{branch_ref}")
+    remote = run_git(repo, "ls-remote", "--heads", "origin", f"refs/heads/{branch_ref}")
+    rows = [line.split() for line in remote.splitlines() if line.strip()]
+    if len(rows) != 1 or len(rows[0]) != 2 or rows[0] != [sha, f"refs/heads/{branch_ref}"]:
+        raise GitError("pushed Activation setup commit did not pass exact remote readback")
+    if not worktree_clean(repo):
+        raise GitError("Activation setup worktree is not clean after commit and push")
+    return sha
+
+
 def switch_branch(repo: Path, branch_ref: str) -> None:
     if not isinstance(branch_ref, str) or not branch_ref or branch_ref.startswith("-"):
         raise GitError("Git branch ref is invalid")

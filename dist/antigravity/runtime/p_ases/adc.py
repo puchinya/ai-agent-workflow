@@ -612,12 +612,15 @@ def publish_adc(
     state: str = "draft",
     explicitly_approved: bool = False,
     supersede: bool = False,
+    expected_current: ADCPointer | None = None,
 ) -> ADCPointer:
     """Publish exact ADC bytes and commit an append-only pointer record."""
     if state not in {"draft", "approved"}:
         raise ADCError("ADC state must be draft or approved")
     if type(supersede) is not bool or type(explicitly_approved) is not bool:
         raise ADCError("ADC approval and supersession flags must be explicit booleans")
+    if expected_current is not None and not isinstance(expected_current, ADCPointer):
+        raise ADCError("expected current ADC pointer is malformed")
     if state == "approved" and explicitly_approved is not True:
         raise ADCError("publishing an approved ADC requires explicit user approval")
     contract = parse_adc(data, github.repo, issue_number)
@@ -647,6 +650,8 @@ def publish_adc(
             return current_verified.pointer
         if not supersede:
             raise ADCError("Issue already has an ADC; use explicit supersession to publish another immutable comment")
+    if expected_current is not None and existing_pointer != expected_current:
+        raise ADCError("current ADC pointer differs from the exact expected predecessor")
     try:
         body_text = data.decode("utf-8", errors="strict")
         operation_id, transaction_marker_id = _publication_transaction(
@@ -759,6 +764,80 @@ def verify_adc(github: GitHub, issue_number: int) -> VerifiedADC:
         raise ADCError("ADC pointer SHA-256 or byte length does not match the named comment")
     contract = parse_adc(content, github.repo, issue_number)
     return VerifiedADC(contract, pointer)
+
+
+def verify_adc_generation(github: GitHub, issue_number: int, comment_id: int, sha256: str,
+                         *, state: str) -> VerifiedADC:
+    """Verify an exact historical ADC generation from the append-only pointer journal."""
+    if type(comment_id) is not int or comment_id < 1 or not isinstance(sha256, str) or not SHA256.fullmatch(sha256):
+        raise ADCError("historical ADC identity is malformed")
+    if state not in {"draft", "approved"}:
+        raise ADCError("historical ADC state is unknown")
+    try:
+        issue = _check_issue(github.issue(issue_number), github.repo, issue_number)
+        # Validate the complete predecessor chain before selecting an older entry.
+        _latest_pointer_record(github, issue_number, issue_body=issue.get("body") or "")
+        generations: list[ADCPointer] = []
+        legacy = parse_pointer(issue.get("body") or "")
+        if legacy is not None:
+            generations.append(legacy)
+        for row in github.issue_comments(issue_number):
+            body = row.get("body") if isinstance(row, dict) else None
+            if not isinstance(body, str) or not body.startswith(POINTER_RECORD_SENTINEL):
+                continue
+            record_id = row.get("id")
+            if type(record_id) is not int or record_id < 1:
+                raise ADCError("ADC pointer record has an invalid Comment ID")
+            _check_comment(row, github.repo, issue_number, record_id)
+            match = _parse_pointer_record_body(body, github.repo, issue_number)
+            if match is None:
+                raise ADCError("malformed ADC pointer record; refusing historical readback")
+            groups = match.groups()
+            generations.append(ADCPointer(int(groups[2]), groups[3], int(groups[4]), groups[5]))
+        matching = [row for row in generations
+                    if row.comment_id == comment_id and row.sha256 == sha256 and row.state == state]
+        if len(matching) != 1:
+            raise ADCError("historical ADC generation is missing, duplicated, or has the wrong state")
+        direct = _check_comment(github.issue_comment(issue_number, comment_id),
+                                github.repo, issue_number, comment_id)
+        listed = [row for row in github.issue_comments(issue_number)
+                  if isinstance(row, dict) and row.get("id") == comment_id]
+        after = _check_comment(github.issue_comment(issue_number, comment_id),
+                               github.repo, issue_number, comment_id)
+    except GitHubError as exc:
+        raise ADCError(str(exc)) from exc
+    if len(listed) != 1:
+        raise ADCError("historical ADC comment is missing or duplicated")
+    fingerprints = []
+    for row in (direct, listed[0], after):
+        body = row.get("body")
+        created, updated = row.get("created_at"), row.get("updated_at")
+        author = row.get("user")
+        if (not isinstance(body, str) or not isinstance(created, str) or not isinstance(updated, str)
+                or created != updated or not isinstance(author, dict)
+                or type(author.get("id")) is not int or author["id"] < 1
+                or not isinstance(author.get("login"), str) or not author["login"]
+                or author.get("type") != "User"):
+            raise ADCError("historical ADC comment was edited or has no stable human author")
+        fingerprints.append((row.get("id"), body, created, updated,
+                             author["id"], author["login"].casefold(), author["type"],
+                             row.get("issue_url"), row.get("html_url"), row.get("url")))
+    if fingerprints[0] != fingerprints[1] or fingerprints[1] != fingerprints[2]:
+        raise ADCError("historical ADC comment changed during direct/list/direct readback")
+    repository = github.repo
+    comment_id = fingerprints[1][0]
+    expected_urls = (f"https://api.github.com/repos/{repository}/issues/{issue_number}",
+                     f"https://github.com/{repository}/issues/{issue_number}#issuecomment-{comment_id}",
+                     f"https://api.github.com/repos/{repository}/issues/comments/{comment_id}")
+    actual_urls = tuple(value.casefold() if isinstance(value, str) else None
+                         for value in fingerprints[1][7:])
+    if actual_urls != tuple(value.casefold() for value in expected_urls):
+        raise ADCError("historical ADC comment repository URLs do not match its Issue")
+    data = fingerprints[1][1].encode("utf-8", errors="strict")
+    contract = parse_adc(data, github.repo, issue_number)
+    if contract.sha256 != sha256 or contract.byte_length != matching[0].byte_length:
+        raise ADCError("historical ADC comment does not match its immutable pointer")
+    return VerifiedADC(contract, matching[0])
 
 
 def restore_adc(github: GitHub, issue_number: int, destination: Path) -> VerifiedADC:
