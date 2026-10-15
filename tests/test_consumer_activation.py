@@ -71,6 +71,8 @@ class FakeGitHub:
         self.fail_record_once = False
         self.fail_create_pr_once = False
         self.check_runs_reads = 0
+        self.workflow_job_reads = 0
+        self.workflow_jobs: dict[int, dict] = {}
         self.permission = "admin"
         self.ordinary_created_at = "2026-10-14T12:02:00Z"
         self.issue_created_at_by_number: dict[int, str] = {}
@@ -208,6 +210,16 @@ class FakeGitHub:
         if len(matches) != 1:
             raise GitHubError("Check Run is missing or duplicated")
         return copy.deepcopy(matches[0])
+
+    def workflow_job_for_check_run(self, check_run):
+        self.workflow_job_reads += 1
+        job = self.workflow_jobs.get(check_run.get("id"))
+        if not isinstance(job, dict):
+            raise GitHubError("Actions job is missing")
+        if any(job.get(field) != check_run.get(field) for field in
+               ("name", "head_sha", "status", "conclusion", "started_at", "completed_at")):
+            raise GitHubError("Actions job does not match Check Run")
+        return copy.deepcopy(job)
 
 
 def setup_fake(github: FakeGitHub, *, merge: bool = True) -> None:
@@ -447,6 +459,27 @@ class ConsumerActivationTests(unittest.TestCase):
         github.checks[0]["app"]["id"] += 1
         with self.assertRaisesRegex(ConsumerActivationError, "did not pass"):
             verify_and_record_activation(github, PR)
+
+    def test_check_run_creation_time_uses_the_exact_linked_actions_job(self):
+        github = FakeGitHub()
+        setup_fake(github)
+        check = github.checks[0]
+        check.pop("created_at")
+        job_created_at = "2026-10-14T11:58:59Z"
+        github.workflow_jobs[check["id"]] = {
+            "id": check["id"], "run_id": 3001, "run_attempt": 1,
+            "name": check["name"], "head_sha": check["head_sha"],
+            "check_run_url": f"https://api.github.com/repos/{REPO}/check-runs/{check['id']}",
+            "created_at": job_created_at, "started_at": check["started_at"],
+            "completed_at": check["completed_at"], "status": check["status"],
+            "conclusion": check["conclusion"],
+        }
+
+        record, record_id = verify_and_record_activation(github, PR)
+
+        self.assertEqual(record.required_check_runs[0].created_at, job_created_at)
+        self.assertGreaterEqual(github.workflow_job_reads, 2)
+        self.assertEqual(read_consumer_activation_record(github, REPO, ISSUE), (record, record_id))
 
     def test_post_merge_success_cannot_rescue_failed_or_pending_check_at_merge(self):
         for merge_run in (

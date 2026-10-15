@@ -439,6 +439,20 @@ def _validate_profile_bytes(raw: bytes, issue_number: int) -> tuple[dict[str, An
     return profile, tuple((name, app_id) for name, app_id in checks if app_id is not None)
 
 
+def _check_run_with_creation_time(github: GitHub, row: dict[str, Any]) -> dict[str, Any]:
+    """Use the linked Actions Job timestamp when GitHub omits Check Run created_at."""
+    if row.get("created_at") is not None:
+        return row
+    try:
+        job = github.workflow_job_for_check_run(row)
+    except GitHubError as exc:
+        raise ConsumerActivationError("Required Check creation time could not be verified") from exc
+    created_at = job.get("created_at") if isinstance(job, dict) else None
+    if not isinstance(created_at, str):
+        raise ConsumerActivationError("Required Check creation time could not be verified")
+    return {**row, "created_at": created_at}
+
+
 def _required_check_evidence(
     github: GitHub, head_sha40: str, checks: tuple[tuple[str, int], ...],
     expected: tuple[RequiredCheckEvidence, ...] | None, merged_at: str,
@@ -449,7 +463,8 @@ def _required_check_evidence(
             raise ConsumerActivationError("pinned Required Check identities do not match the merged project profile")
         evidence: list[RequiredCheckEvidence] = []
         for pinned in expected:
-            current = RequiredCheckEvidence.from_run(github.check_run(pinned.check_run_id))
+            current_row = _check_run_with_creation_time(github, github.check_run(pinned.check_run_id))
+            current = RequiredCheckEvidence.from_run(current_row)
             if (current != pinned or current.head_sha40 != head_sha40
                     or _timestamp(current.completed_at, f"Required Check {current.name} completion time") > merge_time):
                 raise ConsumerActivationError(
@@ -468,13 +483,14 @@ def _required_check_evidence(
         dated: list[tuple[datetime, int, dict[str, Any]]] = []
         seen_ids: set[int] = set()
         for row in matching:
-            created = _timestamp(row.get("created_at"), f"Required Check {name} creation time")
+            resolved = _check_run_with_creation_time(github, row)
+            created = _timestamp(resolved.get("created_at"), f"Required Check {name} creation time")
             run_id = _positive(row.get("id"), f"Required Check {name} Run ID")
             if run_id in seen_ids:
                 raise ConsumerActivationError(f"Required Check {name} has duplicate Check Run IDs")
             seen_ids.add(run_id)
             if created <= merge_time:
-                dated.append((created, run_id, row))
+                dated.append((created, run_id, resolved))
         if not dated:
             raise ConsumerActivationError(f"Required Check {name} did not exist by setup PR merge")
         # GitHub timestamps can tie across reruns; the numeric Run ID gives a
