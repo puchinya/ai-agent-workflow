@@ -122,6 +122,16 @@ class GitHubCheckRunTests(unittest.TestCase):
         with self.assertRaises(GitHubError):
             github.check_runs_for_ref(HEAD)
 
+    def test_historical_check_run_reads_exact_id_and_rejects_mismatched_response(self):
+        row = check_run(701, "trusted-ci")
+        github = FakeGitHub((row,))
+        self.assertEqual(github.check_run(701), row)
+        self.assertEqual(github.calls, [("GET", "repos/octo/repo/check-runs/701", None)])
+        with self.assertRaises(GitHubError):
+            FakeGitHub((row,)).check_run(0)
+        with self.assertRaises(GitHubError):
+            FakeGitHub((check_run(702, "trusted-ci"),)).check_run(701)
+
     def test_workflow_runs_support_main_push_and_dispatch_with_exact_event_path(self):
         run = {"id": 30, "run_number": 8, "run_attempt": 1,
                "path": ".github/workflows/ci.yml", "event": "push",

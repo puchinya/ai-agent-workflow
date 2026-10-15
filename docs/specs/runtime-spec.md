@@ -359,7 +359,7 @@ The activation reader accepts only a unique `PASES_ACTIVATION_V1` record with si
 <a id="req-f01-004-setup-request-and-verification"></a>
 ### 9.2 REQ-F01-004 Setup request and verification
 
-The required request is `P-ASESを有効化して。`. It creates or reuses the marked Activation Issue, proposes a default ADC only when none exists, writes the locator on a setup branch, and opens/reuses one exact setup PR. No Activation is recorded before merge. A trusted verifier requires the exact setup PR merged by the authenticated current repository admin, exact `.agent/project.json`, approved ADC, passing trusted Required Checks, and merge ancestry on the default branch before publishing approval and record comments.
+The required request is `P-ASESを有効化して。`. It creates or reuses the marked Activation Issue, proposes a default ADC only when none exists, writes the locator on a setup branch, and opens/reuses one exact setup PR. The setup branch may commit only the intended `.agent/project.json` change; before staging, Git must verify that no other staged, modified, or untracked path exists. After push, the worktree and exact remote commit must pass readback. If PR creation fails after push, an exact one-parent, one-file branch matching the current subject remains resumable on retry; any drift or ambiguous PR state fails closed. No Activation is recorded before merge. A trusted verifier requires the exact setup PR merged by the authenticated current repository admin, exact `.agent/project.json`, approved ADC, issuance-time trusted Required Check evidence pinned by exact Check Run IDs, and merge ancestry on the default branch before publishing approval and record comments.
 
 <a id="req-f01-006"></a>
 <a id="req-f01-006-historical-activation-pin"></a>

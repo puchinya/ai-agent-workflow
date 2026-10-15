@@ -363,6 +363,19 @@ class GitHub:
                 return items
             page += 1
 
+    def check_run(self, check_run_id: int) -> dict[str, Any]:
+        """Read one historical Check Run by its immutable GitHub ID."""
+        if type(check_run_id) is not int or check_run_id < 1:
+            raise GitHubError("Check Run ID must be a positive integer")
+        result = self.request("GET", f"{self.prefix}/check-runs/{check_run_id}")
+        app = result.get("app") if isinstance(result, dict) else None
+        if (not isinstance(result, dict) or result.get("id") != check_run_id
+                or not isinstance(result.get("name"), str) or not result["name"]
+                or not isinstance(result.get("head_sha"), str)
+                or not isinstance(app, dict) or type(app.get("id")) is not int or app["id"] < 1):
+            raise GitHubError("GitHub Check Run resource has incomplete identity/provenance")
+        return result
+
     def workflow_runs_for_ref(
         self, head_sha40: str, *, workflow_path: str = ".github/workflows/ci.yml",
         event: str = "pull_request",

@@ -164,25 +164,25 @@ Only exact P-ASES repository/cohort pairs use migration Bootstrap. A consumer Is
 <a id="tst-f01-002-automatic-activation-setup"></a>
 ### 2.8 TST-F01-002 Automatic Activation setup
 
-**Setup and action:** Run setup with no profile and no marked Issue, with a valid profile and no Activation locator, with an existing unique marker/open PR, and with duplicate Issue/PR markers. Verify the default ADC is a draft proposal, only `activation.issue_number` is written, and no approval/Activation comment exists before merge. Reject malformed/unknown project fields before any GitHub API or label write. Re-run exact setup and verify it reuses the same Issue/PR.
+**Setup and action:** Run setup with no profile and no marked Issue, with a valid profile and no Activation locator, with an existing unique marker/open PR, and with duplicate Issue/PR markers. Use a local Git repository and bare remote to verify that a dirty `.agent/project.json` is the only path staged and pushed. Simulate a transient PR creation API failure after push, then retry without mocking profile writing or Git commits; verify exact branch recovery creates the PR. Add an unrelated staged, modified, or untracked path and verify staging is rejected. Re-run exact setup and verify it reuses the same Issue/PR.
 
 <a id="ora-f01-002"></a>
 <a id="ora-f01-002-expected-result"></a>
 #### 2.8.1 ORA-F01-002 Expected result
 
-The direct prompt needs no Issue number. One marked Activation Issue and one exact setup PR are created or reused. The PR is reviewable; setup alone cannot activate or relabel Issues. Duplicate or conflicting state blocks.
+The direct prompt needs no Issue number. One marked Activation Issue and one exact setup PR are created or reused. Only `.agent/project.json` is committed. After a PR API failure, an exact pushed branch can resume; a branch with changed ancestry, extra paths, or different bytes blocks. The PR is reviewable; setup alone cannot activate or relabel Issues.
 
 <a id="tst-f01-003"></a>
 <a id="tst-f01-003-immutable-activation-evidence"></a>
 ### 2.9 TST-F01-003 Immutable Activation evidence
 
-**Setup and action:** Verify an admin-merged setup PR with exact `.agent/project.json`, approved ADC pointer, one successful required check per trusted App ID, and merge SHA on current main. Vary missing/malformed ADC pointer, comment deletion/edit, duplicate approval/record, wrong user ID/login/type, non-admin merger, wrong PR file/base/head/repository, failed or duplicate Check Run, wrong merge SHA, and a mutation between direct/list/direct reads. Append a successor and verify its predecessor.
+**Setup and action:** Verify an admin-merged setup PR with exact `.agent/project.json`, approved ADC pointer, one latest successful required check per trusted App ID, and merge SHA on current main. Vary missing/malformed ADC pointer, comment deletion/edit, duplicate approval/record, wrong user ID/login/type, non-admin merger, wrong PR file/base/head/repository, failed or ambiguous latest Check Run, wrong merge SHA, and a mutation between direct/list/direct reads. Record exact Check Run IDs, append a later rerun, and validate the historical record by those IDs. Append a successor and verify its predecessor.
 
 <a id="ora-f01-003"></a>
 <a id="ora-f01-003-expected-result"></a>
 #### 2.9.1 ORA-F01-003 Expected result
 
-Activation is recorded only from the exact verified merge by the authenticated current admin. Every approval/record pair binds ADC proposal and approval, canonical profile digest, PR identity, merge, actor, and predecessor. Any edit, deletion, duplicate, ambiguous history, API failure, or mid-read change fails closed. Exact retries do not append duplicate history.
+Activation is recorded only from the exact verified merge by the authenticated current admin. Every approval/record pair binds ADC proposal and approval, canonical profile digest, PR identity, merge, actor, predecessor, and exact successful Check Run IDs/evidence. New issuance uses the latest matching successful run; history reads fetch the pinned run IDs, so later reruns do not invalidate an existing Activation. Any edit, deletion, duplicate, ambiguous history, API failure, or mid-read change fails closed. Exact retries do not append duplicate history.
 
 <a id="tst-f01-004"></a>
 <a id="tst-f01-004-prompt-and-approval-boundary"></a>
@@ -200,25 +200,25 @@ The prompt requests setup only. The exact admin merge is explicit policy approva
 <a id="tst-f01-005-strict-new-issue-timing"></a>
 ### 2.11 TST-F01-005 Strict new-Issue timing
 
-**Setup and action:** Compare Issue creation times before, equal to, and after Activation comment `created_at`. Vary repository identity and PR status. Verify old Issues and existing labels remain unchanged and that an eligible Issue receives one immutable Gate Selection containing Activation Issue number, record ID, and digest.
+**Setup and action:** Compare Issue creation times before, equal to, and after setup PR `merged_at`, including an Issue created after merge but before the record comment is published. Vary repository identity and PR status. Verify old Issues and existing labels remain unchanged and that an eligible Issue receives one immutable Gate Selection containing Activation Issue number, record ID, and digest.
 
 <a id="ora-f01-005"></a>
 <a id="ora-f01-005-expected-result"></a>
 #### 2.11.1 ORA-F01-005 Expected result
 
-Only same-repository non-PR Issues created strictly after the Activation record comment time select `p-ases-v1`. All others remain `UNDETERMINED` without label side effects.
+Only same-repository non-PR Issues created strictly after the verified setup PR merge time select `p-ases-v1`. An Issue created between merge and evidence publication is eligible; an Issue created at or before merge remains `UNDETERMINED` without label side effects.
 
 <a id="tst-f01-006"></a>
 <a id="tst-f01-006-historical-pin-preservation"></a>
 ### 2.12 TST-F01-006 Historical pin preservation
 
-**Setup and action:** Create a Gate Selection against an Activation, append a successor Activation, and re-read the Issue's phase evidence. Vary the pinned comment ID/digest, predecessor chain, current Issue ADC, kind/phase labels, work binding, receipts, and exact-subject evidence.
+**Setup and action:** Create and persist a Gate Selection against Activation A, append successor B, and call gate-policy again for the already-selected Issue. Also create an unselected Issue between A and B and select it only after B exists. Vary the pinned comment ID/digest, predecessor chain, current Issue ADC, kind/phase labels, work binding, receipts, and exact-subject evidence.
 
 <a id="ora-f01-006"></a>
 <a id="ora-f01-006-expected-result"></a>
 #### 2.12.1 ORA-F01-006 Expected result
 
-The existing selection remains bound to its exact historical record while the complete chain validates and its merge commit remains on main. A successor cannot rewrite the selection or bypass any ordinary phase checks.
+An existing selection remains bound to its exact historical record and gate-policy reuses it after B. A new selection for an Issue created between A and B uses A; an Issue created after B uses B. The complete chain and default-branch ancestry validate, and a successor cannot rewrite a selection or bypass ordinary phase checks.
 
 <a id="tst-f01-007"></a>
 <a id="tst-f01-007-successorreapproval"></a>

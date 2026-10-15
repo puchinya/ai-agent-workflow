@@ -1306,12 +1306,21 @@ def read_latest_bootstrap_evidence(github: GitHub, issue_number: int) -> tuple[i
 
 def read_gate_selection(github: GitHub, issue_number: int) -> tuple[int, GateSelection, str]:
     """Read the unique immutable gate selection without creating or repairing it."""
+    result = _read_gate_selection_if_present(github, issue_number)
+    if result is None:
+        raise GatePolicyError("gate selection record is missing or duplicated")
+    return result
+
+
+def _read_gate_selection_if_present(github: GitHub, issue_number: int) -> tuple[int, GateSelection, str] | None:
     try:
         comments = github.issue_comments(issue_number)
     except GitHubError as exc:
         raise GatePolicyError(f"gate selection readback failed: {exc}") from exc
     rows = [row for row in comments if isinstance(row, dict) and isinstance(row.get("body"), str)
             and row["body"].startswith("<!-- PASES_GATE_SELECTION_V1\n")]
+    if not rows:
+        return None
     if len(rows) != 1:
         raise GatePolicyError("gate selection record is missing or duplicated")
     selection = GateSelection.from_payload(
@@ -1346,6 +1355,7 @@ def pin_gate_selection(github: GitHub, selection: GateSelection) -> tuple[int, s
                 or existing.issue_number != selection.issue_number
                 or existing.policy_version != selection.policy_version
                 or existing.activation_comment_id != selection.activation_comment_id
+                or existing.activation_issue_number != selection.activation_issue_number
                 or existing.activation_sha256 != selection.activation_sha256):
             raise GatePolicyError("existing gate selection conflicts; policy cannot be switched")
         comment_id = _positive(rows[0].get("id"), "Gate selection Comment ID")
@@ -1782,15 +1792,6 @@ def choose_gate_for_new_issue(github: GitHub, repository: str, issue_number: int
     if (repository.casefold() == BOOTSTRAP_REPOSITORY.casefold()
             and issue_number in BOOTSTRAP_COHORT):
         return select_gate(repository, issue_number, selected_at=selected_at)
-    if activation_issue_number is None:
-        return None
-    from .consumer_activation import ConsumerActivationError, read_consumer_activation_record
-    try:
-        activation_row = read_consumer_activation_record(github, repository, activation_issue_number)
-    except ConsumerActivationError as exc:
-        raise GatePolicyError(f"consumer Activation record is invalid: {exc}") from exc
-    if activation_row is None:
-        return None
     try:
         issue = github.issue(issue_number)
     except GitHubError as exc:
@@ -1800,11 +1801,53 @@ def choose_gate_for_new_issue(github: GitHub, repository: str, issue_number: int
             or not isinstance(repo_url, str)
             or repo_url.casefold() != f"https://api.github.com/repos/{repository}".casefold()):
         raise GatePolicyError("gate policy selection requires the exact Issue resource")
-    activation, comment_id = activation_row
+    existing = _read_gate_selection_if_present(github, issue_number)
+    if existing is not None:
+        _gate_id, selection, _body = existing
+        if selection.policy_version != PASES_POLICY or selection.activation_issue_number is None:
+            raise GatePolicyError("existing consumer Issue has a non-consumer Gate Selection")
+        selected_activation_issue = selection.activation_issue_number
+    else:
+        if activation_issue_number is None:
+            return None
+        selected_activation_issue = activation_issue_number
+
+    from .consumer_activation import ConsumerActivationError, read_consumer_activation_history
+    try:
+        history = read_consumer_activation_history(github, repository, selected_activation_issue)
+    except ConsumerActivationError as exc:
+        raise GatePolicyError(f"consumer Activation record is invalid: {exc}") from exc
+    if not history:
+        return None
+    issue_created_at = issue.get("created_at")
+    if existing is not None:
+        gate_id, selection, body = existing
+        matches = [(activation, comment_id) for activation, comment_id in history
+                   if comment_id == selection.activation_comment_id]
+        if len(matches) != 1:
+            raise GatePolicyError("existing Gate Selection does not name one historical Activation record")
+        activation, comment_id = matches[0]
+        if activation.sha256 != selection.activation_sha256:
+            raise GatePolicyError("existing Gate Selection Activation digest no longer matches history")
+        expected = select_gate(
+            repository, issue_number, selected_at=selection.selected_at, activation=activation,
+            activation_comment_id=comment_id, activation_sha256=activation.sha256,
+            issue_created_at=issue_created_at, activation_issue_number=selected_activation_issue,
+        )
+        if expected != selection:
+            raise GatePolicyError("existing Gate Selection is not eligible under its historical Activation")
+        return selection
+
+    issue_created = _parse_time(issue_created_at, "Issue creation")
+    eligible = [(activation, comment_id) for activation, comment_id in history
+                if issue_created > _parse_time(activation.activated_at, "Activation")]
+    if not eligible:
+        return None
+    activation, comment_id = eligible[-1]
     return select_gate(repository, issue_number, selected_at=selected_at, activation=activation,
                        activation_comment_id=comment_id, activation_sha256=activation.sha256,
-                       issue_created_at=issue.get("created_at"),
-                       activation_issue_number=activation_issue_number)
+                       issue_created_at=issue_created_at,
+                       activation_issue_number=selected_activation_issue)
 
 
 def run_local_bootstrap_checks(root: Path) -> tuple[LocalCheck, ...]:

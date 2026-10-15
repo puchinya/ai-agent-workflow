@@ -289,16 +289,16 @@ Migration issue numbers, child sets, branch pairs, and parent evidence MUST NOT 
 <a id="req-f01-003-append-only-approval-and-activation-history"></a>
 ### 9.2 REQ-F01-003 Append-only approval and Activation history
 
-Consumer approval and Activation history are append-only comments. A record identifies the exact approved ADC, canonical Activation profile digest, PR merge, admin, and predecessor; its Issue-comment creation time is the effective Activation time.
+Consumer approval and Activation history are append-only comments. A record identifies the exact approved ADC, canonical Activation profile digest, setup PR merge and verified `merged_at`, admin, predecessor, and the exact trusted Required Check Run IDs with their name, App ID, head SHA, status, conclusion, and timestamps. Verified PR `merged_at`, rather than the later comment publication time, is the effective Activation time. Historical reads fetch each recorded Check Run by ID and compare its pinned evidence; later reruns do not replace the issuance-time evidence.
 
 <a id="req-f01-005"></a>
 <a id="req-f01-005-eligibility-by-activation-time"></a>
 ### 9.3 REQ-F01-005 Eligibility by Activation time
 
-New P-ASES work is eligible only for same-repository non-PR Issues created strictly after verified Activation. Pre-Activation Issues remain untouched.
+New P-ASES work is eligible only for same-repository non-PR Issues created strictly after verified setup PR `merged_at`. For a successor chain, choose the latest Activation whose verified merge time precedes the Issue creation time. Re-running gate-policy for an Issue with an existing valid Gate Selection reuses that exact historical Activation record and selection. Pre-Activation Issues remain untouched.
 
 <a id="req-f01-007"></a>
 <a id="req-f01-007-successor-activation"></a>
 ### 9.4 REQ-F01-007 Successor Activation
 
-Policy or locator changes require a new setup PR and merge, append a successor Activation, and preserve prior records and selections.
+Policy or locator changes require a new setup PR and merge, append a successor Activation effective at its verified `merged_at`, and preserve prior records and selections. The successor governs only Issues created after that merge time.

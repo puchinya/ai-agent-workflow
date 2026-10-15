@@ -15,8 +15,9 @@ from typing import Any
 from .adc import ADCError, VerifiedADC, publish_adc, verify_adc, verify_adc_generation
 from .github import GitHub, GitHubError
 from .git import (
-    GitError, branch_exists, commit_and_push_one_path, create_branch, current_branch, discover_repository,
-    head_sha40, remote_branch_exists, switch_branch, worktree_clean,
+    GitError, activation_profile_bytes_at_commit, branch_exists, changed_paths_between,
+    commit_and_push_one_path, commit_parent_sha40, create_branch, current_branch, discover_repository,
+    head_sha40, push_branch_exact, remote_branch_exists, remote_branch_sha, switch_branch, worktree_clean,
 )
 from .path_safety import path_has_symlink
 from .profile import ProfileError, load_profile
@@ -32,6 +33,18 @@ APPROVAL_MARKER = "<!-- PASES_CONSUMER_ACTIVATION_APPROVAL_V1\n"
 RECORD_MARKER = "<!-- PASES_CONSUMER_ACTIVATION_V1\n"
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _timestamp(value: Any, label: str) -> datetime:
+    if not isinstance(value, str):
+        raise ConsumerActivationError(f"{label} is invalid")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ConsumerActivationError(f"{label} is invalid") from exc
+    if parsed.tzinfo is None or parsed > datetime.now(timezone.utc):
+        raise ConsumerActivationError(f"{label} is not a valid past timestamp")
+    return parsed
 
 
 def _canonical(value: Any) -> bytes:
@@ -425,9 +438,50 @@ def _validate_profile_bytes(raw: bytes, issue_number: int) -> tuple[dict[str, An
     return profile, tuple((name, app_id) for name, app_id in checks if app_id is not None)
 
 
+def _required_check_evidence(
+    github: GitHub, head_sha40: str, checks: tuple[tuple[str, int], ...],
+    expected: tuple[RequiredCheckEvidence, ...] | None,
+) -> tuple[RequiredCheckEvidence, ...]:
+    if expected is not None:
+        if tuple((item.name, item.app_id) for item in expected) != checks:
+            raise ConsumerActivationError("pinned Required Check identities do not match the merged project profile")
+        evidence: list[RequiredCheckEvidence] = []
+        for pinned in expected:
+            current = RequiredCheckEvidence.from_run(github.check_run(pinned.check_run_id))
+            if current != pinned or current.head_sha40 != head_sha40:
+                raise ConsumerActivationError(
+                    f"pinned Required Check {pinned.name} no longer matches its issuance-time Check Run"
+                )
+            evidence.append(current)
+        return tuple(evidence)
+
+    runs = github.check_runs_for_ref(head_sha40)
+    evidence = []
+    for name, app_id in checks:
+        matching = [row for row in runs if row.get("name") == name and row.get("head_sha") == head_sha40
+                    and isinstance(row.get("app"), dict) and row["app"].get("id") == app_id]
+        if not matching:
+            raise ConsumerActivationError(f"Required Check {name} did not pass: no trusted Check Run on PR HEAD")
+        dated = [(_timestamp(row.get("created_at"), f"Required Check {name} creation time"), row)
+                 for row in matching]
+        latest_time = max(stamp for stamp, _row in dated)
+        latest = [row for stamp, row in dated if stamp == latest_time]
+        if len(latest) != 1:
+            raise ConsumerActivationError(f"Required Check {name} has ambiguous latest Check Run evidence")
+        if latest[0].get("status") != "completed" or latest[0].get("conclusion") != "success":
+            raise ConsumerActivationError(f"Required Check {name} latest Check Run did not pass")
+        selected = RequiredCheckEvidence.from_run(latest[0])
+        if selected.head_sha40 != head_sha40:
+            raise ConsumerActivationError(f"Required Check {name} belongs to a different PR HEAD")
+        evidence.append(selected)
+    return tuple(evidence)
+
+
 def _validate_merged_setup(github: GitHub, pr_number: int, expected: dict[str, Any], *,
-                           require_current_adc: bool, require_current_admin: bool
-                           ) -> tuple[dict[str, Any], dict[str, Any], VerifiedADC]:
+                           require_current_adc: bool, require_current_admin: bool,
+                           expected_check_runs: tuple[RequiredCheckEvidence, ...] | None = None
+                           ) -> tuple[dict[str, Any], dict[str, Any], VerifiedADC,
+                                      tuple[RequiredCheckEvidence, ...]]:
     try:
         pr = github.pull_request(pr_number)
         metadata = github.repository_metadata()
@@ -465,13 +519,7 @@ def _validate_merged_setup(github: GitHub, pr_number: int, expected: dict[str, A
         _profile, checks = _validate_profile_bytes(raw_profile, expected["activation_issue_number"])
         if hashlib.sha256(_canonical(activation_profile(expected["activation_issue_number"]))).hexdigest() != expected["activation_profile_sha256"]:
             raise ConsumerActivationError("setup PR Activation profile digest is invalid")
-        runs = github.check_runs_for_ref(head["sha"])
-        for name, app_id in checks:
-            matching = [row for row in runs if row.get("name") == name and row.get("head_sha") == head["sha"]
-                        and isinstance(row.get("app"), dict) and row["app"].get("id") == app_id]
-            if (len(matching) != 1 or matching[0].get("status") != "completed"
-                    or matching[0].get("conclusion") != "success"):
-                raise ConsumerActivationError(f"Required Check {name} did not pass exactly once on PR HEAD")
+        check_evidence = _required_check_evidence(github, head["sha"], checks, expected_check_runs)
         issue_number = expected["activation_issue_number"]
         issue = github.issue(issue_number)
         issue_repository_url = issue.get("repository_url")
@@ -498,7 +546,62 @@ def _validate_merged_setup(github: GitHub, pr_number: int, expected: dict[str, A
                 raise ConsumerActivationError("setup PR refers to a stale or superseded Activation ADC")
     except ADCError as exc:
         raise ConsumerActivationError(f"Activation ADC is missing, changed, or not journaled: {exc}") from exc
-    return pr, issue, proposed
+    return pr, issue, proposed, check_evidence
+
+
+@dataclass(frozen=True)
+class RequiredCheckEvidence:
+    check_run_id: int
+    name: str
+    app_id: int
+    head_sha40: str
+    created_at: str
+    started_at: str
+    completed_at: str
+    status: str
+    conclusion: str
+
+    def validate(self) -> "RequiredCheckEvidence":
+        _positive(self.check_run_id, "Required Check Run ID")
+        _positive(self.app_id, "Required Check App ID")
+        if (not isinstance(self.name, str) or not self.name
+                or not isinstance(self.head_sha40, str) or not SHA40.fullmatch(self.head_sha40)
+                or self.status != "completed" or self.conclusion != "success"):
+            raise ConsumerActivationError("Required Check evidence is not a successful trusted Check Run")
+        created = _timestamp(self.created_at, "Check Run creation time")
+        started = _timestamp(self.started_at, "Check Run start time")
+        completed = _timestamp(self.completed_at, "Check Run completion time")
+        if not created <= started <= completed:
+            raise ConsumerActivationError("Required Check Run timestamps are out of order")
+        return self
+
+    @classmethod
+    def from_run(cls, value: Any) -> "RequiredCheckEvidence":
+        app = value.get("app") if isinstance(value, dict) else None
+        if not isinstance(value, dict) or not isinstance(app, dict):
+            raise ConsumerActivationError("Required Check API response is malformed")
+        return cls(value.get("id"), value.get("name"), app.get("id"), value.get("head_sha"),
+                   value.get("created_at"), value.get("started_at"), value.get("completed_at"),
+                   value.get("status"), value.get("conclusion")).validate()
+
+    def payload(self) -> dict[str, Any]:
+        self.validate()
+        return {
+            "app_id": self.app_id, "check_run_id": self.check_run_id,
+            "completed_at": self.completed_at, "conclusion": self.conclusion,
+            "created_at": self.created_at, "head_sha40": self.head_sha40,
+            "name": self.name, "started_at": self.started_at, "status": self.status,
+        }
+
+    @classmethod
+    def from_payload(cls, value: Any) -> "RequiredCheckEvidence":
+        expected = {"app_id", "check_run_id", "completed_at", "conclusion", "created_at",
+                    "head_sha40", "name", "started_at", "status"}
+        if not isinstance(value, dict) or set(value) != expected:
+            raise ConsumerActivationError("Required Check evidence has unknown schema or fields")
+        return cls(value["check_run_id"], value["name"], value["app_id"], value["head_sha40"],
+                   value["created_at"], value["started_at"], value["completed_at"],
+                   value["status"], value["conclusion"]).validate()
 
 
 @dataclass(frozen=True)
@@ -520,6 +623,7 @@ class ConsumerActivationRecord:
     merger_type: str
     approval_comment_id: int
     predecessor_record_id: int | None
+    required_check_runs: tuple["RequiredCheckEvidence", ...]
     record_created_at: str | None = None
 
     def validate(self) -> "ConsumerActivationRecord":
@@ -543,28 +647,24 @@ class ConsumerActivationRecord:
         if (not isinstance(self.merger_login, str) or not re.fullmatch(r"[A-Za-z0-9-]+", self.merger_login)
                 or self.merger_type != "User"):
             raise ConsumerActivationError("Activation merger identity is invalid")
-        for value, label in ((self.merged_at, "setup PR merge time"),
-                             (self.record_created_at, "Activation comment creation time")):
-            if value is None and label == "Activation comment creation time":
-                continue
-            if not isinstance(value, str):
-                raise ConsumerActivationError(f"{label} is invalid")
-            try:
-                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-            except ValueError as exc:
-                raise ConsumerActivationError(f"{label} is invalid") from exc
-            if parsed.tzinfo is None or parsed > datetime.now(timezone.utc):
-                raise ConsumerActivationError(f"{label} is not a valid past timestamp")
+        merged = _timestamp(self.merged_at, "setup PR merge time")
+        if self.record_created_at is not None:
+            if _timestamp(self.record_created_at, "Activation comment creation time") < merged:
+                raise ConsumerActivationError("Activation record was created before its setup PR merge")
         if self.predecessor_record_id is not None:
             _positive(self.predecessor_record_id, "predecessor Activation record")
+        if (not isinstance(self.required_check_runs, tuple) or not self.required_check_runs
+                or any(not isinstance(item, RequiredCheckEvidence) for item in self.required_check_runs)
+                or len({item.name for item in self.required_check_runs}) != len(self.required_check_runs)):
+            raise ConsumerActivationError("Activation required-check evidence is missing, duplicate, or malformed")
+        for item in self.required_check_runs:
+            item.validate()
         return self
 
     @property
     def activated_at(self) -> str:
         self.validate()
-        if self.record_created_at is None:
-            raise ConsumerActivationError("Activation record has no verified GitHub creation time")
-        return self.record_created_at
+        return self.merged_at
 
     def payload(self) -> dict[str, Any]:
         self.validate()
@@ -580,6 +680,7 @@ class ConsumerActivationRecord:
             "proposed_adc_comment_id": self.proposed_adc_comment_id,
             "proposed_adc_sha256": self.proposed_adc_sha256,
             "proposed_adc_state": self.proposed_adc_state,
+            "required_check_runs": [item.payload() for item in self.required_check_runs],
             "repository": self.repository, "setup_pr_id": self.setup_pr_id,
             "setup_pr_number": self.setup_pr_number,
             "schema": "PASES_CONSUMER_ACTIVATION_V1",
@@ -590,15 +691,26 @@ class ConsumerActivationRecord:
         expected = {"activation_issue_number", "activation_profile_sha256", "adc_comment_id", "adc_sha256",
                     "approval_comment_id", "merge_commit_sha40", "merged_at", "merger_id", "merger_login",
                     "merger_type", "predecessor_record_id", "proposed_adc_comment_id", "proposed_adc_sha256",
-                    "proposed_adc_state", "repository", "setup_pr_id", "setup_pr_number", "schema"}
+                    "proposed_adc_state", "required_check_runs", "repository", "setup_pr_id",
+                    "setup_pr_number", "schema"}
         if not isinstance(value, dict) or set(value) != expected or value.get("schema") != "PASES_CONSUMER_ACTIVATION_V1":
             raise ConsumerActivationError("Activation record has unknown schema or fields")
-        return cls(value["repository"], value["activation_issue_number"], value["proposed_adc_comment_id"],
-                   value["proposed_adc_sha256"], value["proposed_adc_state"], value["adc_comment_id"],
-                   value["adc_sha256"], value["activation_profile_sha256"], value["setup_pr_number"],
-                   value["setup_pr_id"], value["merge_commit_sha40"], value["merged_at"],
-                   value["merger_id"], value["merger_login"], value["merger_type"],
-                   value["approval_comment_id"], value["predecessor_record_id"]).validate()
+        if not isinstance(value["required_check_runs"], list):
+            raise ConsumerActivationError("Activation required-check evidence must be a list")
+        return cls(
+            repository=value["repository"], activation_issue_number=value["activation_issue_number"],
+            proposed_adc_comment_id=value["proposed_adc_comment_id"],
+            proposed_adc_sha256=value["proposed_adc_sha256"], proposed_adc_state=value["proposed_adc_state"],
+            adc_comment_id=value["adc_comment_id"], adc_sha256=value["adc_sha256"],
+            activation_profile_sha256=value["activation_profile_sha256"],
+            setup_pr_number=value["setup_pr_number"], setup_pr_id=value["setup_pr_id"],
+            merge_commit_sha40=value["merge_commit_sha40"], merged_at=value["merged_at"],
+            merger_id=value["merger_id"], merger_login=value["merger_login"],
+            merger_type=value["merger_type"], approval_comment_id=value["approval_comment_id"],
+            predecessor_record_id=value["predecessor_record_id"],
+            required_check_runs=tuple(RequiredCheckEvidence.from_payload(row)
+                                      for row in value["required_check_runs"]),
+        ).validate()
 
     @property
     def sha256(self) -> str:
@@ -617,10 +729,56 @@ def _approval_payload(record_fields: dict[str, Any], *, predecessor: int | None)
         "proposed_adc_comment_id": record_fields["proposed_adc_comment_id"],
         "proposed_adc_sha256": record_fields["proposed_adc_sha256"],
         "proposed_adc_state": record_fields["proposed_adc_state"],
+        "required_check_runs": record_fields["required_check_runs"],
         "repository": record_fields["repository"], "setup_pr_id": record_fields["setup_pr_id"],
         "setup_pr_number": record_fields["setup_pr_number"],
         "schema": "PASES_CONSUMER_ACTIVATION_APPROVAL_V1",
     }
+
+
+def _ensure_setup_branch(root: Path, branch_ref: str, base_sha40: str, content: bytes) -> tuple[str, bool]:
+    """Create or resume the one-path Activation branch, then pin its exact pushed commit."""
+    local_exists = branch_exists(root, branch_ref)
+    remote_exists = remote_branch_exists(root, branch_ref)
+    resumed = local_exists or remote_exists
+    if not resumed:
+        create_branch(root, branch_ref, base_sha40)
+        _write_profile(root, content)
+        commit_sha = commit_and_push_one_path(
+            root, branch_ref, ".agent/project.json", "chore: prepare P-ASES consumer activation",
+        )
+        remote_exists = True
+    else:
+        remote_sha = remote_branch_sha(root, branch_ref) if remote_exists else None
+        if local_exists:
+            switch_branch(root, branch_ref)
+            commit_sha = head_sha40(root)
+            if remote_sha is not None and remote_sha != commit_sha:
+                raise ConsumerActivationError("local and remote Activation setup branch commits differ")
+            if not remote_exists and commit_sha == base_sha40:
+                _write_profile(root, content)
+                commit_sha = commit_and_push_one_path(
+                    root, branch_ref, ".agent/project.json", "chore: prepare P-ASES consumer activation",
+                )
+                remote_exists = True
+        else:
+            if remote_sha is None:
+                raise ConsumerActivationError("remote Activation setup branch disappeared during readback")
+            create_branch(root, branch_ref, remote_sha)
+            commit_sha = head_sha40(root)
+    if (current_branch(root) != branch_ref or head_sha40(root) != commit_sha
+            or commit_parent_sha40(root, commit_sha) != base_sha40
+            or changed_paths_between(root, base_sha40, commit_sha) != (".agent/project.json",)
+            or activation_profile_bytes_at_commit(root, commit_sha) != content
+            or not worktree_clean(root)):
+        raise ConsumerActivationError(
+            "Activation setup branch is not the exact one-file change for the current subject"
+        )
+    if not remote_exists:
+        push_branch_exact(root, branch_ref, commit_sha)
+    if remote_branch_sha(root, branch_ref) != commit_sha or not worktree_clean(root):
+        raise ConsumerActivationError("Activation setup branch failed exact remote/worktree readback")
+    return commit_sha, resumed
 
 
 def setup_consumer_activation(root: Path, github: GitHub) -> dict[str, Any]:
@@ -695,15 +853,10 @@ def setup_consumer_activation(root: Path, github: GitHub) -> dict[str, Any]:
                     "pr": candidates[0]["number"], "reused": True}
         if candidates:
             raise ConsumerActivationError("an ambiguous closed setup PR already exists for this ADC generation")
-        if branch_exists(root, branch_ref) or remote_branch_exists(root, branch_ref):
-            raise ConsumerActivationError("setup branch already exists without one matching setup PR")
         value, content = _profile_for_setup(root, github.repo, issue_number)
         before = profile_path.read_bytes() if profile_path.exists() else None
-        create_branch(root, branch_ref, head)
         try:
-            _write_profile(root, content)
-            commit_sha = commit_and_push_one_path(root, branch_ref, ".agent/project.json",
-                                                  "chore: prepare P-ASES consumer activation")
+            commit_sha, resumed_branch = _ensure_setup_branch(root, branch_ref, head, content)
             body = _body(SETUP_MARKER, expected) + "\n\nMerge this PR to approve the Activation ADC and authorize P-ASES for new Issues."
             try:
                 created_pr = github.create_pull_request(
@@ -732,11 +885,11 @@ def setup_consumer_activation(root: Path, github: GitHub) -> dict[str, Any]:
         switch_branch(root, default_branch)
         return {"status": "SETUP_PENDING", "repository": github.repo, "issue": issue_number,
                 "adc_comment_id": adc.pointer.comment_id, "adc_sha256": adc.pointer.sha256,
-                "pr": pr["number"], "pr_url": pr.get("html_url"), "setup_branch": branch_ref,
+                    "pr": pr["number"], "pr_url": pr.get("html_url"), "setup_branch": branch_ref,
                 "required_checks_configured": bool(value.get("branch", {}).get("required_checks")),
                 "reasons": ([] if value.get("branch", {}).get("required_checks") else
                             ["Add trusted branch.required_checks in project.json before merging this setup PR."]),
-                "reused": False}
+                "reused": resumed_branch}
     except (GitHubError, GitError, OSError, ADCError) as exc:
         raise ConsumerActivationError(f"Activation setup failed closed: {exc}") from exc
 
@@ -751,22 +904,22 @@ def verify_and_record_activation(github: GitHub, pr_number: int) -> tuple[Consum
                 or not isinstance(setup.get("activation_profile_sha256"), str)
                 or not SHA256.fullmatch(setup["activation_profile_sha256"])):
             raise ConsumerActivationError("setup PR ADC or Activation profile digest is invalid")
-        checked_pr, _issue, proposed = _validate_merged_setup(
-            github, pr_number, setup, require_current_adc=True, require_current_admin=True,
-        )
-        merger = checked_pr["merged_by"]
-        merger_id, merger_login, _kind = _identity(merger, "setup PR merger")
-        if _identity(github.authenticated_user(), "authenticated verifier") != (merger_id, merger_login, "User"):
-            raise ConsumerActivationError("post-merge verifier must be the authenticated human who merged the setup PR")
         history = read_consumer_activation_history(github, github.repo, issue_number,
                                                    allow_pending_approval=True)
         for existing, existing_id in history:
             if existing.setup_pr_number == pr_number:
                 if (existing.proposed_adc_comment_id != setup["adc_comment_id"]
                         or existing.proposed_adc_sha256 != setup["adc_sha256"]
-                        or existing.merge_commit_sha40 != checked_pr.get("merge_commit_sha")):
+                        or existing.merge_commit_sha40 != pr.get("merge_commit_sha")):
                     raise ConsumerActivationError("setup PR already has a conflicting Activation record")
                 return existing, existing_id
+        checked_pr, _issue, proposed, check_evidence = _validate_merged_setup(
+            github, pr_number, setup, require_current_adc=True, require_current_admin=True,
+        )
+        merger = checked_pr["merged_by"]
+        merger_id, merger_login, _kind = _identity(merger, "setup PR merger")
+        if _identity(github.authenticated_user(), "authenticated verifier") != (merger_id, merger_login, "User"):
+            raise ConsumerActivationError("post-merge verifier must be the authenticated human who merged the setup PR")
         predecessor = history[-1][1] if history else None
         if setup.get("predecessor_record_id") != predecessor:
             raise ConsumerActivationError("setup PR predecessor does not match the latest Activation history")
@@ -799,6 +952,7 @@ def verify_and_record_activation(github: GitHub, pr_number: int) -> tuple[Consum
             "proposed_adc_comment_id": proposed.pointer.comment_id,
             "proposed_adc_sha256": proposed.pointer.sha256,
             "proposed_adc_state": proposed.pointer.state,
+            "required_check_runs": [item.payload() for item in check_evidence],
             "repository": github.repo,
             "setup_pr_id": _positive(checked_pr.get("id"), "setup PR ID"),
             "setup_pr_number": pr_number,
@@ -822,11 +976,16 @@ def verify_and_record_activation(github: GitHub, pr_number: int) -> tuple[Consum
             approval_id, _ = _publish_comment(github, issue_number, APPROVAL_MARKER, approval_payload,
                                               "Activation approval", allow_history=True)
         record = ConsumerActivationRecord(
-            github.repo, issue_number, proposed.pointer.comment_id, proposed.pointer.sha256,
-            proposed.pointer.state, approved.pointer.comment_id, approved.pointer.sha256,
-            setup["activation_profile_sha256"], pr_number, fields["setup_pr_id"],
-            checked_pr["merge_commit_sha"], checked_pr["merged_at"], merger_id, merger_login,
-            "User", approval_id, predecessor,
+            repository=github.repo, activation_issue_number=issue_number,
+            proposed_adc_comment_id=proposed.pointer.comment_id,
+            proposed_adc_sha256=proposed.pointer.sha256, proposed_adc_state=proposed.pointer.state,
+            adc_comment_id=approved.pointer.comment_id, adc_sha256=approved.pointer.sha256,
+            activation_profile_sha256=setup["activation_profile_sha256"],
+            setup_pr_number=pr_number, setup_pr_id=fields["setup_pr_id"],
+            merge_commit_sha40=checked_pr["merge_commit_sha"], merged_at=checked_pr["merged_at"],
+            merger_id=merger_id, merger_login=merger_login, merger_type="User",
+            approval_comment_id=approval_id, predecessor_record_id=predecessor,
+            required_check_runs=check_evidence,
         ).validate()
         record_id, _ = _publish_comment(github, issue_number, RECORD_MARKER, record.payload(),
                                         "Activation record", allow_history=True)
@@ -880,6 +1039,7 @@ def read_consumer_activation_history(
         used_approvals: set[int] = set()
         used_prs: set[int] = set()
         predecessor: int | None = None
+        predecessor_merge: datetime | None = None
         for listed_record in records:
             record_id = _positive(listed_record["id"], "Activation record Comment ID")
             record = ConsumerActivationRecord.from_payload(
@@ -894,6 +1054,10 @@ def read_consumer_activation_history(
             if record_row.get("body") != listed_record.get("body"):
                 raise ConsumerActivationError("Activation record changed after its initial list read")
             record = replace(record, record_created_at=record_row.get("created_at")).validate()
+            merge_time = _timestamp(record.merged_at, "setup PR merge time")
+            if predecessor_merge is not None and merge_time < predecessor_merge:
+                raise ConsumerActivationError("successor Activation merge time predates its predecessor")
+            predecessor_merge = merge_time
             approval_row = next((row for row in approvals if row.get("id") == record.approval_comment_id), None)
             if approval_row is None or record.approval_comment_id in used_approvals:
                 raise ConsumerActivationError("Activation record has a missing or reused approval comment")
@@ -907,6 +1071,10 @@ def read_consumer_activation_history(
                     or _identity(record_row.get("user"), "Activation record author")
                     != (record.merger_id, record.merger_login.casefold(), record.merger_type)):
                 raise ConsumerActivationError("Activation approval/record author or payload does not match")
+            approval_time = _timestamp(approval.get("created_at"), "Activation approval creation time")
+            record_time = _timestamp(record_row.get("created_at"), "Activation record creation time")
+            if merge_time > approval_time or approval_time > record_time:
+                raise ConsumerActivationError("Activation approval and record do not follow the verified PR merge")
             expected_setup = {
                 "activation_issue_number": record.activation_issue_number,
                 "activation_profile_sha256": record.activation_profile_sha256,
@@ -916,9 +1084,10 @@ def read_consumer_activation_history(
                 "predecessor_record_id": record.predecessor_record_id,
                 "schema": "PASES_CONSUMER_ACTIVATION_SETUP_V1",
             }
-            pr, _issue, proposed = _validate_merged_setup(
+            pr, _issue, proposed, _pinned_checks = _validate_merged_setup(
                 github, record.setup_pr_number, expected_setup,
                 require_current_adc=False, require_current_admin=False,
+                expected_check_runs=record.required_check_runs,
             )
             approved = verify_adc_generation(github, issue_number, record.adc_comment_id,
                                              record.adc_sha256, state="approved")

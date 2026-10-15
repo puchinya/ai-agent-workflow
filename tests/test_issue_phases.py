@@ -20,7 +20,7 @@ from p_ases.execution import (
     ExecutionBinding, ExecutionError, binding_digest, read_binding, read_binding_history, write_binding,
 )
 from p_ases.github import GitHubError
-from p_ases.consumer_activation import ConsumerActivationRecord
+from p_ases.consumer_activation import ConsumerActivationRecord, RequiredCheckEvidence
 from p_ases.gate_policy import GateSelection, PASES_POLICY
 from p_ases.issue_graph import (
     ChildPlan,
@@ -629,9 +629,16 @@ class PhaseEvidenceActivationTests(unittest.TestCase):
     def setUp(self):
         self.repo = "puchinya/ai-agent-workflow"
         self.activation = ConsumerActivationRecord(
-            self.repo, 25, 300, "c" * 64, "draft", 301, "c" * 64,
-            "d" * 64, 44, 445, "b" * 40, "2026-10-11T01:29:00Z", 9,
-            "repo-admin", "User", 302, None, "2026-10-11T01:30:00Z",
+            repository=self.repo, activation_issue_number=25, proposed_adc_comment_id=300,
+            proposed_adc_sha256="c" * 64, proposed_adc_state="draft", adc_comment_id=301,
+            adc_sha256="c" * 64, activation_profile_sha256="d" * 64, setup_pr_number=44,
+            setup_pr_id=445, merge_commit_sha40="b" * 40, merged_at="2026-10-11T01:29:00Z",
+            merger_id=9, merger_login="repo-admin", merger_type="User", approval_comment_id=302,
+            predecessor_record_id=None,
+            required_check_runs=(RequiredCheckEvidence(
+                700, "ci", 15368, "b" * 40, "2026-10-11T01:20:00Z", "2026-10-11T01:21:00Z",
+                "2026-10-11T01:22:00Z", "completed", "success",
+            ),), record_created_at="2026-10-11T01:30:00Z",
         )
         self.gate = GateSelection(
             self.repo, 40, PASES_POLICY, "2026-10-11T02:00:00Z", 999,

@@ -142,13 +142,13 @@ Fixed migration dispatch requires both the exact P-ASES repository and its appro
 <a id="des-f01-002-activation-locator-and-setup"></a>
 ### 7.2 DES-F01-002 Activation locator and setup
 
-`profile.py` accepts the optional `activation.issue_number` locator, with no policy or approval fields. The setup CLI validates the local profile before GitHub API calls, resolves one stable Issue marker in the active repository, and uses the existing ADC journal to publish a proposed default Activation ADC only when the Issue has none. It adds the Issue number to `.agent/project.json` on a dedicated branch and opens/reuses a PR. The generated Required Check list is empty when no project profile exists; an administrator must configure trusted Required Checks in the PR before merge. Empty or untrusted checks can never activate.
+`profile.py` accepts the optional `activation.issue_number` locator, with no policy or approval fields. The setup CLI validates the local profile before GitHub API calls, resolves one stable Issue marker in the active repository, and uses the existing ADC journal to publish a proposed default Activation ADC only when the Issue has none. It adds the Issue number to `.agent/project.json` on a dedicated branch and opens/reuses a PR. Git stages only that path after checking there are no other staged, modified, or untracked paths. A pushed setup branch is accepted on retry only when it is a direct child of the same default-branch SHA, changes exactly `.agent/project.json`, and contains the expected profile bytes. The generated Required Check list is empty when no project profile exists; an administrator must configure trusted Required Checks in the PR before merge. Empty or untrusted checks can never activate.
 
 <a id="des-f01-003"></a>
 <a id="des-f01-003-verified-activation-evidence"></a>
 ### 7.3 DES-F01-003 Verified activation evidence
 
-The post-merge verifier reconstructs the exact setup PR, its sole `.agent/project.json` change, trusted App-ID check runs on the PR HEAD, ADC proposal and pointer history, admin merger identity/permission, and default-branch ancestry. A draft ADC is promoted through the append-only ADC publication API only after that merge is verified. Approval and Activation comments bind proposal and approved ADC IDs/digests, SHA-256 of canonical `{"issue_number": N}`, setup PR ID/number, merge SHA/time, merger ID/login/type, and predecessor record ID. `consumer_activation.py` validates each comment with direct/list/direct readback, unchanged timestamps, stable identity, and exact URLs. The record's GitHub comment `created_at` is the effective Activation time.
+The post-merge verifier reconstructs the exact setup PR, its sole `.agent/project.json` change, the latest successful trusted App-ID Check Run for each required name on the PR HEAD, ADC proposal and pointer history, admin merger identity/permission, and default-branch ancestry. A draft ADC is promoted through the append-only ADC publication API only after that merge is verified. Approval and Activation comments bind proposal and approved ADC IDs/digests, SHA-256 of canonical `{"issue_number": N}`, setup PR ID/number, merge SHA/time, merger ID/login/type, predecessor record ID, and each exact Check Run ID with its issuance-time identity and result. Later history reads fetch those runs by ID instead of requiring a unique current run per name. The record's verified PR `merged_at` is the effective Activation time; comment timestamps remain part of immutable history validation.
 
 <a id="des-f01-004"></a>
 <a id="des-f01-004-admin-merge-as-approval"></a>
@@ -160,13 +160,13 @@ Only an exact setup PR merge by a current repository admin approves policy. The 
 <a id="des-f01-005-work-eligibility"></a>
 ### 7.5 DES-F01-005 Work eligibility
 
-`delivery gate-policy` reads the profile locator only after local schema validation. Only same-repository non-PR Issues created strictly after the Activation record comment time receive a consumer Gate Selection. Existing Issues are not relabeled.
+`delivery gate-policy` reads the profile locator only after local schema validation. For a new selection, it chooses the latest verified Activation whose setup PR `merged_at` is strictly earlier than the same-repository non-PR Issue creation time. For an Issue with a valid existing Gate Selection, it resolves and reuses that exact historical Activation even after a successor. Existing Issues are not relabeled.
 
 <a id="des-f01-006"></a>
 <a id="des-f01-006-historical-activation-pin"></a>
 ### 7.6 DES-F01-006 Historical Activation pin
 
-Consumer `PASES_GATE_SELECTION_V1` records the Activation Issue number, record Comment ID, and record digest. Phase validation resolves that exact historical record from the full append-only chain, even after a successor Activation.
+Consumer `PASES_GATE_SELECTION_V1` records the Activation Issue number, record Comment ID, and record digest. Gate-policy re-reads the Issue's unique selection and validates the exact record from the full append-only chain before returning it; phase validation resolves the same historical record even after a successor Activation.
 
 <a id="des-f01-007"></a>
 <a id="des-f01-007-successor-activation"></a>

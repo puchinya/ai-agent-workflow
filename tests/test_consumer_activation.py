@@ -14,12 +14,18 @@ sys.path.insert(0, str(ROOT / "runtime"))
 from p_ases.adc import ADCError, parse_adc, publish_adc, verify_adc  # noqa: E402
 from p_ases.consumer_activation import (  # noqa: E402
     APPROVAL_MARKER, ISSUE_MARKER, RECORD_MARKER, ConsumerActivationError,
-    _default_activation_adc, read_consumer_activation_history, read_consumer_activation_record,
+    _default_activation_adc, _default_profile, read_consumer_activation_history, read_consumer_activation_record,
     setup_consumer_activation,
     verify_and_record_activation,
 )
 from p_ases.github import GitHubError  # noqa: E402
-from p_ases.gate_policy import PASES_POLICY, choose_gate_for_new_issue  # noqa: E402
+from p_ases.gate_policy import (  # noqa: E402
+    PASES_POLICY, choose_gate_for_new_issue, pin_gate_selection, read_gate_selection,
+)
+from p_ases.git import (  # noqa: E402
+    GitError, activation_profile_bytes_at_commit, changed_paths_between, commit_and_push_one_path,
+    head_sha40, remote_branch_sha, run_git, worktree_clean,
+)
 
 
 REPO = "owner/consumer"
@@ -34,12 +40,12 @@ USER = {"id": 42, "login": "repo-admin", "type": "User"}
 
 
 def comment_row(comment_id: int, body: str, *, author: dict | None = None,
-                timestamp: str = "2026-10-14T12:01:00Z") -> dict:
+                timestamp: str = "2026-10-14T12:01:00Z", issue_number: int = ISSUE) -> dict:
     return {
         "id": comment_id, "body": body, "created_at": timestamp,
         "updated_at": timestamp,
-        "issue_url": f"https://api.github.com/repos/{REPO}/issues/{ISSUE}",
-        "html_url": f"https://github.com/{REPO}/issues/{ISSUE}#issuecomment-{comment_id}",
+        "issue_url": f"https://api.github.com/repos/{REPO}/issues/{issue_number}",
+        "html_url": f"https://github.com/{REPO}/issues/{issue_number}#issuecomment-{comment_id}",
         "url": f"https://api.github.com/repos/{REPO}/issues/comments/{comment_id}",
         "user": copy.deepcopy(author or USER),
     }
@@ -50,6 +56,7 @@ class FakeGitHub:
 
     def __init__(self):
         self.comments: list[dict] = []
+        self.other_comments: dict[int, list[dict]] = {}
         self.issue_row = {
             "number": ISSUE, "state": "open", "pull_request": None,
             "repository_url": f"https://api.github.com/repos/{REPO}",
@@ -62,9 +69,16 @@ class FakeGitHub:
         self.mutate_on_list_call: int | None = None
         self.mutate_marker = APPROVAL_MARKER
         self.fail_record_once = False
+        self.fail_create_pr_once = False
+        self.check_runs_reads = 0
         self.permission = "admin"
         self.ordinary_created_at = "2026-10-14T12:02:00Z"
-        self.checks = [{"id": 1, "name": "ci", "head_sha": HEAD_SHA,
+        self.issue_created_at_by_number: dict[int, str] = {}
+        self.head_sha = HEAD_SHA
+        self.checks = [{"id": 1, "name": "ci", "head_sha": self.head_sha,
+                        "created_at": "2026-10-14T11:59:00Z",
+                        "started_at": "2026-10-14T11:59:01Z",
+                        "completed_at": "2026-10-14T11:59:02Z",
                         "status": "completed", "conclusion": "success", "app": {"id": APP_ID}}]
         self.profile_bytes = json.dumps({
             "schema_version": 2, "initialized": True, "project_name": "consumer",
@@ -80,6 +94,7 @@ class FakeGitHub:
         self.prs: dict[int, dict] = {}
         self.next_pr_number = PR
         self.profile_by_commit = {MERGE_SHA: self.profile_bytes}
+        self.setup_root: Path | None = None
 
     def repository_metadata(self):
         return {"default_branch": "main", "id": 9001}
@@ -118,22 +133,22 @@ class FakeGitHub:
             return copy.deepcopy(self.issue_row)
         return {"number": number, "state": "open", "pull_request": None,
                 "repository_url": f"https://api.github.com/repos/{REPO}",
-                "created_at": self.ordinary_created_at}
+                "created_at": self.issue_created_at_by_number.get(number, self.ordinary_created_at)}
 
     def issue_comments(self, number):
         self.issue_comment_list_calls += 1
-        if self.mutate_on_list_call == self.issue_comment_list_calls:
+        selected_comments = self.comments if number == ISSUE else self.other_comments.get(number, [])
+        if number == ISSUE and self.mutate_on_list_call == self.issue_comment_list_calls:
             target_id = next(row["id"] for row in self.comments
                              if row["body"].startswith(self.mutate_marker))
             target = next(row for row in self.comments if row["id"] == target_id)
             target["body"] += "\nmutated"
             self.mutate_on_list_call = None
-        return copy.deepcopy(self.comments) if number == ISSUE else []
+        return copy.deepcopy(selected_comments)
 
     def issue_comment(self, number, comment_id):
-        if number != ISSUE:
-            raise GitHubError("wrong Issue")
-        matches = [row for row in self.comments if row["id"] == comment_id]
+        selected_comments = self.comments if number == ISSUE else self.other_comments.get(number, [])
+        matches = [row for row in selected_comments if row["id"] == comment_id]
         if len(matches) != 1:
             raise GitHubError("comment missing or duplicated")
         return copy.deepcopy(matches[0])
@@ -142,8 +157,9 @@ class FakeGitHub:
         if body.startswith(RECORD_MARKER) and self.fail_record_once:
             self.fail_record_once = False
             raise GitHubError("simulated lost record publication")
-        comment_id = max((row["id"] for row in self.comments), default=0) + 1
-        self.comments.append(comment_row(comment_id, body, timestamp=self.comment_time))
+        selected_comments = self.comments if number == ISSUE else self.other_comments.setdefault(number, [])
+        comment_id = max((row["id"] for row in selected_comments), default=0) + 1
+        selected_comments.append(comment_row(comment_id, body, timestamp=self.comment_time, issue_number=number))
         return {"id": comment_id}
 
     def pull_requests_for_refs(self, **kwargs):
@@ -152,14 +168,18 @@ class FakeGitHub:
                 and row.get("head", {}).get("ref") == kwargs["head_ref"]]
 
     def create_pull_request(self, *, title, body, head_ref, base_ref):
+        if self.fail_create_pr_once:
+            self.fail_create_pr_once = False
+            raise GitHubError("simulated transient PR creation failure")
         adc = verify_adc(self, ISSUE)
         number = self.next_pr_number
         self.next_pr_number += 1
+        head_sha = head_sha40(self.setup_root) if self.setup_root is not None else self.head_sha
         self.pr = {
             "number": number, "id": 800 + number, "state": "open", "merged": False, "draft": False,
             "html_url": f"https://github.com/{REPO}/pull/{PR}", "body": body,
             "base": {"ref": base_ref, "sha": MAIN_SHA, "repo": {"full_name": REPO, "id": 9001}},
-            "head": {"ref": head_ref, "sha": HEAD_SHA, "repo": {"full_name": REPO, "id": 9001}},
+            "head": {"ref": head_ref, "sha": head_sha, "repo": {"full_name": REPO, "id": 9001}},
         }
         self.pr["html_url"] = f"https://github.com/{REPO}/pull/{number}"
         self.prs[number] = self.pr
@@ -180,7 +200,14 @@ class FakeGitHub:
         return self.profile_by_commit[ref]
 
     def check_runs_for_ref(self, sha):
-        return copy.deepcopy(self.checks)
+        self.check_runs_reads += 1
+        return copy.deepcopy([row for row in self.checks if row["head_sha"] == sha])
+
+    def check_run(self, check_run_id):
+        matches = [row for row in self.checks if row["id"] == check_run_id]
+        if len(matches) != 1:
+            raise GitHubError("Check Run is missing or duplicated")
+        return copy.deepcopy(matches[0])
 
 
 def setup_fake(github: FakeGitHub, *, merge: bool = True) -> None:
@@ -192,9 +219,8 @@ def setup_fake(github: FakeGitHub, *, merge: bool = True) -> None:
                 patch("p_ases.consumer_activation.head_sha40", return_value=MAIN_SHA), \
                 patch("p_ases.consumer_activation.remote_branch_exists", return_value=False), \
                 patch("p_ases.consumer_activation.branch_exists", return_value=False), \
-                patch("p_ases.consumer_activation.create_branch"), \
-                patch("p_ases.consumer_activation._write_profile"), \
-                patch("p_ases.consumer_activation.commit_and_push_one_path", return_value=HEAD_SHA), \
+                patch("p_ases.consumer_activation._ensure_setup_branch",
+                      side_effect=lambda *_args: (github.head_sha, False)), \
                 patch("p_ases.consumer_activation.switch_branch"):
             result = setup_consumer_activation(root, github)
     if result["status"] != "SETUP_PENDING" or result["pr"] != PR:
@@ -204,6 +230,26 @@ def setup_fake(github: FakeGitHub, *, merge: bool = True) -> None:
                           "merged_by": copy.deepcopy(USER), "merge_commit_sha": MERGE_SHA})
         github.prs[github.pr["number"]] = github.pr
         github.profile_by_commit[MERGE_SHA] = github.profile_bytes
+
+
+def local_consumer_checkout(parent: Path) -> tuple[Path, str]:
+    root = parent / "consumer"
+    root.mkdir()
+    run_git(root, "init", "--quiet", "--initial-branch=main")
+    run_git(root, "config", "user.email", "test@example.invalid")
+    run_git(root, "config", "user.name", "P-ASES tests")
+    project = root / ".agent" / "project.json"
+    project.parent.mkdir()
+    project.write_text(json.dumps(_default_profile(REPO), sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    run_git(root, "add", "--", ".agent/project.json")
+    run_git(root, "commit", "--quiet", "-m", "baseline")
+    base = head_sha40(root)
+    bare = parent / "github.com" / "owner" / "consumer.git"
+    bare.parent.mkdir(parents=True)
+    run_git(parent, "init", "--quiet", "--bare", str(bare))
+    run_git(root, "remote", "add", "origin", str(bare))
+    run_git(root, "push", "--quiet", "--set-upstream", "origin", "main")
+    return root, base
 
 
 class ConsumerActivationTests(unittest.TestCase):
@@ -217,10 +263,54 @@ class ConsumerActivationTests(unittest.TestCase):
         record, record_id = verify_and_record_activation(github, PR)
         self.assertEqual(record.activation_issue_number, ISSUE)
         self.assertEqual(record.setup_pr_number, PR)
-        self.assertEqual(record.activated_at, "2026-10-14T12:01:00Z")
+        self.assertEqual(record.activated_at, MERGED_AT)
         self.assertEqual(read_consumer_activation_record(github, REPO, ISSUE), (record, record_id))
         github.main_sha = "d" * 40
         self.assertEqual(read_consumer_activation_record(github, REPO, ISSUE), (record, record_id))
+
+    def test_setup_commits_only_written_profile_and_resumes_after_transient_pr_api_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, base = local_consumer_checkout(Path(temporary))
+            github = FakeGitHub()
+            github.main_sha = base
+            github.setup_root = root
+            github.fail_create_pr_once = True
+            with self.assertRaisesRegex(ConsumerActivationError, "PR creation failed"):
+                setup_consumer_activation(root, github)
+            self.assertEqual(run_git(root, "symbolic-ref", "--short", "HEAD"), "main")
+            self.assertTrue(worktree_clean(root))
+            branch_ref = "pases/consumer-activation-71-"
+            remote_rows = run_git(root, "ls-remote", "--heads", "origin").splitlines()
+            pushed = [row.split() for row in remote_rows if row.split()[1].startswith(f"refs/heads/{branch_ref}")]
+            self.assertEqual(len(pushed), 1)
+            commit_sha = pushed[0][0]
+            self.assertEqual(changed_paths_between(root, base, commit_sha), (".agent/project.json",))
+            self.assertEqual(activation_profile_bytes_at_commit(root, commit_sha),
+                             (json.dumps({**_default_profile(REPO), "activation": {"issue_number": ISSUE}},
+                                         sort_keys=True, indent=2) + "\n").encode())
+
+            result = setup_consumer_activation(root, github)
+            self.assertEqual(result["status"], "SETUP_PENDING")
+            self.assertTrue(result["reused"])
+            self.assertEqual(result["pr"], PR)
+            self.assertEqual(github.pr["head"]["sha"], commit_sha)
+            self.assertEqual(remote_branch_sha(root, result["setup_branch"]), commit_sha)
+            self.assertEqual(run_git(root, "symbolic-ref", "--short", "HEAD"), "main")
+            self.assertTrue(worktree_clean(root))
+
+    def test_git_setup_commit_rejects_any_other_staged_modified_or_untracked_path(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, base = local_consumer_checkout(Path(temporary))
+            run_git(root, "switch", "--quiet", "--create", "pases/activation-test", base)
+            project = root / ".agent" / "project.json"
+            project.write_text(json.dumps({**_default_profile(REPO),
+                                          "activation": {"issue_number": ISSUE}}, sort_keys=True, indent=2)
+                              + "\n", encoding="utf-8")
+            (root / "unrelated.txt").write_text("unrelated\n", encoding="utf-8")
+            with self.assertRaisesRegex(GitError, "only its intended project.json"):
+                commit_and_push_one_path(root, "pases/activation-test", ".agent/project.json", "setup")
+            self.assertEqual(run_git(root, "diff", "--cached", "--name-only"), "")
+            self.assertEqual(run_git(root, "symbolic-ref", "--short", "HEAD"), "pases/activation-test")
 
     def test_setup_creates_issue_when_missing_and_duplicate_markers_block(self):
         github = FakeGitHub()
@@ -274,6 +364,16 @@ class ConsumerActivationTests(unittest.TestCase):
 
         github = FakeGitHub()
         setup_fake(github)
+        failed_rerun = copy.deepcopy(github.checks[0])
+        failed_rerun.update({"id": 2, "created_at": "2026-10-14T11:59:03Z",
+                             "started_at": "2026-10-14T11:59:04Z",
+                             "completed_at": "2026-10-14T11:59:05Z", "conclusion": "failure"})
+        github.checks.append(failed_rerun)
+        with self.assertRaisesRegex(ConsumerActivationError, "did not pass"):
+            verify_and_record_activation(github, PR)
+
+        github = FakeGitHub()
+        setup_fake(github)
         github.checks[0]["app"]["id"] += 1
         with self.assertRaisesRegex(ConsumerActivationError, "did not pass"):
             verify_and_record_activation(github, PR)
@@ -287,6 +387,22 @@ class ConsumerActivationTests(unittest.TestCase):
         self.assertEqual(sum(row["body"].startswith(APPROVAL_MARKER) for row in github.comments), 1)
         record, _ = verify_and_record_activation(github, PR)
         self.assertEqual(sum(row["body"].startswith(RECORD_MARKER) for row in github.comments), 1)
+
+    def test_issued_activation_pins_check_run_identity_across_later_reruns(self):
+        github = FakeGitHub()
+        setup_fake(github)
+        record, record_id = verify_and_record_activation(github, PR)
+        self.assertEqual([item.check_run_id for item in record.required_check_runs], [1])
+        reads_before = github.check_runs_reads
+        rerun = copy.deepcopy(github.checks[0])
+        rerun.update({"id": 2, "created_at": "2026-10-14T12:04:00Z",
+                      "started_at": "2026-10-14T12:04:01Z",
+                      "completed_at": "2026-10-14T12:04:02Z"})
+        github.checks.append(rerun)
+        self.assertEqual(read_consumer_activation_record(github, REPO, ISSUE), (record, record_id))
+        self.assertEqual(github.check_runs_reads, reads_before)
+        self.assertEqual(verify_and_record_activation(github, PR), (record, record_id))
+        self.assertEqual(github.check_runs_reads, reads_before)
 
     def test_stale_adc_deletion_and_mid_read_mutation_fail_closed(self):
         github = FakeGitHub()
@@ -352,6 +468,13 @@ class ConsumerActivationTests(unittest.TestCase):
         self.assertEqual(selected.policy_version, PASES_POLICY)
         self.assertEqual(selected.activation_issue_number, ISSUE)
         self.assertEqual(selected.activation_comment_id, read_consumer_activation_record(github, REPO, ISSUE)[1])
+        github.ordinary_created_at = "2026-10-14T12:00:30Z"
+        between_merge_and_record = choose_gate_for_new_issue(
+            github, REPO, 27, "2026-10-14T12:03:00Z", activation_issue_number=ISSUE,
+        )
+        self.assertIsNotNone(between_merge_and_record)
+        self.assertEqual(between_merge_and_record.activation_comment_id,
+                         read_consumer_activation_record(github, REPO, ISSUE)[1])
         github.ordinary_created_at = record.activated_at
         self.assertIsNone(choose_gate_for_new_issue(
             github, REPO, 27, "2026-10-14T12:03:00Z", activation_issue_number=ISSUE,
@@ -364,7 +487,11 @@ class ConsumerActivationTests(unittest.TestCase):
         selected_before = choose_gate_for_new_issue(
             github, REPO, 28, "2026-10-14T12:03:00Z", activation_issue_number=ISSUE,
         )
+        self.assertIsNotNone(selected_before)
         self.assertEqual(selected_before.activation_comment_id, first_id)
+        pinned_id, pinned_body = pin_gate_selection(github, selected_before)
+        self.assertEqual(read_gate_selection(github, 28), (pinned_id, selected_before, pinned_body))
+        github.issue_created_at_by_number[29] = "2026-10-14T12:30:00Z"
 
         revised = github.proposed_adc.contract.content.replace(
             b"Every Gate Selection stays bound to the exact Activation record that authorized it.",
@@ -372,6 +499,12 @@ class ConsumerActivationTests(unittest.TestCase):
         )
         publish_adc(github, ISSUE, revised, state="draft", supersede=True, explicitly_approved=False)
         github.comment_time = "2026-10-14T13:01:00Z"
+        github.head_sha = "d" * 40
+        github.checks.append({"id": 2, "name": "ci", "head_sha": github.head_sha,
+                             "created_at": "2026-10-14T12:59:00Z",
+                             "started_at": "2026-10-14T12:59:01Z",
+                             "completed_at": "2026-10-14T12:59:02Z",
+                             "status": "completed", "conclusion": "success", "app": {"id": APP_ID}})
         with tempfile.TemporaryDirectory() as tmp, \
                 patch("p_ases.consumer_activation.worktree_clean", return_value=True), \
                 patch("p_ases.consumer_activation.discover_repository", return_value=REPO), \
@@ -379,9 +512,8 @@ class ConsumerActivationTests(unittest.TestCase):
                 patch("p_ases.consumer_activation.head_sha40", return_value=MAIN_SHA), \
                 patch("p_ases.consumer_activation.remote_branch_exists", return_value=False), \
                 patch("p_ases.consumer_activation.branch_exists", return_value=False), \
-                patch("p_ases.consumer_activation.create_branch"), \
-                patch("p_ases.consumer_activation._write_profile"), \
-                patch("p_ases.consumer_activation.commit_and_push_one_path", return_value=HEAD_SHA), \
+                patch("p_ases.consumer_activation._ensure_setup_branch",
+                      side_effect=lambda *_args: (github.head_sha, False)), \
                 patch("p_ases.consumer_activation.switch_branch"):
             result = setup_consumer_activation(Path(tmp), github)
         second_pr = result["pr"]
@@ -399,10 +531,23 @@ class ConsumerActivationTests(unittest.TestCase):
         self.assertEqual(history, (successor, successor_id))
         self.assertEqual(read_consumer_activation_history(github, REPO, ISSUE),
                          [(first, first_id), (successor, successor_id)])
-        self.assertEqual(selected_before.activation_comment_id, first_id)
-        github.ordinary_created_at = "2026-10-14T13:02:00Z"
-        later_selection = choose_gate_for_new_issue(
+        github.issue_created_at_by_number[28] = "2026-10-14T12:02:00Z"
+        reselected = choose_gate_for_new_issue(
+            github, REPO, 28, "2026-10-14T13:03:00Z", activation_issue_number=ISSUE,
+        )
+        self.assertEqual(reselected, selected_before)
+        self.assertEqual(choose_gate_for_new_issue(
+            github, REPO, 28, "2026-10-14T13:03:00Z", activation_issue_number=None,
+        ), selected_before)
+        self.assertEqual(pin_gate_selection(github, reselected), (pinned_id, pinned_body))
+        self.assertEqual(read_gate_selection(github, 28), (pinned_id, selected_before, pinned_body))
+        between_successors = choose_gate_for_new_issue(
             github, REPO, 29, "2026-10-14T13:03:00Z", activation_issue_number=ISSUE,
+        )
+        self.assertEqual(between_successors.activation_comment_id, first_id)
+        github.issue_created_at_by_number[30] = "2026-10-14T13:02:00Z"
+        later_selection = choose_gate_for_new_issue(
+            github, REPO, 30, "2026-10-14T13:03:00Z", activation_issue_number=ISSUE,
         )
         self.assertEqual(later_selection.activation_comment_id, successor_id)
 
