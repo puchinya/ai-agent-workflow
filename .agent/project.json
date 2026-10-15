@@ -8,16 +8,20 @@
     "prefix": "feature",
     "required_checks": [
       {
-        "name": "test (ubuntu-latest, 3.10)"
+        "name": "test (ubuntu-latest, 3.10)",
+        "trusted_app_id": 15368
       },
       {
-        "name": "test (ubuntu-latest, 3.14)"
+        "name": "test (ubuntu-latest, 3.14)",
+        "trusted_app_id": 15368
       },
       {
-        "name": "test (windows-latest, 3.14)"
+        "name": "test (windows-latest, 3.14)",
+        "trusted_app_id": 15368
       },
       {
-        "name": "test (macos-latest, 3.14)"
+        "name": "test (macos-latest, 3.14)",
+        "trusted_app_id": 15368
       }
     ]
   },
