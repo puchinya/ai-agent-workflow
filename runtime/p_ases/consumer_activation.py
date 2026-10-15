@@ -440,17 +440,19 @@ def _validate_profile_bytes(raw: bytes, issue_number: int) -> tuple[dict[str, An
 
 def _required_check_evidence(
     github: GitHub, head_sha40: str, checks: tuple[tuple[str, int], ...],
-    expected: tuple[RequiredCheckEvidence, ...] | None,
+    expected: tuple[RequiredCheckEvidence, ...] | None, merged_at: str,
 ) -> tuple[RequiredCheckEvidence, ...]:
+    merge_time = _timestamp(merged_at, "setup PR merge time")
     if expected is not None:
         if tuple((item.name, item.app_id) for item in expected) != checks:
             raise ConsumerActivationError("pinned Required Check identities do not match the merged project profile")
         evidence: list[RequiredCheckEvidence] = []
         for pinned in expected:
             current = RequiredCheckEvidence.from_run(github.check_run(pinned.check_run_id))
-            if current != pinned or current.head_sha40 != head_sha40:
+            if (current != pinned or current.head_sha40 != head_sha40
+                    or _timestamp(current.completed_at, f"Required Check {current.name} completion time") > merge_time):
                 raise ConsumerActivationError(
-                    f"pinned Required Check {pinned.name} no longer matches its issuance-time Check Run"
+                    f"pinned Required Check {pinned.name} no longer matches its successful pre-merge Check Run"
                 )
             evidence.append(current)
         return tuple(evidence)
@@ -462,15 +464,26 @@ def _required_check_evidence(
                     and isinstance(row.get("app"), dict) and row["app"].get("id") == app_id]
         if not matching:
             raise ConsumerActivationError(f"Required Check {name} did not pass: no trusted Check Run on PR HEAD")
-        dated = [(_timestamp(row.get("created_at"), f"Required Check {name} creation time"), row)
-                 for row in matching]
-        latest_time = max(stamp for stamp, _row in dated)
-        latest = [row for stamp, row in dated if stamp == latest_time]
-        if len(latest) != 1:
-            raise ConsumerActivationError(f"Required Check {name} has ambiguous latest Check Run evidence")
-        if latest[0].get("status") != "completed" or latest[0].get("conclusion") != "success":
-            raise ConsumerActivationError(f"Required Check {name} latest Check Run did not pass")
-        selected = RequiredCheckEvidence.from_run(latest[0])
+        dated: list[tuple[datetime, int, dict[str, Any]]] = []
+        seen_ids: set[int] = set()
+        for row in matching:
+            created = _timestamp(row.get("created_at"), f"Required Check {name} creation time")
+            run_id = _positive(row.get("id"), f"Required Check {name} Run ID")
+            if run_id in seen_ids:
+                raise ConsumerActivationError(f"Required Check {name} has duplicate Check Run IDs")
+            seen_ids.add(run_id)
+            if created <= merge_time:
+                dated.append((created, run_id, row))
+        if not dated:
+            raise ConsumerActivationError(f"Required Check {name} did not exist by setup PR merge")
+        # GitHub timestamps can tie across reruns; the numeric Run ID gives a
+        # stable order independent of API response ordering.
+        _created, _run_id, latest = max(dated, key=lambda item: (item[0], item[1]))
+        if latest.get("status") != "completed" or latest.get("conclusion") != "success":
+            raise ConsumerActivationError(f"Required Check {name} latest Check Run at merge did not pass")
+        selected = RequiredCheckEvidence.from_run(latest)
+        if (_timestamp(selected.completed_at, f"Required Check {name} completion time") > merge_time):
+            raise ConsumerActivationError(f"Required Check {name} completed after setup PR merge")
         if selected.head_sha40 != head_sha40:
             raise ConsumerActivationError(f"Required Check {name} belongs to a different PR HEAD")
         evidence.append(selected)
@@ -519,7 +532,9 @@ def _validate_merged_setup(github: GitHub, pr_number: int, expected: dict[str, A
         _profile, checks = _validate_profile_bytes(raw_profile, expected["activation_issue_number"])
         if hashlib.sha256(_canonical(activation_profile(expected["activation_issue_number"]))).hexdigest() != expected["activation_profile_sha256"]:
             raise ConsumerActivationError("setup PR Activation profile digest is invalid")
-        check_evidence = _required_check_evidence(github, head["sha"], checks, expected_check_runs)
+        check_evidence = _required_check_evidence(
+            github, head["sha"], checks, expected_check_runs, merged_at,
+        )
         issue_number = expected["activation_issue_number"]
         issue = github.issue(issue_number)
         issue_repository_url = issue.get("repository_url")
@@ -659,6 +674,10 @@ class ConsumerActivationRecord:
             raise ConsumerActivationError("Activation required-check evidence is missing, duplicate, or malformed")
         for item in self.required_check_runs:
             item.validate()
+            if _timestamp(item.completed_at, f"Required Check {item.name} completion time") > merged:
+                raise ConsumerActivationError(
+                    f"Required Check {item.name} completed after the setup PR merge"
+                )
         return self
 
     @property

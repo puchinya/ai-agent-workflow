@@ -380,6 +380,42 @@ class ConsumerActivationTests(unittest.TestCase):
         with self.assertRaisesRegex(ConsumerActivationError, "did not pass"):
             verify_and_record_activation(github, PR)
 
+    def test_post_merge_success_cannot_rescue_failed_or_pending_check_at_merge(self):
+        for merge_run in (
+            {"status": "completed", "conclusion": "failure",
+             "completed_at": "2026-10-14T11:59:05Z"},
+            {"status": "in_progress", "conclusion": None, "completed_at": None},
+        ):
+            with self.subTest(status=merge_run["status"]):
+                github = FakeGitHub()
+                setup_fake(github)
+                at_merge = copy.deepcopy(github.checks[0])
+                at_merge.update({"id": 2, "created_at": "2026-10-14T11:59:03Z",
+                                 "started_at": "2026-10-14T11:59:04Z", **merge_run})
+                after_merge = copy.deepcopy(github.checks[0])
+                after_merge.update({"id": 3, "created_at": "2026-10-14T12:05:00Z",
+                                    "started_at": "2026-10-14T12:05:01Z",
+                                    "completed_at": "2026-10-14T12:05:02Z"})
+                github.checks.extend((at_merge, after_merge))
+                github.issue_created_at_by_number[72] = "2026-10-14T12:02:00Z"
+                self.assertGreater(github.issue_created_at_by_number[72], MERGED_AT)
+                with self.assertRaisesRegex(ConsumerActivationError, "latest Check Run at merge did not pass"):
+                    verify_and_record_activation(github, PR)
+                self.assertFalse(any(row["body"].startswith(APPROVAL_MARKER) for row in github.comments))
+                self.assertIsNone(choose_gate_for_new_issue(
+                    github, REPO, 72, "2026-10-14T12:06:00Z", activation_issue_number=ISSUE,
+                ))
+
+    def test_check_run_timestamp_ties_use_run_id_for_deterministic_selection(self):
+        github = FakeGitHub()
+        setup_fake(github)
+        tied = copy.deepcopy(github.checks[0])
+        tied.update({"id": 2, "completed_at": "2026-10-14T11:59:03Z"})
+        github.checks = [tied, github.checks[0]]
+        record, _record_id = verify_and_record_activation(github, PR)
+        self.assertEqual([item.check_run_id for item in record.required_check_runs], [2])
+        self.assertLessEqual(record.required_check_runs[0].completed_at, MERGED_AT)
+
     def test_partial_approval_retry_is_idempotent(self):
         github = FakeGitHub()
         setup_fake(github)
@@ -395,6 +431,7 @@ class ConsumerActivationTests(unittest.TestCase):
         setup_fake(github)
         record, record_id = verify_and_record_activation(github, PR)
         self.assertEqual([item.check_run_id for item in record.required_check_runs], [1])
+        self.assertLess(record.required_check_runs[0].completed_at, record.merged_at)
         reads_before = github.check_runs_reads
         rerun = copy.deepcopy(github.checks[0])
         rerun.update({"id": 2, "created_at": "2026-10-14T12:04:00Z",
