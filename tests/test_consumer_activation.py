@@ -247,7 +247,9 @@ def local_consumer_checkout(parent: Path) -> tuple[Path, str]:
     bare = parent / "github.com" / "owner" / "consumer.git"
     bare.parent.mkdir(parents=True)
     run_git(parent, "init", "--quiet", "--bare", str(bare))
-    run_git(root, "remote", "add", "origin", str(bare))
+    # Keep the fake local remote's path GitHub-shaped on Windows too, where
+    # native paths otherwise use backslashes and fail discover_repository().
+    run_git(root, "remote", "add", "origin", bare.as_posix())
     run_git(root, "push", "--quiet", "--set-upstream", "origin", "main")
     return root, base
 
