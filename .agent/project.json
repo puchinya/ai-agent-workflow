@@ -1,47 +1,69 @@
 {
-  "schema_version": 2,
-  "initialized": true,
-  "project_name": "p-ases",
-  "components": [
-    {
-      "id": "root",
-      "roots": ["."],
-      "stacks": ["python"],
-      "application_types": ["cli", "library"],
-      "targets": [],
-      "hooks": {}
-    }
-  ],
+  "activation": {
+    "issue_number": 57
+  },
   "branch": {
-    "prefix": "feature",
-    "max_slug_length": 48,
     "cleanup_on_switch": [],
+    "max_slug_length": 48,
+    "prefix": "feature",
     "required_checks": [
-      {"name": "test (ubuntu-latest, 3.10)"},
-      {"name": "test (ubuntu-latest, 3.14)"},
-      {"name": "test (windows-latest, 3.14)"},
-      {"name": "test (macos-latest, 3.14)"}
+      {
+        "name": "test (ubuntu-latest, 3.10)",
+        "trusted_app_id": 15368
+      },
+      {
+        "name": "test (ubuntu-latest, 3.14)",
+        "trusted_app_id": 15368
+      },
+      {
+        "name": "test (windows-latest, 3.14)",
+        "trusted_app_id": 15368
+      },
+      {
+        "name": "test (macos-latest, 3.14)",
+        "trusted_app_id": 15368
+      }
     ]
   },
-  "workspace": {
-    "isolation": "auto"
-  },
-  "milestones": {
-    "mode": "required",
-    "version_source": {
-      "type": "python-attr",
-      "path": "runtime/p_ases/__init__.py",
-      "field": "__version__"
+  "components": [
+    {
+      "application_types": [
+        "cli",
+        "library"
+      ],
+      "hooks": {},
+      "id": "root",
+      "roots": [
+        "."
+      ],
+      "stacks": [
+        "python"
+      ],
+      "targets": []
     }
-  },
+  ],
   "hooks": {
     "branch_switch": [],
-    "verify_quick": [],
     "verify_final": [
       "python -m compileall runtime tools tests",
       "python -m unittest discover -s tests -p \"test_*.py\"",
       "python tools/build_dist.py --check",
       "python tools/validate_dist.py"
-    ]
+    ],
+    "verify_quick": []
+  },
+  "initialized": true,
+  "milestones": {
+    "mode": "required",
+    "version_source": {
+      "field": "__version__",
+      "path": "runtime/p_ases/__init__.py",
+      "type": "python-attr"
+    }
+  },
+  "project_name": "p-ases",
+  "schema_version": 2,
+  "workspace": {
+    "isolation": "auto"
   }
 }
