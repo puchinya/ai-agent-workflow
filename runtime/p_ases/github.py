@@ -376,6 +376,39 @@ class GitHub:
             raise GitHubError("GitHub Check Run resource has incomplete identity/provenance")
         return result
 
+    def workflow_job(self, job_id: int) -> dict[str, Any]:
+        """Read one Actions job by its immutable ID, including its creation time."""
+        job_id = _positive_int(job_id, "Workflow job ID")
+        result = self.request("GET", f"{self.prefix}/actions/jobs/{job_id}")
+        check_run_url = f"https://api.github.com/{self.prefix}/check-runs/{job_id}"
+        if (not isinstance(result, dict) or result.get("id") != job_id
+                or type(result.get("run_id")) is not int or result["run_id"] < 1
+                or type(result.get("run_attempt")) is not int or result["run_attempt"] < 1
+                or not isinstance(result.get("name"), str) or not result["name"]
+                or not isinstance(result.get("head_sha"), str)
+                or not re.fullmatch(r"[0-9a-f]{40}", result["head_sha"])
+                or not isinstance(result.get("check_run_url"), str)
+                or result["check_run_url"].casefold() != check_run_url.casefold()
+                or not isinstance(result.get("created_at"), str)
+                or not result["created_at"]
+                or not isinstance(result.get("status"), str)
+                or (result.get("conclusion") is not None and not isinstance(result.get("conclusion"), str))
+                or (result.get("started_at") is not None and not isinstance(result.get("started_at"), str))
+                or (result.get("completed_at") is not None and not isinstance(result.get("completed_at"), str))):
+            raise GitHubError("GitHub Actions job resource has incomplete or mismatched identity data")
+        return result
+
+    def workflow_job_for_check_run(self, check_run: dict[str, Any]) -> dict[str, Any]:
+        """Resolve an Actions job only when it is the exact job linked to a Check Run."""
+        if not isinstance(check_run, dict):
+            raise GitHubError("Check Run resource must be an object")
+        check_run_id = _positive_int(check_run.get("id"), "Check Run ID")
+        job = self.workflow_job(check_run_id)
+        identity_fields = ("name", "head_sha", "status", "conclusion", "started_at", "completed_at")
+        if any(job.get(field) != check_run.get(field) for field in identity_fields):
+            raise GitHubError("GitHub Actions job does not match the Check Run identity or result")
+        return job
+
     def workflow_runs_for_ref(
         self, head_sha40: str, *, workflow_path: str = ".github/workflows/ci.yml",
         event: str = "pull_request",

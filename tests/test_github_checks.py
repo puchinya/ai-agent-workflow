@@ -132,6 +132,36 @@ class GitHubCheckRunTests(unittest.TestCase):
         with self.assertRaises(GitHubError):
             FakeGitHub((check_run(702, "trusted-ci"),)).check_run(701)
 
+    def test_actions_job_supplies_creation_time_only_for_its_exact_check_run(self):
+        check = check_run(701, "trusted-ci")
+        check.update({"status": "completed", "conclusion": "success",
+                      "started_at": "2026-10-14T11:59:01Z",
+                      "completed_at": "2026-10-14T11:59:02Z"})
+        job = {"id": 701, "run_id": 30, "run_attempt": 1, "name": "trusted-ci",
+               "head_sha": HEAD, "status": "completed", "conclusion": "success",
+               "check_run_url": "https://api.github.com/repos/octo/repo/check-runs/701",
+               "created_at": "2026-10-14T11:59:00Z",
+               "started_at": check["started_at"], "completed_at": check["completed_at"]}
+        github = FakeGitHub((job,))
+
+        resolved = github.workflow_job_for_check_run(check)
+
+        self.assertEqual(resolved["created_at"], job["created_at"])
+        self.assertEqual(github.calls, [("GET", "repos/octo/repo/actions/jobs/701", None)])
+
+        for field, value in (("name", "other-job"), ("head_sha", "b" * 40),
+                             ("status", "in_progress"), ("conclusion", "failure"),
+                             ("started_at", "2026-10-14T11:58:00Z"),
+                             ("completed_at", "2026-10-14T11:58:00Z")):
+            with self.subTest(field=field):
+                mismatched = {**job, field: value}
+                with self.assertRaisesRegex(GitHubError, "does not match"):
+                    FakeGitHub((mismatched,)).workflow_job_for_check_run(check)
+
+        wrong_link = {**job, "check_run_url": "https://api.github.com/repos/octo/repo/check-runs/702"}
+        with self.assertRaisesRegex(GitHubError, "incomplete or mismatched"):
+            FakeGitHub((wrong_link,)).workflow_job_for_check_run(check)
+
     def test_workflow_runs_support_main_push_and_dispatch_with_exact_event_path(self):
         run = {"id": 30, "run_number": 8, "run_attempt": 1,
                "path": ".github/workflows/ci.yml", "event": "push",
