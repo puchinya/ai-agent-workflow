@@ -44,6 +44,28 @@ class ParentAcceptanceTests(unittest.TestCase):
                 "[ORA-WF-001](oracle.md#ora-wf-001) | [TST-WF-002](oracle.md#tst-wf-001)"), encoding="utf-8")
             self.assertTrue(any("omits TST IDs" in reason for reason in validate(root, "test-oracle")))
 
+    def test_traceability_accepts_feature_scoped_stable_ids(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("docs/specs", "docs/design", "docs/testing", "tests"):
+                (root / name).mkdir(parents=True, exist_ok=True)
+            (root / "docs/specs/spec.md").write_text('<a id="req-f01-001"></a>\n', encoding="utf-8")
+            (root / "docs/design/design.md").write_text('<a id="des-f01-001"></a>\n', encoding="utf-8")
+            (root / "docs/testing/oracle.md").write_text(
+                '<a id="ora-f01-001"></a>\n<a id="tst-f01-001"></a>\n', encoding="utf-8")
+            (root / "tests/test_oracle.py").write_text("pass\n", encoding="utf-8")
+            (root / "docs/testing/traceability.md").write_text(
+                "| REQ | DES | Oracle | Test | Evidence |\n"
+                "| --- | --- | --- | --- | --- |\n"
+                "| [REQ-F01-001](../specs/spec.md#req-f01-001) | "
+                "[DES-F01-001](../design/design.md#des-f01-001) | "
+                "[ORA-F01-001](oracle.md#ora-f01-001) | "
+                "[TST-F01-001](oracle.md#tst-f01-001) | [test source](../../tests/test_oracle.py) |\n",
+                encoding="utf-8")
+            for scope in ("specification", "design", "test-oracle"):
+                with self.subTest(scope=scope):
+                    self.assertEqual(validate(root, scope), ())
+
     def test_sixteen_skill_gate_matches_the_pinned_canonical_set(self):
         self.assertEqual(tuple(EXPECTED_SKILLS), PARENT_CANONICAL_SKILLS)
         self.assertEqual(validate_skill_package(ROOT), ())

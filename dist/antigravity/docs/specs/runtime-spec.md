@@ -26,6 +26,10 @@
 - [6 REQ-RT-012 Security and privacy](#6-req-rt-012-security-and-privacy)
 - [7 REQ-RT-013 Error and boundary behavior](#7-req-rt-013-error-and-boundary-behavior)
 - [8 P-ASES Bootstrap commands](#8-p-ases-bootstrap-commands)
+- [9 Consumer Activation runtime contract](#9-consumer-activation-runtime-contract)
+  - [9.1 REQ-F01-002 Activation locator](#91-req-f01-002-activation-locator)
+  - [9.2 REQ-F01-004 Setup request and verification](#92-req-f01-004-setup-request-and-verification)
+  - [9.3 REQ-F01-006 Historical Activation pin](#93-req-f01-006-historical-activation-pin)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -43,6 +47,9 @@
 - [REQ-RT-011](#req-rt-011) — 5 REQ-RT-011 Data and API formats
 - [REQ-RT-012](#req-rt-012) — 6 REQ-RT-012 Security and privacy
 - [REQ-RT-013](#req-rt-013) — 7 REQ-RT-013 Error and boundary behavior
+- [REQ-F01-002](#req-f01-002) — 9.1 REQ-F01-002 Activation locator
+- [REQ-F01-004](#req-f01-004) — 9.2 REQ-F01-004 Setup request and verification
+- [REQ-F01-006](#req-f01-006) — 9.3 REQ-F01-006 Historical Activation pin
 <!-- heading-map:end -->
 
 
@@ -338,3 +345,24 @@ An exact subject binds repository, Issue, PR, ADC Comment ID/SHA, base ref/SHA, 
 The Bootstrap evaluator may be newer than the PR being evaluated because it is introduced by a downstream migration PR. Run the evaluator from its own clean checkout and pass `--root` pointing to a separate clean checkout whose HEAD is the exact target PR HEAD. For example: `PYTHONPATH=<evaluator-checkout>/runtime python -m p_ases delivery bootstrap-check <issue> <pr> --repo <owner/name> --root <target-pr-checkout>`. The evaluator fingerprint comes from the evaluator checkout; local checks, branch/HEAD/cleanliness checks, and PR subject validation use the target checkout. Do not copy downstream evaluator files into the target PR branch or report a result for any HEAD other than the target PR's current HEAD.
 
 The activation reader accepts only a unique `PASES_ACTIVATION_V1` record with six closed child Issues, six merged PRs at the declared merge SHAs with exact `Closes #N` associations and repository-owner merge attribution, matching parent integration evidence (documentation/tests/16 Skills/distribution), and a separate `PASES_ACTIVATION_APPROVAL_V1` comment authored by the repository owner. The legacy integration comment is only a pointer and digest envelope: its PASS fields and HTTPS URLs are not trusted until exactly one Verification V2 comment and one Acceptance V2 comment are read back and their referenced GitHub Actions run, job, step, and Check Run APIs are reconstructed on the activation commit SHA, approved parent ADC digest, and fixed trusted App ID 15368. Issuance requires the latest successful run and attempt; historical Activation reads fetch the exact recorded run ID/attempt and its jobs through the attempt-specific GitHub Actions APIs, so later runs or attempts do not replace valid issuance-time evidence. If GitHub cannot return the pinned attempt or provenance, the record blocks without fallback. Each read records a debug diagnostic with the number of GitHub API requests and cumulative client-observed latency; metrics never bypass evidence checks. Child merge SHAs must be present in that activation commit. Approval, activation, and referenced evidence comments require unique Issue #26 list entries and identical direct/list/direct snapshots of ID, body, creation/update timestamps, Issue/HTML/API URLs, and stable owner User ID/login/type; `created_at` must equal `updated_at`. Profile/avatar changes are ignored. Edits, deletions, duplicates, identity mismatches, or readback errors block. The current main branch must contain the activation commit, but advancing main after activation preserves a still-ancestral valid record. Normal `delivery readiness`, Required Check trusted App-ID validation, and phase transitions are unchanged.
+
+<a id="consumer-activation-runtime-contract"></a>
+## 9 Consumer Activation runtime contract
+
+<a id="req-f01-002"></a>
+<a id="req-f01-002-activation-locator"></a>
+### 9.1 REQ-F01-002 Activation locator
+
+`.agent/project.json` MAY contain only `activation: {"issue_number": N}` as its Activation locator. The positive Issue number must resolve to one marked Issue in the same repository. The locator is not activation evidence. Unknown or malformed profile data blocks before GitHub reads or label writes.
+
+<a id="req-f01-004"></a>
+<a id="req-f01-004-setup-request-and-verification"></a>
+### 9.2 REQ-F01-004 Setup request and verification
+
+The required request is `P-ASESを有効化して。`. It creates or reuses the marked Activation Issue, proposes a default ADC only when none exists, writes the locator on a setup branch, and opens/reuses one exact setup PR. The setup branch may commit only the intended `.agent/project.json` change; before staging, Git must verify that no other staged, modified, or untracked path exists. After push, the worktree and exact remote commit must pass readback. If PR creation fails after push, an exact one-parent, one-file branch matching the current subject remains resumable on retry; any drift or ambiguous PR state fails closed. When that branch exists only on the remote, the retry fetches its exact ref and verifies the fetched full SHA against the prior `ls-remote` observation before creating a local branch; all parent, diff, profile, clean-worktree, and remote-SHA checks still apply. No Activation is recorded before merge. A trusted verifier requires the exact setup PR merged by the authenticated current repository admin, exact `.agent/project.json`, approved ADC, issuance-time trusted Required Check evidence pinned by exact Check Run IDs, and merge ancestry on the default branch before publishing approval and record comments. Each required check is selected from the latest matching Check Run created no later than the exact PR `merged_at`, ordered by `(created_at, Check Run ID)` so timestamp ties are deterministic. That selected run must be completed successfully with `completed_at <= merged_at`; a pending or failed run at merge cannot be replaced by a later successful rerun. The record binds only these qualifying run IDs and timestamps, and historical reads revalidate those exact runs by ID.
+
+<a id="req-f01-006"></a>
+<a id="req-f01-006-historical-activation-pin"></a>
+### 9.3 REQ-F01-006 Historical Activation pin
+
+Phase validation resolves an existing Gate Selection to its exact historical Activation record, even after a successor Activation. Existing ADC, kind/phase labels, frozen work binding, receipts, and exact-subject checks remain mandatory.

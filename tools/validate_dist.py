@@ -34,7 +34,8 @@ CLI_ROUTES = {
     "audit": {"self", "independent"},
     "user-review": {"start", "sync", "record", "status"},
     "delivery": {"readiness", "gate-policy", "bootstrap-check", "final", "finalize", "parent",
-                 "parent-evidence", "parent-migrate-labels"},
+                 "parent-evidence", "parent-migrate-labels", "consumer-activation-setup",
+                 "consumer-activation-verify"},
 }
 OLD_COMMAND = re.compile(
     r"(?i)\b(?:init-project|agent-context|validate-docs|run-hook|ensure-milestone|"

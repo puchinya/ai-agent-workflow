@@ -17,6 +17,9 @@ from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from .adc import ADCError, parse_adc, publish_adc, restore_adc, verify_adc
+from .consumer_activation import (
+    ConsumerActivationError, setup_consumer_activation, verify_and_record_activation,
+)
 from .git import GitError, current_branch, discover_repository, head_sha40, remote_branch_sha, worktree_clean
 from .document_format import DocumentFormatError, format_tree
 from .documents import DocumentError, validate_documents
@@ -26,7 +29,8 @@ from .checkpoint import CheckpointError, PRBinding, read_pr_binding
 from .context import WorkContext
 from .profile import ProfileError, load_profile
 from .gate_policy import (
-    BOOTSTRAP_ISSUES, BOOTSTRAP_POLICY, BootstrapResult, BootstrapSubject, GateSelection,
+    BOOTSTRAP_COHORT, BOOTSTRAP_ISSUES, BOOTSTRAP_POLICY, BOOTSTRAP_REPOSITORY,
+    BootstrapResult, BootstrapSubject, GateSelection,
     GatePolicyError, bootstrap_policy_digest, choose_gate_for_new_issue, current_checkout_subject,
     evaluate_bootstrap,
     pin_gate_selection, publish_immutable_record, read_bootstrap_adc, read_bootstrap_evidence,
@@ -899,6 +903,7 @@ def _project_status(root: Path) -> int:
         "root": str(profile.root),
         "project_name": profile.project_name,
         "branch_prefix": profile.branch_prefix,
+        "activation_issue_number": profile.activation_issue_number,
         "required_checks": [
             {"name": name, "trusted_app_id": app_id}
             for name, app_id in profile.required_checks
@@ -1261,13 +1266,30 @@ def _read_audit_references(root: Path, audit: SelfAudit | IndependentReview) -> 
     return tuple(references)
 
 
-def _delivery_gate_policy(args: argparse.Namespace, repository: str, github: GitHub) -> int:
+def _delivery_gate_policy(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
     selected_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     try:
+        fixed_migration = (repository.casefold() == BOOTSTRAP_REPOSITORY.casefold()
+                           and args.issue in BOOTSTRAP_COHORT)
+        activation_issue_number = None
+        if not fixed_migration:
+            try:
+                profile = load_profile(root)
+            except ProfileError as exc:
+                raise GatePolicyError(f"consumer gate selection requires a valid project.json: {exc}") from exc
+            try:
+                if discover_repository(root).casefold() != repository.casefold():
+                    raise GatePolicyError("GitHub repository does not match the active workspace origin")
+            except GitError as exc:
+                raise GatePolicyError(f"could not resolve the active repository from this workspace: {exc}") from exc
+            activation_issue_number = profile.activation_issue_number
         issue = github.issue(args.issue)
         if issue.get("state") != "open" or issue.get("pull_request") is not None:
             raise GatePolicyError("gate policy selection requires an open Issue")
-        selection = choose_gate_for_new_issue(github, repository, args.issue, selected_at)
+        selection = choose_gate_for_new_issue(
+            github, repository, args.issue, selected_at,
+            activation_issue_number=activation_issue_number,
+        )
         if selection is None:
             _json({"status": "UNDETERMINED", "repository": repository, "issue": args.issue,
                    "policy": None, "reasons": ["no valid post-activation gate selection is available; activation may be absent/invalid or this Issue may predate activation"]})
@@ -2802,6 +2824,16 @@ def _parser() -> argparse.ArgumentParser:
     gate_policy = delivery_commands.add_parser("gate-policy", help="pin or read the versioned gate for an Issue")
     gate_policy.add_argument("issue", type=_positive_number)
     gate_policy.add_argument("--repo", help="repository owner/name; defaults to origin")
+    gate_policy.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
+    activation_setup = delivery_commands.add_parser(
+        "consumer-activation-setup", help="create the consumer Activation Issue and setup PR")
+    activation_setup.add_argument("--repo", help="repository owner/name; defaults to origin")
+    activation_setup.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
+    activation_verify = delivery_commands.add_parser(
+        "consumer-activation-verify", help="verify an admin-merged setup PR and record Activation")
+    activation_verify.add_argument("pr", type=_positive_number)
+    activation_verify.add_argument("--repo", help="repository owner/name; defaults to origin")
+    activation_verify.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
     bootstrap = delivery_commands.add_parser("bootstrap-check", help="evaluate the separate migration Bootstrap gate")
     bootstrap.add_argument("issue", type=_positive_number)
     bootstrap.add_argument("pr", type=_positive_number)
@@ -2919,7 +2951,26 @@ def main(argv: list[str] | None = None) -> int:
                     return _user_review_record(args)
                 return _user_review_run(args, repository, root, github)
             if args.verb == "gate-policy":
-                return _delivery_gate_policy(args, repository, github)
+                return _delivery_gate_policy(args, repository, root, github)
+            if args.verb == "consumer-activation-setup":
+                try:
+                    result = setup_consumer_activation(root, github)
+                    _json(result)
+                    return 0
+                except ConsumerActivationError as exc:
+                    return _blocked_result((str(exc),))
+            if args.verb == "consumer-activation-verify":
+                try:
+                    if discover_repository(root).casefold() != repository.casefold():
+                        raise ConsumerActivationError("GitHub repository does not match the active workspace origin")
+                    record, comment_id = verify_and_record_activation(github, args.pr)
+                    _json({"status": "ACTIVATED", "repository": repository,
+                           "issue": record.activation_issue_number, "pr": args.pr,
+                           "activation_comment_id": comment_id, "activated_at": record.activated_at,
+                           "activation_sha256": record.sha256})
+                    return 0
+                except ConsumerActivationError as exc:
+                    return _blocked_result((str(exc),))
             if args.verb == "bootstrap-check":
                 return _delivery_bootstrap_check(args, repository, root, github)
             if args.verb == "readiness":
@@ -3040,7 +3091,8 @@ def main(argv: list[str] | None = None) -> int:
             attention = parse_attention_labels(labels)
             skip_reasons = _phase_skip_reasons(args.skip_phase)
             kind = IssueKind(args.kind)
-            bootstrap = args.issue in PHASE_EVIDENCE_BOOTSTRAP_ISSUES
+            bootstrap = (repository.casefold() == BOOTSTRAP_REPOSITORY.casefold()
+                         and args.issue in PHASE_EVIDENCE_BOOTSTRAP_ISSUES)
             kind_labels = [label.removeprefix("kind:") for label in labels if label.startswith("kind:")]
             if not bootstrap and (len(kind_labels) != 1 or kind_labels[0] != kind.value):
                 raise CLIError("--kind must match the Issue's unique verified kind:* label")

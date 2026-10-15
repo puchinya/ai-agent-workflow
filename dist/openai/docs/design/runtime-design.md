@@ -17,7 +17,15 @@
   - [4.3 DES-RT-005 Review-PR establishment sequence](#43-des-rt-005-review-pr-establishment-sequence)
 - [5 DES-RT-006 Failure handling](#5-des-rt-006-failure-handling)
 - [6 Migration gate policy](#6-migration-gate-policy)
-- [7 Alternatives considered](#7-alternatives-considered)
+- [7 DES-F01 Consumer Activation setup](#7-des-f01-consumer-activation-setup)
+  - [7.1 DES-F01-001 Repository-scoped migration routing](#71-des-f01-001-repository-scoped-migration-routing)
+  - [7.2 DES-F01-002 Activation locator and setup](#72-des-f01-002-activation-locator-and-setup)
+  - [7.3 DES-F01-003 Verified activation evidence](#73-des-f01-003-verified-activation-evidence)
+  - [7.4 DES-F01-004 Admin merge as approval](#74-des-f01-004-admin-merge-as-approval)
+  - [7.5 DES-F01-005 Work eligibility](#75-des-f01-005-work-eligibility)
+  - [7.6 DES-F01-006 Historical Activation pin](#76-des-f01-006-historical-activation-pin)
+  - [7.7 DES-F01-007 Successor Activation](#77-des-f01-007-successor-activation)
+- [8 Alternatives considered](#8-alternatives-considered)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -28,6 +36,13 @@
 - [DES-RT-004](#des-rt-004) — 4.2 DES-RT-004 Workspace binding and publication
 - [DES-RT-005](#des-rt-005) — 4.3 DES-RT-005 Review-PR establishment sequence
 - [DES-RT-006](#des-rt-006) — 5 DES-RT-006 Failure handling
+- [DES-F01-001](#des-f01-001) — 7.1 DES-F01-001 Repository-scoped migration routing
+- [DES-F01-002](#des-f01-002) — 7.2 DES-F01-002 Activation locator and setup
+- [DES-F01-003](#des-f01-003) — 7.3 DES-F01-003 Verified activation evidence
+- [DES-F01-004](#des-f01-004) — 7.4 DES-F01-004 Admin merge as approval
+- [DES-F01-005](#des-f01-005) — 7.5 DES-F01-005 Work eligibility
+- [DES-F01-006](#des-f01-006) — 7.6 DES-F01-006 Historical Activation pin
+- [DES-F01-007](#des-f01-007) — 7.7 DES-F01-007 Successor Activation
 <!-- heading-map:end -->
 
 
@@ -63,6 +78,7 @@ Legacy design note: detailed module behavior below describes the former flat Age
 
 <a id="des-rt-001"></a>
 <a id="des-rt-001-runtime-module-architecture"></a>
+<a id="des-rt-001-architecture"></a>
 ## 3 DES-RT-001 Architecture
 
 `cli.py` parses commands and converts domain errors into stable nonzero exit codes. `profile.py` validates Schema 1/2 and selects components/targets. `versioning.py` resolves and validates an Issue-scoped target or the configured fallback without dependencies; the existing `resolve_version()` API remains the fallback resolver. `git.py` owns branch lifecycle and changed-doc ref/diff subprocesses through argv; it coordinates clean-worktree checks, selected-base resolution, expected-SHA comparison, branch selection, safe cleanup, and the global switch-hook plan. `context.py` formats routing output, including structured document decisions. `documents.py` parses Issue document impact and validates durable Markdown structure and local links. `contracts.py` owns source-byte validation, safe Markdown checkbox normalization within a recognizable Reviewer Checklist H2, normalized exact-byte hashes, pointer format, mirror state, publication/restore flows, the shared structural classifier, and opt-in ten-section structure validation using the existing tokenizer. `verification.py` owns exact-HEAD final hook plans, command-hash-only receipts, and immutable public evidence. `review.py` derives contract units only from actual Markdown H2 headings and extracts checklist items from the canonical marker block first, then the narrow Markdown Reviewer Checklist H2 fallback using Markdown checkbox syntax; it also owns self-review v2 and current-HEAD independent-review drafts/publication/staleness. `qa.py` owns separate functional QA records with PASS/N/A semantics and immutable public evidence. `delivery.py` checks the four evidence gates before Required Checks and owns merged gates. `github.py` owns repository identity, default-branch metadata, Issue milestone state, and every `gh api` invocation. `process.py` executes configured non-GitHub hook commands sequentially; diagnostic output is captured temporarily and redacted before emission.
@@ -113,10 +129,56 @@ The implementation Skill resolves the selected base ref and exact SHA before eva
 
 `gate_policy.py` owns repository-scoped fixed-cohort routing, `PASES_GATE_SELECTION_V1`, Bootstrap subjects/results, append-only Bootstrap evidence, and activation validation. Each result fingerprints the gate evaluator and its CLI, GitHub, ADC, Git, process, and profile adapters so a tool update appends a new evidence attempt without changing the pinned Issue gate. It is not called by `delivery.evaluate_readiness` or phase advancement. `cli.py` runs `delivery gate-policy` and `delivery bootstrap-check`; the latter executes the repository's fixed bounded local verification set and reads the exact current PR, ADC, Actions workflow run, and Check Runs through `github.py`. Bootstrap review artifacts remain parseable for historical records, but current technical evaluation neither reads nor requires self-review, independent-review, or separate-context artifacts. New evidence sets `review_mode=WAIVED_BOOTSTRAP` and reports technical success as `BOOTSTRAP_TECHNICAL_READY` without claiming review evidence or final-user-review eligibility. The clean checkout, complete PR identity/body, ADC pointer, and pinned gate selection are re-read before and after evidence publication. If publication races with a subject change, a newer BLOCKED observation is appended and read back as latest. Activation is read-only until all child merges, closed Issues, parent integration evidence, and a distinct explicit approval comment can be verified; no implementation command transitions an Issue or merges a PR. Ordinary P-ASES review gates are unchanged, and this policy does not grant permission to merge a PR.
 
+<a id="des-f01-consumer-activation-setup"></a>
+## 7 DES-F01 Consumer Activation setup
+
+<a id="des-f01-001"></a>
+<a id="des-f01-001-repository-scoped-migration-routing"></a>
+### 7.1 DES-F01-001 Repository-scoped migration routing
+
+Fixed migration dispatch requires both the exact P-ASES repository and its approved #26–#32 cohort. Other repositories use the consumer path even when their Issue numbers overlap.
+
+<a id="des-f01-002"></a>
+<a id="des-f01-002-activation-locator-and-setup"></a>
+### 7.2 DES-F01-002 Activation locator and setup
+
+`profile.py` accepts the optional `activation.issue_number` locator, with no policy or approval fields. The setup CLI validates the local profile before GitHub API calls, resolves one stable Issue marker in the active repository, and uses the existing ADC journal to publish a proposed default Activation ADC only when the Issue has none. It adds the Issue number to `.agent/project.json` on a dedicated branch and opens/reuses a PR. Git stages only that path after checking there are no other staged, modified, or untracked paths. A pushed setup branch is accepted on retry only when it is a direct child of the same default-branch SHA, changes exactly `.agent/project.json`, and contains the expected profile bytes. If only the remote branch exists, read its exact SHA with `ls-remote`, fetch only that branch ref, compare the fetched commit SHA with the observation, and then create the local branch from that fetched commit. Re-run parent, diff, profile-byte, clean-worktree, and remote-SHA validation after the fetch. The generated Required Check list is empty when no project profile exists; an administrator must configure trusted Required Checks in the PR before merge. Empty or untrusted checks can never activate.
+
+<a id="des-f01-003"></a>
+<a id="des-f01-003-verified-activation-evidence"></a>
+### 7.3 DES-F01-003 Verified activation evidence
+
+The post-merge verifier reconstructs the exact setup PR, its sole `.agent/project.json` change, and the latest matching trusted App-ID Check Run for each required name on the PR HEAD as of `merged_at`. A run is eligible only when its `created_at <= merged_at`; order candidates by `(created_at, Check Run ID)` to resolve equal creation timestamps. The selected run must be completed successfully and have `completed_at <= merged_at`. A latest run that was failed or still pending at merge blocks Activation even when a later retry succeeds. A draft ADC is promoted through the append-only ADC publication API only after that merge is verified. Approval and Activation comments bind proposal and approved ADC IDs/digests, SHA-256 of canonical `{"issue_number": N}`, setup PR ID/number, merge SHA/time, merger ID/login/type, predecessor record ID, and each qualifying Check Run ID with its issuance-time identity, result, and timestamps. Later history reads fetch those exact runs by ID, verify the pinned result and that completion was no later than the recorded merge, and do not require a unique current run per name. The record's verified PR `merged_at` is the effective Activation time; comment timestamps remain part of immutable history validation.
+
+<a id="des-f01-004"></a>
+<a id="des-f01-004-admin-merge-as-approval"></a>
+### 7.4 DES-F01-004 Admin merge as approval
+
+Only an exact setup PR merge by a current repository admin approves policy. The post-merge verifier independently reconstructs the PR, project profile, ADC, trusted Required Checks, and default-branch ancestry before publishing evidence; setup and verification do not change Issue labels or authorization outside the recorded policy.
+
+<a id="des-f01-005"></a>
+<a id="des-f01-005-work-eligibility"></a>
+### 7.5 DES-F01-005 Work eligibility
+
+`delivery gate-policy` reads the profile locator only after local schema validation. For a new selection, it chooses the latest verified Activation whose setup PR `merged_at` is strictly earlier than the same-repository non-PR Issue creation time. For an Issue with a valid existing Gate Selection, it resolves and reuses that exact historical Activation even after a successor. Existing Issues are not relabeled.
+
+<a id="des-f01-006"></a>
+<a id="des-f01-006-historical-activation-pin"></a>
+### 7.6 DES-F01-006 Historical Activation pin
+
+Consumer `PASES_GATE_SELECTION_V1` records the Activation Issue number, record Comment ID, and record digest. Gate-policy re-reads the Issue's unique selection and validates the exact record from the full append-only chain before returning it; phase validation resolves the same historical record even after a successor Activation.
+
+<a id="des-f01-007"></a>
+<a id="des-f01-007-successor-activation"></a>
+### 7.7 DES-F01-007 Successor Activation
+
+Changing the Activation ADC or locator requires a successor setup PR and admin merge. Removing the locator blocks new Gate Selections; restoring it requires a successor. Existing records and selections are not edited. `issue_graph.py` remains unchanged because it validates caller-supplied decomposition plans and has no fixed migration cohort routing.
+
 The fixed policy names each accepted child base/head pair. Merging an upstream PR and retargeting a child changes its subject, so prior evidence is invalidated; add the new pair explicitly and cover it with a strict regression test before evaluating the retargeted PR. Missing pairs fail closed rather than being guessed from the dependency graph.
 
 <a id="alternatives-considered"></a>
-## 7 Alternatives considered
+<a id="7-alternatives-considered"></a>
+## 8 Alternatives considered
 
 - One monolithic `agent_tool.py` would couple profile, GitHub, and review logic. Focused modules make fake transports and focused tests possible.
 - A general HTTP client would need a new credential boundary. The existing authenticated `gh api` transport is explicit and testable.

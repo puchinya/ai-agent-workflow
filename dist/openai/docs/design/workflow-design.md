@@ -12,22 +12,23 @@
 - [2 Requirements traceability](#2-requirements-traceability)
 - [3 DES-WF-001 Architecture](#3-des-wf-001-architecture)
 - [4 DES-WF-002 Data flow and ownership](#4-des-wf-002-data-flow-and-ownership)
-- [5 DES-WF-003 Workspace execution flow](#5-des-wf-003-workspace-execution-flow)
-- [6 DES-WF-004 Failure handling](#6-des-wf-004-failure-handling)
-- [7 DES-WF-005 Authorization boundary and PR handoff](#7-des-wf-005-authorization-boundary-and-pr-handoff)
-- [8 Alternatives considered](#8-alternatives-considered)
-- [9 Migration gate routing](#9-migration-gate-routing)
-- [10 DES-WF-006 Human review and final delivery](#10-des-wf-006-human-review-and-final-delivery)
+- [5 DES-F01 Consumer gate routing and history](#5-des-f01-consumer-gate-routing-and-history)
+- [6 DES-WF-003 Workspace execution flow](#6-des-wf-003-workspace-execution-flow)
+- [7 DES-WF-004 Failure handling](#7-des-wf-004-failure-handling)
+- [8 DES-WF-005 Authorization boundary and PR handoff](#8-des-wf-005-authorization-boundary-and-pr-handoff)
+- [9 Alternatives considered](#9-alternatives-considered)
+- [10 Migration gate routing](#10-migration-gate-routing)
+- [11 DES-WF-006 Human review and final delivery](#11-des-wf-006-human-review-and-final-delivery)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
 **Stable heading map**
 - [DES-WF-001](#des-wf-001) — 3 DES-WF-001 Architecture
 - [DES-WF-002](#des-wf-002) — 4 DES-WF-002 Data flow and ownership
-- [DES-WF-003](#des-wf-003) — 5 DES-WF-003 Workspace execution flow
-- [DES-WF-004](#des-wf-004) — 6 DES-WF-004 Failure handling
-- [DES-WF-005](#des-wf-005) — 7 DES-WF-005 Authorization boundary and PR handoff
-- [DES-WF-006](#des-wf-006) — 10 DES-WF-006 Human review and final delivery
+- [DES-WF-003](#des-wf-003) — 6 DES-WF-003 Workspace execution flow
+- [DES-WF-004](#des-wf-004) — 7 DES-WF-004 Failure handling
+- [DES-WF-005](#des-wf-005) — 8 DES-WF-005 Authorization boundary and PR handoff
+- [DES-WF-006](#des-wf-006) — 11 DES-WF-006 Human review and final delivery
 <!-- heading-map:end -->
 
 
@@ -62,6 +63,7 @@ Legacy design note: detailed procedures below that still mention the former flat
 
 <a id="des-wf-001"></a>
 <a id="des-wf-001-architecture-and-phase-authority"></a>
+<a id="des-wf-001-architecture"></a>
 ## 3 DES-WF-001 Architecture
 
 ```text
@@ -87,6 +89,7 @@ The ordinary single/child phase path is `requirements -> [specification] -> [des
 
 <a id="des-wf-002"></a>
 <a id="des-wf-002-data-flow-and-artifact-ownership"></a>
+<a id="des-wf-002-data-flow-and-ownership"></a>
 ## 4 DES-WF-002 Data flow and ownership
 
 1. A Skill starts from an Issue and reads only the routing data and documents relevant to that task. The Issue declares structured document decisions; older link-only sections remain routable.
@@ -98,6 +101,16 @@ The ordinary single/child phase path is `requirements -> [specification] -> [des
 
 `phase_evidence.py` owns the `PASES_PHASE_DECISION_V1` model, canonical JSON codec, document hashing, generation-scoped predecessor lookup, and two complete direct/list/direct identity snapshots. The record is a technical receipt derived from the current approved ADC, not a user approval. `ExecutionBinding` records the dedicated Issue branch and the `work` route appends an immutable binding generation when the approved ADC is explicitly superseded, retaining the original base, branch, worktree, and initial HEAD. Specification receipts inspect only specification artifacts; design receipts also verify the unchanged specification predecessor; ready receipts verify the completed predecessor chain and ready-stage documents. A changed prior artifact blocks dependent receipts. Ready resolves each `REQ`/`DES`/`ORA`/`TST` link to a canonical file in the same commit, checks the actual anchor, verifies the ADC path or explicit unchanged decision, and reads each executable test source from the commit tree. `github.py` reads and writes comments, Issues, labels, definitions, and branch refs; `git.py` supplies the local branch, HEAD, and ancestry checks. Every ordinary single/child phase transition verifies the actual kind, approved ADC, current Activation/Gate Selection, branch, and binding. `ready -> execution` rebuilds the ready decision on the current HEAD before any label write. Advance re-reads the Issue and evidence immediately before its label mutation and then reads the full Issue state back. Unchanged labels survive the transition. Existing child Issues are checked in place and never reset to requirements.
 
+<a id="des-f01-workflow-consumer-activation"></a>
+<a id="des-f01-consumer-gate-routing-and-history"></a>
+## 5 DES-F01 Consumer gate routing and history
+
+Migration routing is selected only for the exact P-ASES repository plus its fixed #26–#32 cohort. The consumer path is selected for other repository/Issue pairs even when the Issue number overlaps that cohort. The project locator names the consumer's one marked Activation Issue; it is not proof. ADC comments and their pointer journal define the proposed and approved policy generations.
+
+Setup is a two-stage state machine: the exact PR merge by a current human admin approves policy, and the post-merge verifier then appends approval and Activation comments. Git stages only `.agent/project.json` after validating that it is the sole changed path; after push it reads back a clean worktree and the exact remote commit. If PR creation fails after push, retry resumes only a direct-child branch whose sole diff and committed profile bytes match the original setup subject. For a remote-only branch, retry fetches the exact ref and verifies its full commit SHA against the preceding `ls-remote` observation before creating a local branch, then repeats all parent, diff, profile, cleanliness, and remote-readback checks. No phase label changes during setup or Activation verification. Each successful Activation comment is linked to the previous record ID. For each Required Check, issuance selects the latest run created no later than the exact PR `merged_at`, with Check Run ID as the deterministic tie-breaker for equal `created_at`; that run must be completed successfully at or before merge. A pending or failed run at merge cannot be rescued by a post-merge rerun. History reads validate every comment, ADC generation, PR subject, main ancestry, pinned Required Check Run IDs/results and their completion-before-merge bound, merger, and predecessor, then compare complete marker snapshots before returning. A partial approval without its Activation record is never treated as active; an exact retry can finish that same PR only.
+
+The setup PR's verified `merged_at` controls strict Issue creation-time routing; the later record-comment timestamp is retained and checked as history. A later Activation appends a successor and does not change older Gate Selection payloads. New selection chooses the latest merged Activation before the Issue's `created_at`; re-running gate-policy follows an existing selection's exact Activation Comment ID and digest through history. Phase validation resolves the same historical authority. The consumer path stores the Activation Issue number in the Gate Selection while preserving the existing fixed-cohort payload shape.
+
 `ExecutionBinding` uses the current nine-field row, including `branch_ref`, either as a single record or inside the append-only history wrapper. The prior eight-field form is outside the supported contract and may be rejected by read/resume commands; callers must not assume compatibility, branch inference, migration, or automatic rewrite. At `ready`, a linked test source file must already exist in the branch commit, but it may be a failing scaffold awaiting implementation; the receipt binds its path and bytes without claiming a test pass. Execution may extend that source, and later verification establishes the outcome.
 
 After `issue advance` attempts its label PUT, both a normal response and an error/lost response take the same readback path. The runtime checks Issue number, repository URL, non-PR/open identity, unchanged body and complete intended label set, including kind, phase, and attention. Ordinary Issues also revalidate the current approved ADC pointer and comment generation. Any mismatch returns `BLOCKED` and states that the PUT may already have applied; the runtime does not roll labels back or retry automatically.
@@ -108,7 +121,8 @@ The structural Contract preflight is a separate local flow: the CLI reads the ex
 
 <a id="des-wf-003"></a>
 <a id="des-wf-003-workspace-execution-flow"></a>
-## 5 DES-WF-003 Workspace execution flow
+<a id="5-des-wf-003-workspace-execution-flow"></a>
+## 6 DES-WF-003 Workspace execution flow
 
 ```text
 approved Contract
@@ -129,18 +143,21 @@ Git cleanliness sees untracked content in the main checkout. Claude Code’s def
 
 <a id="des-wf-004"></a>
 <a id="des-wf-004-failure-handling"></a>
-## 6 DES-WF-004 Failure handling
+<a id="6-des-wf-004-failure-handling"></a>
+## 7 DES-WF-004 Failure handling
 
 Malformed profiles and Document impact declarations fail closed before hooks or scoped validation. Unknown selected components and invalid doc selectors never broaden scope. Host or target requirement mismatches skip commands and remain unverified. Self-review contract `fail`/`untested`, checklist `fail`, Final Verification other than PASS, QA other than PASS/N/A, independent contract units not all PASS, independent checklist `fail`, and blocking A/B/C findings block handoff. Independent D findings and checklist `untested` remain non-blocking by themselves. Legacy schema-v1 self-reviews remain diagnostic-only. GitHub ambiguity fails closed. Atomic local replacements preserve the old verified bytes on failure. Build/check mismatches identify drift without silently accepting edited generated output.
 
 <a id="des-wf-005"></a>
 <a id="des-wf-005-authorization-boundary-and-pr-handoff"></a>
-## 7 DES-WF-005 Authorization boundary and PR handoff
+<a id="7-des-wf-005-authorization-boundary-and-pr-handoff"></a>
+## 8 DES-WF-005 Authorization boundary and PR handoff
 
 The approved Issue contract is the authority for routine work through a review-ready PR. The implementation Skill retains ownership after local verification and invokes the delivery Skill for PR establishment and gates. A separate decision is reserved for material scope/architecture changes, contract supersession, ambiguous ownership/base, destructive Git operations, merge/release, permission escalation, unrelated GitHub mutation, or an explicit request to stop. A missing PR is an implementation blocker, not a reason to return a “next step.” Pending CI leaves the PR in place and reports blocked delivery.
 
 <a id="alternatives-considered"></a>
-## 8 Alternatives considered
+<a id="8-alternatives-considered"></a>
+## 9 Alternatives considered
 
 - Copying the reference repository or its 105 KiB CLI would introduce template ownership and a monolith. The new runtime uses focused modules and only carries forward specified behavior.
 - Hand-authored host-specific Skill trees would drift. Adapters contain only explicit host differences.
@@ -148,7 +165,8 @@ The approved Issue contract is the authority for routine work through a review-r
 - A shared OpenAI/Antigravity `plugin.json` would violate their different schemas. Packages are separate directories.
 
 <a id="migration-gate-routing"></a>
-## 9 Migration gate routing
+<a id="9-migration-gate-routing"></a>
+## 10 Migration gate routing
 
 `runtime/p_ases/gate_policy.py` owns a versioned gate decision alongside, not inside, `delivery.evaluate_readiness`. Only Issues #26–#32 in `puchinya/ai-agent-workflow` select `bootstrap-legacy-v1`; repository identity comparisons are case-insensitive and all other repositories fail closed. A `PASES_GATE_SELECTION_V1` Issue comment pins the selection. Other Issues require a unique, exact-readback `PASES_ACTIVATION_V1` plus an explicit earlier `PASES_ACTIVATION_APPROVAL_V1`; without them routing is `UNDETERMINED` and stops.
 
@@ -159,7 +177,9 @@ When the Bootstrap evaluator lives on a downstream stacked PR, run its CLI from 
 `gate_policy.py` treats the V1 integration comment only as an envelope that names the typed Verification and Acceptance V2 comments. It verifies their complete direct/list/direct comment identities, reconstructs both referenced Actions runs through `parent_gate.py` on the Activation commit SHA and approved parent ADC, checks App ID 15368 and the fixed job/step/check sets, and verifies all six actual child merge SHAs are in that commit. Activation approval, Activation record, and evidence comments must be unique and unedited (`created_at == updated_at`), attached to Issue #26, and authored by the repository owner's stable GitHub User identity. Identity equality includes ID, case-normalized login, type, body, timestamps, and canonical URLs while ignoring avatar/profile presentation fields. Every API error, deletion, duplicate, identity mismatch, or direct/list/direct change blocks. At issuance the activation SHA must be on main; later main advances preserve the record while that SHA remains an ancestor. Existing activation history is read-only. No activation record is issued during child implementation.
 
 <a id="des-wf-006"></a>
-## 10 DES-WF-006 Human review and final delivery
+<a id="10-des-wf-006-human-review-and-final-delivery"></a>
+<a id="des-wf-006-human-review-and-final-delivery"></a>
+## 11 DES-WF-006 Human review and final delivery
 
 `user_review.py` owns the subject-bound human decision, immutable session start, and feedback snapshots. A child session binds the current ADC, PR HEAD, plan, and Readiness digest; older approvals and change requests cannot satisfy it. Ordinary comments are questions. The only comment-driven execution transition is the whole-body `P-ASES-DECISION: CHANGES_REQUESTED` / `P-ASES-HEAD: <sha40>` pair from the authenticated human; inline comments must name their GitHub `commit_id`. `github.py` is the only network boundary and paginates the four REST feedback surfaces plus GraphQL review-thread state. A previously stored snapshot is compared with every complete new read; missing records are retained as deletion tombstones. Review history treats only `<64 lowercase hex>.json` as a feedback snapshot; `session.json` and canonical `*.result.json` records are separate schemas, and unexpected filenames or a content/name digest mismatch fail closed. Review evaluation derives decisions from the authenticated GitHub user or a verified host adapter, never from CLI-supplied identity fields.
 

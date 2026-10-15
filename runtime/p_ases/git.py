@@ -71,6 +71,23 @@ def remote_branch_sha(repo: Path, branch_ref: str, remote: str = "origin") -> st
     return rows[0][0]
 
 
+def fetch_remote_branch_exact(repo: Path, branch_ref: str, expected_sha40: str,
+                              remote: str = "origin") -> str:
+    """Fetch one branch ref and require it to match the preceding remote SHA read."""
+    if not isinstance(remote, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", remote):
+        raise GitError("Git remote name is invalid")
+    if (not isinstance(branch_ref, str) or not branch_ref or branch_ref.startswith("-")
+            or any(char in branch_ref for char in "\x00\r\n ~^:?*[\\")):
+        raise GitError("Git branch ref is invalid")
+    if not isinstance(expected_sha40, str) or not re.fullmatch(r"[0-9a-f]{40}", expected_sha40):
+        raise GitError("expected remote branch commit must be a full SHA-40")
+    run_git(repo, "fetch", "--no-tags", remote, f"refs/heads/{branch_ref}")
+    fetched_sha40 = run_git(repo, "rev-parse", "--verify", "FETCH_HEAD^{commit}")
+    if not re.fullmatch(r"[0-9a-f]{40}", fetched_sha40) or fetched_sha40 != expected_sha40:
+        raise GitError("fetched remote branch commit differs from its observed SHA")
+    return fetched_sha40
+
+
 def is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
     for value, label in ((ancestor, "ancestor"), (descendant, "descendant")):
         if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40}", value):
@@ -93,6 +110,94 @@ def branch_exists(repo: Path, branch_ref: str) -> bool:
     if not isinstance(branch_ref, str) or not branch_ref:
         raise GitError("Git branch ref is invalid")
     return bool(run_git(repo, "for-each-ref", "--format=%(refname:short)", f"refs/heads/{branch_ref}"))
+
+
+def remote_branch_exists(repo: Path, branch_ref: str, remote: str = "origin") -> bool:
+    if (not isinstance(branch_ref, str) or not branch_ref or branch_ref.startswith("-")
+            or any(char in branch_ref for char in "\x00\r\n ~^:?*[\\")):
+        raise GitError("Git branch ref is invalid")
+    if not isinstance(remote, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", remote):
+        raise GitError("Git remote name is invalid")
+    output = run_git(repo, "ls-remote", "--heads", remote, f"refs/heads/{branch_ref}")
+    rows = [line.split() for line in output.splitlines() if line.strip()]
+    if not rows:
+        return False
+    if (len(rows) != 1 or len(rows[0]) != 2 or rows[0][1] != f"refs/heads/{branch_ref}"
+            or not re.fullmatch(r"[0-9a-f]{40}", rows[0][0])):
+        raise GitError("remote branch readback is ambiguous or malformed")
+    return True
+
+
+def commit_parent_sha40(repo: Path, commit_sha40: str) -> str:
+    if not isinstance(commit_sha40, str) or not re.fullmatch(r"[0-9a-f]{40}", commit_sha40):
+        raise GitError("commit ref must be a full SHA-40")
+    row = run_git(repo, "rev-list", "--parents", "-n", "1", commit_sha40).split()
+    if len(row) != 2 or row[0] != commit_sha40 or not re.fullmatch(r"[0-9a-f]{40}", row[1]):
+        raise GitError("Activation setup commit must have exactly one parent")
+    return row[1]
+
+
+def changed_paths_between(repo: Path, base_sha40: str, head_sha40: str) -> tuple[str, ...]:
+    for value, label in ((base_sha40, "base"), (head_sha40, "head")):
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40}", value):
+            raise GitError(f"Git {label} ref must be a full SHA-40")
+    output = run_git(repo, "diff", "--name-only", "--diff-filter=ACDMRTUXB", base_sha40, head_sha40, "--")
+    return tuple(output.splitlines())
+
+
+def activation_profile_bytes_at_commit(repo: Path, commit_sha40: str) -> bytes:
+    if not isinstance(commit_sha40, str) or not re.fullmatch(r"[0-9a-f]{40}", commit_sha40):
+        raise GitError("Activation setup ref must be a full SHA-40")
+    try:
+        result = subprocess.run(
+            ["git", "show", f"{commit_sha40}:.agent/project.json"], cwd=repo, check=False,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+    except OSError as exc:
+        raise GitError("could not read Activation project.json from Git") from exc
+    if result.returncode:
+        raise GitError("Activation commit does not contain .agent/project.json")
+    return result.stdout
+
+
+def push_branch_exact(repo: Path, branch_ref: str, expected_sha40: str, remote: str = "origin") -> None:
+    if not isinstance(remote, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", remote):
+        raise GitError("Git remote name is invalid")
+    if (not isinstance(branch_ref, str) or not branch_ref or branch_ref.startswith("-")
+            or any(char in branch_ref for char in "\x00\r\n ~^:?*[\\")):
+        raise GitError("Git branch ref is invalid")
+    if not isinstance(expected_sha40, str) or not re.fullmatch(r"[0-9a-f]{40}", expected_sha40):
+        raise GitError("expected Activation setup commit must be a full SHA-40")
+    if current_branch(repo) != branch_ref or head_sha40(repo) != expected_sha40:
+        raise GitError("Activation setup branch changed before push")
+    run_git(repo, "push", remote, f"HEAD:refs/heads/{branch_ref}")
+    actual = remote_branch_sha(repo, branch_ref, remote)
+    if actual != expected_sha40:
+        raise GitError("pushed Activation setup commit did not pass exact remote readback")
+
+
+def commit_and_push_one_path(repo: Path, branch_ref: str, path: str, message: str) -> str:
+    if path != ".agent/project.json" or not isinstance(message, str) or not message.strip():
+        raise GitError("Activation setup may commit only .agent/project.json with a message")
+    if current_branch(repo) != branch_ref:
+        raise GitError("Activation setup branch changed before commit")
+    staged = run_git(repo, "diff", "--cached", "--name-only", "--")
+    unstaged = run_git(repo, "diff", "--name-only", "--")
+    untracked = run_git(repo, "ls-files", "--others", "--exclude-standard").splitlines()
+    changed = set(unstaged.splitlines()) | set(untracked)
+    target = Path(repo) / path
+    if staged or changed != {path} or target.is_symlink() or not target.is_file():
+        raise GitError("Activation setup may commit only its intended project.json change")
+    run_git(repo, "add", "--", path)
+    staged = run_git(repo, "diff", "--cached", "--name-only", "--diff-filter=ACDMRTUXB")
+    if staged.splitlines() != [path]:
+        raise GitError("Activation setup must stage exactly .agent/project.json")
+    run_git(repo, "commit", "-m", message)
+    sha = head_sha40(repo)
+    push_branch_exact(repo, branch_ref, sha)
+    if not worktree_clean(repo):
+        raise GitError("Activation setup worktree is not clean after commit and push")
+    return sha
 
 
 def switch_branch(repo: Path, branch_ref: str) -> None:

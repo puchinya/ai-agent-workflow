@@ -74,6 +74,39 @@ class ProjectContextCLITests(unittest.TestCase):
             self.assertEqual(result["project_name"], "p-ases-test")
             self.assertEqual(before, after)
 
+    def test_project_status_accepts_only_the_activation_issue_locator(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile = self.profile() | {"activation": {"issue_number": 123}}
+            config = root / ".agent/project.json"
+            config.parent.mkdir()
+            config.write_text(json.dumps(profile), encoding="utf-8")
+            status, result = self.run_json(["project", "status", "--root", str(root)])
+            self.assertEqual(status, 0)
+            self.assertEqual(result["status"], "READY")
+            profile["activation"]["adc_sha256"] = "a" * 64
+            config.write_text(json.dumps(profile), encoding="utf-8")
+            status, result = self.run_json(["project", "status", "--root", str(root)])
+            self.assertEqual(status, 2)
+            self.assertEqual(result["status"], "UNAVAILABLE")
+
+    def test_gate_policy_rejects_malformed_profile_before_github_issue_read(self):
+        from unittest.mock import Mock
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = root / ".agent/project.json"
+            config.parent.mkdir()
+            invalid = self.profile() | {"activation": {"issue_number": 123, "unexpected": True}}
+            config.write_text(json.dumps(invalid), encoding="utf-8")
+            github = Mock()
+            with patch("p_ases.cli.GitHub", return_value=github):
+                status, result = self.run_json(["delivery", "gate-policy", "456", "--root", str(root),
+                                                "--repo", "owner/repo"])
+            self.assertEqual(status, 2)
+            self.assertEqual(result["status"], "UNDETERMINED")
+            github.issue.assert_not_called()
+
     def test_project_status_reports_missing_and_invalid_profile_without_mutation(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

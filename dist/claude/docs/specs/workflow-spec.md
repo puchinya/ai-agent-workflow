@@ -24,6 +24,11 @@
 - [8 P-ASES human review and final delivery](#8-p-ases-human-review-and-final-delivery)
   - [8.1 REQ-WF-009 Exact-subject User Review](#81-req-wf-009-exact-subject-user-review)
   - [8.2 REQ-WF-010 Parent Integration and Final Delivery](#82-req-wf-010-parent-integration-and-final-delivery)
+- [9 Consumer Activation workflow contract](#9-consumer-activation-workflow-contract)
+  - [9.1 REQ-F01-001 Repository boundary](#91-req-f01-001-repository-boundary)
+  - [9.2 REQ-F01-003 Append-only approval and Activation history](#92-req-f01-003-append-only-approval-and-activation-history)
+  - [9.3 REQ-F01-005 Eligibility by Activation time](#93-req-f01-005-eligibility-by-activation-time)
+  - [9.4 REQ-F01-007 Successor Activation](#94-req-f01-007-successor-activation)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -38,6 +43,10 @@
 - [REQ-WF-008](#req-wf-008) — 6 REQ-WF-008 Security and privacy
 - [REQ-WF-009](#req-wf-009) — 8.1 REQ-WF-009 Exact-subject User Review
 - [REQ-WF-010](#req-wf-010) — 8.2 REQ-WF-010 Parent Integration and Final Delivery
+- [REQ-F01-001](#req-f01-001) — 9.1 REQ-F01-001 Repository boundary
+- [REQ-F01-003](#req-f01-003) — 9.2 REQ-F01-003 Append-only approval and Activation history
+- [REQ-F01-005](#req-f01-005) — 9.3 REQ-F01-005 Eligibility by Activation time
+- [REQ-F01-007](#req-f01-007) — 9.4 REQ-F01-007 Successor Activation
 <!-- heading-map:end -->
 
 
@@ -210,6 +219,7 @@ Bootstrap reports `BOOTSTRAP_TECHNICAL_READY` or `BOOTSTRAP_BLOCKED` for the fix
 ## 8 P-ASES human review and final delivery
 
 <a id="req-wf-009"></a>
+<a id="req-wf-009-exact-subject-user-review"></a>
 ### 8.1 REQ-WF-009 Exact-subject User Review
 
 Final human User Review begins only after Review Readiness is PASS for the same repository, Issue, PR, approved ADC digest, exact PR HEAD, and Readiness digest. An immutable session start time is created for that exact subject; a prior approval or change request cannot satisfy a newly started session. The runtime reads every page of Issue comments, PR conversation comments, formal PR reviews, and inline diff comments. It records numeric actor identity and type, object ID, creation/update times, body digest, formal review state, target commit, permalink, and deletion/resolution observations. Snapshot history is immutable so removed or edited feedback makes earlier approval evidence stale.
@@ -224,6 +234,7 @@ P-ASES-HEAD: <current full SHA-40>
 The authenticated current human must have authored the comment; an inline comment's `commit_id` must equal the named SHA. Quoted, extended, malformed, stale-head, bot, unauthorized, and natural-language comments do not trigger the execution transition. Other comments remain questions. Changes requested on the current scope return the same Issue and PR to execution; a separately triaged scope change returns to requirements. Questions, pending reviews, unresolved discussion threads, stale HEAD/ADC/Readiness, and incomplete API reads remain blockers.
 
 <a id="req-wf-010"></a>
+<a id="req-wf-010-parent-integration-and-final-delivery"></a>
 ### 8.2 REQ-WF-010 Parent Integration and Final Delivery
 
 Parent Integration uses the declared native child Issue set and dependency DAG. It reads every child Issue, native blocker edge, merged PR, standalone child-closing line, actual merge commit, merge timestamp, and final-main ancestry from GitHub. Each dependency must have merged no later than its dependent child. The child set, dependency graph, current main SHA, parent ADC, and typed Integration Verification/Acceptance records form one immutable subject. For this migration, legacy parent Issue #26 has no ADC pointer journal; the current approved child #31 ADC is therefore the authority for the parent ADC digest and the immutable `planning/p-ases/08-migration-contract.md` source at commit `f34f166f11bbbe6c45b1555827f37f9467b1e49b`. The evaluator verifies that declaration and source availability, then double-reads the child ADC pointer and parent Issue body while collecting the Integration snapshot.
@@ -262,3 +273,32 @@ Bootstrap evidence remains append-only and binds its exact ADC, PR, HEAD, CI, lo
 The Bootstrap evaluator may live on a downstream PR while an earlier stacked PR is being evaluated. Run its CLI from the evaluator checkout, with `--root` set to a separate clean checkout of the target PR at its exact current HEAD. The evaluator code and fingerprint come from the evaluator checkout; local checks and branch/HEAD cleanliness checks run against the target checkout. Never copy downstream evaluator changes into the target branch or claim a result for a target HEAD different from the PR's current GitHub HEAD.
 
 When migrating a legacy Issue-body ADC pointer to the append-only journal, retain the original `## Agent Development Contract` pointer block unchanged. The first journal record names the old pointer Comment ID as its predecessor (or `none` if there was no old pointer). Do not remove or edit that anchor unless a separately approved migration format records its exact prior bytes and predecessor.
+
+Consumer Activation is separate from the fixed migration Activation. The consumer repository's approved Activation Issue ADC and append-only approval/record comments authorize only later-created non-PR Issues in that repository. New Gate Selections carry the exact Activation record identity; successor policy keeps prior selections pinned.
+
+<a id="consumer-activation-workflow-contract"></a>
+## 9 Consumer Activation workflow contract
+
+<a id="req-f01-001"></a>
+<a id="req-f01-001-repository-boundary"></a>
+### 9.1 REQ-F01-001 Repository boundary
+
+Migration issue numbers, child sets, branch pairs, and parent evidence MUST NOT supply authority in another repository.
+
+<a id="req-f01-003"></a>
+<a id="req-f01-003-append-only-approval-and-activation-history"></a>
+### 9.2 REQ-F01-003 Append-only approval and Activation history
+
+Consumer approval and Activation history are append-only comments. A record identifies the exact approved ADC, canonical Activation profile digest, setup PR merge and verified `merged_at`, admin, predecessor, and the exact trusted Required Check Run IDs with their name, App ID, head SHA, status, conclusion, and timestamps. For each required check, issuance selects the latest matching run created no later than `merged_at`, ordered by `(created_at, Check Run ID)` to resolve timestamp ties deterministically. The selected run must be completed successfully with `completed_at <= merged_at`. A failed or pending latest run at merge blocks Activation even if a later rerun succeeds; only a qualifying pre-merge run ID may be pinned. Verified PR `merged_at`, rather than the later comment publication time, is the effective Activation time. Historical reads fetch each recorded Check Run by ID and compare its pinned evidence and merge-time bound; later reruns do not replace the issuance-time evidence.
+
+<a id="req-f01-005"></a>
+<a id="req-f01-005-eligibility-by-activation-time"></a>
+### 9.3 REQ-F01-005 Eligibility by Activation time
+
+New P-ASES work is eligible only for same-repository non-PR Issues created strictly after verified setup PR `merged_at`. For a successor chain, choose the latest Activation whose verified merge time precedes the Issue creation time. Re-running gate-policy for an Issue with an existing valid Gate Selection reuses that exact historical Activation record and selection. Pre-Activation Issues remain untouched.
+
+<a id="req-f01-007"></a>
+<a id="req-f01-007-successor-activation"></a>
+### 9.4 REQ-F01-007 Successor Activation
+
+Policy or locator changes require a new setup PR and merge, append a successor Activation effective at its verified `merged_at`, and preserve prior records and selections. The successor governs only Issues created after that merge time.

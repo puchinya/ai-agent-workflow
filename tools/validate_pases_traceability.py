@@ -11,9 +11,9 @@ from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 MATRIX = ROOT / "docs/testing/traceability.md"
-LINK = re.compile(r"\[((?:REQ|DES|ORA|TST)-[A-Z]+-\d+)\]\(([^)]+)\)")
+LINK = re.compile(r"\[((?:REQ|DES|ORA|TST)-[A-Z][A-Z0-9]*-\d+)\]\(([^)]+)\)")
 ANCHOR = re.compile(r'<a\s+id="([a-z0-9-]+)"\s*>', re.IGNORECASE)
-ID_ANCHOR = re.compile(r"^(req|des|ora|tst)-[a-z]+-\d+$", re.IGNORECASE)
+ID_ANCHOR = re.compile(r"^(req|des|ora|tst)-[a-z][a-z0-9]*-\d+$", re.IGNORECASE)
 SCOPES = {
     "specification": ("REQ", ROOT / "docs/specs"),
     "design": ("DES", ROOT / "docs/design"),

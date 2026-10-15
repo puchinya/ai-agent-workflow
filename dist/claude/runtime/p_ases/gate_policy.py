@@ -261,20 +261,24 @@ class GateSelection:
     selected_at: str
     activation_comment_id: int | None = None
     activation_sha256: str | None = None
+    activation_issue_number: int | None = None
 
     def validate(self) -> "GateSelection":
         if not isinstance(self.repository, str) or not REPOSITORY.fullmatch(self.repository):
             raise GatePolicyError("Gate selection repository must be owner/name")
         _positive(self.issue_number, "Gate selection Issue number")
         _parse_time(self.selected_at, "Gate selection")
-        if self.issue_number in BOOTSTRAP_COHORT:
+        if self.issue_number in BOOTSTRAP_COHORT and self.repository.casefold() == BOOTSTRAP_REPOSITORY.casefold():
             if self.repository.casefold() != BOOTSTRAP_REPOSITORY.casefold():
                 raise GatePolicyError("fixed Bootstrap cohort is limited to its approved repository")
-            if self.policy_version != BOOTSTRAP_POLICY or self.activation_comment_id is not None or self.activation_sha256 is not None:
+            if (self.policy_version != BOOTSTRAP_POLICY or self.activation_comment_id is not None
+                    or self.activation_sha256 is not None or self.activation_issue_number is not None):
                 raise GatePolicyError("fixed Bootstrap cohort must remain pinned to bootstrap-legacy-v1")
         elif self.policy_version == PASES_POLICY:
             _positive(self.activation_comment_id, "Activation Comment ID")
             _sha(self.activation_sha256, "Activation digest")
+            if self.activation_issue_number is not None:
+                _positive(self.activation_issue_number, "Activation Issue number")
         else:
             raise GatePolicyError("non-cohort Issues require a verified activation or remain UNDETERMINED")
         if self.policy_version not in {BOOTSTRAP_POLICY, PASES_POLICY}:
@@ -283,28 +287,33 @@ class GateSelection:
 
     def payload(self) -> dict[str, Any]:
         self.validate()
-        return {"activation_comment_id": self.activation_comment_id, "activation_sha256": self.activation_sha256,
-                "issue_number": self.issue_number, "policy_version": self.policy_version,
-                "repository": self.repository, "schema": "PASES_GATE_SELECTION_V1", "selected_at": self.selected_at}
+        value = {"activation_comment_id": self.activation_comment_id, "activation_sha256": self.activation_sha256,
+                 "issue_number": self.issue_number, "policy_version": self.policy_version,
+                 "repository": self.repository, "schema": "PASES_GATE_SELECTION_V1", "selected_at": self.selected_at}
+        if self.activation_issue_number is not None:
+            value["activation_issue_number"] = self.activation_issue_number
+        return value
 
     @classmethod
     def from_payload(cls, value: Any) -> "GateSelection":
         expected = {"activation_comment_id", "activation_sha256", "issue_number", "policy_version",
                     "repository", "schema", "selected_at"}
-        if not isinstance(value, dict) or set(value) != expected or value.get("schema") != "PASES_GATE_SELECTION_V1":
+        if (not isinstance(value, dict) or set(value) not in (expected, expected | {"activation_issue_number"})
+                or value.get("schema") != "PASES_GATE_SELECTION_V1"):
             raise GatePolicyError("Gate selection record has unknown schema or fields")
         return cls(value["repository"], value["issue_number"], value["policy_version"],
-                   value["selected_at"], value["activation_comment_id"], value["activation_sha256"]).validate()
+                   value["selected_at"], value["activation_comment_id"], value["activation_sha256"],
+                   value.get("activation_issue_number")).validate()
 
 
 def select_gate(repository: str, issue_number: int, *, selected_at: str,
-                activation: "ActivationRecord | None" = None, activation_comment_id: int | None = None,
+                activation: Any | None = None, activation_comment_id: int | None = None,
                 activation_sha256: str | None = None,
-                issue_created_at: str | None = None) -> GateSelection | None:
+                issue_created_at: str | None = None,
+                activation_issue_number: int | None = None) -> GateSelection | None:
     """Return the pinned policy or None when the Issue's policy is undetermined."""
-    if issue_number in BOOTSTRAP_COHORT:
-        if not isinstance(repository, str) or repository.casefold() != BOOTSTRAP_REPOSITORY.casefold():
-            raise GatePolicyError("fixed Bootstrap cohort is limited to its approved repository")
+    if (issue_number in BOOTSTRAP_COHORT and isinstance(repository, str)
+            and repository.casefold() == BOOTSTRAP_REPOSITORY.casefold()):
         return GateSelection(repository, issue_number, BOOTSTRAP_POLICY, selected_at).validate()
     if activation is None or activation_comment_id is None or activation_sha256 is None:
         return None
@@ -318,7 +327,7 @@ def select_gate(repository: str, issue_number: int, *, selected_at: str,
             or _parse_time(issue_created_at, "Issue creation") <= activation_time):
         return None
     return GateSelection(repository, issue_number, PASES_POLICY, selected_at,
-                         activation_comment_id, activation_sha256).validate()
+                         activation_comment_id, activation_sha256, activation_issue_number).validate()
 
 
 @dataclass(frozen=True)
@@ -1297,12 +1306,21 @@ def read_latest_bootstrap_evidence(github: GitHub, issue_number: int) -> tuple[i
 
 def read_gate_selection(github: GitHub, issue_number: int) -> tuple[int, GateSelection, str]:
     """Read the unique immutable gate selection without creating or repairing it."""
+    result = _read_gate_selection_if_present(github, issue_number)
+    if result is None:
+        raise GatePolicyError("gate selection record is missing or duplicated")
+    return result
+
+
+def _read_gate_selection_if_present(github: GitHub, issue_number: int) -> tuple[int, GateSelection, str] | None:
     try:
         comments = github.issue_comments(issue_number)
     except GitHubError as exc:
         raise GatePolicyError(f"gate selection readback failed: {exc}") from exc
     rows = [row for row in comments if isinstance(row, dict) and isinstance(row.get("body"), str)
             and row["body"].startswith("<!-- PASES_GATE_SELECTION_V1\n")]
+    if not rows:
+        return None
     if len(rows) != 1:
         raise GatePolicyError("gate selection record is missing or duplicated")
     selection = GateSelection.from_payload(
@@ -1337,6 +1355,7 @@ def pin_gate_selection(github: GitHub, selection: GateSelection) -> tuple[int, s
                 or existing.issue_number != selection.issue_number
                 or existing.policy_version != selection.policy_version
                 or existing.activation_comment_id != selection.activation_comment_id
+                or existing.activation_issue_number != selection.activation_issue_number
                 or existing.activation_sha256 != selection.activation_sha256):
             raise GatePolicyError("existing gate selection conflicts; policy cannot be switched")
         comment_id = _positive(rows[0].get("id"), "Gate selection Comment ID")
@@ -1768,22 +1787,67 @@ def publish_activation_record(github: GitHub, record: ActivationRecord) -> tuple
 
 
 def choose_gate_for_new_issue(github: GitHub, repository: str, issue_number: int,
-                              selected_at: str) -> GateSelection | None:
-    if issue_number in BOOTSTRAP_COHORT:
+                              selected_at: str, *, activation_issue_number: int | None = None
+                              ) -> GateSelection | None:
+    if (repository.casefold() == BOOTSTRAP_REPOSITORY.casefold()
+            and issue_number in BOOTSTRAP_COHORT):
         return select_gate(repository, issue_number, selected_at=selected_at)
-    activation_row = read_activation_record(github, repository)
-    if activation_row is None:
-        return None
     try:
         issue = github.issue(issue_number)
     except GitHubError as exc:
         raise GatePolicyError(f"new Issue creation-date readback failed: {exc}") from exc
-    if issue.get("number") != issue_number or issue.get("pull_request") is not None:
+    repo_url = issue.get("repository_url")
+    if (issue.get("number") != issue_number or issue.get("pull_request") is not None
+            or not isinstance(repo_url, str)
+            or repo_url.casefold() != f"https://api.github.com/repos/{repository}".casefold()):
         raise GatePolicyError("gate policy selection requires the exact Issue resource")
-    activation, comment_id = activation_row
+    existing = _read_gate_selection_if_present(github, issue_number)
+    if existing is not None:
+        _gate_id, selection, _body = existing
+        if selection.policy_version != PASES_POLICY or selection.activation_issue_number is None:
+            raise GatePolicyError("existing consumer Issue has a non-consumer Gate Selection")
+        selected_activation_issue = selection.activation_issue_number
+    else:
+        if activation_issue_number is None:
+            return None
+        selected_activation_issue = activation_issue_number
+
+    from .consumer_activation import ConsumerActivationError, read_consumer_activation_history
+    try:
+        history = read_consumer_activation_history(github, repository, selected_activation_issue)
+    except ConsumerActivationError as exc:
+        raise GatePolicyError(f"consumer Activation record is invalid: {exc}") from exc
+    if not history:
+        return None
+    issue_created_at = issue.get("created_at")
+    if existing is not None:
+        gate_id, selection, body = existing
+        matches = [(activation, comment_id) for activation, comment_id in history
+                   if comment_id == selection.activation_comment_id]
+        if len(matches) != 1:
+            raise GatePolicyError("existing Gate Selection does not name one historical Activation record")
+        activation, comment_id = matches[0]
+        if activation.sha256 != selection.activation_sha256:
+            raise GatePolicyError("existing Gate Selection Activation digest no longer matches history")
+        expected = select_gate(
+            repository, issue_number, selected_at=selection.selected_at, activation=activation,
+            activation_comment_id=comment_id, activation_sha256=activation.sha256,
+            issue_created_at=issue_created_at, activation_issue_number=selected_activation_issue,
+        )
+        if expected != selection:
+            raise GatePolicyError("existing Gate Selection is not eligible under its historical Activation")
+        return selection
+
+    issue_created = _parse_time(issue_created_at, "Issue creation")
+    eligible = [(activation, comment_id) for activation, comment_id in history
+                if issue_created > _parse_time(activation.activated_at, "Activation")]
+    if not eligible:
+        return None
+    activation, comment_id = eligible[-1]
     return select_gate(repository, issue_number, selected_at=selected_at, activation=activation,
                        activation_comment_id=comment_id, activation_sha256=activation.sha256,
-                       issue_created_at=issue.get("created_at"))
+                       issue_created_at=issue_created_at,
+                       activation_issue_number=selected_activation_issue)
 
 
 def run_local_bootstrap_checks(root: Path) -> tuple[LocalCheck, ...]:
