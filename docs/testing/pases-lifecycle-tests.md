@@ -164,13 +164,13 @@ Only exact P-ASES repository/cohort pairs use migration Bootstrap. A consumer Is
 <a id="tst-f01-002-automatic-activation-setup"></a>
 ### 2.8 TST-F01-002 Automatic Activation setup
 
-**Setup and action:** Run setup with no profile and no marked Issue, with a valid profile and no Activation locator, with an existing unique marker/open PR, and with duplicate Issue/PR markers. Use a local Git repository and bare remote to verify that a dirty `.agent/project.json` is the only path staged and pushed. Simulate a transient PR creation API failure after push, then retry without mocking profile writing or Git commits; verify exact branch recovery creates the PR. Add an unrelated staged, modified, or untracked path and verify staging is rejected. Re-run exact setup and verify it reuses the same Issue/PR.
+**Setup and action:** Run setup with no profile and no marked Issue, with a valid profile and no Activation locator, with an existing unique marker/open PR, and with duplicate Issue/PR markers. Use a local Git repository and bare remote to verify that a dirty `.agent/project.json` is the only path staged and pushed. Simulate a transient PR creation API failure after push, then retry without mocking profile writing or Git commits; verify exact branch recovery creates the PR. Repeat the failure with an independent checkout B cloned using `--single-branch --branch main` before the setup branch is pushed; retry from B, verify it fetches the exact remote branch and matches the previously observed full SHA before creating a local branch, then confirm the PR is created from the recovered commit. Add an unrelated staged, modified, or untracked path and verify staging is rejected. Re-run exact setup and verify it reuses the same Issue/PR.
 
 <a id="ora-f01-002"></a>
 <a id="ora-f01-002-expected-result"></a>
 #### 2.8.1 ORA-F01-002 Expected result
 
-The direct prompt needs no Issue number. One marked Activation Issue and one exact setup PR are created or reused. Only `.agent/project.json` is committed. After a PR API failure, an exact pushed branch can resume; a branch with changed ancestry, extra paths, or different bytes blocks. The PR is reviewable; setup alone cannot activate or relabel Issues.
+The direct prompt needs no Issue number. One marked Activation Issue and one exact setup PR are created or reused. Only `.agent/project.json` is committed. After a PR API failure, an exact pushed branch can resume from the original checkout or an independent checkout that fetched only the default branch; remote `ls-remote` and fetched full SHA must match before the local branch is created. A branch with changed ancestry, extra paths, different bytes, or an SHA race between observation and fetch blocks. The PR is reviewable; setup alone cannot activate or relabel Issues.
 
 <a id="tst-f01-003"></a>
 <a id="tst-f01-003-immutable-activation-evidence"></a>

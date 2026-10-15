@@ -24,7 +24,7 @@ from p_ases.gate_policy import (  # noqa: E402
 )
 from p_ases.git import (  # noqa: E402
     GitError, activation_profile_bytes_at_commit, changed_paths_between, commit_and_push_one_path,
-    head_sha40, remote_branch_sha, run_git, worktree_clean,
+    fetch_remote_branch_exact, head_sha40, remote_branch_sha, run_git, worktree_clean,
 )
 
 
@@ -254,6 +254,15 @@ def local_consumer_checkout(parent: Path) -> tuple[Path, str]:
     return root, base
 
 
+def clone_main_only(parent: Path, remote: Path) -> Path:
+    root = parent / "consumer-independent-checkout"
+    run_git(parent, "clone", "--quiet", "--single-branch", "--branch", "main",
+            remote.as_posix(), str(root))
+    run_git(root, "config", "user.email", "test@example.invalid")
+    run_git(root, "config", "user.name", "P-ASES tests")
+    return root
+
+
 class ConsumerActivationTests(unittest.TestCase):
     def test_empty_consumer_creates_issue_proposed_adc_profile_pr_then_admin_merge_activates(self):
         github = FakeGitHub()
@@ -299,6 +308,65 @@ class ConsumerActivationTests(unittest.TestCase):
             self.assertEqual(remote_branch_sha(root, result["setup_branch"]), commit_sha)
             self.assertEqual(run_git(root, "symbolic-ref", "--short", "HEAD"), "main")
             self.assertTrue(worktree_clean(root))
+
+    def test_setup_resumes_remote_only_branch_from_independent_main_only_checkout(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            root_a, base = local_consumer_checkout(parent)
+            bare = parent / "github.com" / "owner" / "consumer.git"
+            root_b = clone_main_only(parent, bare)
+            self.assertEqual(run_git(root_b, "for-each-ref", "--format=%(refname:short)",
+                                     "refs/remotes/origin"), "origin/main")
+
+            github = FakeGitHub()
+            github.main_sha = base
+            github.setup_root = root_a
+            github.fail_create_pr_once = True
+            with self.assertRaisesRegex(ConsumerActivationError, "PR creation failed"):
+                setup_consumer_activation(root_a, github)
+            self.assertTrue(worktree_clean(root_a))
+
+            branch_rows = run_git(root_b, "ls-remote", "--heads", "origin").splitlines()
+            setup_rows = [row.split() for row in branch_rows
+                          if row.split()[1].startswith("refs/heads/pases/consumer-activation-71-")]
+            self.assertEqual(len(setup_rows), 1)
+            branch_ref = setup_rows[0][1].removeprefix("refs/heads/")
+            self.assertEqual(run_git(root_b, "for-each-ref", "--format=%(refname:short)",
+                                     "refs/heads"), "main")
+            self.assertEqual(run_git(root_b, "for-each-ref", "--format=%(refname:short)",
+                                     "refs/remotes/origin"), "origin/main")
+            observed_sha = remote_branch_sha(root_b, branch_ref)
+            github.setup_root = root_b
+            result = setup_consumer_activation(root_b, github)
+            self.assertEqual(result["status"], "SETUP_PENDING")
+            self.assertTrue(result["reused"])
+            self.assertEqual(github.pr["head"]["sha"], observed_sha)
+            self.assertEqual(head_sha40(root_b), base)
+            self.assertEqual(run_git(root_b, "symbolic-ref", "--short", "HEAD"), "main")
+            self.assertTrue(worktree_clean(root_b))
+
+    def test_remote_branch_fetch_rejects_sha_change_since_ls_remote_observation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            root_a, _base = local_consumer_checkout(parent)
+            bare = parent / "github.com" / "owner" / "consumer.git"
+            root_b = clone_main_only(parent, bare)
+            branch_ref = "pases/fetch-race"
+            run_git(root_a, "switch", "--quiet", "--create", branch_ref)
+            project = root_a / ".agent" / "project.json"
+            project.write_text(project.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+            run_git(root_a, "add", "--", ".agent/project.json")
+            run_git(root_a, "commit", "--quiet", "-m", "initial setup subject")
+            observed_sha = head_sha40(root_a)
+            run_git(root_a, "push", "--quiet", "origin", f"HEAD:refs/heads/{branch_ref}")
+            self.assertEqual(fetch_remote_branch_exact(root_b, branch_ref, observed_sha), observed_sha)
+
+            run_git(root_a, "commit", "--allow-empty", "--quiet", "-m", "remote branch advanced")
+            run_git(root_a, "push", "--quiet", "origin", f"HEAD:refs/heads/{branch_ref}")
+            with self.assertRaisesRegex(GitError, "differs from its observed SHA"):
+                fetch_remote_branch_exact(root_b, branch_ref, observed_sha)
+            self.assertEqual(run_git(root_b, "for-each-ref", "--format=%(refname:short)",
+                                     "refs/heads"), "main")
 
     def test_git_setup_commit_rejects_any_other_staged_modified_or_untracked_path(self):
         with tempfile.TemporaryDirectory() as temporary:

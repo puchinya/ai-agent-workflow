@@ -71,6 +71,23 @@ def remote_branch_sha(repo: Path, branch_ref: str, remote: str = "origin") -> st
     return rows[0][0]
 
 
+def fetch_remote_branch_exact(repo: Path, branch_ref: str, expected_sha40: str,
+                              remote: str = "origin") -> str:
+    """Fetch one branch ref and require it to match the preceding remote SHA read."""
+    if not isinstance(remote, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", remote):
+        raise GitError("Git remote name is invalid")
+    if (not isinstance(branch_ref, str) or not branch_ref or branch_ref.startswith("-")
+            or any(char in branch_ref for char in "\x00\r\n ~^:?*[\\")):
+        raise GitError("Git branch ref is invalid")
+    if not isinstance(expected_sha40, str) or not re.fullmatch(r"[0-9a-f]{40}", expected_sha40):
+        raise GitError("expected remote branch commit must be a full SHA-40")
+    run_git(repo, "fetch", "--no-tags", remote, f"refs/heads/{branch_ref}")
+    fetched_sha40 = run_git(repo, "rev-parse", "--verify", "FETCH_HEAD^{commit}")
+    if not re.fullmatch(r"[0-9a-f]{40}", fetched_sha40) or fetched_sha40 != expected_sha40:
+        raise GitError("fetched remote branch commit differs from its observed SHA")
+    return fetched_sha40
+
+
 def is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
     for value, label in ((ancestor, "ancestor"), (descendant, "descendant")):
         if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40}", value):

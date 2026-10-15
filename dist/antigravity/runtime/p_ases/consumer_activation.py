@@ -17,7 +17,8 @@ from .github import GitHub, GitHubError
 from .git import (
     GitError, activation_profile_bytes_at_commit, branch_exists, changed_paths_between,
     commit_and_push_one_path, commit_parent_sha40, create_branch, current_branch, discover_repository,
-    head_sha40, push_branch_exact, remote_branch_exists, remote_branch_sha, switch_branch, worktree_clean,
+    fetch_remote_branch_exact, head_sha40, push_branch_exact, remote_branch_exists, remote_branch_sha,
+    switch_branch, worktree_clean,
 )
 from .path_safety import path_has_symlink
 from .profile import ProfileError, load_profile
@@ -783,7 +784,8 @@ def _ensure_setup_branch(root: Path, branch_ref: str, base_sha40: str, content: 
         else:
             if remote_sha is None:
                 raise ConsumerActivationError("remote Activation setup branch disappeared during readback")
-            create_branch(root, branch_ref, remote_sha)
+            fetched_sha = fetch_remote_branch_exact(root, branch_ref, remote_sha)
+            create_branch(root, branch_ref, fetched_sha)
             commit_sha = head_sha40(root)
     if (current_branch(root) != branch_ref or head_sha40(root) != commit_sha
             or commit_parent_sha40(root, commit_sha) != base_sha40
