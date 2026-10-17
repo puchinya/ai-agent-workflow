@@ -21,6 +21,8 @@ from p_ases.consumer_activation import (  # noqa: E402
     verify_and_record_activation,
 )
 from p_ases.github import GitHubError  # noqa: E402
+from p_ases.checkpoint import PRBinding, write_pr_binding  # noqa: E402
+from p_ases.execution import ExecutionBinding, write_binding  # noqa: E402
 from p_ases.gate_policy import (  # noqa: E402
     PASES_POLICY, choose_gate_for_new_issue, pin_gate_selection, read_gate_selection,
 )
@@ -28,6 +30,7 @@ from p_ases.git import (  # noqa: E402
     GitError, activation_profile_bytes_at_commit, changed_paths_between, commit_and_push_one_path,
     fetch_remote_branch_exact, head_sha40, remote_branch_sha, run_git, worktree_clean,
 )
+from p_ases.work import execution_binding_path  # noqa: E402
 
 
 REPO = "owner/consumer"
@@ -290,7 +293,116 @@ def clone_main_only(parent: Path, remote: Path) -> Path:
     return root
 
 
+def watch_activation_writes(github: FakeGitHub):
+    return {
+        name: unittest.mock.Mock(wraps=getattr(github, name))
+        for name in ("create_issue", "create_issue_comment", "create_pull_request")
+    }
+
+
 class ConsumerActivationTests(unittest.TestCase):
+    def test_activation_setup_rejects_feature_worktree_before_writes_and_preserves_issue63_state(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, base = local_consumer_checkout(Path(temporary))
+            branch = "codex/issue-63-feature"
+            run_git(root, "switch", "--quiet", "--create", branch)
+            run_git(root, "commit", "--allow-empty", "--quiet", "-m", "PR #64 feature work")
+            feature_head = head_sha40(root)
+
+            exclude = root / ".git" / "info" / "exclude"
+            exclude.write_text(exclude.read_text(encoding="utf-8") + "\n/.p_ases/\n", encoding="utf-8")
+            execution_path = execution_binding_path(root, 63)
+            execution = ExecutionBinding(
+                repository=REPO, issue_number=63, adc_comment_id=6236636013,
+                adc_sha256="a" * 64, base_ref="main", base_sha=base,
+                branch_ref=branch, work_directory=str(root.resolve()), initial_head_sha=base,
+            )
+            write_binding(execution_path, execution)
+            pr_binding_path = execution_path.with_name("pr-binding-000001.json")
+            write_pr_binding(pr_binding_path, PRBinding(
+                repository=REPO, issue_number=63, adc_comment_id=6236636013,
+                adc_sha256="a" * 64, base_sha40=base, branch_ref=branch,
+                pr_number=64, pr_head_sha40=feature_head,
+            ))
+            execution_bytes = execution_path.read_bytes()
+            pr_binding_bytes = pr_binding_path.read_bytes()
+            self.assertTrue(worktree_clean(root))
+
+            github = FakeGitHub()
+            github.main_sha = base
+            github.other_comments[63] = [comment_row(700, "existing Issue #63 receipt", issue_number=63)]
+            issue63_history = copy.deepcopy(github.other_comments[63])
+            issue_before = copy.deepcopy(github.issue_row)
+            writes = watch_activation_writes(github)
+            for name, spy in writes.items():
+                setattr(github, name, spy)
+
+            with self.assertRaisesRegex(ConsumerActivationError, "default branch"):
+                setup_consumer_activation(root, github)
+
+            self.assertEqual(run_git(root, "symbolic-ref", "--short", "HEAD"), branch)
+            self.assertEqual(head_sha40(root), feature_head)
+            self.assertEqual(execution_path.read_bytes(), execution_bytes)
+            self.assertEqual(pr_binding_path.read_bytes(), pr_binding_bytes)
+            self.assertEqual(github.other_comments[63], issue63_history)
+            self.assertEqual(github.issue_row, issue_before)
+            self.assertTrue(worktree_clean(root))
+            for spy in writes.values():
+                spy.assert_not_called()
+
+    def test_activation_setup_rejects_dirty_worktree_before_github_writes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, base = local_consumer_checkout(Path(temporary))
+            dirty_path = root / "untracked.txt"
+            dirty_path.write_text("local work in progress\n", encoding="utf-8")
+            github = FakeGitHub()
+            github.main_sha = base
+            writes = watch_activation_writes(github)
+            for name, spy in writes.items():
+                setattr(github, name, spy)
+
+            with self.assertRaisesRegex(ConsumerActivationError, "clean repository worktree"):
+                setup_consumer_activation(root, github)
+
+            self.assertEqual(run_git(root, "symbolic-ref", "--short", "HEAD"), "main")
+            self.assertEqual(head_sha40(root), base)
+            self.assertEqual(dirty_path.read_text(encoding="utf-8"), "local work in progress\n")
+            for spy in writes.values():
+                spy.assert_not_called()
+
+    def test_activation_setup_rejects_detached_and_stale_default_worktrees_without_writes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            root, base = local_consumer_checkout(parent)
+            github = FakeGitHub()
+            github.main_sha = base
+            writes = watch_activation_writes(github)
+            for name, spy in writes.items():
+                setattr(github, name, spy)
+
+            run_git(root, "checkout", "--quiet", "--detach", base)
+            with self.assertRaises(ConsumerActivationError):
+                setup_consumer_activation(root, github)
+            self.assertEqual(head_sha40(root), base)
+            for spy in writes.values():
+                spy.assert_not_called()
+
+            stale_parent = parent / "stale"
+            stale_parent.mkdir()
+            stale_root, stale_base = local_consumer_checkout(stale_parent)
+            stale_github = FakeGitHub()
+            stale_github.main_sha = "d" * 40
+            stale_writes = watch_activation_writes(stale_github)
+            for name, spy in stale_writes.items():
+                setattr(stale_github, name, spy)
+            self.assertEqual(remote_branch_sha(stale_root, "main"), stale_base)
+            with self.assertRaisesRegex(ConsumerActivationError, "match GitHub default-branch HEAD"):
+                setup_consumer_activation(stale_root, stale_github)
+            self.assertEqual(run_git(stale_root, "symbolic-ref", "--short", "HEAD"), "main")
+            self.assertEqual(head_sha40(stale_root), stale_base)
+            for spy in stale_writes.values():
+                spy.assert_not_called()
+
     def test_solo_owner_empty_ruleset_persists_exact_plan_and_waits_before_setup_pr(self):
         github = FakeGitHub()
         profile = _default_profile(REPO)
@@ -511,6 +623,10 @@ class ConsumerActivationTests(unittest.TestCase):
             github.main_sha = base
             github.setup_root = root
             github.fail_create_pr_once = True
+            self.assertEqual(run_git(root, "symbolic-ref", "--short", "HEAD"), "main")
+            self.assertTrue(worktree_clean(root))
+            self.assertEqual(remote_branch_sha(root, "main"), base)
+            self.assertEqual(github.main_sha, base)
             with self.assertRaisesRegex(ConsumerActivationError, "PR creation failed"):
                 setup_consumer_activation(root, github)
             self.assertEqual(run_git(root, "symbolic-ref", "--short", "HEAD"), "main")
@@ -534,6 +650,7 @@ class ConsumerActivationTests(unittest.TestCase):
             self.assertEqual(result["pr"], PR)
             self.assertEqual(github.pr["head"]["sha"], commit_sha)
             self.assertEqual(remote_branch_sha(root, result["setup_branch"]), commit_sha)
+            self.assertEqual(remote_branch_sha(root, "main"), base)
             self.assertEqual(run_git(root, "symbolic-ref", "--short", "HEAD"), "main")
             self.assertTrue(worktree_clean(root))
 

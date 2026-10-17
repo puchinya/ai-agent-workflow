@@ -28,10 +28,31 @@ When an approved successor ADC makes the existing ExecutionBinding stale, inspec
 
 Activation may advance the frozen base from A to B through its one profile-only Setup PR. Preserve the original ExecutionBinding and V1 PRBinding bytes. Accept that change only with the exact create-only current-base evidence binding the Activation V2 record, Setup PR merge, profile bytes, target PR identity, and unchanged PR code patch. Readiness and Final Delivery repeat the same live checks. Any other base drift blocks.
 
-When the user directly requests Consumer Activation, run it from that active repository context:
+### Worktree boundaries for Issue #63
+
+Keep two checkouts distinct throughout the delivery:
+
+- **PR #64 implementation worktree:** stay on the PR #64 feature branch. Run `context show`, the successor ADC `work bind`, and the new-generation Issue #63 Phase evidence here. Preserve this worktree's feature branch, HEAD, `ExecutionBinding`, `PRBinding`, and Issue #63 history when preparing Activation.
+- **Activation worktree:** select a separate, clean checkout of the repository's default branch at the exact current remote HEAD. Run `consumer-activation-setup` only with this worktree as `--root`. The setup preflight rejects a feature branch, dirty worktree, detached HEAD, or stale default-branch commit before any GitHub write.
+
+Before running Activation, inspect available checkouts with `git worktree list`, then perform a read-only preflight on the selected Activation worktree:
 
 ```sh
-python -m p_ases delivery consumer-activation-setup
+git -C ACTIVATION_WORKTREE status --porcelain --untracked-files=all
+git -C ACTIVATION_WORKTREE symbolic-ref --short HEAD
+git -C ACTIVATION_WORKTREE rev-parse HEAD^{commit}
+git -C ACTIVATION_WORKTREE ls-remote origin refs/heads/DEFAULT_BRANCH
+gh api repos/OWNER/REPO/branches/DEFAULT_BRANCH --jq .commit.sha
+```
+
+Require an empty status, the symbolic branch equal to the repository's default branch, and the local HEAD, `git ls-remote` SHA, and `gh api` SHA to match exactly. If no checkout satisfies these conditions, create/select a separate worktree through Git's existing worktree boundary; do not reset or rebase the PR #64 worktree. If the default ref needs updating, update only the separate Activation worktree with a verified fast-forward, then repeat the full preflight. Do not infer the Activation root from the current directory.
+
+The successor ADC's `work bind` and Phase evidence remain in the PR #64 implementation worktree. After the Activation Setup PR is separately reviewed and merged and the V2 `ACTIVE` record is read back, return to the PR #64 implementation worktree for current-head Final Delivery, User Review, and its separate merge gate.
+
+When the user directly requests Consumer Activation, run it against the explicitly selected Activation worktree:
+
+```sh
+python -m p_ases delivery consumer-activation-setup --repo OWNER/REPO --root ACTIVATION_WORKTREE
 ```
 
 The command resolves the repository and Activation identity, validates the committed profile and Required Checks, and returns the persisted stage, setting inventory, checkpoint, and next step. Do not ask the user for an Issue number or for manual GitHub edits. `PENDING_APPROVAL`, `ADMIN_AUTH_REQUIRED`, `BLOCKED`, and `SETUP_PENDING` are resumable states, never Activation success.

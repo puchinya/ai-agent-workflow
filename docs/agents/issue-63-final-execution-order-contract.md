@@ -65,6 +65,8 @@ Issue: [#63](https://github.com/puchinya/ai-agent-workflow/issues/63)
 1. **実装**: PR #64に現在の契約修正、必要な互換機能、Oracle/テストを実装、コミット・push。CI/セルフレビューを通す。すでにPASSした部分を原因なく作り直さない。
 2. **後続ADC正式化**: 草案を最終順序と一致させ、canonical `.md`ファイルを提示して最終全文をMarkdownとして同一会話で表示する。コードフェンスやHTML disclosure/containerで囲まない。本文全体・実SHA・predecessor pointer・plan/scope SHAをownerへreadbackした後に、後続ADCの正確なSHAに対する`ADC_SUPERSEDE`承認（このチャットでの以前の承認意向を未提示SHAへ流用しない）を取得し、`publish_adc(...state="approved",supersede=True,explicitly_approved=True,expected_current=...)`の正規経路→`verify_adc` / forward generation→自動Phase Intent/一回限りのlabel PUT/Applied→Phase receiptsをreadback。選択UIに全文を格納できなければ、依頼直前の同一会話メッセージにMarkdown全文とfile linkを表示し、選択式依頼がその表示とcanonical fileを明示参照する。SHAが変わる場合は新しいMarkdown全文表示・承認を繰り返す。**この工程を完全に終えてからActivationへ進む。**
 3. **Activation V2 完了**: issue #57の現在record、Ruleset inventory/legacy protection等を管理者権限でreadbackし、`consumer-activation-setup` checkpointを再開する。必要なRuleset変更には別plan SHAと`RULESET_PLAN_APPLY`チャット承認が必要。V3 recordとexisting two-line #57 approvalをghで検証後、isolated browser device Admin applyを行う。Ruleset VERIFIED後に別Activation Setup PRを作成し、そのPRの別merge承認・mergeを経て、`consumer-activation-verify`でV2 recordを発行し`ACTIVE`をreadbackする。**Setup PRはActivation工程内でmergeしてよいが、#64はまだmergeしない。**
+
+   **Worktree境界:** 新ADC世代の`work bind`とIssue #63 Phase receiptsはPR #64の実装worktree（PR #64 feature branch）で行う。Activation setupは別の専用Activation worktreeでのみ実行し、そのworktreeはcleanかつrepository default branch上で、local HEAD = `git ls-remote origin refs/heads/<default>` = `gh api repos/<owner>/<repo>/branches/<default> --jq .commit.sha`でなければならない。実行前に`git worktree list`、`git status --porcelain --untracked-files=all`、`git symbolic-ref --short HEAD`、`git rev-parse HEAD^{commit}`、`git ls-remote`、`gh api`を照合する。API readは`gh`のみ、Git object/refの検査は`git`を使う。PR #64 worktreeをreset/rebaseしてActivationへ流用しない。適合worktreeがなければGit worktree境界で別checkoutを用意し、既定refの進行が必要な場合も専用Activation worktree内の検証済みfast-forwardのみ行ってpreflightをやり直す。CLIは`python -m p_ases delivery consumer-activation-setup --repo OWNER/REPO --root ACTIVATION_WORKTREE`のようにrootを明示する。Setup PR mergeとV2 `ACTIVE` readback後、PR #64実装worktreeへ戻ってFinal Deliveryを行う。
 4. **PR #64マージ**: Activation V2 `ACTIVE`のlive readback、新base互換証跡、HEAD/current CI、Independent Review、User Review、Final Delivery、#64専用exact HEAD `PR_MERGE`承認を再確認し、`gh`経由で一度だけmerge。SHA/readback必須。
 5. **Issue #63クローズ**: PR #64 `Closes #63`を確認。自動closeの状態を読み取り、必要なら独立の正規Issue close操作で閉じ、再readbackする。
 
@@ -92,6 +94,7 @@ Issue: [#63](https://github.com/puchinya/ai-agent-workflow/issues/63)
 4. **Base drift拒否**: 通常PRのmergeや不明コミット/force push、profile相違、direct GitHub readback相違→失敗を特定してBLOCK。単に「no panic」では不可。
 5. **Ruleset/Activation**: Empty→approved create1、owned same→NOOP、owned change→approved update1。403、legacy conflict、broker境界不明、失われたPOST/PUT応答、中断後再開で二重書込なし。V2 record ID + `created_at`厳密一致。
 6. **review/merge**: solo_owner carrierのexact session/readiness/HEAD一致、後続コメントやthread未解決で拒否。Setup PR承認を#64に流用不可。必要CIのApp ID差異で拒否。
+7. **Activation worktree**: PR #64 feature worktreeからsetupを呼ぶとGitHub write 0で拒否し、feature HEAD、ExecutionBinding、PRBinding、Issue #63 historyが不変。clean default worktreeの完全一致HEADからsetupへ進む。dirty、detached、remote/GitHub default HEADより古いcheckoutはwrite 0で拒否。
 
 ## 8 Verification
 
