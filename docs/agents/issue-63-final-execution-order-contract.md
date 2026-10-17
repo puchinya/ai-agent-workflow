@@ -1,9 +1,9 @@
 # Implementation Contract — Issue #63 / PR #64 最終実行順序（後続ADC承認方針）
 
-作成日: 2026-10-17  
-Repository: `puchinya/ai-agent-workflow`  
-Issue: [#63](https://github.com/puchinya/ai-agent-workflow/issues/63)  
-既存実装PR: [#64](https://github.com/puchinya/ai-agent-workflow/pull/64)  
+作成日: 2026-10-17
+Repository: `puchinya/ai-agent-workflow`
+Issue: [#63](https://github.com/puchinya/ai-agent-workflow/issues/63)
+既存実装PR: [#64](https://github.com/puchinya/ai-agent-workflow/pull/64)
 確認時HEAD: `3fca21dc3f259914a4cad893a7af5ae05ddbb737`（実行時に再取得する）
 
 <!-- contents:start -->
