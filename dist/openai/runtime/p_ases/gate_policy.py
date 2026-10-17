@@ -1814,7 +1814,10 @@ def choose_gate_for_new_issue(github: GitHub, repository: str, issue_number: int
 
     from .consumer_activation import ConsumerActivationError, read_consumer_activation_history
     try:
-        history = read_consumer_activation_history(github, repository, selected_activation_issue)
+        history = read_consumer_activation_history(
+            github, repository, selected_activation_issue,
+            through_record_id=existing[1].activation_comment_id if existing is not None else None,
+        )
     except ConsumerActivationError as exc:
         raise GatePolicyError(f"consumer Activation record is invalid: {exc}") from exc
     if not history:

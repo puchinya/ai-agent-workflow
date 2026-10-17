@@ -3,15 +3,20 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases.execution import binding_digest
 from p_ases.git import head_sha40, run_git
+from p_ases.adc import ADCError
 from p_ases.github import GitHubError
-from p_ases.work import WorkError, bind_work, ensure_pull_request, read_pr_binding_history
+from p_ases.execution import write_binding
+from p_ases.work import WorkError, bind_work, ensure_pull_request, execution_binding_path, read_pr_binding_history
 
 
 BODY = "Review implementation and evidence.\n\nCloses #30\n"
@@ -165,6 +170,58 @@ class PREnsureTests(unittest.TestCase):
                                     binding=binding, branch_ref="pases/work", base_ref="main",
                                     title="Issue work", body=BODY)
             self.assertEqual(github.create_count, 0)
+
+    def test_approved_adc_successor_appends_same_pr_generation_and_preserves_v1_bytes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo, base, binding = self._bound_repo(root)
+            github = FakeGitHub(repo, base)
+            first = ensure_pull_request(repo, github, repository="owner/repo", issue_number=30,
+                                        binding=binding, branch_ref="pases/work", base_ref="main",
+                                        title="Issue #30 work", body=BODY)
+            first_path = read_pr_binding_history(repo, 30)[0][0]
+            first_bytes = first_path.read_bytes()
+
+            successor = replace(binding, adc_comment_id=124, adc_sha256="b" * 64)
+            write_binding(execution_binding_path(repo, 30), successor)
+            (repo / "successor.txt").write_text("same PR, new approved ADC\n", encoding="utf-8")
+            run_git(repo, "add", "successor.txt")
+            run_git(repo, "commit", "--quiet", "-m", "continue under successor ADC")
+            run_git(repo, "push", "--quiet", "origin", "pases/work")
+            github.pull = github._pull(body=BODY, head_ref="pases/work", base_ref="main")
+            verified_chain = (
+                SimpleNamespace(pointer=SimpleNamespace(comment_id=123, sha256="a" * 64)),
+                SimpleNamespace(pointer=SimpleNamespace(comment_id=124, sha256="b" * 64)),
+            )
+            with patch("p_ases.work.verify_adc_forward_generations", return_value=verified_chain) as verify:
+                updated = ensure_pull_request(repo, github, repository="owner/repo", issue_number=30,
+                                              binding=successor, branch_ref="pases/work", base_ref="main",
+                                              title="Issue #30 work", body=BODY)
+                rows = read_pr_binding_history(repo, 30, github=github)
+            self.assertEqual(updated.pull_request["number"], first.pull_request["number"])
+            self.assertEqual([row[1].adc_comment_id for row in rows], [123, 124])
+            self.assertEqual(first_path.read_bytes(), first_bytes)
+            self.assertEqual(rows[1][0].name, "pr-binding-000002.json")
+            self.assertGreaterEqual(verify.call_count, 2)
+
+    def test_pr_binding_adc_gap_or_backward_generation_blocks_append(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo, base, binding = self._bound_repo(root)
+            github = FakeGitHub(repo, base)
+            ensure_pull_request(repo, github, repository="owner/repo", issue_number=30,
+                                binding=binding, branch_ref="pases/work", base_ref="main",
+                                title="Issue #30 work", body=BODY)
+            successor = replace(binding, adc_comment_id=124, adc_sha256="b" * 64)
+            write_binding(execution_binding_path(repo, 30), successor)
+            before = read_pr_binding_history(repo, 30)[0][0].read_bytes()
+            with patch("p_ases.work.verify_adc_forward_generations",
+                       side_effect=ADCError("journal gap")):
+                with self.assertRaisesRegex(WorkError, "complete approved forward generation"):
+                    ensure_pull_request(repo, github, repository="owner/repo", issue_number=30,
+                                        binding=successor, branch_ref="pases/work", base_ref="main",
+                                        title="Issue #30 work", body=BODY)
+            self.assertEqual(read_pr_binding_history(repo, 30)[0][0].read_bytes(), before)
 
 
 if __name__ == "__main__":

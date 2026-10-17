@@ -27,7 +27,7 @@ FORBIDDEN_PATH = re.compile(r"(?i)(?:update-template|refresh-template-manifest|t
 CLI_ROUTES = {
     "project": {"status"}, "context": {"show"},
     "adc": {"validate", "publish", "verify", "restore"},
-    "issue": {"validate-split", "split", "advance", "phase-evidence", "integration-check"},
+    "issue": {"validate-split", "split", "advance", "phase-evidence", "phase-rebaseline", "integration-check"},
     "docs": {"validate", "format"}, "work": {"base", "branch", "bind", "recover"},
     "pr": {"ensure"}, "verification": {"plan", "collect", "validate", "final", "published"},
     "acceptance": {"prepare", "validate", "publish", "verify"},
@@ -35,7 +35,10 @@ CLI_ROUTES = {
     "user-review": {"start", "sync", "record", "status"},
     "delivery": {"readiness", "gate-policy", "bootstrap-check", "final", "finalize", "parent",
                  "parent-evidence", "parent-migrate-labels", "consumer-activation-setup",
-                 "consumer-activation-verify"},
+                 "consumer-activation-verify", "consumer-activation-preflight",
+                 "consumer-activation-ruleset-plan", "consumer-activation-ruleset-apply",
+                 "consumer-activation-admin-plan", "consumer-activation-admin-apply",
+                 "owner-authorize-plan", "owner-authorize-commit", "owner-authorize-resume"},
 }
 OLD_COMMAND = re.compile(
     r"(?i)\b(?:init-project|agent-context|validate-docs|run-hook|ensure-milestone|"

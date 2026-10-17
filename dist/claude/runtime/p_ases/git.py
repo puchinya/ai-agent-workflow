@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import hashlib
 from pathlib import Path
 
 
@@ -137,12 +138,40 @@ def commit_parent_sha40(repo: Path, commit_sha40: str) -> str:
     return row[1]
 
 
+def commit_parents_sha40(repo: Path, commit_sha40: str) -> tuple[str, ...]:
+    if not isinstance(commit_sha40, str) or not re.fullmatch(r"[0-9a-f]{40}", commit_sha40):
+        raise GitError("commit ref must be a full SHA-40")
+    row = run_git(repo, "rev-list", "--parents", "-n", "1", commit_sha40).split()
+    if (not row or row[0] != commit_sha40
+            or any(not re.fullmatch(r"[0-9a-f]{40}", value) for value in row[1:])):
+        raise GitError("commit parent readback is malformed")
+    return tuple(row[1:])
+
+
 def changed_paths_between(repo: Path, base_sha40: str, head_sha40: str) -> tuple[str, ...]:
     for value, label in ((base_sha40, "base"), (head_sha40, "head")):
         if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40}", value):
             raise GitError(f"Git {label} ref must be a full SHA-40")
     output = run_git(repo, "diff", "--name-only", "--diff-filter=ACDMRTUXB", base_sha40, head_sha40, "--")
     return tuple(output.splitlines())
+
+
+def patch_sha256_excluding_activation_profile(repo: Path, base_sha40: str, head_sha40: str) -> str:
+    """Hash the exact binary patch outside the one Activation-owned profile path."""
+    for value, label in ((base_sha40, "base"), (head_sha40, "head")):
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40}", value):
+            raise GitError(f"Git {label} ref must be a full SHA-40")
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--binary", base_sha40, head_sha40, "--", ".",
+             ":(exclude).agent/project.json"], cwd=repo, check=False,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+    except OSError as exc:
+        raise GitError("could not start git patch readback") from exc
+    if result.returncode:
+        raise GitError("git patch readback failed")
+    return hashlib.sha256(result.stdout).hexdigest()
 
 
 def activation_profile_bytes_at_commit(repo: Path, commit_sha40: str) -> bytes:

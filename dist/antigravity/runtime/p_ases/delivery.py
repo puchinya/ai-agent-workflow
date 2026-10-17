@@ -15,6 +15,7 @@ from .acceptance import AcceptanceResult
 from .audits import AuditError, IndependentReview, SelfAudit
 from .checkpoint import CheckpointError, PRBinding
 from .context import WorkContext, WorkContextError
+from .current_base import CurrentBaseAdvanceEvidence
 from .evidence_store import VerificationSubject
 from .path_safety import path_has_symlink
 from .verification import VerificationResult, VERDICTS
@@ -170,6 +171,7 @@ class FinalDeliveryResult:
     required_check_result_sha256: str | None
     branch_protection_sha256: str | None
     reasons: tuple[str, ...]
+    current_base_advance_sha256: str | None = None
 
     def validate(self) -> "FinalDeliveryResult":
         self.subject.validate()
@@ -177,7 +179,12 @@ class FinalDeliveryResult:
             raise ReadinessError("Final Delivery status is invalid")
         if type(self.reasons) is not tuple or any(not isinstance(x, str) or not x for x in self.reasons):
             raise ReadinessError("Final Delivery reasons are invalid")
-        digests = (self.user_review_sha256, self.required_check_result_sha256, self.branch_protection_sha256)
+        digests = (self.user_review_sha256, self.required_check_result_sha256,
+                   self.branch_protection_sha256)
+        if (self.current_base_advance_sha256 is not None
+                and (not isinstance(self.current_base_advance_sha256, str)
+                     or not SHA256.fullmatch(self.current_base_advance_sha256))):
+            raise ReadinessError("Final Delivery current-base evidence digest is invalid")
         if any(value is not None and (not isinstance(value, str) or not SHA256.fullmatch(value)) for value in digests):
             raise ReadinessError("Final Delivery evidence digest is invalid")
         if ((self.status == "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION") != (not self.reasons)
@@ -190,21 +197,28 @@ class FinalDeliveryResult:
         self.validate()
         value = {"branch_protection_sha256": self.branch_protection_sha256,
                  "required_check_result_sha256": self.required_check_result_sha256,
-                 "reasons": list(self.reasons), "schema": "PASES_FINAL_DELIVERY_V1",
+                 "reasons": list(self.reasons),
+                 "schema": "PASES_FINAL_DELIVERY_V2" if self.current_base_advance_sha256 else "PASES_FINAL_DELIVERY_V1",
                  "status": self.status, "subject": self.subject.as_dict(),
                  "user_review_sha256": self.user_review_sha256,
                  "merge_authorized": False}
+        if self.current_base_advance_sha256 is not None:
+            value["current_base_advance_sha256"] = self.current_base_advance_sha256
         return hashlib.sha256(_canonical(value)).hexdigest()
 
     def as_dict(self) -> dict[str, Any]:
         self.validate()
-        return {"branch_protection_sha256": self.branch_protection_sha256,
+        value = {"branch_protection_sha256": self.branch_protection_sha256,
                 "final_delivery_sha256": self.sha256,
                 "merge_authorized": False,
                 "required_check_result_sha256": self.required_check_result_sha256,
-                "reasons": list(self.reasons), "schema": "PASES_FINAL_DELIVERY_V1",
+                "reasons": list(self.reasons),
+                "schema": "PASES_FINAL_DELIVERY_V2" if self.current_base_advance_sha256 else "PASES_FINAL_DELIVERY_V1",
                 "status": self.status, "subject": self.subject.as_dict(),
                 "user_review_sha256": self.user_review_sha256}
+        if self.current_base_advance_sha256 is not None:
+            value["current_base_advance_sha256"] = self.current_base_advance_sha256
+        return value
 
 
 def evaluate_final_delivery(
@@ -220,20 +234,67 @@ def evaluate_final_delivery(
     branch_protection: dict[str, Any] | None,
     required_check_names: Iterable[str],
     mergeable: bool | None,
+    review_mode: str = "external_reviewer",
+    effective_branch_policy: dict[str, Any] | None = None,
+    required_check_identities: Iterable[tuple[str, int]] = (),
+    expected_policy_branch: str | None = None,
+    current_base_advance: CurrentBaseAdvanceEvidence | None = None,
+    current_pr_base_sha40: str | None = None,
+    frozen_base_sha40: str | None = None,
 ) -> FinalDeliveryResult:
     """Require human review, GitHub review, checks, and branch protection separately."""
     subject.validate()
     reasons: list[str] = []
     user_review_sha: str | None = None
+    current_base_advance_sha: str | None = None
+    if current_pr_base_sha40 is not None or frozen_base_sha40 is not None:
+        if (not isinstance(current_pr_base_sha40, str) or not SHA40.fullmatch(current_pr_base_sha40)
+                or not isinstance(frozen_base_sha40, str) or not SHA40.fullmatch(frozen_base_sha40)):
+            reasons.append("PR frozen/current base SHA readback is malformed")
+        elif current_pr_base_sha40 != frozen_base_sha40:
+            if current_base_advance is None:
+                reasons.append("verified Activation current-base evidence is missing from Final Delivery")
+            else:
+                try:
+                    current_base_advance.validate()
+                    if (current_base_advance.repository != subject.repository
+                            or current_base_advance.issue_number != subject.issue_number
+                            or current_base_advance.pr_number != subject.pr_number
+                            or current_base_advance.frozen_base_sha40 != frozen_base_sha40
+                            or current_base_advance.current_base_sha40 != current_pr_base_sha40):
+                        reasons.append("Activation current-base evidence differs from the exact Final Delivery subject")
+                    else:
+                        current_base_advance_sha = current_base_advance.sha256
+                except ValueError:
+                    reasons.append("Activation current-base evidence is malformed")
+        elif current_base_advance is not None:
+            reasons.append("Activation current-base evidence is stale for the frozen-base PR")
+    elif current_base_advance is not None:
+        reasons.append("PR base readback is missing for supplied Activation current-base evidence")
+    check_names = tuple(required_check_names)
+    check_identities = tuple(required_check_identities)
+    if review_mode not in {"external_reviewer", "solo_owner"}:
+        reasons.append("final-delivery review mode is unknown")
     if user_review is None:
         reasons.append("exact-subject final User Review evidence is missing")
     else:
         try:
             user_review.validate()
             review_subject = user_review.subject.verification_subject
-            if user_review.status != "APPROVED" or review_subject != subject:
+            exact_approved = user_review.status == "APPROVED" and review_subject == subject
+            if not exact_approved:
                 reasons.append("User Review is not APPROVED for the exact Verification subject")
-            else:
+            relay_evidence_ok = (
+                review_mode != "solo_owner"
+                or (isinstance(user_review.selected_approval_evidence, dict)
+                    and user_review.selected_approval_evidence.get("evidence_type")
+                    == "PASES_USER_REVIEW_DECISION_V1"
+                    and isinstance(user_review.selected_approval_event, str)
+                    and user_review.selected_approval_event.startswith("user-review-relay:"))
+            )
+            if not relay_evidence_ok:
+                reasons.append("solo_owner User Review lacks its typed dedicated relay carrier")
+            if exact_approved and relay_evidence_ok:
                 user_review_sha = user_review.sha256
         except (AttributeError, TypeError, ValueError):
             reasons.append("final User Review evidence is malformed")
@@ -255,12 +316,40 @@ def evaluate_final_delivery(
         reasons.append("PR HEAD changed after the final review subject")
     if current_pr_state != "open" or current_pr_draft is not False:
         reasons.append("PR is not open and non-draft")
-    if github_review_decision != "APPROVED" or github_review_head_sha40 != subject.pr_head_sha40:
+    if (review_mode == "external_reviewer"
+            and (github_review_decision != "APPROVED" or github_review_head_sha40 != subject.pr_head_sha40)):
         reasons.append("GitHub formal review decision is not APPROVED for the current HEAD")
-    if not isinstance(branch_protection, dict):
+    branch_evidence_sha: str | None = None
+    if review_mode == "solo_owner":
+        proof = effective_branch_policy
+        if not isinstance(branch_protection, dict) or not isinstance(proof, dict):
+            reasons.append("current effective Ruleset policy could not be read")
+        else:
+            observed_checks = proof.get("required_checks")
+            expected_checks = tuple(sorted(set(check_identities)))
+            try:
+                observed = tuple(sorted((row["name"], row["app_id"])
+                                        for row in observed_checks
+                                        if isinstance(row, dict) and set(row) == {"app_id", "name"}))
+            except (TypeError, KeyError):
+                observed = ()
+            if (proof.get("status") != "VERIFIED" or proof.get("review_mode") != "solo_owner"
+                    or proof.get("repository") != subject.repository
+                    or (expected_policy_branch is not None and proof.get("branch") != expected_policy_branch)
+                    or not expected_checks or observed != expected_checks
+                    or tuple(sorted(name for name, _app_id in observed))
+                       != tuple(sorted(set(check_names)))):
+                reasons.append("effective Ruleset policy is not verified for the exact trusted checks and PR base")
+            if (proof.get("minimum_approvals") != 0 or proof.get("force_push_disabled") is not True
+                    or proof.get("bypass_actor_count") != 0 or proof.get("pull_request_required") is not True):
+                reasons.append("effective solo_owner Ruleset does not enforce the exact safe PR policy")
+            branch_evidence_sha = hashlib.sha256(_canonical({
+                "branch_policy": proof, "policy_evidence": branch_protection,
+            })).hexdigest()
+    elif not isinstance(branch_protection, dict):
         reasons.append("GitHub branch protection could not be read")
     else:
-        required = tuple(sorted(set(required_check_names)))
+        required = tuple(sorted(set(check_names)))
         status_checks = branch_protection.get("required_status_checks")
         contexts = status_checks.get("contexts") if isinstance(status_checks, dict) else None
         review_policy = branch_protection.get("required_pull_request_reviews")
@@ -270,12 +359,15 @@ def evaluate_final_delivery(
                 or type(review_policy.get("required_approving_review_count")) is not int
                 or review_policy["required_approving_review_count"] < 1):
             reasons.append("branch protection does not require a formal pull-request review")
-    protection_sha = None if not isinstance(branch_protection, dict) else hashlib.sha256(_canonical(branch_protection)).hexdigest()
+    protection_sha = branch_evidence_sha
+    if review_mode == "external_reviewer" and isinstance(branch_protection, dict):
+        protection_sha = hashlib.sha256(_canonical(branch_protection)).hexdigest()
     if mergeable is not True:
         reasons.append("GitHub has not confirmed the PR as mergeable")
     status = "BLOCKED" if reasons else "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION"
     return FinalDeliveryResult(status, subject, user_review_sha, check_result_sha,
-                               protection_sha, tuple(dict.fromkeys(reasons))).validate()
+                               protection_sha, tuple(dict.fromkeys(reasons)),
+                               current_base_advance_sha).validate()
 
 
 def evaluate_readiness(
@@ -291,6 +383,7 @@ def evaluate_readiness(
     independent_review: IndependentReview | None,
     required_checks_sha256: str | None,
     blocker_reasons: Iterable[str] = (),
+    current_base_advance: CurrentBaseAdvanceEvidence | None = None,
 ) -> ReadinessResult:
     """Pass only when every exact-subject proof and the open PR read back agree."""
     if not isinstance(subject, VerificationSubject):
@@ -319,6 +412,20 @@ def evaluate_readiness(
         except ReadinessError as exc:
             reasons.append(f"PR readback is invalid: {exc}")
 
+    base_advance_valid = False
+    if current_base_advance is not None:
+        try:
+            current_base_advance.validate()
+            base_advance_valid = (
+                current_base_advance.repository == subject.repository
+                and current_base_advance.issue_number == subject.issue_number
+                and current_base_advance.pr_number == subject.pr_number
+            )
+            if not base_advance_valid:
+                reasons.append("Activation current-base evidence belongs to a different repository, Issue, or PR")
+        except ValueError as exc:
+            reasons.append(f"Activation current-base evidence is invalid: {exc}")
+
     if not isinstance(pr_binding, PRBinding):
         reasons.append("PRBinding is missing")
     else:
@@ -327,10 +434,21 @@ def evaluate_readiness(
             if (pr_binding.repository != subject.repository or pr_binding.issue_number != subject.issue_number
                     or pr_binding.pr_number != subject.pr_number or pr_binding.adc_comment_id != subject.adc_comment_id
                     or pr_binding.adc_sha256 != subject.adc_sha256 or pr_binding.pr_head_sha40 != subject.pr_head_sha40
-                    or (pr_readback_valid and (pr_binding.base_sha40 != pr.base_sha40
-                                                or pr_binding.branch_ref != pr.head_ref))):
+                    or (pr_readback_valid and (pr_binding.branch_ref != pr.head_ref
+                        or (pr_binding.base_sha40 != pr.base_sha40
+                            and not (base_advance_valid and current_base_advance is not None
+                                     and current_base_advance.frozen_base_sha40 == pr_binding.base_sha40
+                                     and current_base_advance.current_base_sha40 == pr.base_sha40
+                                     and pr_binding.current_base_sha40 == pr.base_sha40
+                                     and pr_binding.current_base_advance_sha256 == current_base_advance.sha256))
+                        or (pr_binding.current_base_sha40 is not None
+                            and (not base_advance_valid or current_base_advance is None
+                                 or pr_binding.current_base_sha40 != current_base_advance.current_base_sha40
+                                 or pr_binding.current_base_advance_sha256 != current_base_advance.sha256))))):
                 reasons.append("PRBinding does not match the exact Verification subject")
             digest_refs.add(pr_binding.sha256)
+            if pr_binding.current_base_advance_sha256 is not None:
+                digest_refs.add(pr_binding.current_base_advance_sha256)
         except CheckpointError as exc:
             reasons.append(f"PRBinding is invalid: {exc}")
 
@@ -344,11 +462,18 @@ def evaluate_readiness(
                     or binding.adc_comment_id != subject.adc_comment_id or binding.adc_sha256 != subject.adc_sha256
                     or work_context.current_head_sha40 != subject.pr_head_sha40
                     or not work_context.worktree_clean
-                    or (pr_readback_valid and (binding.base_sha != pr.base_sha40
+                    or (isinstance(pr_binding, PRBinding)
+                        and binding.base_sha != pr_binding.base_sha40)
+                    or (pr_readback_valid and ((binding.base_sha != pr.base_sha40
+                                               and not (base_advance_valid and current_base_advance is not None
+                                                        and current_base_advance.frozen_base_sha40 == binding.base_sha
+                                                        and current_base_advance.current_base_sha40 == pr.base_sha40))
                                                or binding.base_ref != pr.base_ref
                                                or work_context.branch_ref != pr.head_ref))):
                 reasons.append("work context is stale, dirty, or bound to a different exact subject")
             digest_refs.add(work_context.execution_binding_sha256)
+            if base_advance_valid and current_base_advance is not None:
+                digest_refs.add(current_base_advance.sha256)
         except WorkContextError as exc:
             reasons.append(f"work context is invalid: {exc}")
 

@@ -2,7 +2,7 @@
 <!-- agent-doc-schema: 2 -->
 # P-ASES Human Review and Integration Test Specification
 
-- Status: Approved for Issues #31 and #42
+- Status: Existing cases approved for Issues #31 and #42; TST-F01-014 and TST-F01-015 are drafts pending Issue #63 successor ADC approval and phase evidence.
 - Owning specification: ../specs/workflow-spec.md
 
 <!-- contents:start -->
@@ -35,6 +35,22 @@
     - [2.12.1 ORA-F01-006 Expected result](#2121-ora-f01-006-expected-result)
   - [2.13 TST-F01-007 Successor/reapproval](#213-tst-f01-007-successorreapproval)
     - [2.13.1 ORA-F01-007 Expected result](#2131-ora-f01-007-expected-result)
+  - [2.14 TST-F01-008 Effective V2 policy](#214-tst-f01-008-effective-v2-policy)
+    - [2.14.1 ORA-F01-008 Expected result](#2141-ora-f01-008-expected-result)
+  - [2.15 TST-F01-009 Exact approved Ruleset plan](#215-tst-f01-009-exact-approved-ruleset-plan)
+    - [2.15.1 ORA-F01-009 Expected result](#2151-ora-f01-009-expected-result)
+  - [2.16 TST-F01-010 Existing Issue non-retroactivity](#216-tst-f01-010-existing-issue-non-retroactivity)
+    - [2.16.1 ORA-F01-010 Expected result](#2161-ora-f01-010-expected-result)
+  - [2.17 TST-F01-011 V2 record creation time](#217-tst-f01-011-v2-record-creation-time)
+    - [2.17.1 ORA-F01-011 Expected result](#2171-ora-f01-011-expected-result)
+  - [2.18 TST-F01-012 Prefix and full-history validation](#218-tst-f01-012-prefix-and-full-history-validation)
+    - [2.18.1 ORA-F01-012 Expected result](#2181-ora-f01-012-expected-result)
+  - [2.19 TST-F01-013 Pre-merge bootstrap gates](#219-tst-f01-013-pre-merge-bootstrap-gates)
+    - [2.19.1 ORA-F01-013 Expected result](#2191-ora-f01-013-expected-result)
+  - [2.20 TST-F01-014 Activation admin session and approval separation](#220-tst-f01-014-activation-admin-session-and-approval-separation)
+    - [2.20.1 ORA-F01-014 Expected result](#2201-ora-f01-014-expected-result)
+  - [2.21 TST-F01-015 Chat-confirmed authorization and lifecycle gates](#221-tst-f01-015-chat-confirmed-authorization-and-lifecycle-gates)
+    - [2.21.1 ORA-F01-015 Expected result](#2211-ora-f01-015-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -65,6 +81,22 @@
 - [ORA-F01-006](#ora-f01-006) — 2.12.1 ORA-F01-006 Expected result
 - [TST-F01-007](#tst-f01-007) — 2.13 TST-F01-007 Successor/reapproval
 - [ORA-F01-007](#ora-f01-007) — 2.13.1 ORA-F01-007 Expected result
+- [TST-F01-008](#tst-f01-008) — 2.14 TST-F01-008 Effective V2 policy
+- [ORA-F01-008](#ora-f01-008) — 2.14.1 ORA-F01-008 Expected result
+- [TST-F01-009](#tst-f01-009) — 2.15 TST-F01-009 Exact approved Ruleset plan
+- [ORA-F01-009](#ora-f01-009) — 2.15.1 ORA-F01-009 Expected result
+- [TST-F01-010](#tst-f01-010) — 2.16 TST-F01-010 Existing Issue non-retroactivity
+- [ORA-F01-010](#ora-f01-010) — 2.16.1 ORA-F01-010 Expected result
+- [TST-F01-011](#tst-f01-011) — 2.17 TST-F01-011 V2 record creation time
+- [ORA-F01-011](#ora-f01-011) — 2.17.1 ORA-F01-011 Expected result
+- [TST-F01-012](#tst-f01-012) — 2.18 TST-F01-012 Prefix and full-history validation
+- [ORA-F01-012](#ora-f01-012) — 2.18.1 ORA-F01-012 Expected result
+- [TST-F01-013](#tst-f01-013) — 2.19 TST-F01-013 Pre-merge bootstrap gates
+- [ORA-F01-013](#ora-f01-013) — 2.19.1 ORA-F01-013 Expected result
+- [TST-F01-014](#tst-f01-014) — 2.20 TST-F01-014 Activation admin session and approval separation
+- [ORA-F01-014](#ora-f01-014) — 2.20.1 ORA-F01-014 Expected result
+- [TST-F01-015](#tst-f01-015) — 2.21 TST-F01-015 Chat-confirmed authorization and lifecycle gates
+- [ORA-F01-015](#ora-f01-015) — 2.21.1 ORA-F01-015 Expected result
 <!-- heading-map:end -->
 
 
@@ -231,3 +263,96 @@ An existing selection remains bound to its exact historical record and gate-poli
 #### 2.13.1 ORA-F01-007 Expected result
 
 Policy or locator changes require a new setup PR and explicit admin merge. The successor links the previous record, governs only later-created Issues, and leaves earlier Activation records and Gate Selections unchanged. Removing the locator blocks new selections.
+
+<a id="tst-f01-008"></a>
+### 2.14 TST-F01-008 Effective V2 policy
+
+**Setup and action:** Configure explicit `solo_owner`, the four trusted Required Checks with App ID 15368, and the Activation Issue/history. Start with an empty Ruleset and invoke `consumer-activation-setup`; verify the exact committed setup branch and canonical policy plan are persisted but no V2 setup PR or Ruleset write exists. Exercise exact owner decision plus trusted Admin apply, then resume Activation and verify it reads the already-owned policy as zero-write `NOOP` before creating the policy-bound setup PR. Also test a matching owned Ruleset, an owned drift requiring one authorized PUT, stale profile/branch/plan subjects and automatic plan regeneration, a changed effective-policy digest against an existing open setup PR (preserve the old immutable proposal and create a new branch/plan/PR generation), missing check/App ID inputs, wrong default branch, inactive enforcement, wrong check context/App ID, nonzero approvals, bypass actors, missing `non_fast_forward`, unresolved review threads, unowned collision, legacy conflict, and unavailable 403 reads. In `external_reviewer`, verify a missing required-check identity is `INPUT_REQUIRED` with no setup PR and that the complete inventory reports the solo-owner managed Ruleset as `UNSUPPORTED` while preserving V1 behavior.
+
+<a id="ora-f01-008"></a>
+#### 2.14.1 ORA-F01-008 Expected result
+
+Empty policy is a resumable exact-plan/approval stage, not a missing-Ruleset setup failure; the V2 setup PR is absent until policy verification succeeds. Once owner decision and trusted Admin apply complete, the same Activation resumes, sees a zero-write NOOP, and only then creates the PR bound to Ruleset ID, applied-record ID, setup branch, and effective-policy digest. A stale policy-bound PR stays unchanged; the next authorized policy generation has a fresh exact branch/plan subject and a separate setup PR. V2 is recorded only when branch, effective rules, Ruleset details, legacy protection, mode, checks, and admin identity are all readable and match. A 403 is `UNAVAILABLE`, never “not configured.” Stale profile/branch/plan inputs, missing trusted checks, unowned collision, or legacy conflict cannot produce an ACTIVE result. The external-reviewer inventory is complete and reports only mode-inapplicable solo-owner policy as `UNSUPPORTED`; missing required checks remain `INPUT_REQUIRED` and cannot be reported as ACTIVE.
+
+<a id="tst-f01-009"></a>
+### 2.15 TST-F01-009 Exact approved Ruleset plan
+
+**Setup and action:** Generate a plan for empty, exact, owned-different, and same-name-unowned repository Ruleset states. Change repository ID, owner ID, configured Activation Issue, default branch SHA, committed profile bytes, mode, checks/App IDs, Ruleset ID/digest, predecessor, PR impact, and approval comment between planning and apply. Vary wrong author, edited/deleted/duplicated comment, wrong Issue, wrong repository, invalid plan digest, missing admin permission, API 403, and concurrent state changes. Simulate process death after a successful POST or PUT but before ownership-record publication, then retry from a fresh invocation with the exact plan and approval. Also combine legacy required approvals of one with a valid Ruleset requiring zero.
+
+<a id="ora-f01-009"></a>
+#### 2.15.1 ORA-F01-009 Expected result
+
+Only the exact unedited owner approval for the unchanged canonical plan permits one POST or one PUT to the uniquely owned repository Ruleset. A persisted write intent lets a fresh invocation recover the exact Ruleset ID/body and predecessor, verify effective policy, and append the matching ownership record with no second write. An unowned same-name Ruleset with no intent cannot be adopted. An exact current state is a no-op. All stale, ambiguous, unauthorized, raced, or unreadable states block without modifying other Rulesets or retrying blindly. A legacy approval requirement of one plus Ruleset approvals of zero is `MISMATCH`; the legacy requirement is never replaced by the Ruleset value. Successful writes require exact detail and effective-policy readback plus append-only ownership evidence.
+
+<a id="tst-f01-010"></a>
+### 2.16 TST-F01-010 Existing Issue non-retroactivity
+
+**Setup and action:** Pin an Issue to V1, append V2, then corrupt only a successor record and call both gate-policy and phase evidence for the old Issue. Separately alter its selected V1 prefix and current live Ruleset. Compare Issue ADC, Gate Selection comment, labels, PRBinding, checkpoints, and prior evidence before and after.
+
+<a id="ora-f01-010"></a>
+#### 2.16.1 ORA-F01-010 Expected result
+
+Successor-only corruption does not invalidate a valid old V1 Issue. Corruption within its selected prefix or a current live policy mismatch blocks without rewriting its gate, labels, ADC, PR, or historical evidence.
+
+<a id="tst-f01-011"></a>
+### 2.17 TST-F01-011 V2 record creation time
+
+**Setup and action:** Compare Issue `created_at` with the V2 setup PR `merged_at` and Activation record comment `created_at`. Create Issues before merge, between merge and record publication, exactly at record time, and after record time.
+
+<a id="ora-f01-011"></a>
+#### 2.17.1 ORA-F01-011 Expected result
+
+V2 eligibility begins strictly after the Activation record comment's GitHub creation time. Issues in the merge-to-record interval continue using the latest eligible V1 Activation.
+
+<a id="tst-f01-012"></a>
+### 2.18 TST-F01-012 Prefix and full-history validation
+
+**Setup and action:** Create a two-record V1→V2 chain and a Ruleset ownership chain. Read existing Gate Selections pinned to V1 and V2 while corrupting later Activation and Ruleset applied records. Then corrupt the selected Activation or its bound Ruleset applied-record prefix. Run new Issue selection, V2 setup, and successor issuance against the same full histories.
+
+<a id="ora-f01-012"></a>
+#### 2.18.1 ORA-F01-012 Expected result
+
+Existing Issue reads validate exactly the Activation prefix through their selected record and, for V2, the Ruleset ownership prefix through its exact bound applied-record ID. Corruption after either selected prefix is ignored. A new selection or successor issuance validates the full Activation and Ruleset ownership histories and blocks on any malformed record.
+
+<a id="tst-f01-013"></a>
+### 2.19 TST-F01-013 Pre-merge bootstrap gates
+
+**Setup and action:** Exercise the required order: implementation, successor ADC publication and generation-scoped Phase receipts, Activation V2 `ACTIVE` (including its separately reviewed/merged Setup PR), PR #64 merge, then Issue #63 closure readback. Keep PR #64 open after the Setup PR merge and attempt its merge before `ACTIVE`; that must block. After `ACTIVE`, independently remove or stale each #64 CI, Independent Review, User Review, Final Delivery, and exact-HEAD `PR_MERGE` input and verify merge remains blocked. Keep #60/PR #62 and all old #57/#63 evidence unchanged.
+
+<a id="ora-f01-013"></a>
+#### 2.19.1 ORA-F01-013 Expected result
+
+ADC formalization and its Phase receipts precede Activation. Activation reaches `ACTIVE` only after the exact Setup PR merge, V2 record comment ID/`created_at`, Ruleset ID and effective policy all read back. A Setup PR merge alone cannot authorize #64. PR #64 merge requires its own exact HEAD gates and distinct `PR_MERGE`; Issue closure is read back only after #64 merge.
+
+For the Activation-owned base transition, construct A, one profile-only setup commit, its exact merge commit B, and PR #64 HEAD with B integrated. Verify `pr ensure` appends a V2 PRBinding and readiness accepts the same typed evidence while the original ExecutionBinding and V1 PRBinding bytes stay unchanged. Reject ordinary main drift, any intervening or extra main commit, a wrong Setup PR ID or merge SHA, a profile mismatch at B or target HEAD, a changed code patch, a different target PR identity, and an absent/tampered evidence file. Final Delivery must re-read the same live evidence; changing current main or target base after Readiness blocks it.
+
+<a id="tst-f01-014"></a>
+<a id="220-tst-f01-014-activation-admin-session-and-approval-separation"></a>
+### 2.20 TST-F01-014 Activation admin session and approval separation
+
+**Setup and action:** Run each of the two explicit Admin commands with default `--auth-mode isolated-gh-device`. Fake success, failure, and interruption of the exact `gh auth login --hostname github.com --web --git-protocol https --insecure-storage` call; verify the private mode-0700 `GH_CONFIG_DIR`, runner-managed PTY challenge display without owner-local TTY, ambient token stripping, parent `gh` config preservation, and cleanup. Cover explicit nonstandard `--auth-mode pat` fallback with local interactive TTY, missing/non-interactive TTY, empty input, cancellation, and a repository-limited owner PAT. Exercise correct and incorrect owner/repository identity, admin permission, legacy protection, Ruleset inventory, and effective branch-rule responses; include 403 and incomplete readbacks. Exercise a clean plan, blocked plan, exact and missing Issue #57 plan approvals, plan drift, and separate command invocations. Interrupt apply after POST or PUT and retry with the same plan and approval. Record prompts, output, plan-file creation, API method sequence, and Issue #57 history before and after. If the runner cannot display the browser challenge, record `ADMIN_DEVICE_LOGIN_UNAVAILABLE` and verify zero Admin/Ruleset writes; do not fabricate PTY availability.
+
+<a id="ora-f01-014"></a>
+<a id="2201-ora-f01-014-expected-result"></a>
+#### 2.20.1 ORA-F01-014 Expected result
+
+Only the two explicit commands accept Admin authentication. Device mode is the default and uses the human-completed isolated browser challenge with a mode-0700 private config, no inherited token variables, and no change to normal `gh` config; a runner-managed PTY may display the challenge without an owner-local TTY. Explicit PAT fallback reads the owner-created PAT through `getpass` from a trusted owner-local TTY. Unavailable device login, non-TTY PAT fallback, cancellation, identity/admin mismatch, 403, incomplete readback, blocked plan, absent exact approval, or plan drift produces no Ruleset write; a plan file is created only for a blocker-free canonical plan. A valid apply reaches at most the existing single POST or PUT path after exact Issue #57 approval. Interruption recovery performs reads only and does not issue a second write. PAT bytes do not appear in observable output, persisted files, or unrelated command behavior. Device config cleanup does not revoke the GitHub OAuth grant; same-OS-user subprocesses are not a strong sandbox. Authentication, plan approval, User Review, Final Delivery, and merge authorization remain distinct.
+<a id="tst-f01-015"></a>
+<a id="221-tst-f01-015-owner-decision-relay-and-lifecycle-gates"></a>
+### 2.21 TST-F01-015 Chat-confirmed authorization and lifecycle gates
+
+For the dedicated User Review carrier, assert the exact evaluator seam receives a validated session, complete feedback snapshot, mode, PR author ID and typed V1/V2/V3 evidence. Persist selected V3 scope evidence in the result and revalidate it in Final Delivery against a fresh snapshot and full carrier chain. Preserve `user-review-relay` identity; never recast it as formal PR review or signed host chat. Cover current approval, later feedback, unresolved threads, changed/deleted carrier and result mismatch.
+
+**Setup and action:** Verify the approved successor ADC and complete forward pointer chain, then run the phase executor without any `PHASE_REBASE` decision. Assert one label PUT maximum and append-only Intent/Applied readback, recovery after lost response without a second PUT, and blocking on drift, stale/draft pointer, wrong Issue, missing page, 403 or edit/deletion. Completed matching evidence is read-only NOOP.
+
+For chat approval, capture only a current same-conversation user-role response after showing exact repository, Issue, operation, final ADC/plan SHA or PR+HEAD, and diff/gates. Correct explicit approval produces only a bound ephemeral grant; vague “continue”, assistant text, another conversation without trusted transfer, CLI flag, JSON/file, stale subject and non-owner actor produce zero writes. Assert scope hash is not represented as chat signature. When role metadata is unavailable, expect `CHAT_PROVENANCE_UNAVAILABLE`. V1/V2 histories remain unchanged; V3 direct/list/direct must verify exact owner, URL, time, plan/scope, and predecessor.
+
+Carrier discovery must ignore prose/comments that merely mention `PASES_OWNER_DECISION_*` or `PASES_USER_REVIEW_DECISION_*`; unknown/malformed schemas at the actual owner HTML-marker or User Review top-level JSON carrier position still block. Include the Issue #63 contract-comment shape that mentions the schema in prose.
+
+For self-authored `solo_owner` review, preserve delegated V1 and owner-local V2 as legacy records, and test V3 binding of repository/Issue/PR/HEAD/Readiness/ADC/session/prior-feedback/plan/scope. A separate read-only principal can verify the configured owner. Reject wrong owner/actor/PR author, later feedback, unresolved threads, cross-version replay, formal self-approval and incomplete pagination. Re-run Final Delivery against the full current snapshot and require the exact saved selected evidence.
+
+<a id="ora-f01-015"></a>
+<a id="2211-ora-f01-015-expected-result"></a>
+#### 2.21.1 ORA-F01-015 Expected result
+
+A direct same-conversation exact-scope user-role response can produce operator-reported V3 evidence only when the host provides that role event. This evidence is not a signed chat attestation. V1/V2 meaning and bytes remain unchanged. Separate pinned owner, PR author, actual comment actor, and read-only verifier identities are verified independently. ADC, Ruleset, User Review, Setup PR merge and PR #64 merge remain distinct exact scopes; Phase bootstrap requires no approval and retains technical Intent/Applied recovery. Ruleset needs the exact V3 plan decision plus the owner-authenticated #57 two-line approval. Setup and #64 each require exact HEAD gates, with at most one merge request and read-only recovery. Preserve PRBinding V1.

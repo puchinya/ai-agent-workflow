@@ -2,7 +2,7 @@
 <!-- agent-doc-schema: 2 -->
 # Runtime and CLI Test Specification
 
-- Status: Approved
+- Status: Existing cases approved; TST-RT-018 and TST-RT-019 are drafts pending Issue #63 successor ADC approval and phase evidence.
 - Owning specification: ../specs/
 
 The stable RT test IDs preserve the earlier traceability graph. Current CLI cases use the namespaced P-ASES routes. Procedures for APIs that the Runtime Specification marks legacy are regression conditions for retained internal behavior, not public-command compatibility requirements.
@@ -41,6 +41,14 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
     - [2.14.1 ORA-RT-014 Expected result](#2141-ora-rt-014-expected-result)
   - [2.15 TST-RT-015 Error and boundary cases](#215-tst-rt-015-error-and-boundary-cases)
     - [2.15.1 ORA-RT-015 Fail-closed result](#2151-ora-rt-015-fail-closed-result)
+  - [2.16 TST-RT-016 Effective branch-policy assessment](#216-tst-rt-016-effective-branch-policy-assessment)
+    - [2.16.1 ORA-RT-016 Expected result](#2161-ora-rt-016-expected-result)
+  - [2.17 TST-RT-017 Canonical plan and write boundary](#217-tst-rt-017-canonical-plan-and-write-boundary)
+    - [2.17.1 ORA-RT-017 Expected result](#2171-ora-rt-017-expected-result)
+  - [2.18 TST-RT-018 Temporary child-process credential isolation](#218-tst-rt-018-temporary-child-process-credential-isolation)
+    - [2.18.1 ORA-RT-018 Expected result](#2181-ora-rt-018-expected-result)
+  - [2.19 TST-RT-019 Exact chat approval, V3 history, and transport boundary](#219-tst-rt-019-exact-chat-approval-v3-history-and-transport-boundary)
+    - [2.19.1 ORA-RT-019 Expected result](#2191-ora-rt-019-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -75,6 +83,14 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
 - [ORA-RT-014](#ora-rt-014) — 2.14.1 ORA-RT-014 Expected result
 - [TST-RT-015](#tst-rt-015) — 2.15 TST-RT-015 Error and boundary cases
 - [ORA-RT-015](#ora-rt-015) — 2.15.1 ORA-RT-015 Fail-closed result
+- [TST-RT-016](#tst-rt-016) — 2.16 TST-RT-016 Effective branch-policy assessment
+- [ORA-RT-016](#ora-rt-016) — 2.16.1 ORA-RT-016 Expected result
+- [TST-RT-017](#tst-rt-017) — 2.17 TST-RT-017 Canonical plan and write boundary
+- [ORA-RT-017](#ora-rt-017) — 2.17.1 ORA-RT-017 Expected result
+- [TST-RT-018](#tst-rt-018) — 2.18 TST-RT-018 Temporary child-process credential isolation
+- [ORA-RT-018](#ora-rt-018) — 2.18.1 ORA-RT-018 Expected result
+- [TST-RT-019](#tst-rt-019) — 2.19 TST-RT-019 Exact chat approval, V3 history, and transport boundary
+- [ORA-RT-019](#ora-rt-019) — 2.19.1 ORA-RT-019 Expected result
 <!-- heading-map:end -->
 
 
@@ -265,3 +281,55 @@ No credentials or Issue bodies are emitted, and local state stays scoped to its 
 #### 2.15.1 ORA-RT-015 Fail-closed result
 
 Every invalid boundary returns a nonzero bounded error before an unrelated local or GitHub mutation.
+
+<a id="tst-rt-016"></a>
+### 2.16 TST-RT-016 Effective branch-policy assessment
+
+**Setup and action:** Feed `assess_branch_policy` branch, legacy protection, effective rules, and Ruleset detail fixtures for exact `solo_owner` and `external_reviewer` policies. Vary missing sources, HTTP 403/404, duplicate Ruleset IDs/rules, branch scope, enforcement, source, bypass actors, Required Check contexts and App IDs, approval count, and force-push rule. Include legacy approvals of one with a valid `solo_owner` Ruleset requiring zero.
+
+<a id="ora-rt-016"></a>
+#### 2.16.1 ORA-RT-016 Expected result
+
+Policy status distinguishes `VERIFIED`, `NOT_CONFIGURED`, `UNAVAILABLE`, `UNVERIFIED`, and `MISMATCH` without treating forbidden reads as missing settings. Required Checks compare exact context/App ID pairs. A known legacy approval requirement remains an independent constraint and conflicting legacy/Ruleset values produce `MISMATCH`.
+
+<a id="tst-rt-017"></a>
+### 2.17 TST-RT-017 Canonical plan and write boundary
+
+**Setup and action:** Build plans from fake GitHub responses and validate canonical plan digest round trips. Mutate every bound identity/evidence field, including repository/owner IDs, configured Activation Issue, ADC generation, setup-branch commit/generation, profile ref/digest, predecessor, and policy evidence. Verify a V2 plan may consume only its exact remote setup-branch HEAD and that `apply_ruleset_plan` rejects a file changed after owner-decision verification. Simulate one POST, one PUT, zero-write NOOP, process death after successful POST/PUT, exact retry recovery, an unowned same-name Ruleset without intent, lost responses, direct/list/direct approval mismatch, an old policy-bound open setup PR followed by a new branch/plan/PR generation, and corruption after an exact V2 applied-record prefix. Verify external-reviewer inventory marks solo-owner policy `UNSUPPORTED` but blocks missing required checks. Inspect the fake transport's complete request sequence.
+
+<a id="ora-rt-017"></a>
+#### 2.17.1 ORA-RT-017 Expected result
+
+Plan digests change when any bound input changes, including setup generation. Activation does not create a V2 setup PR before policy verification. If an existing proposal's immutable policy binding is stale, the old PR stays unchanged and a new setup branch, plan, and PR bind the current policy. Only a fresh exact `RULESET_PLAN_APPLY` V3 chat-confirmed decision plus the owner-authenticated two-line Issue #57 approval can reach the single managed Ruleset writer. A durable intent recovers the same exact Ruleset and approval after process death without a second POST/PUT; without intent, an unowned same-name Ruleset is rejected. An exact owned policy performs no write and requires no write approval. Historical V2 verification reads only through its bound applied-record ID while new issuance validates the full history. External-reviewer V1 reports the complete inventory and cannot be ACTIVE with missing required checks. Every ambiguous write result performs reads only and never triggers a second POST/PUT or rollback.
+
+<a id="tst-rt-018"></a>
+### 2.18 TST-RT-018 Temporary child-process credential isolation
+
+**Setup and action:** Use fake `gh` children and a subprocess recorder to inspect every argument, environment mapping, output stream, and client state. Device auth is the default: fake successful and failed `gh auth login` calls, verify the exact argv, mode-0700 one-time `GH_CONFIG_DIR`, runner-managed PTY display of the challenge, host permission-verification failure, later API use of the same directory, and cleanup on normal return, exception, SIGINT, and handled SIGTERM. For explicit nonstandard `pat` fallback, enter a marker credential through the injectable owner-controlled TTY input boundary. Vary all four standard/enterprise token variables and the parent `GH_CONFIG_DIR`; assert they are removed from isolated children and parent/default `gh` state is byte-for-byte unchanged. Cover identity/admin mismatch, 403, stale plan and failed device login as zero Ruleset writes, plus ambiguous request recovery as read-only. In a Cloud-like environment, permit the runner-managed PTY to display a device challenge without requiring an owner-local TTY; if that capability is unavailable, assert `ADMIN_DEVICE_LOGIN_UNAVAILABLE` without an Admin API call. Inspect `os.environ`, unrelated child environments, temporary files, logs, and object representation before, during, and after both modes.
+
+<a id="ora-rt-018"></a>
+#### 2.18.1 ORA-RT-018 Expected result
+
+Only the `gh api` child process for the active authenticated client receives the Admin authentication context: PAT fallback uses its designated child-only token override; device mode uses its private per-command `GH_CONFIG_DIR`, with ambient token variables removed. The normal parent `gh` environment, configuration, and unrelated children remain unchanged. PAT bytes never appear in argv, logs, JSON, files, object representation, `os.environ`, another subprocess, or later ordinary requests. The device OAuth token exists only in its private temporary GitHub CLI config while the session is active; cleanup removes that directory but does not revoke the GitHub-side grant. Device login uses a runner-managed interactive PTY when required and does not require an owner-local TTY. It never silently falls back. If the runner cannot present the challenge, return `ADMIN_DEVICE_LOGIN_UNAVAILABLE` and make no Admin API request. Normal return, API error, exception, SIGINT, and handled SIGTERM clear client bindings and remove only the private device config. Same-OS-user subprocesses are not a strong sandbox. Identity/admin mismatch, 403, stale plan, and unavailable device login cause zero Ruleset writes; an interrupted or ambiguous write follows durable-intent recovery and never triggers a second POST/PUT.
+
+<a id="tst-rt-019"></a>
+### 2.19 TST-RT-019 Exact chat approval, V3 history, and transport boundary
+
+Test V1 delegated, V2 owner-local TTY, and V3 `chat_confirmed_gh_v1` as immutable schemas in one predecessor chain. V3 ordinary and User Review bodies must bind exact repository/Issue/operation/subject, plan SHA, approval-scope SHA, optional PR/HEAD, owner actor, channel, and immediate predecessor. Verify canonical bytes, stable owner ID 3744776, repository ID 1401910271, actual `url`/`issue_url`/`html_url`, created=updated, complete pagination and direct/list/direct equality. Reject wrong actor/source, unknown channel/field, changed scope, duplicate/replay across versions, stale subject, missing page, edit/deletion and broken predecessor. Ignore incidental schema-name mentions in prose; still reject unknown or malformed records at the actual carrier position. Preserve V1/V2 bytes and PRBinding V1.
+
+Verify the transport boundary separately: GitHub API resources (Issues, PRs, comments, reviews, checks, Actions, Rulesets, policy, merge, labels and closure) must go through `gh` in `github.py`; request JSON uses `--input -` stdin and no SDK, connector or direct HTTP is called. Repository fetch/push and remote-ref/object readback use only the existing Git boundary and Git commands. Assert no Git command is used as a substitute for GitHub API state, and no API writer is added outside `github.py`.
+
+`capture_direct_chat_confirmation` accepts only a direct current user-role approval in the same conversation and only for the exact displayed scope. Test explicit approval success; vague “continue”, assistant-authored text, wrong role, different conversation, stale ADC/plan/PR HEAD, changed wording/scope, and non-owner GitHub actor must make zero GitHub writes. The scope digest is not a chat signature. If the host cannot provide the direct role event, assert `CHAT_PROVENANCE_UNAVAILABLE`. The CLI `owner-authorize-commit` must fail closed and must not read stdin, accept `--approved`, or accept a consent file. The in-process hook must re-read live subjects and authenticated owner before a single V3 append; lost POST is read-only recovery with no second POST.
+
+For `RULESET_PLAN_APPLY`, require a blocker-free canonical plan and exact V3 approval; then append/read back the existing exact two-line Issue #57 comment from owner ID 3744776. Assert wrong Issue/repository/actor/body, duplicate/missing approval, stale plan, and 403 cause zero Ruleset writes. Exact owned policy remains a zero-write NOOP and the existing canonical writer/durable intent remains unique.
+
+For V3 `USER_REVIEW`, bind session, Readiness, ADC, exact PR HEAD, prior full feedback digest, plan and scope digests. Verify null genesis, immediate predecessor, strict `created_at > started_at`, unchanged timestamps, direct/list/direct URLs and distinct read-only verifier identity. The evaluator accepts only a typed V3 carrier; current feedback excluding that carrier must equal the bound prior digest, all surfaces must be read, and no unresolved thread/later feedback may remain. Persist V3 selected evidence in `PASES_USER_REVIEW_RESULT_V2`; Final Delivery re-reads full history and snapshot and reproduces the exact result. Reject wrong actor/author/owner, stale or changed scope, self-approval, edits/deletions, incomplete pagination, replay, and unresolved threads.
+
+For PR merge, keep separate exact-HEAD grants for the Issue #57 Setup PR and PR #64. Test stale HEAD, failed current gates, wrong PR/repository/target and non-owner actor as zero merge requests. Simulate lost merge response; durable attempt and read-only resume must never issue a second request. The Phase bootstrap remains automatic after approved ADC and uses only technical Intent/Applied evidence with at most one label PUT.
+
+<a id="ora-rt-019"></a>
+#### 2.19.1 ORA-RT-019 Expected result
+
+Only a direct same-conversation explicit user-role event bound to the current exact scope can produce an operator-reported V3 grant. The runtime reports `chat_confirmed_gh_v1` without claiming a signed chat attestation. Owner and repository IDs, actual GitHub actor, comment URLs, operation and predecessor are independently checked; the read-only verifier principal may differ from the pinned owner. CLI/flags/files/vague continuation cannot authorize a write. If user-role provenance is unavailable, V3 is unavailable and no carrier is written. V1/V2 remain read-compatible and unmodified.
+
+V3 User Review enters the complete-session/snapshot evaluator and carries exact session, Readiness, ADC, HEAD, prior feedback, plan and scope. Final Delivery re-reads the complete chain and snapshot. Ruleset requires both the V3 exact-plan owner record and exact #57 two-line comment. Setup PR and PR #64 decisions remain separate exact-HEAD authorizations. Merge is unavailable until Required Checks, independent review, User Review, Final Delivery and Activation V2 gates pass. Phase bootstrap remains automatic after approved ADC publication with Intent/Applied only.
