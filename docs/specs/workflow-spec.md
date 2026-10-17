@@ -2,7 +2,7 @@
 <!-- agent-doc-schema: 2 -->
 # Portable Workflow Specification
 
-- Status: Approved
+- Status: Existing content approved; REQ-F01-014 and REQ-F01-015 are drafts pending Issue #63 successor ADC approval and phase evidence.
 - Owning Issue: [Issue #7](https://github.com/puchinya/ai-agent-workflow/issues/7)
 - Related design: [Workflow design](../design/workflow-design.md)
 - Runtime contract: [Runtime specification](runtime-spec.md)
@@ -35,6 +35,8 @@
   - [9.8 REQ-F01-011 V2 effective time](#98-req-f01-011-v2-effective-time)
   - [9.9 REQ-F01-012 Activation history prefix](#99-req-f01-012-activation-history-prefix)
   - [9.10 REQ-F01-013 Bootstrap and review gates](#910-req-f01-013-bootstrap-and-review-gates)
+  - [9.11 REQ-F01-014 Activation-scoped temporary admin authentication](#911-req-f01-014-activation-scoped-temporary-admin-authentication)
+  - [9.12 REQ-F01-015 Owner-authorized relay decisions and separated operations](#912-req-f01-015-owner-authorized-relay-decisions-and-separated-operations)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -59,6 +61,8 @@
 - [REQ-F01-011](#req-f01-011) — 9.8 REQ-F01-011 V2 effective time
 - [REQ-F01-012](#req-f01-012) — 9.9 REQ-F01-012 Activation history prefix
 - [REQ-F01-013](#req-f01-013) — 9.10 REQ-F01-013 Bootstrap and review gates
+- [REQ-F01-014](#req-f01-014) — 9.11 REQ-F01-014 Activation-scoped temporary admin authentication
+- [REQ-F01-015](#req-f01-015) — 9.12 REQ-F01-015 Owner-authorized relay decisions and separated operations
 <!-- heading-map:end -->
 
 
@@ -344,3 +348,21 @@ Validation of an existing Gate Selection MUST validate only the authenticated Ac
 ### 9.10 REQ-F01-013 Bootstrap and review gates
 
 The #63 implementation branch MUST be able to create the initial Ruleset before its PR is merged. This bootstrap does not skip CI, independent review, User Review, Final Delivery, or owner merge authorization. The #60 implementation and PR #62 remain independent and are integrated after #63.
+
+<a id="req-f01-014"></a>
+### 9.11 REQ-F01-014 Activation-scoped temporary admin authentication
+
+Only the explicit `delivery consumer-activation-admin-plan` and `delivery consumer-activation-admin-apply` commands may request temporary administrator authentication for Consumer Activation. Each command MUST accept the credential only from the repository owner through `getpass` on that owner's interactive local TTY, in a separate short-lived session. The owner creates a repository-limited, short-lived fine-grained PAT with at least Administration read/write and only the minimum additional permissions required by the existing Activation Issue read/write path, then revokes it on GitHub after use; ending a local session does not revoke the PAT. Non-interactive or sandboxed execution MUST stop with `ADMIN_AUTH_INTERACTIVE_REQUIRED`. The system MUST NOT request the PAT in chat or store it in a file, command argument, log, JSON, worktree, process-global environment, or persistent GitHub CLI credential store, and MUST NOT use browser automation or `gh auth login --web`.
+
+The temporary credential MUST be passed only to the `gh api` child processes owned by the authenticated `GitHub` client through a private per-client override and child-process environment. It MUST NOT mutate `os.environ`, default `gh` authentication, or unrelated subprocess environments. The override MUST be cleared on normal return, errors, and interruption; complete erasure from Python memory is not guaranteed. Before any Ruleset action, the command MUST verify the authenticated stable user ID equals the repository owner's ID, the owner login and repository ID match the target, repository `permissions.admin=true`, collaborator permission is `admin`, and default-branch protection, Ruleset inventory, and effective branch rules are completely readable. A 403 or incomplete readback MUST block rather than imply absent protection.
+
+Admin-plan is read-only and MAY write a canonical plan file only when its status is `PLANNED` with no blockers. Admin-apply MUST revalidate the exact plan, repository identity, effective policy, and a separate exact-plan owner approval on the configured Activation Issue, then reuse the existing one-write/durable-intent/apply/readback path. Temporary authentication alone is neither Ruleset approval nor PR merge authorization. The ordinary preflight and existing plan/apply commands MUST retain their current authentication behavior and MUST NOT prompt or escalate automatically.
+
+<a id="req-f01-015"></a>
+### 9.12 REQ-F01-015 Owner-authorized relay decisions and separated operations
+
+For delegated GitHub relay operations, the owner MUST first receive a readback of the exact operation, repository, Issue/PR, and subject SHA/HEAD in ChatGPT, then directly confirm that operation in chat. A generic request to continue, an Issue comment, model-generated text, a CLI flag, or caller-supplied JSON is not an operation-specific decision. The ChatGPT GitHub connector acts as a delegated relay under its authenticated GitHub account; its GitHub records are delegated evidence and MUST NOT be described as a signed or host-attested chat event. The relay MUST write only the exact operation the owner confirmed. If the GitHub actor, target, or subject cannot be verified, that operation MUST block before its write.
+
+`PHASE_REBASE`, `ADC_SUPERSEDE`, `RULESET_PLAN_APPLY`, `USER_REVIEW`, and `PR_MERGE` are distinct, one-time decisions. Each decision MUST bind its exact ADC SHA, blocker-free plan SHA, or current PR HEAD as applicable and MUST NOT be replayed for a different operation, repository, Issue, PR, or subject. The four delegated GitHub relay decisions (`PHASE_REBASE`, `ADC_SUPERSEDE`, `RULESET_PLAN_APPLY`, and `PR_MERGE`) use `PASES_OWNER_DECISION_V1` records identifying the `delegated_github_relay` evidence channel, stable GitHub actor ID, operation and exact subject, plus the predecessor comment ID. The relay appends the record through GitHub and reads it back from the target Issue; the runtime verifies canonical bytes, stable owner ID, comment sequence, and unused decision scope. This record proves the delegated GitHub action and actor; it does not claim cryptographic linkage to a chat event. `USER_REVIEW` continues through the existing host-attested User Review procedure and is not represented by a relay record. The implementation executor MUST NOT create a record in the owner's name or treat a GitHub comment by itself as proof of chat intent.
+
+For Issue #63, `PHASE_REBASE` MUST authorize only the exact successor ADC SHA and one `phase:ready` to `phase:requirements` label replacement while preserving every other label and immutable Issue history. `ADC_SUPERSEDE` MUST be separately approved for that same exact ADC SHA and use the supported append-only publication path. A `RULESET_PLAN_APPLY` decision MUST bind the exact blocker-free canonical plan SHA; only the separately confirmed GitHub relay may then append the existing exact two-line Issue #57 approval comment as an explicitly scoped exception to the predecessor's agent-posting prohibition. The comment MUST read back with the configured stable owner User ID; an unknown actor MUST block. Existing one-write, durable-intent, readback, and fail-closed Ruleset semantics remain mandatory. `USER_REVIEW` continues to use the existing host-attested User Review procedure; delegated GitHub relay records MUST NOT satisfy it. `PR_MERGE` requires its own current-HEAD decision after all independent review, CI, User Review, and Final Delivery gates pass.

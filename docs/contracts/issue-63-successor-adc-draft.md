@@ -1,0 +1,197 @@
+# Agent Development Contract — issue-63-activation-ruleset-management-successor-draft
+
+Draft only — not approved for execution or publication.
+
+Repository: puchinya/ai-agent-workflow
+Issue: 63
+Parent contract: none
+Predecessor ADC: Issue #63 comment #6228771805, SHA-256 `ad13d005126693bb4e1cbe1e7eaa815e43f0a1ef3b88ef9f1670450a42bc9622` (immutable; this draft is a proposed successor).
+Assigned requirements: REQ-F01-008, REQ-F01-009, REQ-F01-010, REQ-F01-011, REQ-F01-012, REQ-F01-013, REQ-F01-014, REQ-F01-015
+Dependencies: Consumer Activation #57; predecessor F01 Issue #42; open #60/PR #62 is a downstream integration target, not a prerequisite.
+Target release: unspecified
+
+<!-- contents:start -->
+**Contents**
+- [1 Issue](#1-issue)
+- [2 Scope](#2-scope)
+- [3 Change Kind](#3-change-kind)
+- [4 Requirements](#4-requirements)
+- [5 Architecture Decisions](#5-architecture-decisions)
+- [6 Artifact Impact](#6-artifact-impact)
+- [7 Exact Changes](#7-exact-changes)
+- [8 Invariants](#8-invariants)
+- [9 Non-goals](#9-non-goals)
+- [10 Verification Obligations](#10-verification-obligations)
+- [11 Reviewer Checklist](#11-reviewer-checklist)
+- [12 Completion Gates](#12-completion-gates)
+<!-- contents:end -->
+
+<!-- heading-map:start -->
+**Stable heading map**
+<!-- heading-map:end -->
+
+
+<a id="issue"></a>
+## 1 Issue
+
+[P-ASES][F01][P0] Activation時のRuleset自動整備と既存Issue非破壊の再Activation. This contract authorizes implementation for this Issue alone, not administrator privileges or a Ruleset plan approval.
+
+<a id="scope"></a>
+## 2 Scope
+
+Consumer Activation must establish effective repository Ruleset protection using exact, human-approved plans before recording V2 Activation. Preserve existing Issue authorization and append-only history, while applying current runtime fixes and live GitHub policy checks to old Issues. #63 is implemented before #60/PR #62 is merged.
+
+<a id="change-kind"></a>
+## 3 Change Kind
+
+Behavioral bug fix and approved workflow enhancement. No implicit change to legacy V1 contracts or automatic authority for GitHub settings edits.
+
+<a id="requirements"></a>
+## 4 Requirements
+
+All requirements from the immutable predecessor ADC remain binding. This successor adds the following requirement without changing the prior Activation history, Gate Selection, or Ruleset approval requirements.
+
+- REQ-F01-008: V2 Activation shall verify the effective protected default-branch policy, trusted Required Checks/App IDs, review mode, and readable admin credentials before issuing the new record.
+- REQ-F01-009: An explicitly approved canonical plan shall be required for any automated repository Ruleset create/update; writes shall be confined to the verified owned Ruleset and shall be idempotent/fail-closed.
+- REQ-F01-010: V1 Activation history and existing Issue Gate Selections, ADCs, PRs and evidence shall remain unchanged; current runtime bug fixes and live Final Delivery checks shall apply to those Issues without re-authorization.
+- REQ-F01-011: V2 Activation shall be append-only, have a record.created_at effective time, and must not retroactively authorize Issues created before its issuance.
+- REQ-F01-012: Existing Issues shall validate only the authenticated history prefix ending at their selected Activation; issuing a successor and choosing new Issues shall validate the full history.
+- REQ-F01-013: #63 shall bootstrap its Ruleset automation before merge, not require #60 completion, and preserve the existing independent review, Required Checks, User Review and merge gates.
+- REQ-F01-014: Only the two explicit Activation admin commands shall accept a short-lived owner-created repository-scoped fine-grained PAT with Administration read/write through `getpass` on the owner’s interactive local TTY, with a separate session per command. The token shall reach only that command’s `gh api` child process, never global authentication state, unrelated processes, logs, arguments, files, JSON, or chat. The stable authenticated user ID must equal the target repository owner ID, with owner login, repository ID, `permissions.admin=true`, and collaborator permission `admin` verified. Non-TTY/cancelled/identity-mismatched/admin-insufficient/unreadable states shall block with zero Ruleset writes. Admin-plan shall save only a blocker-free canonical plan; admin-apply shall reuse the existing exact Issue #57 plan-approval and durable-intent path. The owner shall revoke the PAT in GitHub after use.
+- REQ-F01-015: For delegated GitHub relay operations, the owner must receive a ChatGPT readback of the exact operation, repository, Issue/PR, and subject SHA/HEAD, then directly confirm that operation in chat. A generic request to continue, Issue comment, model-generated text, CLI flag, or caller-supplied JSON is not an operation-specific decision. The ChatGPT GitHub connector acts as a delegated relay through its authenticated GitHub account; relay records are delegated GitHub evidence, not signed or host-attested chat events. No Cloud host signature, browser OAuth, or TTY is required for this relay path. If the GitHub actor, target, or subject cannot be verified, block that operation before its write. `PHASE_REBASE`, `ADC_SUPERSEDE`, `RULESET_PLAN_APPLY`, `USER_REVIEW`, and `PR_MERGE` are distinct one-time decisions bound to the exact ADC SHA, blocker-free plan SHA, or current PR HEAD as applicable. Canonical `PASES_OWNER_DECISION_V1` records identify the `delegated_github_relay` channel, stable GitHub actor ID, operation, exact subject, and predecessor comment ID; the relay appends and reads back each record. The record proves the delegated GitHub action and actor, not cryptographic linkage to the chat. For #63, phase rebaseline is limited to one `ready`→`requirements` label replacement with all other labels and immutable history preserved; ADC supersede requires separate approval. Only the separate relay may append the exact Issue #57 Ruleset approval comment after an exact plan decision and under the explicitly scoped successor-ADC exception. User Review retains the existing host-attested procedure, and relay evidence cannot satisfy it. PR merge requires its own current-HEAD decision after all independent gates pass. Existing PRBinding V1 remains immutable; a successor generation may advance only the same repository, Issue #63, PR #64, branch, base SHA, and ancestry after validating the ADC journal and new ExecutionBinding.
+
+<a id="architecture-decisions"></a>
+## 5 Architecture Decisions
+
+**D1 — 履歴の非遡及とruntime修正を分離する**
+
+- 既存IssueのGate Selectionが参照するActivation comment ID/SHA、ADC、本文、phase、PR、過去の証跡を不変とする。V1有効時刻は既存の`merged_at`。V2の新review要求を旧ADCに遡及しない。
+- 最新の**バグ修正済みruntime**と**現在の**CI/Ruleset/reviewは既存Issueでも評価する。保護が不足すればBLOCKし、古いIssueを新Activationへ付け替えない。
+- 既存Issueの認可履歴は、参照先までの**厳密なprefix検証**を共有関数で行う。後続Activationの破損は旧Issueに波及させない。prefix自身の異常はBLOCK。新Issue選択・新Activation発行は全履歴を検証する。
+
+**D2 — #63を先行し#62と共通基盤を一本化する**
+
+- 順序: **#63の実装PR → #63ブランチで初回Ruleset整備 → #63レビュー/マージ → V2後継Activation → PR #62をmainへ追従 → #60完了**。#63は#60マージ待ちにしない。
+- #63で`branch_policy.py::{EffectiveBranchPolicy,assess_branch_policy}`、`profile.py`のSchema 2任意`final_delivery.review_mode`、`github.py`の保護APIを先行導入。公開インターフェースはPR #62の現行実装に互換。後の#62で重複コードを除去し、機能実装自体は#60へ残す。
+- このrepositoryの#63 PRは`.agent/project.json`に**明示`final_delivery.review_mode=solo_owner`**を追加し、既存Required Checks 4件とtrusted App ID 15368を維持。既定`external_reviewer`の互換性と他consumer repoの設定は変更しない。#57 V1のmerged profile証跡は変更しない。
+
+**D3 — 管理対象Rulesetのexact state**
+
+- 対象はrepository scopeで**名前`P-ASES Final Delivery (managed)`の一件のみ**。`target=branch`、`enforcement=active`、`conditions.ref_name={include:["~DEFAULT_BRANCH"],exclude:[]}`、`bypass_actors=[]`。
+- ルールは3種: `pull_request`（approvals=0、stale-dismiss=false、code-owner=false、last-push-approval=false、review-thread-resolution=true、merge methods=[merge,squash,rebase]）、`required_status_checks`（profileの4件の`context`＋`integration_id=15368`完全一致、strict=true）、`non_fast_forward`（force push禁止）。GitHub APIのrequired fieldsを全て正確に付ける。
+- この自動更新は**明示選択したsolo_ownerのみ**。`external_reviewer`は読み取り・診断のみ。別名Ruleset、組織Ruleset、legacy protectionは変更しない。同名で管理所有証跡がない、競合保護、複数候補はBLOCK。削除・強制上書き・ルール緩和は禁止。
+
+**D4 — 人の承認を拘束した安全な自動適用**
+
+- `delivery consumer-activation-preflight`はGitHub read-only。plan出力はrepo ID、owner ID、default branch、committed profile SHA、mode/check集合、Ruleset既存ID/digest（なければnull）、desired API payload、diff、現行保護証跡、既存PR影響を含むcanonical JSONのSHA-256を生成する。
+- 本人がChatGPTから正確なplan SHAのreadbackを受け、チャット上で`RULESET_PLAN_APPLY`を別途確認する。ChatGPT GitHub relayがdelegated decision recordを追記・readbackし、stable owner IDとexact subjectを検証できた後に限り、#57へ次の完全一致コメントをAPIで追記する（Codex実装エージェントによる投稿は禁止）。これはこの後継ADCで定義するrelay限定例外であり、未承認または別SHAでは実行しない。
+  ```text
+  PASES-RULESET-APPROVE: <64桁plan SHA-256>
+  PASES-REPOSITORY: puchinya/ai-agent-workflow
+  ```
+  既存apply CLIは中継者が記録したcomment ID・actor stable User ID・未編集本文・Issue/repo・exact plan・direct/list/direct readbackを検証する。ChatGPT relayがGitHub上で行った記録はdelegated GitHub evidenceであり、host署名済みchat eventとは扱わない。User Reviewは既存host-attested入力モデルを維持し、このrelay記録で代用しない。
+- `--apply --plan <path> --approval-comment-id <id>`は書込直前に計画前提を二度再取得し、一致時のみ**初回一度POST／所有証跡がある既存IDへ一度PUT／一致ならNOOP**。HTTP errorや失われたresponse後は管理対象のunique ID/bodyを再取得し、曖昧ならBLOCK。盲目的再試行、無断ロールバックは禁止。
+- 適用後はruleset detail / effective branch rules / legacy protection / `main.protected`を**同じAdmin認証**で再読取し、#60互換の`EffectiveBranchPolicy.status=VERIFIED`以外はActivation発行不可。初回成功時に#57へ追記専用`PASES_RULESET_APPLIED_V1`（repo、ID、plan SHA、承認comment ID、適用後body digest）を投稿・再検証して管理所有証跡とする。以後のPUTはこのIDと前回digestに一致する場合のみ許可し、成功ごとに後継適用証跡を追加。証跡投稿失敗時は**一意ID＋元plan/承認＋現状が完全一致する場合だけ**冪等回復し、曖昧ならBLOCK。403を未設定扱いにせず、tokenをログに出さない。書込中・適用後の実効設定変更を検知したらBLOCK。過去のrecordは編集しない。
+
+**D5 — 後継Activation V2**
+
+- V1 payloadと承認履歴を一切変更せず、同じ#57へversioned setup/approval/record **V2をappend-only**。V2 recordはmerged profile bytes SHA、review mode、Check集合/App ID、管理Ruleset ID、実効policy digest、setup PR/管理者を拘束する。
+- V2の**有効時刻はGitHubが返すActivation recordの`created_at`**。setup PR mergeとrecord作成の中間に作成されたIssueは新V2を使用しない（旧V1が有効ならV1を使用）。V1の時刻は従来どおり。
+- 現行`setup_consumer_activation`が同一ADC SHAで古いACTIVEを返す短絡は**V1→V2移行の場合に使わない**。fresh policy double-read後のみrecord追加。発行後のpolicy変更は過去のrecordを無効にせず、現在のpreflight/Final DeliveryだけBLOCK。
+
+**D6 — Activation-only temporary administrator credential**
+
+- Preserve D1–D5 and the predecessor ADC’s exact-plan approval/apply rules. The only authentication change is a new explicit owner-operated route for the two commands `delivery consumer-activation-admin-plan` and `delivery consumer-activation-admin-apply`; ordinary preflight, Ruleset plan/apply, and all other commands never prompt or escalate.
+- The human owner creates a short-lived fine-grained PAT limited to repository `puchinya/ai-agent-workflow`, with Administration read/write and only the minimum additional read/write permissions the existing Issue #57 approval and applied-record path requires. The owner enters it using `getpass` on an interactive local TTY. Non-TTY/sandbox execution returns `ADMIN_AUTH_INTERACTIVE_REQUIRED` before requesting the token or making requests. Do not use browser automation, `gh auth login --web`, token arguments, token files, global `GH_TOKEN`, or persistent credential stores. The owner revokes the PAT in GitHub after the separate plan and apply sessions; process exit alone does not revoke it.
+- Add `runtime/p_ases/admin_auth.py` for the TTY-only owner session and account/repository/admin preflight. Add a private, repr-hidden credential override to `GitHub`; `GitHub.request` copies the child environment, sets the override as `GH_TOKEN`, removes competing token variables, and supplies it only to its own `gh api` subprocess. Never mutate `os.environ` or unrelated child environments. Clear the override in `finally` across success, error, and interruption; Python-memory erasure is not guaranteed.
+- Add only these CLI commands and arguments:
+  ```sh
+  python -m p_ases delivery consumer-activation-admin-plan --repo puchinya/ai-agent-workflow --root . --output /tmp/pases-issue63-plan.json
+  python -m p_ases delivery consumer-activation-admin-apply --repo puchinya/ai-agent-workflow --root . --plan /tmp/pases-issue63-plan.json --approval-comment-id COMMENT_ID
+  ```
+  Each command obtains a separate TTY credential session. The plan command is read-only with respect to GitHub and saves a canonical plan only when `status=PLANNED` and `blockers=[]`. Apply rechecks stable user ID equality with owner ID, owner login, repository/owner IDs, `permissions.admin=true`, collaborator permission `admin`, main legacy protection, Ruleset inventory, effective branch rules, exact plan freshness, and exact human approval on configured Activation Issue #57 before reusing `apply_ruleset_plan`. A 403 or partial read remains unavailable and blocks.
+- No credential is approval. The owner separately confirms the exact plan SHA through `RULESET_PLAN_APPLY`; only the ChatGPT GitHub relay appends the existing exact approval comment on #57 under this successor ADC's scoped exception. Existing durable intent, one-write/no-op semantics, readback, V1/V2 history, PR #64, #57 V1, and #60/PR #62 remain unchanged. Admin authentication and Ruleset approval do not approve PR merge.
+
+**D7 — Delegated owner decision relay**
+
+- Before each relay operation, ChatGPT reads back the exact operation, repository, Issue/PR, and ADC/plan SHA or PR HEAD and waits for the owner's direct, operation-specific chat confirmation. A generic continuation does not authorize a write. The ChatGPT GitHub connector acts under its authenticated account and records resulting actions through GitHub. Treat these as delegated GitHub evidence; never call them host attestations or cryptographically signed chat events. Cloud implementation does not require a Chat host signature, browser OAuth, or interactive TTY for this relay path.
+- The independent `owner_consent.py` verifier parses canonical append-only `PASES_OWNER_DECISION_V1` fields: `schema, repository, issue_number, operation, subject_sha256, pr_number, pr_head_sha40, owner_id, evidence_channel, predecessor_comment_id`; unused PR fields are null and `evidence_channel` is exactly `delegated_github_relay`. The GitHub relay appends the record and reads it back. Runtime verifies canonical bytes, stable owner ID, unchanged direct/list/direct readback, monotonic comment IDs, one-time operation/subject use, and the current subject. A GitHub record verifies the relay actor and delegated action; it does not prove chat authorship. The implementation executor cannot write a decision under the owner's name.
+- The five decisions `PHASE_REBASE`, `ADC_SUPERSEDE`, `RULESET_PLAN_APPLY`, `USER_REVIEW`, and `PR_MERGE` are separate and one-time. The four GitHub relay operations have `PASES_OWNER_DECISION_V1` records; User Review retains its existing host-attested procedure and is not represented by a relay record. The first two bind the exact successor ADC SHA. Ruleset approval binds a blocker-free exact plan SHA. User Review and merge bind the current PR HEAD, with merge requiring all independent CI/review/Final Delivery gates. No decision implies another.
+- For `RULESET_PLAN_APPLY`, after a separate exact-plan chat confirmation and only under this approved successor ADC, the delegated relay may append the existing two-line `PASES-RULESET-APPROVE` / `PASES-REPOSITORY` comment to #57. The comment must read back with the configured stable owner User ID expected by existing Ruleset verification; an unknown actor blocks. This is a relay-only, exact-plan-scoped exception to the predecessor's agent-posting prohibition; existing apply, durable intent, one-write and readback logic remains unchanged.
+- `PHASE_REBASE` permits the relay to replace only #63's labels from `phase:ready` to `phase:requirements` for the exact approved successor ADC, preserving `kind:single` and all other labels. It does not authorize `ADC_SUPERSEDE`; that publication requires its own exact-SHA decision. Neither operation changes the Issue body, old Phase Decisions, Gate Selection, ADC, or existing PR.
+- Preserve PRBinding V1 byte-for-byte. A new version may advance only the same repository, Issue #63, PR #64, branch, base SHA, and commit ancestry; validate the append-only ADC journal, old V1 readback, and new ExecutionBinding before the append. Reject gaps, duplicate/non-contiguous versions, stale or backward ADC identity, ancestry mismatch, and any cross-PR/branch/base drift. `pr ensure`, Review Readiness, and Final Delivery validate the latest generation while retaining legacy single-generation compatibility.
+
+<a id="artifact-impact"></a>
+## 6 Artifact Impact
+
+Canonical: update `docs/specs/workflow-spec.md` (REQ-F01-014/015), `docs/design/workflow-design.md` (DES-F01-014/015), `docs/testing/pases-lifecycle-tests.md` (TST/ORA-F01-014/015), `docs/testing/runtime-tests.md` (TST/ORA-RT-018/019), and `docs/testing/traceability.md`. Keep this unapproved review copy at `docs/contracts/issue-63-successor-adc-draft.md` until ADC publication. Update `runtime/p_ases/github.py`, add `runtime/p_ases/admin_auth.py` and `runtime/p_ases/owner_consent.py`, update `runtime/p_ases/cli.py`, `runtime/p_ases/phase_rebaseline.py`, and `workflow/skills/{delivery-control,user-review}/SKILL.md`. Add `tests/test_admin_auth.py`, `tests/test_owner_consent.py`, and `tests/test_phase_rebaseline.py`; extend `tests/test_github_checks.py`, `tests/test_p_ases_cli.py`, and `tests/test_ruleset_management.py`. Before Ready, all test paths linked by traceability must exist as actual source files in a commit; they may be failing test-driven scaffolds until implementation. Regenerate the three distribution targets with the repository build tool after implementation. The existing `.agent/project.json`, #57 records, #60 ADC, and PR #62 remain unchanged.
+
+<a id="exact-changes"></a>
+## 7 Exact Changes
+
+1. Draft phase: preserve the existing local drafts, revise them to this addendum, add actual test source scaffolds for every traceability path, and commit/push those reviewable drafts to the existing PR #64. This does not publish or approve the ADC, change phase, or authorize runtime implementation. Keep #57 and #60 read-only.
+2. Before Ready, validate that every referenced test source, document link, anchor, and commit exists and matches the successor ADC. Missing test files may make draft validation fail before this check; no fake paths or permanent skips are allowed.
+3. `runtime/p_ases/{branch_policy,profile,github}.py`の#62互換基盤、`runtime/p_ases/ruleset_management.py`（plan/approval/唯一の対象へのPOST/PUT/NOOP）、`runtime/p_ases/consumer_activation.py`（V2/冪等発行）、`runtime/p_ases/{gate_policy,phase_evidence}.py`（prefix検証）を実装。
+4. `runtime/p_ases/cli.py`へ`delivery consumer-activation-preflight`、`delivery consumer-activation-ruleset-plan --output <path>`、`delivery consumer-activation-ruleset-apply --plan <path> --approval-comment-id <id>`、V2 setup/verifyを追加。関連Skill更新、`dist/{openai,claude,antigravity}`を生成。
+5. **初回ブートストラップ**: 承認済みの後継ADC/Ready後、#63実装branchのblocker-free plan SHAを提示し、別のexact `RULESET_PLAN_APPLY` chat confirmationを得る。ChatGPT GitHub relayは#57へ既存exact approval commentを追記し、Codexはstable owner IDと本文をreadbackする。所有者が明示認可した別のAdmin環境で同branchのapplyを実行し実効Ruleをreadback。#63のUser Review/独立レビュー/Final Delivery/PR mergeは**省略しない**。各操作に別のcurrent-HEAD decisionを要求し、権限・承認が欠ける場合は#63もBLOCKED、強行mergeしない。
+6. #63 merge後は、mainで後継V2 Activation setup PR→検証・記録を実施。Rulesetが一致していればNOOP。PR #62は同じPRのままmainへ追従、重複共有基盤差分を解消、#60独自のレビュー/最終判定を再実行する。
+7. Add the two admin commands and TTY session boundary exactly as in D6. Reuse the current canonical Ruleset plan, Issue #57 approval verification, durable intent, one-write apply, and effective-policy readback paths; do not add aliases or a second apply implementation.
+8. Implement the owner-decision record verifier for delegated GitHub relay evidence, five distinct one-time decision types, #63 phase rebaseline, and forward-only PRBinding successor generation exactly as in REQ-F01-015 and D7. The relay-only #57 plan-approval comment is enabled only by this approved successor ADC; the executor cannot submit it in the owner's name.
+
+<a id="invariants"></a>
+## 8 Invariants
+
+- The V1 #57 Activation ADC, pointer, approval, record, original `merged_at`, and each prior Issue's ADC/Gate Selection/PR/evidence remain immutable.
+- Existing Issues are never auto-migrated to V2. The current live Final Delivery policy continues to fail closed on unavailable or mismatched protection.
+- Ruleset mutation requires an exact plan plus a separately confirmed `RULESET_PLAN_APPLY` decision and relay-recorded Issue #57 approval comment; this ADC approval does not grant that permission.
+- Only the uniquely owned P-ASES repository Ruleset may be created or changed. No silent changes to unrelated Rulesets, legacy branch protection, bypass actors, or repository authorization.
+- Keep approved #60 behavior confined to #60; use one shared policy API and preserve the original Issue #60 closing association.
+- Never ask the agent to receive or display the PAT. Never pass it through CLI args, files, JSON, logs, chat, `os.environ`, default `gh` auth, or unrelated child processes.
+- GitHub-side PAT revocation is the owner’s explicit post-use action; local cleanup must not be reported as revocation.
+
+<a id="non-goals"></a>
+## 9 Non-goals
+
+- [ ] 既存#57 V1および#60/PR #62の本文/ADC/Gate Selection/証跡を変更・再承認しない
+- [ ] #63の修正で#60のレビュー/mergeを代行しない。#49/#61/#41/#46の改修を混在させない
+- [ ] Ruleset writeは本人のexact-plan承認後のみ。ownerの無関係Settings、legacyや組織Rulesetを変更しない
+- [ ] V1/V2の認可、実効時刻、履歴prefix、新Issue full-historyを別々に検証
+- [ ] 認証・race・重複・失敗時の停止と安全なresumeをテストする
+- [ ] spec→design→tests→traceability・3 distributionが同期する
+- [ ] コミット・push・PR作成（`Closes #63`）・self/独立review・CI・別subjectのUser Review/PR_MERGE承認・ブローカー実行のmerge・Issue closure readbackを報告する
+
+<a id="verification-obligations"></a>
+## 10 Verification Obligations
+
+- 旧V1/旧IssueのADC・Gate Selection・phase/PR不変。後続V2だけ破損→旧Issue PASS/新Issue BLOCK、元V1改変→旧Issue BLOCK。
+- V2の記録前後でIssue作成日時を比較し、PR merge日時でV2を誤選択しない。
+- 空→1 POST、同一→NOOP、承認済みowned ID変更→1 PUT。それ以外・同名collision・承認なし・403・race・partial write→BLOCK/二重作成なし。
+- wrong branch、Check name/App ID、approve count、force push、bypass、inactive enforcement、legacy conflict→VERIFIED不可。
+- 非TTY/getpass cancellation/空入力/identity mismatch/admin不足/403/不完全readback/blocked plan/未承認apply/driftではRuleset POST/PUTが0回。正常時もIssue #57のexact-plan承認後に既存の1回write経路だけを通る。
+- token markerはargv/log/file/JSON/chat/os.environ/unrelated child/default authに現れず、例外・中断後の通常GitHub requestにも残らない。POST/PUT中断後の再開はread-only recoveryで二重writeしない。
+- admin-planとadmin-applyは別々にTTY認証し、owner操作後のGitHub UIでのPAT revokeを記録する。Codex環境がTTYを提供しない場合はlive activationをBLOCKEDとする。
+- PR #63をmerge前のbranch runtimeで整備できるがUser Review/CIは省略できない。#62をrebaseしても#60の`Closes #60`とADCは不変。
+- commands: `python -m compileall runtime tools tests`, `python -m unittest discover -s tests -p 'test_*.py'`, `python -m p_ases docs validate --root .`, `python tools/build_dist.py --check`, `python tools/validate_dist.py`。既存3系統traceability/16 Skills acceptance/Ubuntu・Windows・macOSの4 Required Checksも実行してexact HEAD/App IDを検証。live管理API実測ができなければBLOCKED。
+
+<a id="reviewer-checklist"></a>
+## 11 Reviewer Checklist
+
+- [ ] temporary PAT is entered only by the owner on a local TTY, reaches only the active `gh api` child process, and is never exposed in ChatGPT or repository artifacts
+- [ ] 既存#57 V1および#60/PR #62の本文/ADC/Gate Selection/証跡を変更・再承認しない
+- [ ] #63の修正で#60のレビュー/mergeを代行しない。#49/#61/#41/#46の改修を混在させない
+- [ ] Ruleset writeは本人のexact-plan承認後のみ。ownerの無関係Settings、legacyや組織Rulesetを変更しない
+- [ ] V1/V2の認可、実効時刻、履歴prefix、新Issue full-historyを別々に検証
+- [ ] 認証・race・重複・失敗時の停止と安全なresumeをテストする
+- [ ] spec→design→tests→traceability・3 distributionが同期する
+- [ ] コミット・push・PR作成（`Closes #63`）・self/独立review・CI・別subjectのUser Review/PR_MERGE承認・ブローカー実行のmerge・Issue closure readbackを報告する
+
+<a id="completion-gates"></a>
+## 12 Completion Gates
+
+- Review the exact accepted successor ADC generation and immutable pointer before implementing. Align specs, design, source, testing and status evidence.
+- Issue #63 is currently `phase:ready`. First preserve and commit reviewable docs/ADC drafts and real test source scaffolds to the same PR #64; missing traceability targets may fail validation during this draft stage. Before Ready, verify every referenced test source, link, anchor, and commit. Then, after the full successor ADC bytes and SHA are read back, obtain separate direct chat confirmations for `PHASE_REBASE` and `ADC_SUPERSEDE` on that same exact SHA. The delegated GitHub relay records each decision; only then may it perform the one-time `ready`→`requirements` label replacement and Codex use append-only ADC publication. Existing Phase Decisions remain bound to the predecessor generation and cannot satisfy the new chain. Do not start implementation, write Rulesets, or merge before both exact decisions, ADC publication, and new phase evidence pass.
+- Pass all required local checks and CI, complete self-review, independent review, User Review and verified Final Delivery, then commit, push and create a PR with the standalone `Closes #63` reference.
+- Before Ruleset API writes, require a distinct direct-chat `RULESET_PLAN_APPLY` confirmation for the exact blocker-free plan; the ChatGPT GitHub relay records the exact approval comment on #57 under this ADC's scoped exception, and Codex verifies the comment actor/body/subject by readback. Also require an independently verified `Administration: write` credential from the separate owner-operated admin environment. Never request the PAT in chat or claim local session cleanup revoked it. If that admin environment is unavailable, block only the Ruleset stage and continue other Cloud work. On insufficient privilege, unavailable policy, or unverified protection, report BLOCKED, never claim activation or merge success.
+- Report changed files, contract checklist/acceptance outcomes, exact test commands/results, unverified environments, A/B/C/D review findings, deviations/blockers and the PR URL. Do not report implementation complete before the merge/review transition required by workflow.
+
+This document is an Implementation Contract. Do not redesign the architecture during implementation. If a requirement conflicts with repository reality or requires a material design change, do not silently choose an alternative. Report the exact conflict and continue only with independent valid work.

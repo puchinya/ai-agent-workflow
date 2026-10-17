@@ -2,7 +2,7 @@
 <!-- agent-doc-schema: 2 -->
 # P-ASES Human Review and Integration Test Specification
 
-- Status: Approved for Issues #31 and #42
+- Status: Existing cases approved for Issues #31 and #42; TST-F01-014 and TST-F01-015 are drafts pending Issue #63 successor ADC approval and phase evidence.
 - Owning specification: ../specs/workflow-spec.md
 
 <!-- contents:start -->
@@ -47,6 +47,10 @@
     - [2.18.1 ORA-F01-012 Expected result](#2181-ora-f01-012-expected-result)
   - [2.19 TST-F01-013 Pre-merge bootstrap gates](#219-tst-f01-013-pre-merge-bootstrap-gates)
     - [2.19.1 ORA-F01-013 Expected result](#2191-ora-f01-013-expected-result)
+  - [2.20 TST-F01-014 Activation admin session and approval separation](#220-tst-f01-014-activation-admin-session-and-approval-separation)
+    - [2.20.1 ORA-F01-014 Expected result](#2201-ora-f01-014-expected-result)
+  - [2.21 TST-F01-015 Owner decision relay and lifecycle gates](#221-tst-f01-015-owner-decision-relay-and-lifecycle-gates)
+    - [2.21.1 ORA-F01-015 Expected result](#2211-ora-f01-015-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -89,6 +93,10 @@
 - [ORA-F01-012](#ora-f01-012) — 2.18.1 ORA-F01-012 Expected result
 - [TST-F01-013](#tst-f01-013) — 2.19 TST-F01-013 Pre-merge bootstrap gates
 - [ORA-F01-013](#ora-f01-013) — 2.19.1 ORA-F01-013 Expected result
+- [TST-F01-014](#tst-f01-014) — 2.20 TST-F01-014 Activation admin session and approval separation
+- [ORA-F01-014](#ora-f01-014) — 2.20.1 ORA-F01-014 Expected result
+- [TST-F01-015](#tst-f01-015) — 2.21 TST-F01-015 Owner decision relay and lifecycle gates
+- [ORA-F01-015](#ora-f01-015) — 2.21.1 ORA-F01-015 Expected result
 <!-- heading-map:end -->
 
 
@@ -315,3 +323,26 @@ Existing Issue reads validate exactly the Activation prefix through their select
 #### 2.19.1 ORA-F01-013 Expected result
 
 The Ruleset can be established from the implementation branch after exact human plan approval. Bootstrap does not satisfy CI, independent review, User Review, Final Delivery, or explicit owner merge authorization.
+
+<a id="tst-f01-014"></a>
+<a id="220-tst-f01-014-activation-admin-session-and-approval-separation"></a>
+### 2.20 TST-F01-014 Activation admin session and approval separation
+
+**Setup and action:** Run each of the two explicit admin commands with a local interactive TTY, a missing/non-interactive TTY, empty input, and input cancellation. For the interactive path, use a repository-limited owner PAT with correct and incorrect owner/repository identity, admin permission, legacy protection, Ruleset inventory, and effective branch-rule responses; include 403 and incomplete readbacks. Exercise a clean plan, a blocked plan, exact and missing Issue #57 plan approvals, plan drift, and two separate command invocations. Interrupt apply after POST or PUT and retry with the same plan and approval. Record prompts, output, plan-file creation, API method sequence, and Issue #57 history before and after.
+
+<a id="ora-f01-014"></a>
+<a id="2201-ora-f01-014-expected-result"></a>
+#### 2.20.1 ORA-F01-014 Expected result
+
+Only the two explicit commands accept a credential, and only from an interactive owner-controlled TTY. A missing TTY, cancellation, identity/admin mismatch, 403, incomplete readback, blocked plan, absent exact approval, or plan drift produces no Ruleset write; a plan file is created only for a blocker-free canonical plan. A valid apply reaches at most the existing single POST or PUT path after exact Issue #57 approval. Interruption recovery performs reads only and does not issue a second write. Credentials do not appear in observable output, persisted files, or unrelated command behavior. Authentication, plan approval, User Review, Final Delivery, and merge authorization remain distinct.
+<a id="tst-f01-015"></a>
+<a id="221-tst-f01-015-owner-decision-relay-and-lifecycle-gates"></a>
+### 2.21 TST-F01-015 Owner decision relay and lifecycle gates
+
+**Setup and action:** Exercise canonical delegated relay records for `PHASE_REBASE`, `ADC_SUPERSEDE`, `RULESET_PLAN_APPLY`, and `PR_MERGE`; verify `USER_REVIEW` still uses the existing host-attested procedure. Vary actor stable ID, evidence channel, operation, repository, Issue/PR, exact ADC/plan SHA or PR HEAD, predecessor/comment IDs, duplicate operation/subject pairs, edited or deleted records, and direct/list/direct readback. Verify the relay waits for a direct chat confirmation after exact-subject readback before writing, treats a generic continuation message as no approval, and rejects a `USER_REVIEW` relay record. Verify PRBinding V1 byte identity and that a V2 append succeeds only for the same #64/repository/Issue/branch/base SHA with a valid ADC journal, commit ancestry, and matching ExecutionBinding; reject gaps, repeats, stale or backward ADC, and identity drift.
+
+<a id="ora-f01-015"></a>
+<a id="2211-ora-f01-015-expected-result"></a>
+#### 2.21.1 ORA-F01-015 Expected result
+
+Only an exact decision following direct chat confirmation and recorded by the delegated GitHub relay under the configured owner ID produces one canonical record for a relay operation and current subject. Wrong actors, channel, operation, target, or subject; reused decisions; edited/deleted records; non-monotonic predecessors; and ambiguous readbacks block the affected operation. The record is delegated GitHub evidence and is never reported as a signed chat event. A successful phase rebaseline changes only the target phase label and preserves all others; ADC supersede, exact Ruleset plan approval, and PR merge each require a separate relay decision. User Review retains the existing host-attested procedure, and a relay record cannot satisfy it. The #57 comment is permitted only under the successor ADC's explicit exception and exact-plan subject. Merge remains blocked unless independent review, required checks, host-attested User Review, and Final Delivery all pass on the same approved HEAD. PRBinding V1 stays unchanged and its successor accepts only the same PR execution identity.

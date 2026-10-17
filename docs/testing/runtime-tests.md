@@ -2,7 +2,7 @@
 <!-- agent-doc-schema: 2 -->
 # Runtime and CLI Test Specification
 
-- Status: Approved
+- Status: Existing cases approved; TST-RT-018 and TST-RT-019 are drafts pending Issue #63 successor ADC approval and phase evidence.
 - Owning specification: ../specs/
 
 The stable RT test IDs preserve the earlier traceability graph. Current CLI cases use the namespaced P-ASES routes. Procedures for APIs that the Runtime Specification marks legacy are regression conditions for retained internal behavior, not public-command compatibility requirements.
@@ -45,6 +45,10 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
     - [2.16.1 ORA-RT-016 Expected result](#2161-ora-rt-016-expected-result)
   - [2.17 TST-RT-017 Canonical plan and write boundary](#217-tst-rt-017-canonical-plan-and-write-boundary)
     - [2.17.1 ORA-RT-017 Expected result](#2171-ora-rt-017-expected-result)
+  - [2.18 TST-RT-018 Temporary child-process credential isolation](#218-tst-rt-018-temporary-child-process-credential-isolation)
+    - [2.18.1 ORA-RT-018 Expected result](#2181-ora-rt-018-expected-result)
+  - [2.19 TST-RT-019 Delegated owner decision record and replay protection](#219-tst-rt-019-delegated-owner-decision-record-and-replay-protection)
+    - [2.19.1 ORA-RT-019 Expected result](#2191-ora-rt-019-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -83,6 +87,10 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
 - [ORA-RT-016](#ora-rt-016) — 2.16.1 ORA-RT-016 Expected result
 - [TST-RT-017](#tst-rt-017) — 2.17 TST-RT-017 Canonical plan and write boundary
 - [ORA-RT-017](#ora-rt-017) — 2.17.1 ORA-RT-017 Expected result
+- [TST-RT-018](#tst-rt-018) — 2.18 TST-RT-018 Temporary child-process credential isolation
+- [ORA-RT-018](#ora-rt-018) — 2.18.1 ORA-RT-018 Expected result
+- [TST-RT-019](#tst-rt-019) — 2.19 TST-RT-019 Delegated owner decision record and replay protection
+- [ORA-RT-019](#ora-rt-019) — 2.19.1 ORA-RT-019 Expected result
 <!-- heading-map:end -->
 
 
@@ -293,3 +301,23 @@ Policy status distinguishes `VERIFIED`, `NOT_CONFIGURED`, `UNAVAILABLE`, `UNVERI
 #### 2.17.1 ORA-RT-017 Expected result
 
 Plan digests change when any bound input changes. Only an exact, owner-authored approval on the configured Activation Issue can reach the one managed Ruleset write. A durable intent recovers the same exact Ruleset and approval after process death without a second POST/PUT; without intent, an unowned same-name Ruleset is rejected. Historical V2 verification reads only through its bound applied-record ID while new issuance validates the full history. Every ambiguous write result performs reads only and never triggers a second POST/PUT or rollback.
+
+<a id="tst-rt-018"></a>
+### 2.18 TST-RT-018 Temporary child-process credential isolation
+
+**Setup and action:** Use a fake GitHub API executable and subprocess recorder to inspect every argument, environment mapping, output stream, and client state. Enter a marker credential through the injectable TTY input boundary. Vary preexisting `GH_TOKEN`, `GITHUB_TOKEN`, and enterprise token variables; successful and failed API requests; `getpass` cancellation; exceptions and interruption during POST/PUT; sequential admin-plan/admin-apply clients; and an ordinary `GitHub` client after the session. Inspect `os.environ`, unrelated child environments, persisted files, logs, and object representation before, during, and after the session.
+
+<a id="ora-rt-018"></a>
+#### 2.18.1 ORA-RT-018 Expected result
+
+Only the `gh api` child process for the active authenticated client receives the temporary credential via its designated child environment. Conflicting token variables do not override it. The token never appears in argv, logs, JSON, files, object representation, `os.environ`, another subprocess, or later ordinary requests. Normal return, API error, exception, and interruption clear the client override; Python-memory erasure is not asserted. Cancellation or non-TTY input makes no API request. An interrupted write follows the existing durable-intent recovery contract and does not trigger a second POST/PUT.
+
+<a id="tst-rt-019"></a>
+### 2.19 TST-RT-019 Delegated owner decision record and replay protection
+
+**Setup and action:** Feed canonical `delegated_github_relay` records for `PHASE_REBASE`, `ADC_SUPERSEDE`, `RULESET_PLAN_APPLY`, and `PR_MERGE` through the parser and verifier. Vary schema fields, stable GitHub actor ID, operation, repository, Issue/PR, subject SHA/HEAD, evidence channel, and predecessor/comment IDs. Test direct/list/direct comment readback, edited or deleted records, monotonic and duplicate IDs, repeated operation/subject pairs, mismatched decision scopes, interrupted record publication, and retry after exact durable readback. Verify that the relay only writes after exact-subject readback and direct chat confirmation, rejects a relay `USER_REVIEW`, and runtime evidence does not claim a host signature. Use a fake GitHub client and assert method counts and payload bytes.
+
+<a id="ora-rt-019"></a>
+#### 2.19.1 ORA-RT-019 Expected result
+
+The verifier accepts only a canonical delegated relay record whose stable owner ID, evidence channel, and operation subject match current state. The relay writes one append-only decision record after exact-subject readback and direct chat confirmation; unchanged direct/list/direct readback is required before the scoped action proceeds. Replays, duplicate operation/subject pairs, stale or mismatched subjects, invalid predecessors, edits/deletions, and ambiguous write outcomes fail closed without another mutation. Records are delegated GitHub evidence, not host attestations. The executor cannot write in the owner's name or reuse a record for another gate; all five operation types remain independent, and User Review retains its existing host-attested path.

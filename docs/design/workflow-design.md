@@ -2,7 +2,7 @@
 <!-- agent-doc-schema: 2 -->
 # Portable Workflow Design
 
-- Status: Approved
+- Status: Existing content approved; DES-F01-014 and DES-F01-015 are drafts pending Issue #63 successor ADC approval and phase evidence.
 - Owning Issue: [Issue #7](https://github.com/puchinya/ai-agent-workflow/issues/7)
 - Related specification: [Portable Workflow Specification](../specs/workflow-spec.md)
 
@@ -19,6 +19,8 @@
   - [5.4 DES-F01-011 Versioned V2 setup and record](#54-des-f01-011-versioned-v2-setup-and-record)
   - [5.5 DES-F01-012 Record-comment effective time](#55-des-f01-012-record-comment-effective-time)
   - [5.6 DES-F01-013 Bootstrap and independent delivery gates](#56-des-f01-013-bootstrap-and-independent-delivery-gates)
+  - [5.7 DES-F01-014 Activation-scoped administrator session](#57-des-f01-014-activation-scoped-administrator-session)
+  - [5.8 DES-F01-015 Delegated owner decision relay](#58-des-f01-015-delegated-owner-decision-relay)
 - [6 DES-WF-003 Workspace execution flow](#6-des-wf-003-workspace-execution-flow)
 - [7 DES-WF-004 Failure handling](#7-des-wf-004-failure-handling)
 - [8 DES-WF-005 Authorization boundary and PR handoff](#8-des-wf-005-authorization-boundary-and-pr-handoff)
@@ -37,6 +39,8 @@
 - [DES-F01-011](#des-f01-011) — 5.4 DES-F01-011 Versioned V2 setup and record
 - [DES-F01-012](#des-f01-012) — 5.5 DES-F01-012 Record-comment effective time
 - [DES-F01-013](#des-f01-013) — 5.6 DES-F01-013 Bootstrap and independent delivery gates
+- [DES-F01-014](#des-f01-014) — 5.7 DES-F01-014 Activation-scoped administrator session
+- [DES-F01-015](#des-f01-015) — 5.8 DES-F01-015 Delegated owner decision relay
 - [DES-WF-003](#des-wf-003) — 6 DES-WF-003 Workspace execution flow
 - [DES-WF-004](#des-wf-004) — 7 DES-WF-004 Failure handling
 - [DES-WF-005](#des-wf-005) — 8 DES-WF-005 Authorization boundary and PR handoff
@@ -69,6 +73,7 @@ Legacy design note: detailed procedures below that still mention the former flat
 | Work context is reproducible | `work base`, `work branch`, `work bind`, and `work recover` freeze and verify the exact Issue execution identity. |
 | Approved Contract execution has a stable workspace | The Contract execution Skill asks the host to reuse/create its native isolated workspace according to policy, then writes a local Issue execution binding before edits; host lifecycle stays outside the runtime. |
 | Execution authorization continues to the review PR | An approved Issue contract covers routine Issue-scoped commit/push/PR/review-phase/self-review/check operations; Skills do not add a PR-specific prompt. |
+| Activation administrator authority is temporary and owner-mediated | Only the two explicit Activation admin commands create a one-command TTY session; ordinary commands retain ambient authentication and never escalate. |
 | Implementation owns end-to-end handoff | The implementation flow continues through a review-ready PR, exact-HEAD self-review, and delivery gate before reporting completion. |
 | New Contract layout is checked without changing legacy publication | A separate read-only preflight validates the canonical template's physical H2 structure before new-template contracts are saved or published; the historical comment and mirror path remains unchanged. |
 | Chat project instructions work across hosts | One Japanese project-instructions body uses one repository URL substitution and describes only capabilities available to the active chat; it does not depend on installing this workflow plugin. |
@@ -168,6 +173,35 @@ After `issue advance` attempts its label PUT, both a normal response and an erro
 The kind labels share the P-ASES color `c5def5`: `kind:single` has description `P-ASES Issue kind: single`, `kind:child` has description `P-ASES Issue kind: child`, and the existing `kind:parent` definition remains migration-owned. `issue_graph.py` owns only the two child initialization definitions: `kind:child` (`c5def5`, `P-ASES Issue kind: child`) and `phase:requirements` (`0e8a16`, `Workflow phase: requirements`). It checks repository definitions before creating a child, creates missing definitions with exact readback, then creates the child with those labels and existing `enhancement`. Existing children must already have one `kind:child`, one valid phase, and at most one attention label. Fixed legacy Bootstrap children #27–#32 are read without automatic relabeling. A create response lost after GitHub writes is recovered only when one exact child marker can be read back.
 
 The structural Contract preflight is a separate local flow: the CLI reads the explicit source path, `contracts.py` reuses `_prepare_contract_input` and `_contract_h2_headings`, and bounded JSON reports the normalized payload identity. It neither writes a mirror nor contacts GitHub. The implementation Skill invokes it before saving or publishing new contracts created from the canonical template; legacy contract APIs and historical reads do not depend on it.
+
+<a id="des-f01-014"></a>
+### 5.7 DES-F01-014 Activation-scoped administrator session
+
+`admin_auth.py::temporary_admin_client(repo, *, stdin, getpass_fn, github_factory)` owns the explicit interactive session boundary. The two new CLI commands first require an interactive local TTY in the separate trusted admin environment, then call `getpass` to read the owner-created, repository-scoped, short-lived fine-grained PAT without echo. Codex Cloud never prompts for or receives this credential. The PAT has Administration read/write and only the minimum additional permissions required by the existing Activation Issue read/write path. Each command creates a separate session; neither session is reused by another command. Non-TTY/sandbox execution returns `ADMIN_AUTH_INTERACTIVE_REQUIRED` before reading credentials or making GitHub requests. The command does not create or revoke the PAT. The owner must revoke it in GitHub after the plan/apply operation; clearing the local session does not revoke GitHub-side authority.
+
+`GitHub` receives an optional private credential override that is excluded from representation and diagnostic output. For each `gh api` request it copies the inherited child environment, sets the override as `GH_TOKEN`, removes competing token variables such as `GITHUB_TOKEN`, and passes that environment only to the `gh api` subprocess. It never assigns `os.environ`, invokes persistent `gh auth` flows, or passes the token in argv. A `finally` path clears the client override on success, API error, exception, or interruption; Python cannot guarantee erasure of prior string copies from memory. Other subprocesses and default CLI authentication remain unchanged.
+
+Before planning or applying, the authenticated API reads the owner login and stable user ID, repository and owner IDs, repository `permissions.admin`, collaborator permission, main branch legacy protection, repository Ruleset inventory, and effective branch rules. The authenticated stable user ID must equal the repository owner ID; the login and repository ID must match the configured target; both repository admin and collaborator permission must report admin; every protection read must be complete. A 403 or incomplete response blocks as unavailable. Admin-plan builds the existing canonical Ruleset plan and writes it outside the worktree only when it has no blockers and a `PLANNED` status. Admin-apply loads the supplied canonical plan, rechecks identity and current policy, verifies the exact independent owner approval on the configured Activation Issue, then delegates to the existing apply and durable-intent flow. Existing plan, approval, single-write, recovery, and effective-policy readback rules remain the only Ruleset mutation path.
+
+The public surface adds exactly these two commands:
+
+```sh
+python -m p_ases delivery consumer-activation-admin-plan --repo puchinya/ai-agent-workflow --root . --output /tmp/pases-issue63-plan.json
+python -m p_ases delivery consumer-activation-admin-apply --repo puchinya/ai-agent-workflow --root . --plan /tmp/pases-issue63-plan.json --approval-comment-id COMMENT_ID
+```
+
+Before the second command, ChatGPT reads back the exact plan SHA and obtains a separate `RULESET_PLAN_APPLY` confirmation; the GitHub relay records the exact approval on Issue #57 and the command verifies its actor, body, and subject. The owner supplies an Admin credential only in the separate trusted TTY environment. Authentication does not imply plan approval or authorize PR merge. Ordinary preflight/plan/apply commands do not start an admin session and preserve their existing behavior. `delivery-control` documents the local TTY operation, separate chat approval, and PAT revocation without asking the owner to transmit a secret to the agent.
+
+<a id="des-f01-015"></a>
+### 5.8 DES-F01-015 Delegated owner decision relay
+
+Before a relay operation, ChatGPT reads back the exact operation, repository, Issue/PR, and subject SHA/HEAD and waits for the owner's direct, operation-specific chat confirmation. A generic request to continue does not authorize a write. The ChatGPT GitHub connector then acts as a delegated GitHub relay under its authenticated account; relay comments and label changes are delegated GitHub evidence, not signed or host-attested chat events. The runtime does not require Cloud host signatures, browser OAuth, or a TTY for this relay path. It blocks an operation when the GitHub actor, target, or subject cannot be verified.
+
+`owner_consent.py` exposes `parse_owner_decision(body)` and `verify_owner_decision_history(comments, repository, issue_number, owner_id, operation, subject_sha256)`. It parses and validates canonical `PASES_OWNER_DECISION_V1` records for `PHASE_REBASE`, `ADC_SUPERSEDE`, `RULESET_PLAN_APPLY`, and `PR_MERGE`, with `schema`, `repository`, `issue_number`, `operation`, `subject_sha256`, `pr_number`, `pr_head_sha40`, `owner_id`, `evidence_channel`, and `predecessor_comment_id`; unused PR fields are null and `evidence_channel` is exactly `delegated_github_relay`. It rejects `USER_REVIEW` records because that decision retains its existing host-attested path. The GitHub relay appends each supported record to the target Issue and reads it back. The runtime verifies canonical bytes, configured stable owner ID, unchanged comment body, monotonic predecessor/comment IDs, and one-time use of the operation/subject. The comment records the GitHub actor and delegated action; it does not claim a cryptographic link to a chat message. The implementation executor cannot create a record in the owner's name or infer chat intent from the record alone.
+
+The five decisions remain non-interchangeable; the relay records the four GitHub operations described above, while `USER_REVIEW` uses its existing host-attested flow. A subject or operation mismatch blocks. `phase_rebaseline.py::rebaseline_issue_phase(github, issue_number, decision_comment_id, successor_adc_sha256)` verifies the exact Phase Rebase decision and changes only the complete label set needed to move #63 from `phase:ready` to `phase:requirements`; it preserves `kind:single` and all unrelated labels and never changes Issue text or prior evidence. ADC publication requires a separate confirmation. For Rulesets, the relay posts the exact two-line #57 plan approval only after a separate exact-plan confirmation for a blocker-free plan and under the successor ADC's relay-only exception. The comment must read back with the configured stable owner ID. PR merge remains separate and binds to the current PR HEAD after all required checks and independent review pass.
+
+For the existing PR #64, the original PRBinding V1 remains byte-for-byte immutable. A successor PRBinding generation may be appended only when the repository, Issue #63, PR #64, branch, base SHA, and commit ancestry remain fixed; the ADC journal verifies the approved forward successor and the new ExecutionBinding matches the frozen execution identity. Reject missing, duplicated, non-contiguous, stale, backward, or cross-PR generations. `pr ensure`, Review Readiness, and Final Delivery evaluate the latest valid generation while preserving legacy single-generation behavior.
 
 <a id="des-wf-003"></a>
 <a id="des-wf-003-workspace-execution-flow"></a>
