@@ -24,6 +24,7 @@ from p_ases.cli import _read_review_record
 from p_ases.user_review import (
     FeedbackEvent,
     FeedbackSnapshot,
+    UserReviewError,
     UserReviewResult,
     UserReviewSession,
     UserReviewSubject,
@@ -42,6 +43,7 @@ REPOSITORY = "puchinya/ai-agent-workflow"
 ISSUE_NUMBER = 63
 PR_NUMBER = 64
 OWNER_ID = 3744776
+READ_ONLY_VERIFIER_ID = 91827364
 ADC_SHA256 = "c" * 64
 PLAN_SHA256 = "e" * 64
 PR_HEAD_SHA40 = "d" * 40
@@ -82,6 +84,13 @@ def github_comment(
     actor_id: int = OWNER_ID,
     created_at: str = COMMENT_CREATED_AT,
     updated_at: str | None = None,
+    comment_url_repo: str = REPOSITORY,
+    comment_url_id: int | None = None,
+    source_repo: str = REPOSITORY,
+    source_issue: int = ISSUE_NUMBER,
+    html_url_repo: str = REPOSITORY,
+    html_url_issue: int = ISSUE_NUMBER,
+    html_url_comment_id: int | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         id=comment_id,
@@ -89,8 +98,11 @@ def github_comment(
         user={"id": actor_id, "type": "User", "login": "puchinya"},
         created_at=created_at,
         updated_at=updated_at or created_at,
-        html_url=(f"https://github.com/{REPOSITORY}/issues/{ISSUE_NUMBER}"
-                  f"#issuecomment-{comment_id}"),
+        url=(f"https://api.github.com/repos/{comment_url_repo}/issues/comments/"
+             f"{comment_url_id if comment_url_id is not None else comment_id}"),
+        issue_url=f"https://api.github.com/repos/{source_repo}/issues/{source_issue}",
+        html_url=(f"https://github.com/{html_url_repo}/issues/{html_url_issue}"
+                  f"#issuecomment-{html_url_comment_id if html_url_comment_id is not None else comment_id}"),
     )
 
 
@@ -113,7 +125,8 @@ def verify(history: UserReviewDecisionHistory, session: UserReviewSession = SESS
         repository=REPOSITORY,
         issue_number=ISSUE_NUMBER,
         pr_number=PR_NUMBER,
-        owner_id=OWNER_ID,
+        repository_owner_user_id=OWNER_ID,
+        authenticated_verifier_user_id=READ_ONLY_VERIFIER_ID,
         session=session,
         readiness_sha256=READINESS.sha256,
         adc_sha256=ADC_SHA256,
@@ -211,6 +224,7 @@ class UserReviewRelayTests(unittest.TestCase):
             github_comment(current_body, created_at=SESSION_STARTED_AT),
             github_comment(current_body, updated_at="2026-10-17T09:02:00Z"),
             github_comment(current_body, actor_id=OWNER_ID + 1),
+            github_comment(current_body, actor_id=READ_ONLY_VERIFIER_ID),
             github_comment(decision_body(review_session_id="e" * 64)),
             github_comment(decision_body(readiness_sha256="e" * 64)),
             github_comment(decision_body(adc_sha256="e" * 64)),
@@ -237,10 +251,24 @@ class UserReviewRelayTests(unittest.TestCase):
             decision_history(comment, direct_before={101: None}),
             decision_history(comment, direct_after={101: None}),
             decision_history(comment, direct_after={101: edited}),
+            decision_history(comment, direct_after={101: github_comment(
+                decision_body(), source_issue=62)}),
         )
         for history in cases:
             with self.subTest(history=history), self.assertRaises(UserReviewRelayError):
                 verify(history)
+
+        for wrong_source in (
+            github_comment(decision_body(), source_issue=62),
+            github_comment(decision_body(), source_repo="someone/else"),
+            github_comment(decision_body(), comment_url_repo="someone/else"),
+            github_comment(decision_body(), comment_url_id=102),
+            github_comment(decision_body(), html_url_repo="someone/else"),
+            github_comment(decision_body(), html_url_issue=62),
+            github_comment(decision_body(), html_url_comment_id=102),
+        ):
+            with self.subTest(wrong_source=wrong_source), self.assertRaises(UserReviewRelayError):
+                verify(decision_history(wrong_source))
 
     def test_rejects_duplicate_or_replayed_current_session_decisions(self) -> None:
         first = github_comment(decision_body(), comment_id=101)
@@ -260,11 +288,14 @@ class UserReviewRelayTests(unittest.TestCase):
             snapshot,
             review_mode="solo_owner",
             pr_author_user_id=OWNER_ID,
+            repository_owner_user_id=OWNER_ID,
+            authenticated_verifier_user_id=READ_ONLY_VERIFIER_ID,
             allowed_human_user_ids=(OWNER_ID,),
             relay_approval=approval,
         )
 
         self.assertEqual(result.status, "APPROVED")
+        self.assertNotEqual(READ_ONLY_VERIFIER_ID, OWNER_ID)
         self.assertEqual(result.selected_approval_event, "user-review-relay:101")
         self.assertEqual(result.selected_approval_evidence, approval.as_selected_evidence())
 
@@ -274,7 +305,7 @@ class UserReviewRelayTests(unittest.TestCase):
         carrier = carrier_feedback_event(comment)
 
         for mode, author, allowed, snapshot in (
-            ("independent", OWNER_ID, (OWNER_ID,), feedback_snapshot(carrier)),
+            ("external_reviewer", OWNER_ID, (OWNER_ID,), feedback_snapshot(carrier)),
             ("solo_owner", OWNER_ID + 1, (OWNER_ID,), feedback_snapshot(carrier)),
             ("solo_owner", OWNER_ID, (OWNER_ID + 1,), feedback_snapshot(carrier)),
             ("solo_owner", OWNER_ID, (OWNER_ID,), feedback_snapshot(
@@ -290,13 +321,58 @@ class UserReviewRelayTests(unittest.TestCase):
                 result = evaluate_user_review(
                     SESSION, READINESS, PR_HEAD_SHA40, snapshot,
                     review_mode=mode, pr_author_user_id=author,
+                    repository_owner_user_id=OWNER_ID,
+                    authenticated_verifier_user_id=READ_ONLY_VERIFIER_ID,
                     allowed_human_user_ids=allowed, relay_approval=approval,
                 )
                 self.assertNotEqual(result.status, "APPROVED")
 
+        with self.assertRaises(UserReviewError):
+            evaluate_user_review(
+                SESSION, READINESS, PR_HEAD_SHA40, feedback_snapshot(carrier),
+                review_mode="independent", pr_author_user_id=OWNER_ID,
+                repository_owner_user_id=OWNER_ID,
+                authenticated_verifier_user_id=READ_ONLY_VERIFIER_ID,
+                allowed_human_user_ids=(OWNER_ID,), relay_approval=approval,
+            )
+
+        wrong_owner = evaluate_user_review(
+            SESSION, READINESS, PR_HEAD_SHA40, feedback_snapshot(carrier),
+            review_mode="solo_owner", pr_author_user_id=OWNER_ID,
+            repository_owner_user_id=OWNER_ID + 1,
+            authenticated_verifier_user_id=READ_ONLY_VERIFIER_ID,
+            allowed_human_user_ids=(OWNER_ID,), relay_approval=approval,
+        )
+        self.assertNotEqual(wrong_owner.status, "APPROVED")
+
+        formal_self_approval = FeedbackEvent(
+            channel="pr-review",
+            event_id="self-approval-1",
+            actor_id=OWNER_ID,
+            actor_login="puchinya",
+            actor_type="User",
+            created_at="2026-10-17T09:01:00Z",
+            updated_at="2026-10-17T09:01:00Z",
+            kind="approved",
+            head_sha40=PR_HEAD_SHA40,
+            body_sha256="a" * 64,
+            source_url=f"https://github.com/{REPOSITORY}/pull/{PR_NUMBER}#pullrequestreview-1",
+        ).validate()
+        executor_self_approval = evaluate_user_review(
+            SESSION, READINESS, PR_HEAD_SHA40,
+            feedback_snapshot(formal_self_approval),
+            review_mode="solo_owner", pr_author_user_id=OWNER_ID,
+            repository_owner_user_id=OWNER_ID,
+            authenticated_verifier_user_id=READ_ONLY_VERIFIER_ID,
+            allowed_human_user_ids=(OWNER_ID,), relay_approval=None,
+        )
+        self.assertNotEqual(executor_self_approval.status, "APPROVED")
+
         incomplete = evaluate_user_review(
             SESSION, READINESS, PR_HEAD_SHA40, feedback_snapshot(carrier),
             review_mode="solo_owner", pr_author_user_id=OWNER_ID,
+            repository_owner_user_id=OWNER_ID,
+            authenticated_verifier_user_id=READ_ONLY_VERIFIER_ID,
             allowed_human_user_ids=(OWNER_ID,), relay_approval=approval,
             all_feedback_surfaces_read=False,
         )
@@ -309,6 +385,8 @@ class UserReviewRelayTests(unittest.TestCase):
         result = evaluate_user_review(
             SESSION, READINESS, PR_HEAD_SHA40, snapshot,
             review_mode="solo_owner", pr_author_user_id=OWNER_ID,
+            repository_owner_user_id=OWNER_ID,
+            authenticated_verifier_user_id=READ_ONLY_VERIFIER_ID,
             allowed_human_user_ids=(OWNER_ID,), relay_approval=approval,
         )
 
