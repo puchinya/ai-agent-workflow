@@ -33,6 +33,44 @@ def records(n, offset=0):
 
 
 class UserReviewGitHubAdapterTests(unittest.TestCase):
+    def test_cloud_user_review_relay_uses_native_exact_head_github_approval(self):
+        head = "a" * 40
+        verification_subject = VerificationSubject(
+            "octo/repo", 31, 37, 123, "b" * 64, "c" * 64, head).validate()
+        readiness = ReadinessResult("PASS", verification_subject, (), ("d" * 64,), "e" * 64).validate()
+        subject = UserReviewSubject(verification_subject, readiness.sha256).validate()
+        approval = {
+            "id": 88, "state": "APPROVED", "commit_id": head, "body": "",
+            "submitted_at": "2026-10-12T00:01:00Z", "updated_at": "2026-10-12T00:01:00Z",
+            "user": {"id": 42, "login": "puchinya", "type": "User"},
+            "html_url": "https://github.com/octo/repo/pull/37#pullrequestreview-88",
+        }
+
+        class FeedbackGitHub:
+            def issue_comments(self, _issue):
+                return []
+
+            def pull_conversation_comments(self, _pr):
+                return []
+
+            def pull_reviews(self, _pr):
+                return [approval]
+
+            def pull_diff_comments(self, _pr):
+                return []
+
+            def pull_review_threads(self, _pr):
+                return []
+
+        snapshot = _review_payload_from_github(
+            FeedbackGitHub(), subject, observed_at="2026-10-12T00:02:00Z")
+        result = evaluate_user_review(
+            subject, readiness, head, snapshot.events, allowed_human_user_ids=(42,),
+            required_after="2026-10-12T00:00:30Z")
+        self.assertEqual(result.status, "APPROVED")
+        self.assertEqual(result.selected_approval_event, "pr-review:88")
+        self.assertEqual(result.subject.sha256, readiness.sha256)
+
     def test_cli_review_sync_maps_explicit_pr_and_diff_comments_to_same_execution_loop(self):
         head = "a" * 40
         verification_subject = VerificationSubject(
