@@ -33,7 +33,7 @@ python -m p_ases delivery consumer-activation-preflight
 python -m p_ases delivery consumer-activation-ruleset-plan --output /tmp/pases-ruleset-plan.json
 ```
 
-Present the plan and its SHA-256. The repository owner must manually post this exact two-line comment on Activation Issue #57:
+Present the plan and its SHA-256. The repository owner must manually post this exact two-line comment on the Activation Issue configured by `.agent/project.json` at `activation.issue_number` (this repository currently configures #57):
 
 ```text
 PASES-RULESET-APPROVE: <64-digit plan SHA-256>
@@ -46,7 +46,7 @@ The agent must not create or edit that approval. After the owner posts it, run a
 python -m p_ases delivery consumer-activation-ruleset-apply --plan /tmp/pases-ruleset-plan.json --approval-comment-id COMMENT_ID
 ```
 
-Apply rechecks the repository, profile, current policy, PR impact, owner identity, admin permission, and approval before a single Ruleset write. It then reads back the Ruleset and effective branch policy and appends ownership evidence to #57. A forbidden or incomplete read blocks; do not treat HTTP 403 as an unconfigured branch.
+Apply rechecks the repository, profile, current policy, PR impact, owner identity, admin permission, and approval before a single Ruleset write. It persists an exact-plan intent before writing. If the process stops after that point, a retry verifies the same approval and predecessor, reads the exact Ruleset and effective policy, and appends or reuses its ownership record without another write. A same-name Ruleset without a matching intent remains unowned and blocks. A forbidden or incomplete read blocks; do not treat HTTP 403 as an unconfigured branch.
 
 Present the Issue and PR. The authenticated repository admin reviews the proposed ADC and the exact `.agent/project.json` change, configures `branch.required_checks` with the repository's real check names and trusted App IDs if the generated list is empty, then merges the setup PR. The agent must not merge it on this prompt alone. After the admin confirms the merge, run:
 

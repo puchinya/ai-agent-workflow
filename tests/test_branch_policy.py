@@ -92,6 +92,17 @@ class BranchPolicyTests(unittest.TestCase):
         }
         self.assertEqual(assess(legacy=legacy, effective=[], rulesets=[]).status, "MISMATCH")
 
+    def test_solo_owner_preserves_conflicting_legacy_approval_requirement(self):
+        legacy = {
+            "required_status_checks": {"checks": [{"context": "ci", "app_id": 15368}]},
+            "required_pull_request_reviews": {"required_approving_review_count": 1},
+        }
+        rules, details = solo_ruleset(approvals=0)
+        result = assess(legacy=legacy, effective=rules, rulesets=details)
+        self.assertEqual(result.status, "MISMATCH")
+        self.assertIn("SOLO_OWNER_LEGACY_APPROVAL_POLICY_CONFLICT", result.reason_codes)
+        self.assertEqual(result.minimum_approvals, 1)
+
     def test_external_reviewer_accepts_exact_legacy_policy(self):
         legacy = {
             "required_status_checks": {"checks": [{"context": "ci", "app_id": 15368}]},

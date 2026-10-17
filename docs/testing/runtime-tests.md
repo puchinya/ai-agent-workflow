@@ -277,19 +277,19 @@ Every invalid boundary returns a nonzero bounded error before an unrelated local
 <a id="tst-rt-016"></a>
 ### 2.16 TST-RT-016 Effective branch-policy assessment
 
-**Setup and action:** Feed `assess_branch_policy` branch, legacy protection, effective rules, and Ruleset detail fixtures for exact `solo_owner` and `external_reviewer` policies. Vary missing sources, HTTP 403/404, duplicate Ruleset IDs/rules, branch scope, enforcement, source, bypass actors, Required Check contexts and App IDs, approval count, and force-push rule.
+**Setup and action:** Feed `assess_branch_policy` branch, legacy protection, effective rules, and Ruleset detail fixtures for exact `solo_owner` and `external_reviewer` policies. Vary missing sources, HTTP 403/404, duplicate Ruleset IDs/rules, branch scope, enforcement, source, bypass actors, Required Check contexts and App IDs, approval count, and force-push rule. Include legacy approvals of one with a valid `solo_owner` Ruleset requiring zero.
 
 <a id="ora-rt-016"></a>
 #### 2.16.1 ORA-RT-016 Expected result
 
-Policy status distinguishes `VERIFIED`, `NOT_CONFIGURED`, `UNAVAILABLE`, `UNVERIFIED`, and `MISMATCH` without treating forbidden reads as missing settings. Required Checks compare exact context/App ID pairs.
+Policy status distinguishes `VERIFIED`, `NOT_CONFIGURED`, `UNAVAILABLE`, `UNVERIFIED`, and `MISMATCH` without treating forbidden reads as missing settings. Required Checks compare exact context/App ID pairs. A known legacy approval requirement remains an independent constraint and conflicting legacy/Ruleset values produce `MISMATCH`.
 
 <a id="tst-rt-017"></a>
 ### 2.17 TST-RT-017 Canonical plan and write boundary
 
-**Setup and action:** Build plans from fake GitHub responses and validate canonical plan digest round trips. Mutate every bound identity/evidence field and simulate one POST, one PUT, no-op, lost response, and direct/list/direct approval mismatch. Inspect the fake transport's complete request sequence.
+**Setup and action:** Build plans from fake GitHub responses and validate canonical plan digest round trips. Mutate every bound identity/evidence field, including the configured Activation Issue and predecessor. Simulate one POST, one PUT, no-op, process death after successful POST/PUT, exact retry recovery, an unowned same-name Ruleset without intent, lost responses, direct/list/direct approval mismatch, and corruption after an exact V2 applied-record prefix. Inspect the fake transport's complete request sequence.
 
 <a id="ora-rt-017"></a>
 #### 2.17.1 ORA-RT-017 Expected result
 
-Plan digests change when any bound input changes. Only an exact, owner-authored approval can reach the one managed Ruleset write. Every ambiguous write result performs reads only and never triggers a second POST/PUT or rollback.
+Plan digests change when any bound input changes. Only an exact, owner-authored approval on the configured Activation Issue can reach the one managed Ruleset write. A durable intent recovers the same exact Ruleset and approval after process death without a second POST/PUT; without intent, an unowned same-name Ruleset is rejected. Historical V2 verification reads only through its bound applied-record ID while new issuance validates the full history. Every ambiguous write result performs reads only and never triggers a second POST/PUT or rollback.

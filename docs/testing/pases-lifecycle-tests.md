@@ -269,12 +269,12 @@ V2 is recorded only when branch, effective rules, Ruleset details, legacy protec
 <a id="tst-f01-009"></a>
 ### 2.15 TST-F01-009 Exact approved Ruleset plan
 
-**Setup and action:** Generate a plan for empty, exact, owned-different, and same-name-unowned repository Ruleset states. Change repository ID, owner ID, default branch SHA, committed profile bytes, mode, checks/App IDs, Ruleset ID/digest, PR impact, and approval comment between planning and apply. Vary wrong author, edited/deleted/duplicated comment, wrong Issue, wrong repository, invalid plan digest, missing admin permission, API 403, lost POST/PUT response, and concurrent state changes.
+**Setup and action:** Generate a plan for empty, exact, owned-different, and same-name-unowned repository Ruleset states. Change repository ID, owner ID, configured Activation Issue, default branch SHA, committed profile bytes, mode, checks/App IDs, Ruleset ID/digest, predecessor, PR impact, and approval comment between planning and apply. Vary wrong author, edited/deleted/duplicated comment, wrong Issue, wrong repository, invalid plan digest, missing admin permission, API 403, and concurrent state changes. Simulate process death after a successful POST or PUT but before ownership-record publication, then retry from a fresh invocation with the exact plan and approval. Also combine legacy required approvals of one with a valid Ruleset requiring zero.
 
 <a id="ora-f01-009"></a>
 #### 2.15.1 ORA-F01-009 Expected result
 
-Only the exact unedited owner approval for the unchanged canonical plan permits one POST or one PUT to the uniquely owned repository Ruleset. An exact current state is a no-op. All stale, unowned, ambiguous, unauthorized, raced, or unreadable states block without modifying other Rulesets or retrying blindly. Successful writes require exact detail and effective-policy readback plus append-only ownership evidence.
+Only the exact unedited owner approval for the unchanged canonical plan permits one POST or one PUT to the uniquely owned repository Ruleset. A persisted write intent lets a fresh invocation recover the exact Ruleset ID/body and predecessor, verify effective policy, and append the matching ownership record with no second write. An unowned same-name Ruleset with no intent cannot be adopted. An exact current state is a no-op. All stale, ambiguous, unauthorized, raced, or unreadable states block without modifying other Rulesets or retrying blindly. A legacy approval requirement of one plus Ruleset approvals of zero is `MISMATCH`; the legacy requirement is never replaced by the Ruleset value. Successful writes require exact detail and effective-policy readback plus append-only ownership evidence.
 
 <a id="tst-f01-010"></a>
 ### 2.16 TST-F01-010 Existing Issue non-retroactivity
@@ -299,12 +299,12 @@ V2 eligibility begins strictly after the Activation record comment's GitHub crea
 <a id="tst-f01-012"></a>
 ### 2.18 TST-F01-012 Prefix and full-history validation
 
-**Setup and action:** Create a two-record V1→V2 chain. Read an existing Gate Selection pinned to V1 while varying corruption after its V1 record, then repeat with corruption of the V1 record, approval, predecessor, setup PR, and Check Run evidence. Run new Issue selection and successor issuance against the same full chain.
+**Setup and action:** Create a two-record V1→V2 chain and a Ruleset ownership chain. Read existing Gate Selections pinned to V1 and V2 while corrupting later Activation and Ruleset applied records. Then corrupt the selected Activation or its bound Ruleset applied-record prefix. Run new Issue selection, V2 setup, and successor issuance against the same full histories.
 
 <a id="ora-f01-012"></a>
 #### 2.18.1 ORA-F01-012 Expected result
 
-Existing Issue reads validate exactly the prefix through their selected record and ignore later corruption. A new selection or successor issuance validates the full chain and blocks on any malformed record.
+Existing Issue reads validate exactly the Activation prefix through their selected record and, for V2, the Ruleset ownership prefix through its exact bound applied-record ID. Corruption after either selected prefix is ignored. A new selection or successor issuance validates the full Activation and Ruleset ownership histories and blocks on any malformed record.
 
 <a id="tst-f01-013"></a>
 ### 2.19 TST-F01-013 Pre-merge bootstrap gates

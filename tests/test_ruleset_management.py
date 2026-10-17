@@ -15,9 +15,9 @@ sys.path.insert(0, str(ROOT / "runtime"))
 from p_ases.branch_policy import EffectiveBranchPolicy  # noqa: E402
 from p_ases.github import GitHubError  # noqa: E402
 from p_ases.ruleset_management import (  # noqa: E402
-    RULESET_NAME, RulesetManagementError, _canonical, _desired_payload, _managed_body,
+    APPLIED_MARKER, RULESET_NAME, RulesetManagementError, _canonical, _desired_payload, _managed_body,
     _body_digest, _publish_applied_record, _verify_exact_approval, apply_ruleset_plan,
-    effective_policy_sha256, validate_plan, write_plan,
+    effective_policy_sha256, validate_plan, verify_applied_policy_record, write_plan,
 )
 
 
@@ -27,14 +27,14 @@ OWNER_ID = 3744776
 
 
 def approval_row(comment_id: int, body: str, *, actor_id: int = OWNER_ID,
-                 updated_at: str = "2026-10-17T00:00:00Z"):
+                 updated_at: str = "2026-10-17T00:00:00Z", issue_number: int = 57):
     return {
         "id": comment_id,
         "body": body,
         "created_at": "2026-10-17T00:00:00Z",
         "updated_at": updated_at,
-        "issue_url": f"https://api.github.com/repos/{REPOSITORY}/issues/57",
-        "html_url": f"https://github.com/{REPOSITORY}/issues/57#issuecomment-{comment_id}",
+        "issue_url": f"https://api.github.com/repos/{REPOSITORY}/issues/{issue_number}",
+        "html_url": f"https://github.com/{REPOSITORY}/issues/{issue_number}#issuecomment-{comment_id}",
         "user": {"id": actor_id, "login": "puchinya", "type": "User"},
     }
 
@@ -46,13 +46,18 @@ class FakeApprovalGitHub:
         self.row = copy.deepcopy(row)
 
     def issue(self, number):
+        self.issue_number = number
         return {"number": number, "state": "open", "pull_request": None,
                 "repository_url": f"https://api.github.com/repos/{REPOSITORY}"}
 
     def issue_comment(self, issue_number, comment_id):
+        if issue_number != self.issue_number:
+            raise AssertionError("approval check used an unexpected Issue")
         return copy.deepcopy(self.row)
 
     def issue_comments(self, issue_number):
+        if issue_number != self.issue_number:
+            raise AssertionError("approval list used an unexpected Issue")
         return [copy.deepcopy(self.row)]
 
 
@@ -71,8 +76,13 @@ def make_plan(**updates):
         "existing_ruleset_sha256": None,
         "owner_id": OWNER_ID,
         "plan_schema": "PASES_RULESET_PLAN_V1",
-        "policy_evidence": {},
+        "policy_evidence": {
+            "branch": {"name": "main", "protected": False, "commit": {"sha": "1" * 40}},
+            "legacy_protection": None,
+            "source_errors": {"legacy_protection": 404},
+        },
         "policy_proof": {"status": "NOT_CONFIGURED"},
+        "predecessor_comment_id": None,
         "profile_review_mode": "solo_owner",
         "profile_sha256": "b" * 64,
         "repository": REPOSITORY,
@@ -152,6 +162,14 @@ class RulesetManagementTests(unittest.TestCase):
                                                      + f"\nPASES-REPOSITORY: {REPOSITORY}"))
         with self.assertRaisesRegex(RulesetManagementError, "approval comment"):
             _verify_exact_approval(wrong_plan, plan, 900)
+
+    def test_exact_owner_approval_uses_the_plan_activation_issue_number(self):
+        plan = make_plan(activation_issue_number=92)
+        expected = (f"PASES-RULESET-APPROVE: {plan['plan_sha256']}\n"
+                    f"PASES-REPOSITORY: {REPOSITORY}")
+        github = FakeApprovalGitHub(approval_row(900, expected, issue_number=92))
+        self.assertEqual(_verify_exact_approval(github, plan, 900)["id"], 900)
+        self.assertEqual(github.issue_number, 92)
 
     def test_apply_rejects_non_owner_approval_before_any_ruleset_write(self):
         plan = make_plan()
@@ -240,6 +258,111 @@ class RulesetManagementTests(unittest.TestCase):
         self.assertEqual(result["status"], "VERIFIED")
         self.assertEqual(result["ruleset_id"], 400)
         self.assertEqual(result["record_comment_id"], 901)
+
+    def test_process_death_after_ruleset_create_recovers_from_durable_intent(self):
+        plan = make_plan()
+        post_write_plan = copy.deepcopy(plan)
+        post_write_plan.update({
+            "blockers": ["MANAGED_RULESET_HAS_NO_OWNERSHIP_EVIDENCE"],
+            "diff": {**plan["diff"], "operation": "blocked"},
+            "existing_ruleset_id": 400,
+            "existing_ruleset_sha256": _body_digest(plan["desired_ruleset"]),
+            "policy_evidence": {
+                **plan["policy_evidence"],
+                "branch": {"name": "main", "protected": True, "commit": {"sha": "1" * 40}},
+            },
+        })
+
+        class ProcessDeathGitHub:
+            repo = REPOSITORY
+
+            def __init__(self):
+                self.create_calls = 0
+                self.created = False
+                self.crash_after_create = True
+                self.detail = None
+
+            def create_repository_ruleset(self, payload):
+                self.create_calls += 1
+                self.created = True
+                self.detail = {
+                    **copy.deepcopy(payload), "id": 400,
+                    "source": REPOSITORY, "source_type": "Repository",
+                }
+                return {"id": 400}
+
+            def repository_rulesets(self):
+                return ([{"id": 400, "name": RULESET_NAME, "target": "branch", "enforcement": "active"}]
+                        if self.created else [])
+
+            def ruleset_details(self, ruleset_id, *, source_type):
+                if ruleset_id != 400 or source_type != "Repository":
+                    raise AssertionError("unexpected Ruleset detail read")
+                if self.crash_after_create:
+                    self.crash_after_create = False
+                    raise SystemExit("simulated process death after successful POST")
+                return copy.deepcopy(self.detail)
+
+        github = ProcessDeathGitHub()
+        policy = EffectiveBranchPolicy(
+            REPOSITORY, "main", ("branch", "effective-rules", "ruleset-details"), "solo_owner",
+            "VERIFIED", (("ci", 15368),), True, 0, True, 0, (), (), (), "d" * 64,
+        )
+        evidence = {"branch": {"protected": True}}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "ruleset-plan.json"
+            write_plan(path, plan)
+            shared_patches = (
+                patch("p_ases.ruleset_management._verify_exact_approval", return_value={"id": 900}),
+                patch("p_ases.ruleset_management._require_current_admin",
+                      return_value={"id": OWNER_ID, "login": "puchinya"}),
+                patch("p_ases.ruleset_management._read_policy", return_value=(policy, evidence)),
+                patch("p_ases.ruleset_management._read_ownership_history", return_value=[]),
+                patch("p_ases.ruleset_management._publish_applied_record", return_value=901),
+            )
+            with shared_patches[0], shared_patches[1], shared_patches[2], shared_patches[3], shared_patches[4], \
+                    patch("p_ases.ruleset_management.build_ruleset_plan",
+                          side_effect=[plan, plan, post_write_plan]):
+                with self.assertRaisesRegex(SystemExit, "simulated process death"):
+                    apply_ruleset_plan(root, github, path, 900)
+                result = apply_ruleset_plan(root, github, path, 900)
+        self.assertEqual(github.create_calls, 1)
+        self.assertEqual(result["status"], "VERIFIED")
+        self.assertEqual(result["ruleset_id"], 400)
+        self.assertEqual(result["record_comment_id"], 901)
+
+    def test_unowned_same_name_ruleset_without_intent_cannot_be_adopted(self):
+        plan = make_plan()
+        blocked = copy.deepcopy(plan)
+        blocked["blockers"] = ["MANAGED_RULESET_HAS_NO_OWNERSHIP_EVIDENCE"]
+        blocked["diff"]["operation"] = "blocked"
+        blocked["existing_ruleset_id"] = 400
+        blocked["existing_ruleset_sha256"] = _body_digest(plan["desired_ruleset"])
+        blocked["plan_sha256"] = hashlib.sha256(
+            _canonical({key: item for key, item in blocked.items() if key != "plan_sha256"})
+        ).hexdigest()
+
+        class UnownedGitHub(FakeApprovalGitHub):
+            def __init__(self, row):
+                super().__init__(row)
+                self.write_calls = 0
+
+            def create_repository_ruleset(self, _payload):
+                self.write_calls += 1
+
+        expected = (f"PASES-RULESET-APPROVE: {plan['plan_sha256']}\n"
+                    f"PASES-REPOSITORY: {REPOSITORY}")
+        github = UnownedGitHub(approval_row(900, expected))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "ruleset-plan.json"
+            write_plan(path, plan)
+            with patch("p_ases.ruleset_management._require_current_admin",
+                       return_value={"id": OWNER_ID, "login": "puchinya"}), \
+                    patch("p_ases.ruleset_management.build_ruleset_plan", return_value=blocked):
+                with self.assertRaisesRegex(RulesetManagementError, "preconditions changed"):
+                    apply_ruleset_plan(Path(tmp), github, path, 900)
+        self.assertEqual(github.write_calls, 0)
 
     def test_lost_ruleset_update_response_recovers_exactly_once(self):
         from p_ases.branch_policy import EffectiveBranchPolicy
@@ -332,7 +455,7 @@ class RulesetManagementTests(unittest.TestCase):
                 raise GitHubError("simulated lost comment response")
 
         github = LostCommentGitHub()
-        def ownership_history(_github, _repository_id, _owner_id):
+        def ownership_history(_github, _repository_id, _owner_id, _activation_issue_number):
             if not github.rows:
                 return []
             body = github.rows[0]["body"]
@@ -360,6 +483,58 @@ class RulesetManagementTests(unittest.TestCase):
                          effective_policy_sha256(changed_evidence, 10, "f" * 64))
         self.assertNotEqual(effective_policy_sha256(policy, 10, "f" * 64),
                             effective_policy_sha256(policy, 11, "f" * 64))
+
+    def test_historical_v2_evidence_uses_ownership_prefix_before_corrupt_successor(self):
+        plan_sha = "a" * 64
+        policy_sha = "d" * 64
+        body_sha = "c" * 64
+        approval_body = (f"PASES-RULESET-APPROVE: {plan_sha}\n"
+                         f"PASES-REPOSITORY: {REPOSITORY}")
+        payload = {
+            "actor_id": OWNER_ID, "actor_login": "puchinya", "approval_comment_id": 10,
+            "plan_sha256": plan_sha, "predecessor_comment_id": None,
+            "effective_policy_sha256": policy_sha, "repository": REPOSITORY,
+            "repository_id": 1401910271, "ruleset_body_sha256": body_sha,
+            "ruleset_id": 17, "schema": "PASES_RULESET_APPLIED_V1",
+        }
+        record_body = APPLIED_MARKER + _canonical(payload).decode("utf-8") + "\n-->"
+
+        def row(comment_id, body):
+            return {
+                "id": comment_id, "body": body,
+                "created_at": "2026-10-17T00:00:00Z", "updated_at": "2026-10-17T00:00:00Z",
+                "issue_url": f"https://api.github.com/repos/{REPOSITORY}/issues/57",
+                "html_url": f"https://github.com/{REPOSITORY}/issues/57#issuecomment-{comment_id}",
+                "user": {"id": OWNER_ID, "login": "puchinya", "type": "User"},
+            }
+
+        comments = [row(10, approval_body), row(11, record_body), row(13, APPLIED_MARKER + "not-json\n-->")]
+
+        class HistoricalGitHub:
+            repo = REPOSITORY
+
+            def repository_metadata(self):
+                return {"id": 1401910271, "owner": {"id": OWNER_ID}}
+
+            def issue_comments(self, issue_number):
+                if issue_number != 57:
+                    raise AssertionError("ownership history used the wrong Activation Issue")
+                return copy.deepcopy(comments)
+
+            def issue_comment(self, issue_number, comment_id):
+                if issue_number != 57:
+                    raise AssertionError("ownership history used the wrong Activation Issue")
+                matches = [item for item in comments if item["id"] == comment_id]
+                if len(matches) != 1:
+                    raise GitHubError("comment missing or duplicated")
+                return copy.deepcopy(matches[0])
+
+        github = HistoricalGitHub()
+        verified = verify_applied_policy_record(github, 57, 20, 11, 17, policy_sha)
+        self.assertEqual(verified, payload)
+        from p_ases.ruleset_management import _read_ownership_history
+        with self.assertRaisesRegex(RulesetManagementError, "canonical|JSON"):
+            _read_ownership_history(github, 1401910271, OWNER_ID, 57)
 
 
 if __name__ == "__main__":

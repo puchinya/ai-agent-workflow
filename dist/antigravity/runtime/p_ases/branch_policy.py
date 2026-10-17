@@ -325,6 +325,8 @@ def assess_branch_policy(
     status = "UNVERIFIED"
     pull_request_required: bool | None = None
     minimum_approvals: int | None = None
+    legacy_approvals: int | None = None
+    ruleset_approvals: int | None = None
     force_push_disabled: bool | None = None
     bypass_actor_count: int | None = None
 
@@ -382,11 +384,11 @@ def assess_branch_policy(
                     count = review.get("required_approving_review_count") if isinstance(review, dict) else None
                     if type(count) is not int or count < 0:
                         reasons.add("LEGACY_APPROVAL_POLICY_UNVERIFIED")
-                    elif count < expected_approvals or (review_mode == "solo_owner" and count != 0):
-                        reasons.add("APPROVAL_COUNT_MISMATCH")
                     else:
-                        minimum_approvals = count
+                        legacy_approvals = count
                         pull_request_required = True
+                        if count < expected_approvals or (review_mode == "solo_owner" and count != 0):
+                            reasons.add("APPROVAL_COUNT_MISMATCH")
                     force = legacy_protection.get("allow_force_pushes")
                     if isinstance(force, dict) and type(force.get("enabled")) is bool:
                         force_push_disabled = force["enabled"] is False
@@ -398,7 +400,7 @@ def assess_branch_policy(
 
             if rules:
                 sources.add("effective-rules")
-                ok, rule_reasons, ruleset_approvals = _ruleset_summary(
+                ok, rule_reasons, observed_ruleset_approvals = _ruleset_summary(
                     repository=repository, branch=branch, default_branch=default_branch, effective_rules=rules,
                     details_rows=details, required=required, minimum_approvals=expected_approvals,
                     require_no_bypass_or_force_push=review_mode == "solo_owner",
@@ -406,7 +408,7 @@ def assess_branch_policy(
                 reasons.update(rule_reasons)
                 if ok:
                     pull_request_required = True
-                    minimum_approvals = ruleset_approvals
+                    ruleset_approvals = observed_ruleset_approvals
                     matching_detail = next((row for row in details if row.get("id") in {
                         item.get("ruleset_id") for item in rules
                     }), None)
@@ -419,8 +421,12 @@ def assess_branch_policy(
             elif review_mode == "solo_owner":
                 reasons.add("SOLO_OWNER_ACTIVE_RULESET_REQUIRED")
 
-            if review_mode == "solo_owner" and legacy_protection is not None and minimum_approvals != 0:
+            if review_mode == "solo_owner" and legacy_protection is not None and legacy_approvals not in (None, 0):
                 reasons.add("SOLO_OWNER_LEGACY_APPROVAL_POLICY_CONFLICT")
+            observed_approvals = [value for value in (legacy_approvals, ruleset_approvals)
+                                  if value is not None]
+            if observed_approvals:
+                minimum_approvals = max(observed_approvals)
             if not rules and review_mode == "external_reviewer" and minimum_approvals is None:
                 reasons.add("FORMAL_REVIEW_POLICY_MISSING")
             if errors.get("legacy_protection") == 404 and not rules and legacy_protection is None:

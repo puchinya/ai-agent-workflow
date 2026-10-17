@@ -391,7 +391,8 @@ def _setup_payload(issue_number: int, adc: VerifiedADC, predecessor_record_id: i
 
 def _setup_payload_v2(issue_number: int, adc: VerifiedADC, predecessor_record_id: int | None,
                       profile_content: bytes, review_mode: str, ruleset_id: int,
-                      policy_sha256: str, checks: tuple[tuple[str, int], ...]) -> dict[str, Any]:
+                      policy_sha256: str, applied_record_id: int,
+                      checks: tuple[tuple[str, int], ...]) -> dict[str, Any]:
     if review_mode != "solo_owner" or not checks:
         raise ConsumerActivationError("Activation V2 requires solo_owner and trusted Required Checks")
     return {
@@ -401,6 +402,7 @@ def _setup_payload_v2(issue_number: int, adc: VerifiedADC, predecessor_record_id
         "adc_sha256": adc.pointer.sha256,
         "adc_state": adc.pointer.state,
         "branch_policy_sha256": policy_sha256,
+        "ruleset_applied_record_id": applied_record_id,
         "predecessor_record_id": predecessor_record_id,
         "required_checks": [{"context": name, "integration_id": app_id} for name, app_id in checks],
         "review_mode": review_mode,
@@ -593,6 +595,7 @@ def _validate_merged_setup(github: GitHub, pr_number: int, expected: dict[str, A
             if tuple(sorted(checks)) != tuple(sorted(expected_checks)) or not checks:
                 raise ConsumerActivationError("setup PR V2 Required Checks differ from its exact profile")
             _positive(expected.get("ruleset_id"), "Activation V2 Ruleset ID")
+            _positive(expected.get("ruleset_applied_record_id"), "Activation V2 applied-policy record ID")
             if not isinstance(expected.get("branch_policy_sha256"), str) or not SHA256.fullmatch(
                     expected["branch_policy_sha256"]):
                 raise ConsumerActivationError("Activation V2 effective-policy digest is invalid")
@@ -603,11 +606,15 @@ def _validate_merged_setup(github: GitHub, pr_number: int, expected: dict[str, A
         )
         if is_v2 and require_current_policy:
             try:
-                managed = read_verified_managed_policy(github, default_branch, checks, expected["review_mode"])
+                managed = read_verified_managed_policy(
+                    github, default_branch, checks, expected["review_mode"],
+                    expected["activation_issue_number"],
+                )
             except RulesetManagementError as exc:
                 raise ConsumerActivationError(f"V2 effective branch policy could not be verified: {exc}") from exc
             if (managed["ruleset_id"] != expected["ruleset_id"]
-                    or managed["effective_policy_sha256"] != expected["branch_policy_sha256"]):
+                    or managed["effective_policy_sha256"] != expected["branch_policy_sha256"]
+                    or managed["applied_record_id"] != expected["ruleset_applied_record_id"]):
                 raise ConsumerActivationError("V2 setup PR effective-policy evidence is stale or mismatched")
         issue_number = expected["activation_issue_number"]
         issue = github.issue(issue_number)
@@ -718,6 +725,7 @@ class ConsumerActivationRecord:
     review_mode: str | None = None
     ruleset_id: int | None = None
     branch_policy_sha256: str | None = None
+    ruleset_applied_record_id: int | None = None
 
     def validate(self) -> "ConsumerActivationRecord":
         if not isinstance(self.repository, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", self.repository):
@@ -747,12 +755,15 @@ class ConsumerActivationRecord:
         if self.predecessor_record_id is not None:
             _positive(self.predecessor_record_id, "predecessor Activation record")
         if self.schema_version == 1:
-            if any(value is not None for value in (self.review_mode, self.ruleset_id, self.branch_policy_sha256)):
+            if any(value is not None for value in (self.review_mode, self.ruleset_id, self.branch_policy_sha256,
+                                                   self.ruleset_applied_record_id)):
                 raise ConsumerActivationError("V1 Activation record cannot contain V2 policy fields")
         elif self.schema_version == 2:
             if (self.review_mode != "solo_owner" or type(self.ruleset_id) is not int or self.ruleset_id < 1
                     or not isinstance(self.branch_policy_sha256, str)
-                    or not SHA256.fullmatch(self.branch_policy_sha256)):
+                    or not SHA256.fullmatch(self.branch_policy_sha256)
+                    or type(self.ruleset_applied_record_id) is not int
+                    or self.ruleset_applied_record_id < 1):
                 raise ConsumerActivationError("V2 Activation policy evidence is incomplete")
         else:
             raise ConsumerActivationError("Activation record version is unknown")
@@ -801,6 +812,7 @@ class ConsumerActivationRecord:
                 "branch_policy_sha256": self.branch_policy_sha256,
                 "review_mode": self.review_mode,
                 "ruleset_id": self.ruleset_id,
+                "ruleset_applied_record_id": self.ruleset_applied_record_id,
             })
         return value
 
@@ -816,7 +828,7 @@ class ConsumerActivationRecord:
         version = 1 if value.get("schema") == "PASES_CONSUMER_ACTIVATION_V1" else (
             2 if value.get("schema") == "PASES_CONSUMER_ACTIVATION_V2" else None)
         expected = common if version == 1 else common | {
-            "branch_policy_sha256", "review_mode", "ruleset_id",
+            "branch_policy_sha256", "review_mode", "ruleset_id", "ruleset_applied_record_id",
         } if version == 2 else set()
         if not expected or set(value) != expected:
             raise ConsumerActivationError("Activation record has unknown schema or fields")
@@ -838,6 +850,7 @@ class ConsumerActivationRecord:
             schema_version=version,
             review_mode=value.get("review_mode"), ruleset_id=value.get("ruleset_id"),
             branch_policy_sha256=value.get("branch_policy_sha256"),
+            ruleset_applied_record_id=value.get("ruleset_applied_record_id"),
         ).validate()
 
     @property
@@ -868,6 +881,7 @@ def _approval_payload(record_fields: dict[str, Any], *, predecessor: int | None)
             "branch_policy_sha256": record_fields["branch_policy_sha256"],
             "review_mode": record_fields["review_mode"],
             "ruleset_id": record_fields["ruleset_id"],
+            "ruleset_applied_record_id": record_fields["ruleset_applied_record_id"],
         })
     return value
 
@@ -979,7 +993,7 @@ def setup_consumer_activation(root: Path, github: GitHub) -> dict[str, Any]:
             if len(checks) != len(configured_profile.required_checks):
                 raise ConsumerActivationError("Activation V2 requires trusted App IDs for every Required Check")
             policy_evidence = read_verified_managed_policy(
-                github, default_branch, checks, review_mode,
+                github, default_branch, checks, review_mode, issue_number,
             )
         if (history and configured == issue_number and adc.pointer.state == "approved"
                 and history[-1][0].adc_sha256 == adc.pointer.sha256
@@ -987,7 +1001,8 @@ def setup_consumer_activation(root: Path, github: GitHub) -> dict[str, Any]:
                 and (version == 1 or history[-1][0].activation_profile_sha256
                      == hashlib.sha256(content).hexdigest())
                 and (version == 1 or history[-1][0].ruleset_id == policy_evidence["ruleset_id"]
-                     and history[-1][0].branch_policy_sha256 == policy_evidence["effective_policy_sha256"])):
+                     and history[-1][0].branch_policy_sha256 == policy_evidence["effective_policy_sha256"]
+                     and history[-1][0].ruleset_applied_record_id == policy_evidence["applied_record_id"])):
             active, record_id = history[-1]
             return {"status": "ACTIVE", "repository": github.repo, "issue": issue_number,
                     "activation_comment_id": record_id, "activated_at": active.activated_at,
@@ -997,7 +1012,8 @@ def setup_consumer_activation(root: Path, github: GitHub) -> dict[str, Any]:
         if version == 2:
             expected = _setup_payload_v2(
                 issue_number, adc, predecessor, content, review_mode,
-                policy_evidence["ruleset_id"], policy_evidence["effective_policy_sha256"], checks,
+                policy_evidence["ruleset_id"], policy_evidence["effective_policy_sha256"],
+                policy_evidence["applied_record_id"], checks,
             )
         else:
             expected = _setup_payload(issue_number, adc, predecessor)
@@ -1129,6 +1145,7 @@ def verify_and_record_activation(github: GitHub, pr_number: int) -> tuple[Consum
                 "branch_policy_sha256": setup["branch_policy_sha256"],
                 "review_mode": setup["review_mode"],
                 "ruleset_id": setup["ruleset_id"],
+                "ruleset_applied_record_id": setup["ruleset_applied_record_id"],
             })
         approval_payload = _approval_payload(fields, predecessor=predecessor)
         comments = github.issue_comments(issue_number)
@@ -1167,6 +1184,8 @@ def verify_and_record_activation(github: GitHub, pr_number: int) -> tuple[Consum
             review_mode=setup.get("review_mode") if schema_version == 2 else None,
             ruleset_id=setup.get("ruleset_id") if schema_version == 2 else None,
             branch_policy_sha256=setup.get("branch_policy_sha256") if schema_version == 2 else None,
+            ruleset_applied_record_id=(setup.get("ruleset_applied_record_id")
+                                       if schema_version == 2 else None),
         ).validate()
         record_marker = RECORD_MARKER_V2 if schema_version == 2 else RECORD_MARKER
         if schema_version == 2:
@@ -1177,12 +1196,13 @@ def verify_and_record_activation(github: GitHub, pr_number: int) -> tuple[Consum
                 latest_policy = read_verified_managed_policy(
                     github, checked_pr["base"]["ref"],
                     tuple((item.name, item.app_id) for item in check_evidence),
-                    setup["review_mode"],
+                    setup["review_mode"], issue_number,
                 )
             except RulesetManagementError as exc:
                 raise ConsumerActivationError(f"V2 policy changed or became unreadable before recording: {exc}") from exc
             if (latest_policy["ruleset_id"] != setup["ruleset_id"]
-                    or latest_policy["effective_policy_sha256"] != setup["branch_policy_sha256"]):
+                    or latest_policy["effective_policy_sha256"] != setup["branch_policy_sha256"]
+                    or latest_policy["applied_record_id"] != setup["ruleset_applied_record_id"]):
                 raise ConsumerActivationError("V2 policy changed before the Activation record was published")
         record_id, _ = _publish_comment(github, issue_number, record_marker, record.payload(),
                                         "Activation record", allow_history=True)
@@ -1326,6 +1346,7 @@ def read_consumer_activation_history(
                                          for item in record.required_check_runs],
                     "review_mode": record.review_mode,
                     "ruleset_id": record.ruleset_id,
+                    "ruleset_applied_record_id": record.ruleset_applied_record_id,
                 })
             pr, _issue, proposed, _pinned_checks = _validate_merged_setup(
                 github, record.setup_pr_number, expected_setup,
@@ -1336,7 +1357,8 @@ def read_consumer_activation_history(
             if record.schema_version == 2:
                 try:
                     verify_applied_policy_record(
-                        github, record_id, record.ruleset_id, record.branch_policy_sha256,
+                        github, issue_number, record_id, record.ruleset_applied_record_id,
+                        record.ruleset_id, record.branch_policy_sha256,
                     )
                 except RulesetManagementError as exc:
                     raise ConsumerActivationError(f"historical V2 policy evidence is invalid: {exc}") from exc

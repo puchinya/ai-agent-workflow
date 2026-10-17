@@ -33,7 +33,7 @@ from p_ases.issue_graph import (
     validate_split,
 )
 from p_ases.phase_evidence import (
-    PhaseDecision, PhaseEvidenceError, _check_activation, _collect_payload, _readback,
+    PhaseDecision, PhaseEvidenceError, _artifact_impacts, _check_activation, _collect_payload, _readback,
     _markdown_anchors, _receipt_subject, _validate_ready_traceability, publish_phase_evidence,
     verify_ready_preparation,
 )
@@ -881,6 +881,33 @@ class PhaseEvidenceCollectionTests(unittest.TestCase):
             self.assertEqual([row["path"] for row in decision.payload["documents"]], [
                 "docs/specs/product.md",
             ])
+
+    def test_artifact_impact_parser_accepts_canonical_braced_path_list(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repository, verified = self.make_repository(Path(temporary))
+            original = (
+                b"- Specification: docs/specs/product.md\n"
+                b"- Design: docs/design/system.md\n"
+                b"- Testing: docs/testing/oracle.md, docs/testing/traceability.md"
+            )
+            compact = (
+                b"Canonical: docs/specs/product.md, docs/design/system.md, "
+                b"docs/testing/{pases-lifecycle-tests,runtime-tests,traceability}.md; "
+                b"runtime/p_ases/phase_evidence.py"
+            )
+            content = verified.contract.content.replace(original, compact)
+            contract = parse_adc(content, repository, 40)
+            canonical = VerifiedADC(contract, ADCPointer(88, contract.sha256, len(content), "approved"))
+            paths, reasons = _artifact_impacts(canonical)
+        self.assertEqual(paths, {
+            "specification": ("docs/specs/product.md",),
+            "design": ("docs/design/system.md",),
+            "test-oracle": (
+                "docs/testing/pases-lifecycle-tests.md", "docs/testing/runtime-tests.md",
+                "docs/testing/traceability.md",
+            ),
+        })
+        self.assertEqual(reasons, {})
 
     def test_phase_evidence_accepts_incremental_spec_design_then_ready_documents(self):
         with tempfile.TemporaryDirectory() as temporary:

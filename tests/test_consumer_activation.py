@@ -651,7 +651,8 @@ class ConsumerActivationTests(unittest.TestCase):
         v2_profile["branch"]["required_checks"] = [{"name": "ci", "trusted_app_id": APP_ID}]
         v2_profile["final_delivery"] = {"review_mode": "solo_owner"}
         v2_profile["activation"] = {"issue_number": ISSUE}
-        policy_evidence = {"ruleset_id": 123, "effective_policy_sha256": "c" * 64}
+        policy_evidence = {"ruleset_id": 123, "effective_policy_sha256": "c" * 64,
+                           "applied_record_id": 456}
         setup_bytes: dict[str, bytes] = {}
         with tempfile.TemporaryDirectory() as tmp, \
                 patch("p_ases.consumer_activation.worktree_clean", return_value=True), \
@@ -732,11 +733,13 @@ class ConsumerActivationTests(unittest.TestCase):
         )
         v2 = ConsumerActivationRecord(
             **{**v1.__dict__, "record_created_at": "2026-10-14T12:05:00Z", "schema_version": 2,
-               "review_mode": "solo_owner", "ruleset_id": 123, "branch_policy_sha256": "c" * 64},
+               "review_mode": "solo_owner", "ruleset_id": 123, "branch_policy_sha256": "c" * 64,
+               "ruleset_applied_record_id": 456},
         )
         self.assertEqual(v1.activated_at, MERGED_AT)
         self.assertEqual(v2.activated_at, "2026-10-14T12:05:00Z")
         self.assertEqual(v2.payload()["schema"], "PASES_CONSUMER_ACTIVATION_V2")
+        self.assertEqual(v2.payload()["ruleset_applied_record_id"], 456)
 
 
 def sample_check_evidence():

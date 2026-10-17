@@ -21,13 +21,12 @@ class RulesetManagementError(ValueError):
 
 
 RULESET_NAME = "P-ASES Final Delivery (managed)"
-ACTIVATION_ISSUE = 57
 APPLIED_MARKER = "<!-- PASES_RULESET_APPLIED_V1\n"
 PLAN_SCHEMA = "PASES_RULESET_PLAN_V1"
 PLAN_FIELDS = {
     "activation_issue_number", "blockers", "default_branch", "default_branch_sha40", "diff",
     "existing_ruleset_id", "existing_ruleset_sha256", "owner_id", "plan_schema", "policy_evidence",
-    "policy_proof", "profile_review_mode", "profile_sha256", "repository", "repository_id",
+    "policy_proof", "predecessor_comment_id", "profile_review_mode", "profile_sha256", "repository", "repository_id",
     "required_checks", "desired_ruleset", "existing_pr_impact", "plan_sha256",
 }
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -156,23 +155,38 @@ def _decode_record(body: Any) -> dict[str, Any]:
     return payload
 
 
-def _read_ownership_history(github: GitHub, repository_id: int, owner_id: int) -> list[tuple[int, dict[str, Any]]]:
-    listed = _comments_for_marker(github, ACTIVATION_ISSUE)
-    all_comments = github.issue_comments(ACTIVATION_ISSUE)
-    listed.sort(key=lambda row: row.get("id", 0))
+def _read_ownership_history(github: GitHub, repository_id: int, owner_id: int,
+                            activation_issue_number: int, *,
+                            through_comment_id: int | None = None) -> list[tuple[int, dict[str, Any]]]:
+    activation_issue_number = _positive(activation_issue_number, "Activation Issue number")
+    listed = _comments_for_marker(github, activation_issue_number)
+    all_comments = github.issue_comments(activation_issue_number)
+    if through_comment_id is not None:
+        through_comment_id = _positive(through_comment_id, "Ruleset applied-policy Comment ID")
+        positions = [index for index, row in enumerate(listed) if row.get("id") == through_comment_id]
+        if len(positions) != 1:
+            raise RulesetManagementError("selected Ruleset applied-policy record is missing or duplicated")
+        listed = listed[:positions[0] + 1]
     ids = [row.get("id") for row in listed]
-    if (any(type(value) is not int or value < 1 for value in ids) or len(ids) != len(set(ids))):
+    if (any(type(value) is not int or value < 1 for value in ids) or len(ids) != len(set(ids))
+            or ids != sorted(ids)):
         raise RulesetManagementError("Ruleset ownership comments contain invalid or duplicate IDs")
     result: list[tuple[int, dict[str, Any]]] = []
     predecessor: int | None = None
     seen: set[tuple[int, str]] = set()
     for row in listed:
         comment_id = row["id"]
-        first = github.issue_comment(ACTIVATION_ISSUE, comment_id)
-        second_list = _comments_for_marker(github, ACTIVATION_ISSUE)
+        first = github.issue_comment(activation_issue_number, comment_id)
+        second_list = _comments_for_marker(github, activation_issue_number)
+        if through_comment_id is not None:
+            positions = [index for index, item in enumerate(second_list)
+                         if item.get("id") == through_comment_id]
+            if len(positions) != 1:
+                raise RulesetManagementError("selected Ruleset applied-policy record changed during readback")
+            second_list = second_list[:positions[0] + 1]
         second_matches = [item for item in second_list if item.get("id") == comment_id]
-        final = github.issue_comment(ACTIVATION_ISSUE, comment_id)
-        expected_issue_url = f"https://api.github.com/repos/{github.repo}/issues/{ACTIVATION_ISSUE}"
+        final = github.issue_comment(activation_issue_number, comment_id)
+        expected_issue_url = f"https://api.github.com/repos/{github.repo}/issues/{activation_issue_number}"
         if (len(second_matches) != 1 or first.get("id") != comment_id or final.get("id") != comment_id
                 or first.get("body") != row.get("body")
                 or second_matches[0].get("body") != row.get("body")
@@ -188,10 +202,10 @@ def _read_ownership_history(github: GitHub, repository_id: int, owner_id: int) -
         expected_approval = (f"PASES-RULESET-APPROVE: {payload['plan_sha256']}\n"
                              f"PASES-REPOSITORY: {github.repo}")
         approval_listed = [item for item in all_comments if item.get("id") == approval_id]
-        approval_first = github.issue_comment(ACTIVATION_ISSUE, approval_id)
-        approval_final_list = github.issue_comments(ACTIVATION_ISSUE)
+        approval_first = github.issue_comment(activation_issue_number, approval_id)
+        approval_final_list = github.issue_comments(activation_issue_number)
         approval_listed_again = [item for item in approval_final_list if item.get("id") == approval_id]
-        approval_final = github.issue_comment(ACTIVATION_ISSUE, approval_id)
+        approval_final = github.issue_comment(activation_issue_number, approval_id)
         approval_user = approval_final.get("user") if isinstance(approval_final.get("user"), dict) else {}
         if (approval_id >= comment_id or len(approval_listed) != 1 or len(approval_listed_again) != 1
                 or approval_first.get("id") != approval_id or approval_final.get("id") != approval_id
@@ -207,7 +221,7 @@ def _read_ownership_history(github: GitHub, repository_id: int, owner_id: int) -
                 or approval_final.get("updated_at") != approval_final.get("created_at")
                 or approval_user.get("id") != owner_id or approval_user.get("type") != "User"
                 or approval_final.get("issue_url", "").casefold()
-                != f"https://api.github.com/repos/{github.repo}/issues/{ACTIVATION_ISSUE}".casefold()):
+                != f"https://api.github.com/repos/{github.repo}/issues/{activation_issue_number}".casefold()):
             raise RulesetManagementError("Ruleset apply record does not name one exact owner approval comment")
         user = final.get("user")
         if (not isinstance(user, dict) or user.get("type") != "User"
@@ -223,8 +237,15 @@ def _read_ownership_history(github: GitHub, repository_id: int, owner_id: int) -
         predecessor = comment_id
         seen.add((payload["ruleset_id"], payload["ruleset_body_sha256"]))
         result.append((comment_id, payload))
-    final_list = _comments_for_marker(github, ACTIVATION_ISSUE)
-    if [row.get("id") for row in final_list] != [row.get("id") for row in listed]:
+    final_list = _comments_for_marker(github, activation_issue_number)
+    if through_comment_id is not None:
+        positions = [index for index, row in enumerate(final_list)
+                     if row.get("id") == through_comment_id]
+        if len(positions) != 1:
+            raise RulesetManagementError("selected Ruleset applied-policy record changed during readback")
+        final_list = final_list[:positions[0] + 1]
+    if ([(row.get("id"), row.get("body"), row.get("html_url")) for row in final_list]
+            != [(row.get("id"), row.get("body"), row.get("html_url")) for row in listed]):
         raise RulesetManagementError("Ruleset ownership history changed during readback")
     return result
 
@@ -316,8 +337,10 @@ def build_ruleset_plan(root: Path, github: GitHub) -> dict[str, Any]:
         profile = load_profile(root)
     except (GitError, ProfileError) as exc:
         raise RulesetManagementError(f"Ruleset planning requires the valid active project profile: {exc}") from exc
-    if profile.activation_issue_number != ACTIVATION_ISSUE:
-        blockers.append("ACTIVATION_LOCATOR_MISMATCH")
+    activation_issue_number = profile.activation_issue_number
+    if type(activation_issue_number) is not int or activation_issue_number < 1:
+        blockers.append("ACTIVATION_LOCATOR_MISSING")
+        activation_issue_number = None
     if profile.final_delivery_review_mode != "solo_owner":
         blockers.append("REVIEW_MODE_MUST_BE_EXPLICIT_SOLO_OWNER")
     if not profile.required_checks or any(app_id is None for _, app_id in profile.required_checks):
@@ -362,7 +385,8 @@ def build_ruleset_plan(root: Path, github: GitHub) -> dict[str, Any]:
         except GitHubError:
             blockers.append("MANAGED_RULESET_DETAIL_UNAVAILABLE")
     existing_digest = _body_digest(existing_detail) if existing_detail is not None else None
-    history = _read_ownership_history(github, repository_id, owner_id)
+    history = (_read_ownership_history(github, repository_id, owner_id, activation_issue_number)
+               if activation_issue_number is not None else [])
     last_owner_record = history[-1] if history else None
     if existing_id is not None:
         if last_owner_record is None:
@@ -427,7 +451,7 @@ def build_ruleset_plan(root: Path, github: GitHub) -> dict[str, Any]:
         ),
     }
     plan = {
-        "activation_issue_number": ACTIVATION_ISSUE,
+        "activation_issue_number": activation_issue_number,
         "blockers": sorted(set(blockers)),
         "default_branch": default_branch,
         "default_branch_sha40": default_branch_sha,
@@ -438,6 +462,7 @@ def build_ruleset_plan(root: Path, github: GitHub) -> dict[str, Any]:
         "plan_schema": PLAN_SCHEMA,
         "policy_evidence": policy_evidence,
         "policy_proof": policy.as_dict() if isinstance(policy, EffectiveBranchPolicy) else None,
+        "predecessor_comment_id": last_owner_record[0] if last_owner_record is not None else None,
         "profile_review_mode": profile.final_delivery_review_mode,
         "profile_sha256": profile_sha,
         "repository": github.repo,
@@ -464,11 +489,15 @@ def validate_plan(value: Any) -> dict[str, Any]:
     if (not isinstance(value.get("repository"), str) or not REPOSITORY.fullmatch(value["repository"])
             or type(value.get("repository_id")) is not int or value["repository_id"] < 1
             or type(value.get("owner_id")) is not int or value["owner_id"] < 1
-            or value.get("activation_issue_number") != ACTIVATION_ISSUE
+            or type(value.get("activation_issue_number")) is not int
+            or value.get("activation_issue_number") < 1
             or value.get("profile_review_mode") != "solo_owner"
             or value.get("diff", {}).get("operation") not in {"create", "update", "noop"}
             or value.get("blockers") != []):
         raise RulesetManagementError("Ruleset plan is blocked or has invalid bound identity")
+    predecessor = value.get("predecessor_comment_id")
+    if predecessor is not None:
+        _positive(predecessor, "Ruleset ownership predecessor comment ID")
     _sha(value.get("profile_sha256"), "committed profile digest")
     if (not isinstance(value.get("default_branch"), str) or not value["default_branch"]
             or not isinstance(value.get("default_branch_sha40"), str)
@@ -549,28 +578,137 @@ def read_plan(path: Path) -> dict[str, Any]:
     return validate_plan(value)
 
 
+APPLY_INTENT_SCHEMA = "PASES_RULESET_APPLY_INTENT_V1"
+APPLY_INTENT_FIELDS = {
+    "activation_issue_number", "approval_comment_id", "operation", "owner_id", "plan_sha256",
+    "predecessor_comment_id", "repository", "repository_id", "ruleset_body_sha256", "ruleset_id",
+    "schema", "state", "record_comment_id", "intent_sha256",
+}
+
+
+def _apply_intent_path(root: Path, plan: dict[str, Any]) -> Path:
+    return (Path(root).resolve() / ".p_ases" / "state" / str(plan["activation_issue_number"])
+            / "ruleset-apply" / f"{plan['plan_sha256']}.json")
+
+
+def _intent_payload(plan: dict[str, Any], approval_comment_id: int, *, state: str,
+                    ruleset_id: int | None, record_comment_id: int | None = None) -> dict[str, Any]:
+    if state not in {"PREPARED", "WRITE_STARTED", "APPLIED"}:
+        raise RulesetManagementError("Ruleset apply intent state is invalid")
+    payload = {
+        "activation_issue_number": plan["activation_issue_number"],
+        "approval_comment_id": _positive(approval_comment_id, "Ruleset approval comment ID"),
+        "operation": plan["diff"]["operation"],
+        "owner_id": plan["owner_id"],
+        "plan_sha256": plan["plan_sha256"],
+        "predecessor_comment_id": plan["predecessor_comment_id"],
+        "repository": plan["repository"],
+        "repository_id": plan["repository_id"],
+        "ruleset_body_sha256": _body_digest(plan["desired_ruleset"]),
+        "ruleset_id": ruleset_id,
+        "schema": APPLY_INTENT_SCHEMA,
+        "state": state,
+        "record_comment_id": record_comment_id,
+    }
+    payload["intent_sha256"] = hashlib.sha256(_canonical(payload)).hexdigest()
+    return payload
+
+
+def _validate_apply_intent(value: Any, plan: dict[str, Any], approval_comment_id: int) -> dict[str, Any]:
+    if (not isinstance(value, dict) or set(value) != APPLY_INTENT_FIELDS
+            or value.get("schema") != APPLY_INTENT_SCHEMA):
+        raise RulesetManagementError("Ruleset apply intent has an unknown schema")
+    supplied = value["intent_sha256"]
+    payload = {key: item for key, item in value.items() if key != "intent_sha256"}
+    if (not isinstance(supplied, str) or hashlib.sha256(_canonical(payload)).hexdigest() != supplied
+            or value.get("activation_issue_number") != plan["activation_issue_number"]
+            or value.get("approval_comment_id") != approval_comment_id
+            or value.get("operation") != plan["diff"]["operation"]
+            or value.get("owner_id") != plan["owner_id"]
+            or value.get("plan_sha256") != plan["plan_sha256"]
+            or value.get("predecessor_comment_id") != plan["predecessor_comment_id"]
+            or value.get("repository") != plan["repository"]
+            or value.get("repository_id") != plan["repository_id"]
+            or value.get("ruleset_body_sha256") != _body_digest(plan["desired_ruleset"])
+            or value.get("state") not in {"PREPARED", "WRITE_STARTED", "APPLIED"}):
+        raise RulesetManagementError("Ruleset apply intent does not match this exact approved plan")
+    ruleset_id = value.get("ruleset_id")
+    if ruleset_id is not None:
+        _positive(ruleset_id, "Ruleset apply intent Ruleset ID")
+    if value["operation"] == "update" and ruleset_id not in (None, plan["existing_ruleset_id"]):
+        raise RulesetManagementError("Ruleset apply intent update ID differs from the approved plan")
+    record_id = value.get("record_comment_id")
+    if record_id is not None:
+        _positive(record_id, "Ruleset applied-policy Comment ID")
+    if value["state"] == "APPLIED" and (ruleset_id is None or record_id is None):
+        raise RulesetManagementError("completed Ruleset apply intent is missing verified IDs")
+    return value
+
+
+def _write_apply_intent(path: Path, intent: dict[str, Any]) -> None:
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=destination.parent, prefix=f".{destination.name}.",
+                                         delete=False, mode="wb") as stream:
+            temporary = Path(stream.name)
+            stream.write(json.dumps(intent, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8") + b"\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, destination)
+    except OSError as exc:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+        raise RulesetManagementError("could not atomically persist Ruleset apply intent") from exc
+
+
+def _read_apply_intent(path: Path, plan: dict[str, Any], approval_comment_id: int) -> dict[str, Any] | None:
+    try:
+        raw = Path(path).read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise RulesetManagementError("could not read Ruleset apply intent") from exc
+
+    def unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in result:
+                raise RulesetManagementError("Ruleset apply intent contains a duplicate JSON key")
+            result[key] = item
+        return result
+
+    try:
+        value = json.loads(raw.decode("utf-8", errors="strict"), object_pairs_hook=unique)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise RulesetManagementError("Ruleset apply intent is not valid UTF-8 JSON") from exc
+    return _validate_apply_intent(value, plan, approval_comment_id)
+
+
 def _verify_exact_approval(github: GitHub, plan: dict[str, Any], comment_id: int) -> dict[str, Any]:
     comment_id = _positive(comment_id, "Ruleset approval comment ID")
+    issue_number = _positive(plan.get("activation_issue_number"), "Activation Issue number")
     expected = (f"PASES-RULESET-APPROVE: {plan['plan_sha256']}\n"
                 f"PASES-REPOSITORY: {github.repo}")
-    issue = github.issue(ACTIVATION_ISSUE)
+    issue = github.issue(issue_number)
     expected_repo_url = f"https://api.github.com/repos/{github.repo}"
-    if (issue.get("number") != ACTIVATION_ISSUE or issue.get("pull_request") is not None
+    if (issue.get("number") != issue_number or issue.get("pull_request") is not None
             or issue.get("state") != "open"
             or not isinstance(issue.get("repository_url"), str)
             or issue["repository_url"].casefold() != expected_repo_url.casefold()):
-        raise RulesetManagementError("Ruleset approval Issue #57 identity is invalid")
-    first = github.issue_comment(ACTIVATION_ISSUE, comment_id)
-    listed = github.issue_comments(ACTIVATION_ISSUE)
+        raise RulesetManagementError("Ruleset approval Activation Issue identity is invalid")
+    first = github.issue_comment(issue_number, comment_id)
+    listed = github.issue_comments(issue_number)
     matches = [row for row in listed if row.get("id") == comment_id]
-    final = github.issue_comment(ACTIVATION_ISSUE, comment_id)
+    final = github.issue_comment(issue_number, comment_id)
     user = final.get("user") if isinstance(final.get("user"), dict) else {}
     if (len(matches) != 1 or first.get("id") != comment_id or final.get("id") != comment_id
             or first.get("body") != expected or final.get("body") != expected
             or final.get("created_at") != matches[0].get("created_at")
             or final.get("html_url") != matches[0].get("html_url")
             or not isinstance(final.get("issue_url"), str)
-            or final["issue_url"].casefold() != f"{expected_repo_url}/issues/{ACTIVATION_ISSUE}".casefold()
+            or final["issue_url"].casefold() != f"{expected_repo_url}/issues/{issue_number}".casefold()
             or final.get("updated_at") != final.get("created_at")
             or type(user.get("id")) is not int or user.get("id") != plan["owner_id"]
             or user.get("type") != "User" or not isinstance(user.get("login"), str)):
@@ -599,7 +737,10 @@ def _require_current_admin(github: GitHub, owner_id: int) -> dict[str, Any]:
 def _publish_applied_record(github: GitHub, plan: dict[str, Any], approval_id: int,
                             ruleset_id: int, body_digest: str, policy_digest: str,
                             actor: dict[str, Any]) -> int:
-    history = _read_ownership_history(github, plan["repository_id"], plan["owner_id"])
+    issue_number = _positive(plan.get("activation_issue_number"), "Activation Issue number")
+    history = _read_ownership_history(
+        github, plan["repository_id"], plan["owner_id"], issue_number,
+    )
     matching_attempts = [
         (comment_id, payload) for comment_id, payload in history
         if payload["plan_sha256"] == plan["plan_sha256"]
@@ -607,12 +748,20 @@ def _publish_applied_record(github: GitHub, plan: dict[str, Any], approval_id: i
     if matching_attempts:
         if (len(matching_attempts) != 1
                 or matching_attempts[0][1]["approval_comment_id"] != approval_id
+                or matching_attempts[0][1]["predecessor_comment_id"] != plan["predecessor_comment_id"]
                 or matching_attempts[0][1]["ruleset_id"] != ruleset_id
                 or matching_attempts[0][1]["ruleset_body_sha256"] != body_digest
                 or matching_attempts[0][1]["effective_policy_sha256"] != policy_digest):
             raise RulesetManagementError("existing Ruleset application record conflicts with this exact plan")
         return matching_attempts[0][0]
     predecessor = history[-1][0] if history else None
+    if predecessor != plan["predecessor_comment_id"]:
+        raise RulesetManagementError("Ruleset ownership predecessor changed after the approved plan")
+    if predecessor is not None:
+        previous = history[-1][1]
+        if (previous["ruleset_id"] != plan["existing_ruleset_id"]
+                or previous["ruleset_body_sha256"] != plan["existing_ruleset_sha256"]):
+            raise RulesetManagementError("Ruleset predecessor no longer matches the approved existing body")
     payload = {
         "actor_id": actor["id"], "actor_login": actor["login"],
         "approval_comment_id": approval_id, "plan_sha256": plan["plan_sha256"],
@@ -621,7 +770,7 @@ def _publish_applied_record(github: GitHub, plan: dict[str, Any], approval_id: i
         "ruleset_id": ruleset_id, "schema": "PASES_RULESET_APPLIED_V1",
     }
     expected_body = f"{APPLIED_MARKER}{_canonical(payload).decode('utf-8')}\n-->"
-    existing = [row for row in _comments_for_marker(github, ACTIVATION_ISSUE)
+    existing = [row for row in _comments_for_marker(github, issue_number)
                 if row.get("body") == expected_body]
     if len(existing) > 1:
         raise RulesetManagementError("Ruleset application record is duplicated")
@@ -629,13 +778,13 @@ def _publish_applied_record(github: GitHub, plan: dict[str, Any], approval_id: i
         comment_id = _positive(existing[0].get("id"), "Ruleset application comment ID")
     else:
         try:
-            response = github.create_issue_comment(ACTIVATION_ISSUE, expected_body)
+            response = github.create_issue_comment(issue_number, expected_body)
             comment_id = _positive(response.get("id"), "Ruleset application comment ID")
         except (GitHubError, RulesetManagementError) as exc:
             # A comment POST may succeed while its response is lost. Reconcile the
             # exact immutable record once; never publish a second ownership record.
             try:
-                recovered = [row for row in _comments_for_marker(github, ACTIVATION_ISSUE)
+                recovered = [row for row in _comments_for_marker(github, issue_number)
                              if row.get("body") == expected_body]
             except GitHubError as read_error:
                 raise RulesetManagementError(
@@ -651,22 +800,24 @@ def _publish_applied_record(github: GitHub, plan: dict[str, Any], approval_id: i
                     "recovered Ruleset ownership record was not authored by the verified applying owner"
                 ) from exc
             comment_id = _positive(recovered[0].get("id"), "Ruleset application comment ID")
-    final = github.issue_comment(ACTIVATION_ISSUE, comment_id)
-    listed = _comments_for_marker(github, ACTIVATION_ISSUE)
+    final = github.issue_comment(issue_number, comment_id)
+    listed = _comments_for_marker(github, issue_number)
     matches = [row for row in listed if row.get("id") == comment_id]
-    reread = github.issue_comment(ACTIVATION_ISSUE, comment_id)
+    reread = github.issue_comment(issue_number, comment_id)
     final_user = final.get("user") if isinstance(final.get("user"), dict) else {}
     if (len(matches) != 1 or final.get("id") != comment_id or reread.get("id") != comment_id
             or final.get("body") != expected_body or reread.get("body") != expected_body
             or final.get("html_url") != matches[0].get("html_url")
             or not isinstance(final.get("issue_url"), str)
             or final["issue_url"].casefold()
-            != f"https://api.github.com/repos/{github.repo}/issues/{ACTIVATION_ISSUE}".casefold()
+            != f"https://api.github.com/repos/{github.repo}/issues/{issue_number}".casefold()
             or final.get("created_at") != matches[0].get("created_at")
             or final.get("updated_at") != final.get("created_at")
             or final_user.get("id") != actor["id"] or final_user.get("type") != "User"):
         raise RulesetManagementError("Ruleset application record failed exact direct/list/direct readback")
-    verified_history = _read_ownership_history(github, plan["repository_id"], plan["owner_id"])
+    verified_history = _read_ownership_history(
+        github, plan["repository_id"], plan["owner_id"], issue_number,
+    )
     if (not verified_history or verified_history[-1][0] != comment_id
             or verified_history[-1][1] != payload):
         raise RulesetManagementError("Ruleset application record did not become the valid latest ownership evidence")
@@ -681,14 +832,156 @@ def _read_managed_candidate(github: GitHub) -> tuple[int, dict[str, Any]]:
     return ruleset_id, github.ruleset_details(ruleset_id, source_type="Repository")
 
 
+def _recovery_preconditions_match(plan: dict[str, Any], current: dict[str, Any]) -> bool:
+    fields = (
+        "activation_issue_number", "default_branch", "default_branch_sha40", "existing_pr_impact",
+        "owner_id", "profile_review_mode", "profile_sha256", "repository", "repository_id",
+        "required_checks",
+    )
+    if any(current.get(field) != plan.get(field) for field in fields):
+        return False
+    original_evidence = plan.get("policy_evidence")
+    current_evidence = current.get("policy_evidence")
+    if not isinstance(original_evidence, dict) or not isinstance(current_evidence, dict):
+        return False
+    original_branch = original_evidence.get("branch")
+    current_branch = current_evidence.get("branch")
+    if not isinstance(original_branch, dict) or not isinstance(current_branch, dict):
+        return False
+    original_commit = original_branch.get("commit") if isinstance(original_branch.get("commit"), dict) else {}
+    current_commit = current_branch.get("commit") if isinstance(current_branch.get("commit"), dict) else {}
+    if (original_branch.get("name") != current_branch.get("name")
+            or original_commit.get("sha") != current_commit.get("sha")
+            or original_evidence.get("legacy_protection") != current_evidence.get("legacy_protection")):
+        return False
+    original_errors = original_evidence.get("source_errors")
+    current_errors = current_evidence.get("source_errors")
+    if not isinstance(original_errors, dict) or not isinstance(current_errors, dict):
+        return False
+    return original_errors.get("legacy_protection") == current_errors.get("legacy_protection")
+
+
+def _check_plan_predecessor(plan: dict[str, Any], history: list[tuple[int, dict[str, Any]]]) -> None:
+    expected_id = plan["predecessor_comment_id"]
+    if expected_id is None:
+        if history:
+            raise RulesetManagementError("Ruleset ownership predecessor changed during recovery")
+        return
+    if not history or history[-1][0] != expected_id:
+        raise RulesetManagementError("Ruleset ownership predecessor changed during recovery")
+    predecessor = history[-1][1]
+    if (predecessor["ruleset_id"] != plan["existing_ruleset_id"]
+            or predecessor["ruleset_body_sha256"] != plan["existing_ruleset_sha256"]):
+        raise RulesetManagementError("approved Ruleset plan does not match its exact ownership predecessor")
+
+
+def _verified_apply_result(plan: dict[str, Any], approval_comment_id: int,
+                           ruleset_id: int, detail: dict[str, Any],
+                           policy: EffectiveBranchPolicy, record_comment_id: int | None) -> dict[str, Any]:
+    return {
+        "activation_issue_number": plan["activation_issue_number"],
+        "approval_comment_id": approval_comment_id,
+        "effective_policy": policy.as_dict(),
+        "operation": plan["diff"]["operation"].upper(),
+        "plan_sha256": plan["plan_sha256"],
+        "record_comment_id": record_comment_id,
+        "repository": plan["repository"],
+        "ruleset_body_sha256": _body_digest(detail),
+        "ruleset_id": ruleset_id,
+        "status": "VERIFIED",
+    }
+
+
+def _resume_ruleset_apply(root: Path, github: GitHub, plan: dict[str, Any],
+                          intent_path: Path, intent: dict[str, Any],
+                          approval_comment_id: int, actor: dict[str, Any]) -> dict[str, Any]:
+    if plan["diff"]["operation"] not in {"create", "update"}:
+        raise RulesetManagementError("only a Ruleset create or update can have an interrupted apply intent")
+    current = build_ruleset_plan(root, github)
+    if not _recovery_preconditions_match(plan, current):
+        raise RulesetManagementError("Ruleset recovery preconditions changed after the approved write started")
+    unexpected_blockers = set(current.get("blockers", [])) - {
+        "MANAGED_RULESET_HAS_NO_OWNERSHIP_EVIDENCE",
+        "MANAGED_RULESET_OWNERSHIP_DIGEST_MISMATCH",
+    }
+    if unexpected_blockers:
+        raise RulesetManagementError("Ruleset recovery is blocked by changed plan evidence: "
+                                     + ", ".join(sorted(unexpected_blockers)))
+    history = _read_ownership_history(
+        github, plan["repository_id"], plan["owner_id"], plan["activation_issue_number"],
+    )
+    matching = [(comment_id, payload) for comment_id, payload in history
+                if payload["plan_sha256"] == plan["plan_sha256"]]
+    if len(matching) > 1:
+        raise RulesetManagementError("Ruleset apply intent already has duplicate ownership records")
+    _check_plan_predecessor(plan, history[:history.index(matching[0])] if matching else history)
+
+    ruleset_id, detail = _read_managed_candidate(github)
+    if (plan["diff"]["operation"] == "update"
+            and ruleset_id != plan["existing_ruleset_id"]):
+        raise RulesetManagementError("recovered Ruleset ID differs from the approved update target")
+    if intent.get("ruleset_id") is not None and intent["ruleset_id"] != ruleset_id:
+        raise RulesetManagementError("recovered Ruleset ID differs from the durable apply intent")
+    if (_canonical(_managed_body(detail)) != _canonical(_managed_body(plan["desired_ruleset"]))
+            or _body_digest(detail) != intent["ruleset_body_sha256"]):
+        raise RulesetManagementError("recovered Ruleset body does not match the exact approved payload")
+    policy, evidence = _read_policy(
+        github, plan["repository"], plan["default_branch"], plan["profile_review_mode"],
+        tuple((row["context"], row["integration_id"]) for row in plan["required_checks"]),
+        plan["default_branch"],
+    )
+    if policy.status != "VERIFIED":
+        raise RulesetManagementError("recovered Ruleset has no verified effective branch policy")
+    if not isinstance(evidence.get("branch"), dict) or evidence["branch"].get("protected") is not True:
+        raise RulesetManagementError("recovered default branch protected state is not verified")
+    digest = _body_digest(detail)
+    policy_digest = effective_policy_sha256(policy, ruleset_id, digest)
+    if matching:
+        record_id, payload = matching[0]
+        if (history[-1][0] != record_id
+                or payload["approval_comment_id"] != approval_comment_id
+                or payload["ruleset_id"] != ruleset_id
+                or payload["ruleset_body_sha256"] != digest
+                or payload["effective_policy_sha256"] != policy_digest
+                or payload["predecessor_comment_id"] != plan["predecessor_comment_id"]):
+            raise RulesetManagementError("existing applied-policy record conflicts with interrupted exact plan")
+    else:
+        if intent["state"] == "APPLIED":
+            raise RulesetManagementError("completed Ruleset apply intent has no matching applied-policy record")
+        record_id = _publish_applied_record(
+            github, plan, approval_comment_id, ruleset_id, digest, policy_digest, actor,
+        )
+    if intent.get("record_comment_id") is not None and intent["record_comment_id"] != record_id:
+        raise RulesetManagementError("Ruleset applied-policy Comment ID differs from the durable intent")
+    completed = _intent_payload(
+        plan, approval_comment_id, state="APPLIED", ruleset_id=ruleset_id,
+        record_comment_id=record_id,
+    )
+    _write_apply_intent(intent_path, completed)
+    return _verified_apply_result(plan, approval_comment_id, ruleset_id, detail, policy, record_id)
+
+
 def apply_ruleset_plan(root: Path, github: GitHub, plan_path: Path,
                        approval_comment_id: int) -> dict[str, Any]:
     """Apply one approved plan once, read it back, and append ownership evidence."""
     plan = read_plan(plan_path)
     if plan["repository"].casefold() != github.repo.casefold():
         raise RulesetManagementError("Ruleset plan repository does not match the GitHub client")
+    approval_comment_id = _positive(approval_comment_id, "Ruleset approval comment ID")
+    intent_path = _apply_intent_path(root, plan)
+    intent = _read_apply_intent(intent_path, plan, approval_comment_id)
     approval = _verify_exact_approval(github, plan, approval_comment_id)
     actor = _require_current_admin(github, plan["owner_id"])
+    if intent is not None and intent["state"] in {"WRITE_STARTED", "APPLIED"}:
+        # A durable intent before the one mutation is the only authority to
+        # adopt a post-write same-name Ruleset. Recovery never sends POST/PUT.
+        approval = _verify_exact_approval(github, plan, approval_comment_id)
+        actor = _require_current_admin(github, plan["owner_id"])
+        if approval.get("id") != approval_comment_id:
+            raise RulesetManagementError("Ruleset approval identity changed during recovery")
+        return _resume_ruleset_apply(
+            root, github, plan, intent_path, intent, approval_comment_id, actor,
+        )
     current = build_ruleset_plan(root, github)
     if current["plan_sha256"] != plan["plan_sha256"]:
         raise RulesetManagementError("Ruleset plan preconditions changed before apply")
@@ -714,11 +1007,27 @@ def apply_ruleset_plan(root: Path, github: GitHub, plan_path: Path,
     desired = plan["desired_ruleset"]
     if not isinstance(desired, dict):
         raise RulesetManagementError("Ruleset plan has no desired API payload")
+    if operation in {"create", "update"}:
+        if intent is None:
+            intent = _intent_payload(
+                plan, approval_comment_id, state="PREPARED",
+                ruleset_id=plan.get("existing_ruleset_id"),
+            )
+            _write_apply_intent(intent_path, intent)
+        intent = _intent_payload(
+            plan, approval_comment_id, state="WRITE_STARTED",
+            ruleset_id=plan.get("existing_ruleset_id"),
+        )
+        _write_apply_intent(intent_path, intent)
     ruleset_id = plan.get("existing_ruleset_id")
     if operation == "create":
         try:
             created = github.create_repository_ruleset(desired)
             ruleset_id = _positive(created.get("id"), "created managed Ruleset ID")
+            intent = _intent_payload(
+                plan, approval_comment_id, state="WRITE_STARTED", ruleset_id=ruleset_id,
+            )
+            _write_apply_intent(intent_path, intent)
         except GitHubError as exc:
             # A lost/failed response is reconciled by one fresh inventory read. Never POST twice.
             try:
@@ -732,6 +1041,10 @@ def apply_ruleset_plan(root: Path, github: GitHub, plan_path: Path,
             raise RulesetManagementError("Ruleset update has no previously owned stable ID")
         try:
             github.update_repository_ruleset(ruleset_id, desired)
+            intent = _intent_payload(
+                plan, approval_comment_id, state="WRITE_STARTED", ruleset_id=ruleset_id,
+            )
+            _write_apply_intent(intent_path, intent)
         except GitHubError as exc:
             try:
                 recovered_id, detail = _read_managed_candidate(github)
@@ -768,18 +1081,12 @@ def apply_ruleset_plan(root: Path, github: GitHub, plan_path: Path,
         record_id = _publish_applied_record(
             github, plan, approval_comment_id, ruleset_id, digest, policy_digest, actor,
         )
-    return {
-        "activation_issue_number": ACTIVATION_ISSUE,
-        "approval_comment_id": approval_comment_id,
-        "effective_policy": policy.as_dict(),
-        "operation": operation.upper(),
-        "plan_sha256": plan["plan_sha256"],
-        "record_comment_id": record_id,
-        "repository": github.repo,
-        "ruleset_body_sha256": digest,
-        "ruleset_id": ruleset_id,
-        "status": "VERIFIED",
-    }
+        completed = _intent_payload(
+            plan, approval_comment_id, state="APPLIED", ruleset_id=ruleset_id,
+            record_comment_id=record_id,
+        )
+        _write_apply_intent(intent_path, completed)
+    return _verified_apply_result(plan, approval_comment_id, ruleset_id, detail, policy, record_id)
 
 
 def preflight(root: Path, github: GitHub) -> dict[str, Any]:
@@ -813,7 +1120,8 @@ def effective_policy_sha256(policy: EffectiveBranchPolicy, ruleset_id: int,
 
 
 def read_verified_managed_policy(github: GitHub, branch: str,
-                                 checks: tuple[tuple[str, int], ...], review_mode: str
+                                 checks: tuple[tuple[str, int], ...], review_mode: str,
+                                 activation_issue_number: int
                                  ) -> dict[str, Any]:
     """Verify the unique owned Ruleset against live branch policy for Activation V2."""
     metadata = github.repository_metadata()
@@ -832,7 +1140,7 @@ def read_verified_managed_policy(github: GitHub, branch: str,
     if _canonical(_managed_body(detail)) != _canonical(_managed_body(desired)):
         raise RulesetManagementError("managed Ruleset body does not match the committed review profile")
     body_digest = _body_digest(detail)
-    history = _read_ownership_history(github, repository_id, owner_id)
+    history = _read_ownership_history(github, repository_id, owner_id, activation_issue_number)
     if not history or (history[-1][1]["ruleset_id"] != ruleset_id
                        or history[-1][1]["ruleset_body_sha256"] != body_digest):
         raise RulesetManagementError("managed Ruleset has no current append-only ownership proof")
@@ -851,26 +1159,36 @@ def read_verified_managed_policy(github: GitHub, branch: str,
         raise RulesetManagementError("default branch protected state is not verified")
     return {
         "effective_policy_sha256": policy_digest,
+        "applied_record_id": history[-1][0],
         "policy": policy,
         "ruleset_body_sha256": body_digest,
         "ruleset_id": ruleset_id,
     }
 
 
-def verify_applied_policy_record(github: GitHub, activation_record_id: int,
+def verify_applied_policy_record(github: GitHub, activation_issue_number: int,
+                                 activation_record_id: int, applied_record_id: int,
                                  ruleset_id: int, policy_digest: str) -> dict[str, Any]:
     """Bind a historical V2 Activation to an earlier append-only Ruleset apply record."""
+    activation_issue_number = _positive(activation_issue_number, "Activation Issue number")
     activation_record_id = _positive(activation_record_id, "Activation record Comment ID")
+    applied_record_id = _positive(applied_record_id, "Ruleset applied-policy Comment ID")
+    if applied_record_id >= activation_record_id:
+        raise RulesetManagementError("V2 Activation does not follow its Ruleset applied-policy record")
     ruleset_id = _positive(ruleset_id, "managed Ruleset ID")
     policy_digest = _sha(policy_digest, "effective policy digest")
     metadata = github.repository_metadata()
     repository_id = _positive(metadata.get("id"), "repository ID")
     owner = metadata.get("owner") if isinstance(metadata.get("owner"), dict) else {}
     owner_id = _positive(owner.get("id"), "repository owner ID")
-    history = _read_ownership_history(github, repository_id, owner_id)
-    matches = [(comment_id, payload) for comment_id, payload in history
-               if comment_id < activation_record_id and payload["ruleset_id"] == ruleset_id
-               and payload["effective_policy_sha256"] == policy_digest]
-    if len(matches) != 1:
+    history = _read_ownership_history(
+        github, repository_id, owner_id, activation_issue_number,
+        through_comment_id=applied_record_id,
+    )
+    if not history or history[-1][0] != applied_record_id:
+        raise RulesetManagementError("selected Ruleset applied-policy record is not the history prefix endpoint")
+    payload = history[-1][1]
+    if (payload["ruleset_id"] != ruleset_id
+            or payload["effective_policy_sha256"] != policy_digest):
         raise RulesetManagementError("V2 Activation does not bind one earlier Ruleset applied-policy record")
-    return matches[0][1]
+    return payload
