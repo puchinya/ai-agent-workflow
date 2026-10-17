@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 import unittest
@@ -11,7 +12,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
 
-from p_ases.adc import ADCPointer  # noqa: E402
+from p_ases.adc import ADCPointer, parse_adc  # noqa: E402
 from p_ases.github import GitHubError  # noqa: E402
 from p_ases import phase_rebaseline as phase_module  # noqa: E402
 from p_ases.phase_rebaseline import (  # noqa: E402
@@ -33,9 +34,8 @@ ACTOR_ID = 9001
 
 def verified(comment_id: int, sha256: str, state: str = "approved") -> SimpleNamespace:
     pointer = ADCPointer(comment_id, sha256, 100, state)
-    authority = ("REQ-F01-015 PASES_PHASE_REBASE_INTENT_V1 PASES_PHASE_REBASE_APPLIED_V1 "
-                 "phase:ready phase:requirements Phase rebaseline is not a decision "
-                 "without a separate phase approval")
+    authority = ("REQ-F01-015 automatic phase rebaseline automatic #63 Phase Intent/Applied path "
+                 "`PHASE_REBASE` decisionは要求せず、必須のIntent/Applied技術記録を残す")
     return SimpleNamespace(pointer=pointer, contract=SimpleNamespace(
         sha256=sha256, content=authority.encode("utf-8"), requirement_ids=("REQ-F01-015",)))
 
@@ -136,6 +136,26 @@ class PhaseRebaselineTests(unittest.TestCase):
         schemas = [row["body"].split("\n", 1)[0][5:] for row in github.comments]
         self.assertEqual(schemas, [INTENT_SCHEMA, APPLIED_SCHEMA])
         self.assertGreaterEqual(sum(call[0] == "issue_comments" for call in github.calls), 4)
+
+    def test_published_successor_adc_authority_matches_phase_executor(self):
+        github = FakeGitHub()
+        github.next_comment_id = 6228771900
+        raw = (ROOT / "docs/contracts/issue-63-successor-adc-draft.md").read_bytes()
+        successor = SimpleNamespace(
+            pointer=ADCPointer(6228771810, hashlib.sha256(raw).hexdigest(), len(raw), "approved"),
+            contract=parse_adc(raw, REPOSITORY, 63),
+        )
+        predecessor = verified(BASELINE_ADC_COMMENT_ID, OLD_SHA)
+        with patch.object(phase_module, "verify_adc", return_value=successor), \
+                patch.object(phase_module, "verify_adc_generation", return_value=predecessor), \
+                patch.object(phase_module, "verify_adc_forward_generations",
+                             return_value=(predecessor, successor)):
+            result = rebaseline_issue_phase(github, 63)
+
+        self.assertEqual(result["status"], "APPLIED")
+        self.assertEqual(github.labels, ["enhancement", "kind:single", "phase:requirements"])
+        self.assertEqual([row["body"].split("\n", 1)[0][5:] for row in github.comments],
+                         [INTENT_SCHEMA, APPLIED_SCHEMA])
 
     def test_completed_bootstrap_is_noop(self):
         github = FakeGitHub()

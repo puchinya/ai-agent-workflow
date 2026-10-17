@@ -209,13 +209,18 @@ def _approved_generation(github: Any) -> tuple[VerifiedADC, VerifiedADC]:
         if current.pointer.state != "approved":
             raise PhaseRebaselineError("current ADC pointer is not approved")
         successor_text = current.contract.content.decode("utf-8", errors="strict")
+        # The approved ADC authorizes automatic Phase Intent/Applied execution
+        # and explicitly says a PHASE_REBASE decision is not required. Validate
+        # those contract statements rather than requiring implementation-only
+        # schema and label names to appear in the contract text.
         required_authority = (
-            "REQ-F01-015", INTENT_SCHEMA, APPLIED_SCHEMA,
-            "phase:ready", "phase:requirements", "Phase rebaseline is not a decision",
-            "without a separate phase approval",
+            "automatic phase rebaseline",
+            "automatic #63 Phase Intent/Applied path",
+            "`PHASE_REBASE` decisionは要求せず",
+            "必須のIntent/Applied技術記録を残す",
         )
         if ("REQ-F01-015" not in current.contract.requirement_ids
-                or any(term not in successor_text for term in required_authority[1:])):
+                or any(term not in successor_text for term in required_authority)):
             raise PhaseRebaselineError("approved successor ADC does not contain the exact phase-bootstrap authority")
         predecessor = verify_adc_generation(
             github, ISSUE_NUMBER, BASELINE_ADC_COMMENT_ID, BASELINE_ADC_SHA256, state="approved",
