@@ -2,7 +2,7 @@
 <!-- agent-doc-schema: 2 -->
 # P-ASES Human Review and Integration Test Specification
 
-- Status: Approved for Issues #31 and #42
+- Status: Approved for Issues #31, #42, and #60
 - Owning specification: ../specs/workflow-spec.md
 
 <!-- contents:start -->
@@ -35,6 +35,22 @@
     - [2.12.1 ORA-F01-006 Expected result](#2121-ora-f01-006-expected-result)
   - [2.13 TST-F01-007 Successor/reapproval](#213-tst-f01-007-successorreapproval)
     - [2.13.1 ORA-F01-007 Expected result](#2131-ora-f01-007-expected-result)
+  - [2.14 TST-FD-001 Protection transport and state classification](#214-tst-fd-001-protection-transport-and-state-classification)
+    - [2.14.1 ORA-FD-001 Expected result](#2141-ora-fd-001-expected-result)
+  - [2.15 TST-FD-002 Required Check identity and exact-set comparison](#215-tst-fd-002-required-check-identity-and-exact-set-comparison)
+    - [2.15.1 ORA-FD-002 Expected result](#2151-ora-fd-002-expected-result)
+  - [2.16 TST-FD-003 External reviewer compatibility mode](#216-tst-fd-003-external-reviewer-compatibility-mode)
+    - [2.16.1 ORA-FD-003 Expected result](#2161-ora-fd-003-expected-result)
+  - [2.17 TST-FD-004 Solo owner subject-bound User Review](#217-tst-fd-004-solo-owner-subject-bound-user-review)
+    - [2.17.1 ORA-FD-004 Expected result](#2171-ora-fd-004-expected-result)
+  - [2.18 TST-FD-005 Solo owner active-ruleset requirements](#218-tst-fd-005-solo-owner-active-ruleset-requirements)
+    - [2.18.1 ORA-FD-005 Expected result](#2181-ora-fd-005-expected-result)
+  - [2.19 TST-FD-006 Final Delivery V2 and merge readback](#219-tst-fd-006-final-delivery-v2-and-merge-readback)
+    - [2.19.1 ORA-FD-006 Expected result](#2191-ora-fd-006-expected-result)
+  - [2.20 TST-FD-007 Schema 2 profile compatibility](#220-tst-fd-007-schema-2-profile-compatibility)
+    - [2.20.1 ORA-FD-007 Expected result](#2201-ora-fd-007-expected-result)
+  - [2.21 TST-FD-008 Traceability, consumer fixture, and distribution](#221-tst-fd-008-traceability-consumer-fixture-and-distribution)
+    - [2.21.1 ORA-FD-008 Expected result](#2211-ora-fd-008-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -65,6 +81,22 @@
 - [ORA-F01-006](#ora-f01-006) — 2.12.1 ORA-F01-006 Expected result
 - [TST-F01-007](#tst-f01-007) — 2.13 TST-F01-007 Successor/reapproval
 - [ORA-F01-007](#ora-f01-007) — 2.13.1 ORA-F01-007 Expected result
+- [TST-FD-001](#tst-fd-001) — 2.14 TST-FD-001 Protection transport and state classification
+- [ORA-FD-001](#ora-fd-001) — 2.14.1 ORA-FD-001 Expected result
+- [TST-FD-002](#tst-fd-002) — 2.15 TST-FD-002 Required Check identity and exact-set comparison
+- [ORA-FD-002](#ora-fd-002) — 2.15.1 ORA-FD-002 Expected result
+- [TST-FD-003](#tst-fd-003) — 2.16 TST-FD-003 External reviewer compatibility mode
+- [ORA-FD-003](#ora-fd-003) — 2.16.1 ORA-FD-003 Expected result
+- [TST-FD-004](#tst-fd-004) — 2.17 TST-FD-004 Solo owner subject-bound User Review
+- [ORA-FD-004](#ora-fd-004) — 2.17.1 ORA-FD-004 Expected result
+- [TST-FD-005](#tst-fd-005) — 2.18 TST-FD-005 Solo owner active-ruleset requirements
+- [ORA-FD-005](#ora-fd-005) — 2.18.1 ORA-FD-005 Expected result
+- [TST-FD-006](#tst-fd-006) — 2.19 TST-FD-006 Final Delivery V2 and merge readback
+- [ORA-FD-006](#ora-fd-006) — 2.19.1 ORA-FD-006 Expected result
+- [TST-FD-007](#tst-fd-007) — 2.20 TST-FD-007 Schema 2 profile compatibility
+- [ORA-FD-007](#ora-fd-007) — 2.20.1 ORA-FD-007 Expected result
+- [TST-FD-008](#tst-fd-008) — 2.21 TST-FD-008 Traceability, consumer fixture, and distribution
+- [ORA-FD-008](#ora-fd-008) — 2.21.1 ORA-FD-008 Expected result
 <!-- heading-map:end -->
 
 
@@ -80,7 +112,7 @@ Verify human User Review, child Integration, and final merge gates as independen
 <a id="tst-ur-001-user-review-identity-and-exact-subject"></a>
 ### 2.1 TST-UR-001 User Review identity and exact subject
 
-**Setup and action:** Submit current and stale approvals from human, bot, and unrelated accounts; change HEAD, ADC, Readiness, feedback, and review-thread resolution between reads. Drive the CLI through `start → sync → status` with `session.json` present in the snapshot directory. Then alter a correctly named snapshot without changing its SHA filename and add an unknown JSON filename.
+**Setup and action:** Submit current and stale approvals from human, bot, and unrelated accounts; change HEAD, ADC, Readiness, feedback, and review-thread resolution between reads. Drive the CLI through `start → sync → status` with `session.json` present in the snapshot directory. Then alter a correctly named snapshot without changing its SHA filename and add an unknown JSON filename. For `solo_owner`, add an exact owner Issue approval before/after session start and change its subject, actor, timestamps, deletion state, and bytes between direct/list/direct reads; for default mode, submit the same Issue approval without a formal PR review.
 
 <a id="ora-ur-001"></a>
 <a id="ora-ur-001-expected-result"></a>
@@ -116,13 +148,13 @@ Integration passes only for the frozen native child set, exact dependency DAG, c
 <a id="tst-ur-004-final-delivery-separation"></a>
 ### 2.4 TST-UR-004 Final Delivery separation
 
-**Setup and action:** Vary User Review, GitHub formal review, Required Checks, branch protection, mergeability, and explicit merge authorization independently.
+**Setup and action:** Vary User Review, GitHub formal review, Required Checks, effective branch policy, mergeability, and explicit merge authorization independently. Exercise `external_reviewer` with a fresh non-author approval and `solo_owner` with an exact owner Issue approval; attempt to substitute self-approval, AI review, or CI alone for either human or independent review. Verify Final Delivery emits `READY_FOR_EXPLICIT_MERGE_AUTHORIZATION` with `merge_authorized: false` and that finalization only reads back a separate merge.
 
 <a id="ora-ur-004"></a>
 <a id="ora-ur-004-expected-result"></a>
 #### 2.4.1 ORA-UR-004 Expected result
 
-Each gate must be checked separately. Final Delivery never authorizes or performs merge, release, Issue closure, or parent activation.
+Each gate must be checked separately. Final Delivery never authorizes or performs merge, release, Issue closure, or parent activation. The exact mode-specific result is V2 and becomes stale when HEAD, ADC, User Review, Required Checks, or effective branch policy changes.
 
 <a id="tst-ur-005"></a>
 <a id="tst-ur-005-parent-user-review"></a>
@@ -231,3 +263,99 @@ An existing selection remains bound to its exact historical record and gate-poli
 #### 2.13.1 ORA-F01-007 Expected result
 
 Policy or locator changes require a new setup PR and explicit admin merge. The successor links the previous record, governs only later-created Issues, and leaves earlier Activation records and Gate Selections unchanged. Removing the locator blocks new selections.
+
+<a id="tst-fd-001"></a>
+<a id="tst-fd-001-protection-transport-and-state-classification"></a>
+### 2.14 TST-FD-001 Protection transport and state classification
+
+**Setup and action:** Feed the branch-policy evaluator readable branch metadata and effective rules alongside legacy-protection responses of 403, 404, valid, missing, malformed, and contradictory states. Include readable evidence that the branch is unprotected and has no applicable rules, and separately provide a lone 404 without that evidence.
+
+<a id="ora-fd-001"></a>
+<a id="ora-fd-001-expected-result"></a>
+#### 2.14.1 ORA-FD-001 Expected result
+
+The evaluator returns `UNAVAILABLE` for 403, `UNVERIFIED` for a lone 404 or incomplete source, `NOT_CONFIGURED` only when independent readable evidence establishes no protection, `MISMATCH` for readable policy conflicts, and `VERIFIED` only for an exact applicable policy. Every status except `VERIFIED` blocks Final Delivery with stable reason codes and never triggers a GitHub settings write.
+
+<a id="tst-fd-002"></a>
+<a id="tst-fd-002-required-check-identity-and-exact-set-comparison"></a>
+### 2.15 TST-FD-002 Required Check identity and exact-set comparison
+
+**Setup and action:** Vary configured check names/App IDs, effective legacy/ruleset status-check rules, and current HEAD Check Runs. Cover missing and extra names, wrong or absent integration/App ID, duplicate names/runs, stale HEAD, pending, skipped, failed, and unreadable results.
+
+<a id="ora-fd-002"></a>
+<a id="ora-fd-002-expected-result"></a>
+#### 2.15.1 ORA-FD-002 Expected result
+
+Only an exact set of unique `(name, trusted App ID)` pairs that is required by policy and has current-HEAD successful Check Runs verifies. A matching name with the wrong App ID, an extra required check, or any missing/non-success/stale/ambiguous source blocks.
+
+<a id="tst-fd-003"></a>
+<a id="tst-fd-003-external-reviewer-compatibility-mode"></a>
+### 2.16 TST-FD-003 External reviewer compatibility mode
+
+**Setup and action:** Evaluate the default mode with Schema 2 profiles both omitting and naming `external_reviewer`. Vary effective PR review policy, aggregate review state/head, formal review actor versus PR author, dismissal/edit state, Independent Review, User Review, and Verification.
+
+<a id="ora-fd-003"></a>
+<a id="ora-fd-003-expected-result"></a>
+#### 2.16.1 ORA-FD-003 Expected result
+
+An omitted mode is behaviorally identical to `external_reviewer`. Delivery is ready only with effective review protection, a current active formal approval by a different user, independent review PASS, User Review approval, exact Verification, and all other exact-subject gates. A self-approval, stale/dismissed approval, or missing gate blocks.
+
+<a id="tst-fd-004"></a>
+<a id="tst-fd-004-solo-owner-subject-bound-user-review"></a>
+### 2.17 TST-FD-004 Solo owner subject-bound User Review
+
+**Setup and action:** Give the evaluator a personal User repository, authenticated owner, PR author, exact current review subject, and active User Review session. Submit the exact two-line owner Issue comment after session start; vary owner/author/authenticated IDs and types, subject digest, creation time, edit/delete state, URL, duplicate ID, and direct/list/direct responses. Also submit formal self-approval alone and owner comments in `external_reviewer` mode.
+
+<a id="ora-fd-004"></a>
+<a id="ora-fd-004-expected-result"></a>
+#### 2.17.1 ORA-FD-004 Expected result
+
+Only the immutable exact-subject Issue decision from the verified personal owner after session start can approve `solo_owner` User Review. Formal self-approval alone, bot/other actor, wrong or stale subject, pre-session comment, changed/deleted/duplicate comment, unstable readback, or any Issue approval in default mode cannot approve. Independent AI review remains separately required.
+
+<a id="tst-fd-005"></a>
+<a id="tst-fd-005-solo-owner-active-ruleset-requirements"></a>
+### 2.18 TST-FD-005 Solo owner active-ruleset requirements
+
+**Setup and action:** Provide effective ruleset details for correct and incorrect scope, enforcement, PR requirement, approval count, Required Checks and App IDs, force-push rule, bypass actors, duplicates, and inaccessible details. Compare with a branch having only legacy protection.
+
+<a id="ora-fd-005"></a>
+<a id="ora-fd-005-expected-result"></a>
+#### 2.18.1 ORA-FD-005 Expected result
+
+Only one unambiguous active applicable ruleset with PR-required, approval count zero, exact trusted Checks, force-push prevention, and no bypass actors verifies `solo_owner`. Legacy-only, inactive, wrong-scope, inaccessible, duplicate, bypassable, or conflicting rulesets block; the runtime makes no configuration mutation.
+
+<a id="tst-fd-006"></a>
+<a id="tst-fd-006-final-delivery-v2-and-merge-readback"></a>
+### 2.19 TST-FD-006 Final Delivery V2 and merge readback
+
+**Setup and action:** Confirm every passing mode produces a V2 result with policy/review-mode digests and `merge_authorized: false`. Change PR HEAD, ADC, Readiness, User Review, Required Checks, or ruleset between initial and final reads. After a separate merge, vary `merged_by` identity and default-branch ancestry.
+
+<a id="ora-fd-006"></a>
+<a id="ora-fd-006-expected-result"></a>
+#### 2.19.1 ORA-FD-006 Expected result
+
+Only `READY_FOR_EXPLICIT_MERGE_AUTHORIZATION` is a passing pre-merge state, never authorizes merge, and is invalidated by any subject or policy change. `finalize` is readback-only; `solo_owner` finalization requires the verified owner as merger and the actual merge commit on the default branch.
+
+<a id="tst-fd-007"></a>
+<a id="tst-fd-007-schema-2-profile-compatibility"></a>
+### 2.20 TST-FD-007 Schema 2 profile compatibility
+
+**Setup and action:** Load prior Schema 2 profiles without `final_delivery`, profiles with both allowed modes, and malformed, duplicate-key, unknown-field, non-object, and unknown-value variants. Check that status reads do not rewrite any file and that CLI/Issue data cannot override the loaded mode.
+
+<a id="ora-fd-007"></a>
+<a id="ora-fd-007-expected-result"></a>
+#### 2.20.1 ORA-FD-007 Expected result
+
+Legacy Schema 2 profiles default to `external_reviewer`; only the two explicit modes validate. Invalid profile input fails closed before GitHub work or mutation. A CLI or Issue override is ignored or rejected, and no profile is automatically repaired or activated.
+
+<a id="tst-fd-008"></a>
+<a id="tst-fd-008-traceability-consumer-fixture-and-distribution"></a>
+### 2.21 TST-FD-008 Traceability, consumer fixture, and distribution
+
+**Setup and action:** Run canonical document/traceability validation and the consumer profile fixture, then regenerate all host distributions and compare generated output to canonical sources. Inspect the prepared delivery PR body and repository diff for exact one-Issue scope.
+
+<a id="ora-fd-008"></a>
+<a id="ora-fd-008-expected-result"></a>
+#### 2.21.1 ORA-FD-008 Expected result
+
+All eight requirements resolve through their stable REQ/DES/ORA/TST anchors to existing executable test paths before `ready`; all host distributions reproduce canonical content. Delivery presents one PR with only standalone `Closes #60`, self-review and independent review evidence, and a separate human merge action.

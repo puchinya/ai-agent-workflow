@@ -32,6 +32,7 @@ class ProjectProfile:
     branch_prefix: str
     required_checks: tuple[tuple[str, int | None], ...]
     activation_issue_number: int | None = None
+    final_delivery_review_mode: str = "external_reviewer"
 
     def required_check_policy(self) -> RequiredCheckPolicy:
         if any(app_id is None for _, app_id in self.required_checks):
@@ -56,7 +57,7 @@ def load_profile(repository_root: Path) -> ProjectProfile:
         raise ProfileError("project configuration is unreadable JSON") from exc
     expected = {"schema_version", "initialized", "project_name", "components", "branch", "workspace", "milestones", "hooks"}
     if (not isinstance(value, dict) or not expected.issubset(value)
-            or set(value) - expected - {"activation"}):
+            or set(value) - expected - {"activation", "final_delivery"}):
         raise ProfileError("project configuration has unknown or missing top-level fields")
     if value["schema_version"] != 2 or value["initialized"] is not True:
         raise ProfileError("project configuration schema is unknown or not initialized")
@@ -95,4 +96,14 @@ def load_profile(repository_root: Path) -> ProjectProfile:
                 or type(activation.get("issue_number")) is not int or activation["issue_number"] < 1):
             raise ProfileError("activation configuration must contain only a positive issue_number")
         activation_issue_number = activation["issue_number"]
-    return ProjectProfile(root, project_name.strip(), prefix, tuple(checks), activation_issue_number)
+    final_delivery_review_mode = "external_reviewer"
+    if "final_delivery" in value:
+        final_delivery = value["final_delivery"]
+        if not isinstance(final_delivery, dict) or set(final_delivery) != {"review_mode"}:
+            raise ProfileError("final_delivery configuration must contain only review_mode")
+        final_delivery_review_mode = final_delivery["review_mode"]
+        if (not isinstance(final_delivery_review_mode, str)
+                or final_delivery_review_mode not in {"external_reviewer", "solo_owner"}):
+            raise ProfileError("final_delivery.review_mode is unknown")
+    return ProjectProfile(root, project_name.strip(), prefix, tuple(checks), activation_issue_number,
+                          final_delivery_review_mode)

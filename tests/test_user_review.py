@@ -13,7 +13,7 @@ sys.path.insert(0, str(ROOT / "runtime"))
 from p_ases.delivery import ReadinessResult
 from p_ases.evidence_store import VerificationSubject
 from p_ases.user_review import (
-    FeedbackSnapshot, ParentFeedbackSnapshot, ParentReviewSubject, ParentUserReviewSession,
+    FeedbackEvent, FeedbackSnapshot, ParentFeedbackSnapshot, ParentReviewSubject, ParentUserReviewSession,
     UserReviewError, UserReviewSession, UserReviewSubject, add_authenticated_chat_event,
     capture_authenticated_chat_event,
     evaluate_parent_user_review, evaluate_user_review, feedback_digest, merge_feedback_history,
@@ -75,6 +75,18 @@ def parent_issue_comment(identifier=90, *, user_id=42, actor_type="User", decisi
         "user": {"id": user_id, "login": "puchinya", "type": actor_type},
         "html_url": f"https://github.com/octo/repo/issues/26#issuecomment-{identifier}",
     }
+
+
+def owner_issue_approval(*, actor=42, actor_type="User", subject_sha256=None,
+                        created_at=CREATED, updated_at=CREATED, edited=False, deleted=False):
+    return FeedbackEvent(
+        channel="issue-comment", event_id="77", actor_id=actor, actor_login="puchinya",
+        actor_type=actor_type, created_at=created_at, updated_at=updated_at, kind="approved",
+        head_sha40=None, body_sha256="a" * 64,
+        source_url="https://github.com/octo/repo/issues/31#issuecomment-77",
+        deleted=deleted, resolved=None, deleted_at=updated_at if deleted else None, edited=edited,
+        subject_sha256=subject_sha256 or USER_SUBJECT.sha256,
+    ).validate()
 
 
 def parent_events(*, comments=()):
@@ -384,6 +396,69 @@ class UserReviewTests(unittest.TestCase):
     def test_dismissed_formal_review_never_approves(self):
         result = evaluate(rows(reviews=(github_review(state="DISMISSED"),)))
         self.assertNotEqual(result.status, "APPROVED")
+
+    def test_solo_owner_uses_only_new_exact_subject_issue_approval(self):
+        event = owner_issue_approval(created_at="2026-10-12T00:02:00Z",
+                                     updated_at="2026-10-12T00:02:00Z")
+        result = evaluate((event,), review_mode="solo_owner", owner_id=42,
+                          required_after="2026-10-12T00:01:00Z")
+        self.assertEqual(result.status, "APPROVED")
+        self.assertEqual(result.selected_approval_event, "issue-comment:77")
+        self.assertNotEqual(evaluate((event,), required_after="2026-10-12T00:01:00Z").status,
+                            "APPROVED")
+
+    def test_solo_owner_issue_approval_rejects_wrong_actor_subject_time_and_edits(self):
+        valid_time = {"created_at": "2026-10-12T00:02:00Z", "updated_at": "2026-10-12T00:02:00Z"}
+        cases = (
+            (owner_issue_approval(actor=99, **valid_time), {"review_mode": "solo_owner", "owner_id": 42}),
+            (owner_issue_approval(actor_type="Bot", **valid_time), {"review_mode": "solo_owner", "owner_id": 42}),
+            (owner_issue_approval(subject_sha256="0" * 64, **valid_time),
+             {"review_mode": "solo_owner", "owner_id": 42}),
+            (owner_issue_approval(**valid_time),
+             {"review_mode": "solo_owner", "owner_id": 42, "required_after": "2026-10-12T00:02:00Z"}),
+            (owner_issue_approval(created_at="2026-10-12T00:02:00Z",
+                                  updated_at="2026-10-12T00:03:00Z", edited=True),
+             {"review_mode": "solo_owner", "owner_id": 42}),
+            (owner_issue_approval(created_at="2026-10-12T00:02:00Z",
+                                  updated_at="2026-10-12T00:03:00Z", deleted=True),
+             {"review_mode": "solo_owner", "owner_id": 42}),
+        )
+        for event, options in cases:
+            with self.subTest(event=event, options=options):
+                arguments = {"required_after": "2026-10-12T00:01:00Z"}
+                arguments.update(options)
+                self.assertNotEqual(evaluate((event,), **arguments).status, "APPROVED")
+
+    def test_solo_owner_issue_approval_requires_canonical_github_permalink(self):
+        event = owner_issue_approval(created_at="2026-10-12T00:02:00Z",
+                                     updated_at="2026-10-12T00:02:00Z")
+        for url in (
+            "https://attacker.example/octo/repo/issues/31#issuecomment-77",
+            "https://github.com/octo/repo/issues/30#issuecomment-77",
+            "https://github.com/octo/repo/issues/31?redirect=1#issuecomment-77",
+        ):
+            with self.subTest(url=url):
+                self.assertNotEqual(evaluate((replace(event, source_url=url),), review_mode="solo_owner",
+                                             owner_id=42, required_after="2026-10-12T00:01:00Z").status,
+                                    "APPROVED")
+
+    def test_solo_owner_issue_approval_requires_canonical_github_permalink(self):
+        event = owner_issue_approval(created_at="2026-10-12T00:02:00Z",
+                                     updated_at="2026-10-12T00:02:00Z")
+        for url in (
+            "https://attacker.example/octo/repo/issues/31#issuecomment-77",
+            "https://github.com/octo/repo/issues/30#issuecomment-77",
+            "https://github.com/octo/repo/issues/31?redirect=1#issuecomment-77",
+        ):
+            with self.subTest(url=url):
+                self.assertNotEqual(evaluate((replace(event, source_url=url),), review_mode="solo_owner",
+                                             owner_id=42, required_after="2026-10-12T00:01:00Z").status,
+                                    "APPROVED")
+
+    def test_formal_self_approval_alone_does_not_satisfy_solo_owner_review(self):
+        self.assertNotEqual(evaluate(rows(reviews=(github_review(),)), review_mode="solo_owner",
+                                     owner_id=42, required_after="2026-10-11T23:59:00Z").status,
+                            "APPROVED")
 
 
 if __name__ == "__main__":

@@ -30,6 +30,7 @@
   - [9.1 REQ-F01-002 Activation locator](#91-req-f01-002-activation-locator)
   - [9.2 REQ-F01-004 Setup request and verification](#92-req-f01-004-setup-request-and-verification)
   - [9.3 REQ-F01-006 Historical Activation pin](#93-req-f01-006-historical-activation-pin)
+- [10 Final Delivery profile contract](#10-final-delivery-profile-contract)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -366,3 +367,10 @@ The required request is `P-ASESを有効化して。`. It creates or reuses the 
 ### 9.3 REQ-F01-006 Historical Activation pin
 
 Phase validation resolves an existing Gate Selection to its exact historical Activation record, even after a successor Activation. Existing ADC, kind/phase labels, frozen work binding, receipts, and exact-subject checks remain mandatory.
+
+<a id="final-delivery-profile-contract"></a>
+## 10 Final Delivery profile contract
+
+The runtime profile loader in `runtime/p_ases/profile.py` is the sole owner of final-delivery mode parsing. Schema 2 `.agent/project.json` MAY include the optional top-level object `final_delivery` with exactly one field, `review_mode`, whose value is `external_reviewer` or `solo_owner`. The object rejects unknown fields, duplicate JSON keys, non-object values, empty or unknown mode strings, and malformed JSON. When the object or field is absent, `ProjectProfile.final_delivery_review_mode` resolves to `external_reviewer` without rewriting the file. Existing Schema 2 consumers therefore retain their current review semantics by default.
+
+The mode is repository policy only: Issue, PR, command-line, user-review snapshot, environment, or hand-authored evidence cannot override it or supply owner identity. The runtime separately verifies repository owner and authenticated GitHub user through GitHub metadata before evaluating `solo_owner`. Required check names and trusted App IDs remain sourced from the existing `branch.required_checks` profile structure and retain its existing validation. Profile loading is read-only; changing mode is a committed consumer-profile change and follows the Activation successor and administrator approval rules in REQ-FD-007.

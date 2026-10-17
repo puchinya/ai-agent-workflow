@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import hashlib
 import io
+import json
 import sys
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -13,9 +16,17 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases.adc import publish_adc
-from p_ases.cli import CLI_ADVANCE_TARGETS, _parser, main
+from p_ases.cli import (CLI_ADVANCE_TARGETS, CLIError, _delivery_final, _parser,
+                        _solo_owner_merge_actor_matches, _verify_solo_owner_issue_approval, main)
+from p_ases.branch_policy import EffectiveBranchPolicy
+from p_ases.profile import ProjectProfile
+from p_ases.evidence_store import VerificationSubject
 from p_ases.github import GitHubError
 from p_ases.phase_evidence import PhaseEvidenceError
+from p_ases.user_review import (FeedbackEvent, FeedbackSnapshot, UserReviewResult, UserReviewSession,
+                                UserReviewSubject, feedback_digest)
+from p_ases.delivery import ReadinessResult
+from p_ases.verification import RequiredCheckPolicy, VerificationResult
 from test_adc_intake import FakeGitHub, adc_bytes
 
 
@@ -31,6 +42,208 @@ def ordinary_context(github, adc=None):
 
 
 class PasesCLITests(unittest.TestCase):
+    def test_solo_owner_finalize_requires_the_verified_human_merge_actor(self):
+        owner_pr = {"merged_by": {"id": 42, "type": "User"}}
+        self.assertTrue(_solo_owner_merge_actor_matches(owner_pr, 42))
+        self.assertFalse(_solo_owner_merge_actor_matches({"merged_by": {"id": 99, "type": "User"}}, 42))
+        self.assertFalse(_solo_owner_merge_actor_matches({"merged_by": {"id": 42, "type": "Bot"}}, 42))
+        self.assertFalse(_solo_owner_merge_actor_matches({"merged_by": None}, 42))
+
+    def test_solo_owner_issue_approval_uses_direct_list_direct_identity_readback(self):
+        verification_subject = VerificationSubject(
+            "octo/repo", 60, 61, 77, "a" * 64, "b" * 64, "c" * 40,
+        ).validate()
+        readiness = ReadinessResult("PASS", verification_subject, (), ("d" * 64,), "e" * 64).validate()
+        subject = UserReviewSubject(verification_subject, readiness.sha256).validate()
+        body = f"P-ASES-DECISION: APPROVED\nP-ASES-SUBJECT: {subject.sha256}"
+        created = "2026-10-12T00:02:00Z"
+        html_url = "https://github.com/octo/repo/issues/60#issuecomment-501"
+        issue_url = "https://api.github.com/repos/octo/repo/issues/60"
+        user = {"id": 42, "login": "owner", "type": "User"}
+        comment = {"id": 501, "body": body, "created_at": created, "updated_at": created,
+                   "html_url": html_url, "issue_url": issue_url, "user": user}
+        event = FeedbackEvent(
+            "issue-comment", "501", 42, "owner", "User", created, created, "approved", None,
+            hashlib.sha256(body.encode("utf-8")).hexdigest(), html_url,
+            subject_sha256=subject.sha256,
+        ).validate()
+        snapshot = FeedbackSnapshot(subject, (event,), (), "2026-10-12T00:03:00Z").validate()
+
+        class GitHub:
+            def __init__(self):
+                self.direct_count = 0
+                self.list_count = 0
+
+            def issue_comments(self, _issue):
+                self.list_count += 1
+                return [deepcopy(comment)]
+
+            def issue_comment(self, _issue, _comment):
+                self.direct_count += 1
+                return deepcopy(comment)
+
+        github = GitHub()
+        _verify_solo_owner_issue_approval(github, "octo/repo", 60, snapshot, 42)
+        self.assertEqual(github.list_count, 2)
+        self.assertEqual(github.direct_count, 2)
+
+    def test_solo_owner_issue_approval_rejects_unstable_direct_or_list_readback(self):
+        verification_subject = VerificationSubject(
+            "octo/repo", 60, 61, 77, "a" * 64, "b" * 64, "c" * 40,
+        ).validate()
+        readiness = ReadinessResult("PASS", verification_subject, (), ("d" * 64,), "e" * 64).validate()
+        subject = UserReviewSubject(verification_subject, readiness.sha256).validate()
+        body = f"P-ASES-DECISION: APPROVED\nP-ASES-SUBJECT: {subject.sha256}"
+        created = "2026-10-12T00:02:00Z"
+        html_url = "https://github.com/octo/repo/issues/60#issuecomment-501"
+        issue_url = "https://api.github.com/repos/octo/repo/issues/60"
+        user = {"id": 42, "login": "owner", "type": "User"}
+        comment = {"id": 501, "body": body, "created_at": created, "updated_at": created,
+                   "html_url": html_url, "issue_url": issue_url, "user": user}
+        event = FeedbackEvent(
+            "issue-comment", "501", 42, "owner", "User", created, created, "approved", None,
+            hashlib.sha256(body.encode("utf-8")).hexdigest(), html_url,
+            subject_sha256=subject.sha256,
+        ).validate()
+        snapshot = FeedbackSnapshot(subject, (event,), (), "2026-10-12T00:03:00Z").validate()
+
+        for unstable_source in ("list", "direct_after"):
+            class GitHub:
+                def __init__(self):
+                    self.direct_count = 0
+                    self.list_count = 0
+
+                @staticmethod
+                def changed_copy():
+                    changed = deepcopy(comment)
+                    changed["updated_at"] = "2026-10-12T00:04:00Z"
+                    return changed
+
+                def issue_comments(self, _issue):
+                    self.list_count += 1
+                    if unstable_source == "list" and self.list_count == 2:
+                        return [self.changed_copy()]
+                    return [deepcopy(comment)]
+
+                def issue_comment(self, _issue, _comment):
+                    self.direct_count += 1
+                    if unstable_source == "direct_after" and self.direct_count == 2:
+                        return self.changed_copy()
+                    return deepcopy(comment)
+
+            with self.subTest(unstable_source=unstable_source), self.assertRaisesRegex(
+                    CLIError, "direct/list/direct identity verification"):
+                _verify_solo_owner_issue_approval(GitHub(), "octo/repo", 60, snapshot, 42)
+
+    def test_final_delivery_blocks_when_project_profile_changes_during_evaluation(self):
+        repository = "octo/repo"
+        head = "c" * 40
+        subject = VerificationSubject(repository, 60, 62, 77, "a" * 64, "b" * 64, head).validate()
+        check_policy = RequiredCheckPolicy((("test (ubuntu-latest, 3.14)", 15368),)).validate()
+        readiness = ReadinessResult("PASS", subject, (), ("d" * 64,), check_policy.sha256).validate()
+        review_subject = UserReviewSubject(subject, readiness.sha256).validate()
+        review = UserReviewResult(
+            "APPROVED", review_subject, feedback_digest(()), (), "user-review", "pr-review:44", (),
+        ).validate()
+        session = UserReviewSession(review_subject, "2026-10-12T00:00:00Z").validate()
+        snapshot = FeedbackSnapshot(review_subject, (), (), "2026-10-12T00:01:00Z").validate()
+        verification = VerificationResult(
+            "PASS", subject, (), check_policy.sha256, "e" * 64, ("f" * 64,), (),
+        ).validate()
+        initial_profile = ProjectProfile(
+            ROOT, "repo", "feature", check_policy.checks, 57, "external_reviewer",
+        )
+        changed_profile = ProjectProfile(
+            ROOT, "repo", "feature", check_policy.checks, 57, "solo_owner",
+        )
+        policy = EffectiveBranchPolicy(
+            repository, "main", ("repository_ruleset",), "external_reviewer", "VERIFIED",
+            tuple(sorted(check_policy.checks)), True, 1, True, 0, (), (), (), "9" * 64,
+        ).validate()
+        solo_owner_policy = EffectiveBranchPolicy(
+            repository, "main", ("repository_ruleset",), "solo_owner", "VERIFIED",
+            tuple(sorted(check_policy.checks)), True, 0, True, 0, (), (), (), "8" * 64,
+        ).validate()
+        pr = {"repository": repository, "issue_number": 60, "pr_number": 62,
+              "state": "open", "draft": False, "base_ref": "main", "head_sha": head}
+        raw_pr = {"draft": False, "mergeable": True, "user": {"id": 43}}
+        formal_reviews = [{
+            "id": 44, "state": "APPROVED", "commit_id": head,
+            "submitted_at": "2026-10-12T00:02:00Z", "updated_at": "2026-10-12T00:02:00Z",
+            "user": {"id": 43, "type": "User"},
+        }]
+        checked_adc = verified_adc()
+
+        class GitHub:
+            def pull_request(self, _pr):
+                return deepcopy(raw_pr)
+
+            @staticmethod
+            def authenticated_user():
+                return {"id": 42, "type": "User"}
+
+            @staticmethod
+            def pull_review_decision(_pr):
+                return {"headRefOid": head, "reviewDecision": "APPROVED"}
+
+            @staticmethod
+            def pull_reviews(_pr):
+                return deepcopy(formal_reviews)
+
+        args = SimpleNamespace(
+            issue=60, pr=62, head=head, plan="plan.json", verification="verification.json",
+            acceptance="acceptance.json", self_audit="self.json", independent_review="independent.json",
+            readiness="readiness.json", user_review_record="user-review.json",
+        )
+        stdout = io.StringIO()
+
+        def readiness_command(*_args, **_kwargs):
+            print(json.dumps({"path": "readiness.json"}))
+            return 0
+
+        def assess_policy(_github, _repository, _branch, profile):
+            return (solo_owner_policy if profile.final_delivery_review_mode == "solo_owner" else policy)
+
+        with contextlib.ExitStack() as stack:
+            for target, kwargs in (
+                ("_approved_issue_adc", {"return_value": ({}, checked_adc)}),
+                ("_load_plan", {"return_value": (object(), (), (), ())}),
+                ("_subject", {"return_value": subject}),
+                ("_readback_current_pr", {"return_value": pr}),
+                ("read_readiness", {"return_value": readiness}),
+                ("_delivery_readiness", {"side_effect": readiness_command}),
+                ("_read_review_record", {"return_value": (review_subject, review, snapshot.sha256)}),
+                ("review_session_path", {"return_value": Path("session.json")}),
+                ("read_review_session", {"return_value": session}),
+                ("read_feedback_snapshot", {"return_value": snapshot}),
+                ("load_profile", {"side_effect": [initial_profile, changed_profile, changed_profile]}),
+                ("_review_payload_from_github", {"return_value": snapshot}),
+                ("_latest_review_snapshot", {"return_value": None}),
+                ("evaluate_user_review", {"return_value": review}),
+                ("read_verification_result", {"return_value": verification}),
+                ("_calculate_verification", {"return_value": (verification, ())}),
+                ("_assess_current_branch_policy", {"side_effect": assess_policy}),
+                ("verify_adc", {"return_value": checked_adc}),
+                ("_write_immutable", {}),
+                ("_json", {"side_effect": lambda payload: print(json.dumps(payload))}),
+            ):
+                mocked = stack.enter_context(patch(f"p_ases.cli.{target}", **kwargs))
+                if target == "_assess_current_branch_policy":
+                    assess_policy_mock = mocked
+            stack.enter_context(contextlib.redirect_stdout(stdout))
+            status = _delivery_final(args, repository, ROOT, GitHub())
+
+        result = json.loads(stdout.getvalue())
+        self.assertEqual(status, 2)
+        self.assertEqual(result["status"], "BLOCKED")
+        self.assertIn("FINAL_PROFILE_CHANGED", result["reason_codes"])
+        self.assertIn("FINAL_BRANCH_POLICY_CHANGED", result["reason_codes"])
+        self.assertIn("project profile changed during Final Delivery", result["reasons"])
+        self.assertEqual(
+            [call.args[3].final_delivery_review_mode for call in assess_policy_mock.call_args_list],
+            ["external_reviewer", "solo_owner"],
+        )
+
     def test_cli_exposes_exactly_twelve_namespaces_and_adds_project_context(self):
         namespaces = _parser()._subparsers._group_actions[0].choices
         self.assertEqual(set(namespaces), {

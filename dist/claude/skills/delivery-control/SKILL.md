@@ -6,15 +6,17 @@ description: Evaluate Review Readiness and Final Delivery without merging or pub
 
 ## Owner and inputs
 
-Owner: runtime/p_ases/delivery.py and gate_policy.py. Inputs are current PR identity, exact HEAD, final Verification and Acceptance, audit and review evidence, User Review, required Checks, branch protection, and explicit user permissions.
+Owner: runtime/p_ases/delivery.py, branch_policy.py, and gate_policy.py. Inputs are current PR identity, exact HEAD, final Verification and Acceptance, audit and review evidence, User Review, the trusted profile Required Checks, the selected review mode, and read-only GitHub branch/ruleset evidence.
 
 ## Workflow
 
 1. Read the gate policy for the Issue. Fixed Bootstrap Issues #27–#32 use the separate technical evaluator before activation.
 2. Evaluate ordinary Review Readiness from current exact-subject inputs. Do not substitute Bootstrap technical readiness for normal product gates.
-3. For final delivery, re-read User Review, GitHub formal review, Required Checks, branch protection, and mergeability.
-4. Verify an already merged PR and closed Issue only with the finalize command.
-5. Present PR number, exact HEAD, technical checks, risks, and intended order before any merge request. A successful check is not user merge permission.
+3. For final delivery, re-read User Review, all formal PR reviews, current-head Required Checks, effective branch policy, and mergeability; repeat those reads before publishing the result.
+4. Report branch policy as `VERIFIED`, `NOT_CONFIGURED`, `UNAVAILABLE`, `UNVERIFIED`, or `MISMATCH`, including the exact branch, readable sources, HTTP errors, stable reason codes, and required owner action. A 403 is unavailable evidence; a 404 by itself is unverified evidence. Neither is proof that policy is absent or satisfied.
+5. Keep `external_reviewer` as the default. It requires current-head approval from a different human and policy requiring at least one formal approval. `solo_owner` is explicit opt-in for a personal repository when its owner, authenticated User, and PR author IDs match; it requires an active applicable ruleset with required PR, exact trusted Checks/App IDs, zero approvals, force-push prohibition, and no bypass actors.
+6. Verify an already merged PR and closed Issue only with the finalize command. In `solo_owner`, the authenticated owner and PR author must still match and `merged_by` must be that same User.
+7. Present PR number, exact HEAD, technical checks, policy diagnostics, risks, and intended order before any merge request. `READY_FOR_EXPLICIT_MERGE_AUTHORIZATION` returns `merge_authorized: false`; a successful check is not user merge permission.
 
 ## Consumer Activation request
 
@@ -54,6 +56,6 @@ Parent label migration is preflight-only unless the explicit apply option is sup
 
 ## Failure handling and output
 
-Stale evidence, missing required checks, wrong App ID, draft/foreign PR, blocked user review, or unavailable branch protection is not ready. Report the exact blocker and evidence refs. Never merge, tag, publish a Release, activate the parent, or close #26 under this Issue #32 contract.
+Stale evidence, missing required checks, wrong App ID, draft/foreign PR, blocked user review, unavailable or unverified branch policy, or a policy mismatch is not ready. Report the exact blocker, policy source readbacks, required owner action, and evidence refs. This workflow only reads GitHub branch settings; it never changes protection, bypass, or permissions and never merges. Never tag, publish a Release, activate the parent, or close #26 under this Issue #32 contract.
 
 Next owners: integration-validation supplies parent gates; user-review supplies current feedback. See the [delivery design](../../docs/design/workflow-design.md).
