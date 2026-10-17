@@ -1808,9 +1808,13 @@ def _review_record_path(root: Path, issue_number: int, subject: UserReviewSubjec
 def _read_review_record(path: Path) -> tuple[UserReviewSubject, UserReviewResult, str]:
     value = _read_json(path, "User Review result")
     expected = {"result", "result_sha256", "schema", "snapshot_sha256", "subject"}
-    if not isinstance(value, dict) or set(value) != expected or value.get("schema") != "PASES_USER_REVIEW_RESULT_V1":
+    if (not isinstance(value, dict) or set(value) != expected
+            or value.get("schema") not in {"PASES_USER_REVIEW_RESULT_V1", "PASES_USER_REVIEW_RESULT_V2"}):
         raise UserReviewError("User Review result record has unknown or missing fields")
     result = UserReviewResult.from_dict(value["result"])
+    if ((value["schema"] == "PASES_USER_REVIEW_RESULT_V2") !=
+            (result.selected_approval_evidence is not None)):
+        raise UserReviewError("dedicated carrier requires V2 User Review result schema")
     if value["subject"] != result.subject.as_dict() or value["result_sha256"] != result.sha256:
         raise UserReviewError("User Review result record subject/digest does not match")
     if not isinstance(value["snapshot_sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", value["snapshot_sha256"]):
