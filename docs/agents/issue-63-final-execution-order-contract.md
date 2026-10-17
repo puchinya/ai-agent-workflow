@@ -71,7 +71,7 @@ Issue: [#63](https://github.com/puchinya/ai-agent-workflow/issues/63)
 - **No-op/retry**: V2 recordが既に存在し内容一致なら新規発行しない。Rulesetが完全一致ならNOOP。通信不達後はread-only recovery→一致すれば継続、不明ならBLOCK。二重Ruleset write・二重ADC publish・二重Activation recordを禁止。
 - **Stale subject**: ADC/plan/profile/branch/Setup PR/HEAD/Readinessに差異があれば以前のapprovalを失効扱いし、新対象をreadbackする。#63の古いADCを削除しない。
 - **Partial failure**: 403/TTYなし/relay分離未立証/credential不足/承認未成立では機密情報を要求せず、該当ステージを`BLOCKED`または`PENDING_APPROVAL`にする。独立コード作業は継続。PR #64のmerge/closeはしない。
-- **Ownership**: owner-local PATはCodex Cloud、PR、ログ、ファイル、CI、コマンド引数、`os.environ` に公開しない。PATが必要な操作は別の信頼済みTTY environmentから行い、作業後にGitHub上で明示的に失効させる。
+- **Ownership**: owner-local PATはCodex Cloud、PR、ログ、ファイル、CI、コマンド引数、`os.environ` に公開しない。PATが必要な操作は別の信頼済みTTY environmentから行い、作業後にGitHub上で明示的に失効させる。明示選択した`isolated-gh-device` Admin modeは、実TTY、0700 private `GH_CONFIG_DIR`、ambient token除去、normal `gh`設定不変、終了時のprivate config cleanupを必須とする。GitHub OAuth grantはcleanupで失効しない。同一OS userのsubprocessはstrong sandboxではない。device flowが使えなければ`ADMIN_DEVICE_LOGIN_UNAVAILABLE`で停止し、owner-local PAT pathを残す。
 - **Historic**: #57 V1、#63旧ADC・Phase Decision・Gate Selection、#60/PR #62、旧PRBindingは不変。V2の有効時刻はrecord commentの`created_at`。
 
 ## 6 Non-goals / Forbidden Changes
@@ -118,6 +118,7 @@ GitHub Actionsが同じHEADでUbuntu 3.10/3.14、Windows 3.14、macOS 3.14（App
 - [ ] V2 record ID/created_at/owned Ruleset ID・policy digestまでverifyしてACTIVE。
 - [ ] Setup PR由来base advanceの例外は検証済み限定で、元Bindingと旧履歴を不変維持。
 - [ ] 管理者PATと独立broker tool routeはCodexに露出していない。
+- [ ] `isolated-gh-device`は明示選択、実TTY、0700 private config、ambient token除去、normal `gh`状態の不変、cleanupを満たし、Cloudで不可なら`ADMIN_DEVICE_LOGIN_UNAVAILABLE`をreadback。
 - [ ] 5種のowner decisionを相互流用せず、署名・Actorの偽装なし。
 - [ ] 4 CI / unit / docs / traceability / dist / 16 Skillsを最新HEADで検証。
 - [ ] PR #64の現HEAD independent review / User Review / Final Delivery / PR_MERGEはActivation後に再実施。

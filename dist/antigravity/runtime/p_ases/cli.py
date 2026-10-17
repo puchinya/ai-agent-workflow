@@ -3721,14 +3721,18 @@ def _parser() -> argparse.ArgumentParser:
     owner_resume.add_argument("--repo", help="repository owner/name; defaults to origin")
     owner_resume.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
     admin_plan = delivery_commands.add_parser(
-        "consumer-activation-admin-plan", help="owner-only local TTY Ruleset plan")
+        "consumer-activation-admin-plan", help="owner-operated interactive TTY Ruleset plan")
     admin_plan.add_argument("--output", required=True, type=Path)
+    admin_plan.add_argument("--auth-mode", choices=("pat", "isolated-gh-device"), default="pat",
+                             help="temporary Admin transport; device login uses a private per-command gh config")
     admin_plan.add_argument("--repo", help="repository owner/name; defaults to origin")
     admin_plan.add_argument("--root", type=Path, help="repository root; defaults to current checkout")
     admin_apply = delivery_commands.add_parser(
-        "consumer-activation-admin-apply", help="owner-only local TTY exact-approved Ruleset apply")
+        "consumer-activation-admin-apply", help="owner-operated interactive TTY exact-approved Ruleset apply")
     admin_apply.add_argument("--plan", required=True, type=Path)
     admin_apply.add_argument("--approval-comment-id", type=_positive_number)
+    admin_apply.add_argument("--auth-mode", choices=("pat", "isolated-gh-device"), default="pat",
+                             help="temporary Admin transport; device login uses a private per-command gh config")
     admin_apply.add_argument("--repo", help="repository owner/name; defaults to origin")
     admin_apply.add_argument("--root", type=Path, help="repository root; defaults to current checkout")
     bootstrap = delivery_commands.add_parser("bootstrap-check", help="evaluate the separate migration Bootstrap gate")
@@ -3911,7 +3915,7 @@ def main(argv: list[str] | None = None) -> int:
                                    "plan_path": str(args.plan), "plan_sha256": authorized_plan_sha,
                                    "reasons": ["the isolated owner relay must return the exact Issue #57 approval comment ID"]})
                             return 2
-                    with temporary_admin_client(repository) as admin:
+                    with temporary_admin_client(repository, auth_mode=args.auth_mode) as admin:
                         profile = load_profile(root)
                         if profile.activation_issue_number != 57:
                             raise CLIError("temporary Admin target must match configured Activation #57")

@@ -32,6 +32,7 @@ class GitHub:
     _api_request_count: int = field(default=0, init=False, repr=False)
     _api_elapsed_ms: float = field(default=0.0, init=False, repr=False)
     _admin_token_override: str | None = field(default=None, init=False, repr=False)
+    _admin_config_dir: str | None = field(default=None, init=False, repr=False)
 
     @property
     def api_metrics(self) -> dict[str, int | float]:
@@ -64,10 +65,16 @@ class GitHub:
             argv.extend(["--input", "-"])
             input_text = json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
         child_env = os.environ.copy()
+        if self._admin_token_override is not None and self._admin_config_dir is not None:
+            raise GitHubError("Admin client cannot combine token and isolated gh-config authentication")
         if self._admin_token_override is not None:
-            child_env.pop("GH_TOKEN", None)
-            child_env.pop("GITHUB_TOKEN", None)
+            for name in ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"):
+                child_env.pop(name, None)
             child_env["GH_TOKEN"] = self._admin_token_override
+        elif self._admin_config_dir is not None:
+            for name in ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"):
+                child_env.pop(name, None)
+            child_env["GH_CONFIG_DIR"] = self._admin_config_dir
         started = time.perf_counter()
         self._api_request_count += 1
         try:

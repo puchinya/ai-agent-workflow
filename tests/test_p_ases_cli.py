@@ -4,6 +4,7 @@ import contextlib
 import copy
 import io
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -71,6 +72,60 @@ class PasesCLITests(unittest.TestCase):
             "--repo", "puchinya/ai-agent-workflow", "--root", str(ROOT),
         ])
         self.assertIsNone(admin_apply.approval_comment_id)
+        self.assertEqual(admin_apply.auth_mode, "pat")
+        admin_plan = _parser().parse_args([
+            "delivery", "consumer-activation-admin-plan", "--output", "/tmp/pases-plan.json",
+            "--auth-mode", "isolated-gh-device", "--root", str(ROOT),
+        ])
+        self.assertEqual(admin_plan.auth_mode, "isolated-gh-device")
+        device_apply = _parser().parse_args([
+            "delivery", "consumer-activation-admin-apply", "--plan", "/tmp/pases-plan.json",
+            "--auth-mode", "isolated-gh-device", "--root", str(ROOT),
+        ])
+        self.assertEqual(device_apply.auth_mode, "isolated-gh-device")
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            _parser().parse_args([
+                "delivery", "consumer-activation-admin-plan", "--output", "/tmp/pases-plan.json",
+                "--auth-mode", "unknown", "--root", str(ROOT),
+            ])
+
+    def test_admin_plan_forwards_selected_auth_mode_to_temporary_client(self):
+        admin = SimpleNamespace(
+            authenticated_user=lambda: {"id": 3744776, "type": "User", "login": "owner"},
+            repository_metadata=lambda: {
+                "id": 1401910271, "full_name": "puchinya/ai-agent-workflow",
+                "owner": {"id": 3744776, "type": "User", "login": "owner"},
+                "permissions": {"admin": True}, "default_branch": "main",
+            },
+            collaborator_permission=lambda _login: {"permission": "admin"},
+            branch_protection=lambda _branch: {},
+            repository_rulesets=lambda: [], effective_branch_rules=lambda _branch: [],
+        )
+        modes = []
+
+        def admin_context(_repository, *, auth_mode):
+            modes.append(auth_mode)
+            return contextlib.nullcontext(admin)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            checkpoint = root / "missing-checkpoint.json"
+            with patch("p_ases.cli._runtime_root", return_value=root), \
+                 patch("p_ases.cli.discover_repository", return_value="puchinya/ai-agent-workflow"), \
+                 patch("p_ases.cli.GitHub", return_value=SimpleNamespace(repo="puchinya/ai-agent-workflow")), \
+                 patch("p_ases.cli.load_profile", return_value=SimpleNamespace(activation_issue_number=57)), \
+                 patch("p_ases.cli.activation_checkpoint_path", return_value=checkpoint), \
+                 patch("p_ases.cli.temporary_admin_client", side_effect=admin_context), \
+                 patch("p_ases.cli.build_ruleset_plan", return_value={
+                     "blockers": [], "plan_sha256": "a" * 64, "diff": {"operation": "create"},
+                 }), patch("p_ases.cli.write_ruleset_plan"), patch("p_ases.cli._json"):
+                result = main([
+                    "delivery", "consumer-activation-admin-plan", "--output", str(root / "plan.json"),
+                    "--auth-mode", "isolated-gh-device", "--repo", "puchinya/ai-agent-workflow",
+                    "--root", str(root),
+                ])
+        self.assertEqual(result, 0)
+        self.assertEqual(modes, ["isolated-gh-device"])
 
     def test_ruleset_write_route_never_self_authorizes_from_a_plan_or_admin_credential(self):
         plan = {
