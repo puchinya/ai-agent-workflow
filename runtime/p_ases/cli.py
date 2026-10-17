@@ -15,6 +15,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 from typing import Any
+from urllib.parse import urlsplit
 
 from .adc import ADCError, parse_adc, publish_adc, restore_adc, verify_adc
 from .consumer_activation import (
@@ -50,6 +51,7 @@ from .delivery import (
     FinalDeliveryResult, PRReadback, ReadinessError, evaluate_final_delivery,
     evaluate_readiness, read_readiness, readiness_path, write_readiness,
 )
+from .branch_policy import EffectiveBranchPolicy, assess_branch_policy
 from .acceptance import (
     ACCEPTANCE_POLICY_VERSION, ARTIFACT_TYPES, OBSERVATION_KINDS, AcceptanceError,
     AcceptanceObservation, AcceptanceResult, acceptance_result_path, evaluate_acceptance,
@@ -904,6 +906,7 @@ def _project_status(root: Path) -> int:
         "project_name": profile.project_name,
         "branch_prefix": profile.branch_prefix,
         "activation_issue_number": profile.activation_issue_number,
+        "final_delivery_review_mode": profile.final_delivery_review_mode,
         "required_checks": [
             {"name": name, "trusted_app_id": app_id}
             for name, app_id in profile.required_checks
@@ -1770,6 +1773,159 @@ def _review_payload_from_github(github: GitHub, subject: UserReviewSubject,
     return FeedbackSnapshot(subject, ordered, unresolved, observed_at).validate()
 
 
+def _verified_solo_owner_id(github: GitHub, repository: str, pull_request: dict[str, Any],
+                            authenticated: dict[str, Any] | None = None) -> tuple[int, dict[str, Any]]:
+    metadata = github.repository_metadata()
+    owner = metadata.get("owner")
+    author = pull_request.get("user") if isinstance(pull_request, dict) else None
+    current = authenticated or github.authenticated_user()
+    repository_name = metadata.get("full_name")
+    owner_id = owner.get("id") if isinstance(owner, dict) else None
+    authenticated_id = current.get("id") if isinstance(current, dict) else None
+    author_id = author.get("id") if isinstance(author, dict) else None
+    if (not isinstance(repository_name, str) or repository_name.casefold() != repository.casefold()
+            or not isinstance(owner, dict) or owner.get("type") != "User"
+            or not isinstance(author, dict) or author.get("type") != "User"
+            or any(type(value) is not int or value < 1 for value in (owner_id, authenticated_id, author_id))
+            or len({owner_id, authenticated_id, author_id}) != 1
+            or current.get("type") != "User"):
+        raise CLIError("solo_owner requires the repository owner, authenticated user, and PR author to be the same personal User")
+    return owner_id, current
+
+
+def _verify_solo_owner_issue_approval(github: GitHub, repository: str, issue_number: int,
+                                      snapshot: FeedbackSnapshot, owner_id: int) -> None:
+    """Double-read each exact owner approval through direct/list/direct GitHub reads."""
+    subject_sha = snapshot.subject.sha256
+    grammar = re.compile(
+        rf"P-ASES-DECISION: APPROVED\nP-ASES-SUBJECT: {re.escape(subject_sha)}"
+    )
+
+    def matching(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        result = []
+        for row in rows:
+            body = row.get("body") if isinstance(row, dict) else None
+            user = row.get("user") if isinstance(row, dict) else None
+            if (isinstance(body, str) and grammar.fullmatch(body)
+                    and isinstance(user, dict) and user.get("id") == owner_id
+                    and user.get("type") == "User"):
+                result.append(row)
+        return result
+
+    initial = matching(github.issue_comments(issue_number))
+    if not initial:
+        return
+    if len(initial) != 1 or type(initial[0].get("id")) is not int or initial[0]["id"] < 1:
+        raise CLIError("solo-owner Issue approval is duplicated or has an invalid comment ID")
+    comment_id = initial[0]["id"]
+    direct_before = github.issue_comment(issue_number, comment_id)
+    listed = [row for row in github.issue_comments(issue_number) if row.get("id") == comment_id]
+    direct_after = github.issue_comment(issue_number, comment_id)
+    if len(listed) != 1:
+        raise CLIError("solo-owner Issue approval is missing or duplicated in the complete comment list")
+
+    def identity(row: dict[str, Any]) -> tuple[Any, ...]:
+        user = row.get("user") if isinstance(row.get("user"), dict) else {}
+        return (row.get("id"), row.get("body"), row.get("created_at"), row.get("updated_at"),
+                row.get("html_url"), row.get("issue_url"), user.get("id"), user.get("login"),
+                user.get("type"))
+
+    before_identity, list_identity, after_identity = map(identity, (direct_before, listed[0], direct_after))
+    body = direct_before.get("body")
+    user = direct_before.get("user")
+    html_url = direct_before.get("html_url")
+    issue_url = direct_before.get("issue_url")
+    parsed_html = urlsplit(html_url) if isinstance(html_url, str) else None
+    parsed_issue = urlsplit(issue_url) if isinstance(issue_url, str) else None
+    try:
+        html_port = parsed_html.port if parsed_html is not None else None
+        issue_port = parsed_issue.port if parsed_issue is not None else None
+    except ValueError as exc:
+        raise CLIError("solo-owner approval URL contains an invalid port") from exc
+    api_issue_suffix = f"/repos/{repository}/issues/{issue_number}"
+    event = next((row for row in snapshot.events
+                  if row.channel == "issue-comment" and row.event_id == str(comment_id)), None)
+    if (before_identity != list_identity or before_identity != after_identity
+            or not isinstance(body, str) or not grammar.fullmatch(body)
+            or direct_before.get("created_at") != direct_before.get("updated_at")
+            or not isinstance(user, dict) or user.get("id") != owner_id or user.get("type") != "User"
+            or parsed_html is None or parsed_html.scheme != "https" or parsed_html.hostname != "github.com"
+            or html_port is not None or parsed_html.username is not None or parsed_html.password is not None
+            or parsed_html.query
+            or parsed_html.path != f"/{repository}/issues/{issue_number}"
+            or parsed_html.fragment != f"issuecomment-{comment_id}"
+            or parsed_issue is None or parsed_issue.scheme != "https" or parsed_issue.hostname != "api.github.com"
+            or issue_port is not None or parsed_issue.username is not None or parsed_issue.password is not None
+            or parsed_issue.path.casefold() != api_issue_suffix.casefold()
+            or parsed_issue.query or parsed_issue.fragment
+            or event is None or event.subject_sha256 != subject_sha
+            or event.actor_id != owner_id or event.actor_type != "User"
+            or event.body_sha256 != hashlib.sha256(body.encode("utf-8")).hexdigest()
+            or event.created_at != direct_before.get("created_at")
+            or event.updated_at != direct_before.get("updated_at")
+            or event.source_url != html_url):
+        raise CLIError("solo-owner Issue approval failed exact-subject direct/list/direct identity verification")
+
+
+def _assess_current_branch_policy(github: GitHub, repository: str, branch: str,
+                                  profile: Any) -> EffectiveBranchPolicy:
+    default_branch = branch
+    source_errors: dict[str, int | None] = {}
+    try:
+        metadata = github.repository_metadata()
+        default_branch = metadata.get("default_branch", branch)
+    except GitHubError as exc:
+        source_errors["repository_metadata"] = exc.status_code
+    try:
+        branch_info = github.branch(branch)
+    except GitHubError as exc:
+        branch_info = None
+        source_errors["branch"] = exc.status_code
+    try:
+        legacy = github.branch_protection(branch)
+    except GitHubError as exc:
+        legacy = None
+        source_errors["legacy_protection"] = exc.status_code
+    try:
+        effective_rules = github.effective_branch_rules(branch)
+    except GitHubError as exc:
+        effective_rules = None
+        source_errors["effective_rules"] = exc.status_code
+    details: list[dict[str, Any]] | None = [] if effective_rules is not None else None
+    if effective_rules is not None:
+        identifiers: dict[int, str] = {}
+        for row in effective_rules:
+            identifier = row.get("ruleset_id")
+            source_type = row.get("ruleset_source_type", row.get("source_type"))
+            if type(identifier) is not int or identifier < 1 or source_type not in {"Repository", "Organization"}:
+                source_errors[f"ruleset:{identifier}"] = None
+                details = None
+                continue
+            if identifier in identifiers and identifiers[identifier] != source_type:
+                source_errors[f"ruleset:{identifier}"] = None
+                details = None
+                continue
+            identifiers[identifier] = source_type
+        if details is not None:
+            for identifier, source_type in sorted(identifiers.items()):
+                try:
+                    details.append(github.ruleset_details(identifier, source_type=source_type))
+                except GitHubError as exc:
+                    source_errors[f"ruleset:{identifier}"] = exc.status_code
+                    details = None
+                    break
+    try:
+        check_policy = profile.required_check_policy()
+    except (ProfileError, VerificationError) as exc:
+        raise CLIError(f"trusted Required Check policy is invalid: {exc}") from exc
+    return assess_branch_policy(
+        repository=repository, branch=branch, review_mode=profile.final_delivery_review_mode,
+        required_check_policy=check_policy, branch_info=branch_info,
+        legacy_protection=legacy, effective_rules=effective_rules, ruleset_details=details,
+        source_errors=source_errors, default_branch=default_branch,
+    )
+
+
 def _latest_review_snapshot(root: Path, subject: UserReviewSubject) -> FeedbackSnapshot | None:
     folder = Path(root).absolute() / ".p_ases" / "user-review" / str(subject.verification_subject.issue_number) / subject.sha256
     if path_has_symlink(folder):
@@ -1872,6 +2028,12 @@ def _user_review_run(args: argparse.Namespace, repository: str, root: Path, gith
         head_sha = head.get("sha") if isinstance(head, dict) else None
         if head_sha != args.head:
             raise CLIError("requested HEAD differs from the current GitHub PR HEAD")
+        profile = load_profile(root)
+        review_mode = profile.final_delivery_review_mode
+        identity = github.authenticated_user()
+        owner_id: int | None = None
+        if review_mode == "solo_owner":
+            owner_id, identity = _verified_solo_owner_id(github, repository, pr, identity)
         subject = _subject(repository, args.issue, args.pr, args.head, verified_adc, plan)
         pr_identity = _readback_current_pr(github, subject)
         readiness = read_readiness(args.readiness)
@@ -1890,11 +2052,13 @@ def _user_review_run(args: argparse.Namespace, repository: str, root: Path, gith
         current = _review_payload_from_github(github, user_review_subject, observed_at=observed_at)
         previous = _latest_review_snapshot(root, user_review_subject)
         snapshot = merge_feedback_history(previous, current)
-        identity = github.authenticated_user()
+        if owner_id is not None:
+            _verify_solo_owner_issue_approval(github, repository, args.issue, snapshot, owner_id)
         result = evaluate_user_review(
             user_review_subject, readiness, pr_identity["head_sha"], snapshot.events,
             allowed_human_user_ids=(identity["id"],), all_feedback_surfaces_read=True,
             required_after=session.started_at,
+            review_mode=review_mode, owner_id=owner_id,
             new_scope_requested=bool(getattr(args, "new_scope", False)),
             unresolved_thread_ids=snapshot.unresolved_thread_ids,
         )
@@ -1903,9 +2067,15 @@ def _user_review_run(args: argparse.Namespace, repository: str, root: Path, gith
         current_pr_identity = _readback_current_pr(github, subject)
         current_readiness = read_readiness(args.readiness)
         current_identity = github.authenticated_user()
+        if review_mode == "solo_owner":
+            final_owner_id, current_identity = _verified_solo_owner_id(github, repository, pr, current_identity)
+            if final_owner_id != owner_id:
+                raise CLIError("repository owner identity changed during User Review")
         second_observed = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
         second = _review_payload_from_github(github, user_review_subject, observed_at=second_observed)
         second = merge_feedback_history(previous, second)
+        if owner_id is not None:
+            _verify_solo_owner_issue_approval(github, repository, args.issue, second, owner_id)
         if (current_issue.get("state") != "open" or current_adc.pointer != verified_adc.pointer
                 or current_pr_identity != pr_identity or current_readiness != readiness
                 or current_identity.get("id") != identity.get("id")
@@ -1988,15 +2158,24 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
         if (saved_snapshot.sha256 != snapshot_sha or saved_snapshot.subject != user_subject
                 or feedback_digest(saved_snapshot.events) != saved_review.feedback_sha256):
             blockers.append("saved User Review snapshot is missing or inconsistent")
+        profile = load_profile(root)
+        review_mode = profile.final_delivery_review_mode
+        raw_pr = github.pull_request(args.pr)
+        identity = github.authenticated_user()
+        owner_id: int | None = None
+        if review_mode == "solo_owner":
+            owner_id, identity = _verified_solo_owner_id(github, repository, raw_pr, identity)
         fresh_subject = UserReviewSubject(subject, readiness.sha256).validate()
         observed_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
         fresh = _review_payload_from_github(github, fresh_subject, observed_at=observed_at)
         previous = _latest_review_snapshot(root, fresh_subject)
         fresh = merge_feedback_history(previous, fresh)
-        identity = github.authenticated_user()
+        if owner_id is not None:
+            _verify_solo_owner_issue_approval(github, repository, args.issue, fresh, owner_id)
         current_review = evaluate_user_review(
             fresh_subject, readiness, pr["head_sha"], fresh.events,
             allowed_human_user_ids=(identity["id"],), required_after=session.started_at,
+            review_mode=review_mode, owner_id=owner_id,
             unresolved_thread_ids=fresh.unresolved_thread_ids,
         )
         if (saved_review.status != "APPROVED" or current_review != saved_review
@@ -2008,17 +2187,23 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
             repository, root, github)
         if verification != calculated_verification or verification.subject != subject or verification.status != "PASS":
             blockers.append("#29 Verification is stale or is not PASS for the exact subject")
-        raw_pr = github.pull_request(args.pr)
         aggregate = github.pull_review_decision(args.pr)
-        protection = github.branch_protection(pr["base_ref"])
-        profile = load_profile(root)
-        required_names = tuple(name for name, _app_id in profile.required_checks)
+        formal_reviews = github.pull_reviews(args.pr)
+        formal_reviews_sha = _formal_reviews_sha256(formal_reviews)
+        policy = _assess_current_branch_policy(github, repository, pr["base_ref"], profile)
+        required_policy = profile.required_check_policy()
         result = evaluate_final_delivery(
             subject=subject, user_review=current_review, verification=verification,
             current_pr_head_sha40=aggregate.get("headRefOid"), current_pr_state=pr["state"],
             current_pr_draft=raw_pr.get("draft"), github_review_decision=aggregate.get("reviewDecision"),
-            github_review_head_sha40=aggregate.get("headRefOid"), branch_protection=protection,
-            required_check_names=required_names, mergeable=raw_pr.get("mergeable"),
+            github_review_head_sha40=aggregate.get("headRefOid"), github_reviews=formal_reviews,
+            branch_policy=policy, required_check_policy=required_policy, review_mode=review_mode,
+            repository_owner_type=("User" if review_mode == "solo_owner" else None),
+            repository_owner_id=owner_id,
+            authenticated_user_id=(identity.get("id") if review_mode == "solo_owner" else None),
+            pr_author_id=(raw_pr.get("user", {}).get("id")
+                          if review_mode == "solo_owner" and isinstance(raw_pr.get("user"), dict) else None),
+            mergeable=raw_pr.get("mergeable"),
         )
         if verify_adc(github, args.issue).pointer != verified_adc.pointer:
             blockers.append("approved ADC pointer changed during Final Delivery")
@@ -2026,14 +2211,31 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
             blockers.append("PR identity/base/head changed during Final Delivery")
         if github.pull_review_decision(args.pr) != aggregate:
             blockers.append("GitHub formal review decision or PR HEAD changed during Final Delivery")
-        if github.branch_protection(pr["base_ref"]) != protection:
-            blockers.append("branch protection changed during Final Delivery")
+        if _formal_reviews_sha256(github.pull_reviews(args.pr)) != formal_reviews_sha:
+            blockers.append("GitHub formal reviews changed during Final Delivery")
+        final_policy = _assess_current_branch_policy(github, repository, pr["base_ref"], profile)
+        if final_policy != policy:
+            blockers.append("effective branch policy changed during Final Delivery")
         final_readiness = read_readiness(args.readiness)
         final_identity = github.authenticated_user()
+        final_raw_pr = github.pull_request(args.pr)
+        if (final_raw_pr.get("draft") is not raw_pr.get("draft")
+                or final_raw_pr.get("mergeable") is not raw_pr.get("mergeable")):
+            blockers.append("PR draft or mergeability changed during Final Delivery")
+        if owner_id is not None:
+            try:
+                final_owner_id, _final_identity = _verified_solo_owner_id(
+                    github, repository, final_raw_pr, final_identity)
+                if final_owner_id != owner_id:
+                    blockers.append("repository owner or PR author identity changed during Final Delivery")
+            except (CLIError, GitHubError) as exc:
+                blockers.append(f"solo-owner identity could not be reverified during Final Delivery: {exc}")
         final_session = read_review_session(session_path)
         final_observed = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
         final_feedback = _review_payload_from_github(github, fresh_subject, observed_at=final_observed)
         final_feedback = merge_feedback_history(previous, final_feedback)
+        if owner_id is not None:
+            _verify_solo_owner_issue_approval(github, repository, args.issue, final_feedback, owner_id)
         if (final_readiness != readiness or final_identity.get("id") != identity.get("id")
                 or final_session != session
                 or feedback_digest(final_feedback.events) != feedback_digest(fresh.events)
@@ -2045,10 +2247,24 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
         if final_verification != verification:
             blockers.append("#29 Verification/Required Check Runs changed during Final Delivery")
         if blockers:
-            result = FinalDeliveryResult("BLOCKED", subject, result.user_review_sha256,
-                                         result.required_check_result_sha256,
-                                         result.branch_protection_sha256,
-                                         tuple((*result.reasons, *blockers))).validate()
+            code_by_reason = {
+                "approved ADC pointer changed during Final Delivery": "FINAL_ADC_CHANGED",
+                "PR identity/base/head changed during Final Delivery": "FINAL_PR_IDENTITY_CHANGED",
+                "GitHub formal review decision or PR HEAD changed during Final Delivery": "FINAL_REVIEW_DECISION_CHANGED",
+                "GitHub formal reviews changed during Final Delivery": "FINAL_FORMAL_REVIEWS_CHANGED",
+                "effective branch policy changed during Final Delivery": "FINAL_BRANCH_POLICY_CHANGED",
+                "PR draft or mergeability changed during Final Delivery": "FINAL_PR_STATE_CHANGED",
+                "repository owner or PR author identity changed during Final Delivery": "FINAL_SOLO_OWNER_IDENTITY_CHANGED",
+                "Readiness, authenticated user, or GitHub feedback changed during Final Delivery": "FINAL_USER_REVIEW_CHANGED",
+                "#29 Verification/Required Check Runs changed during Final Delivery": "FINAL_VERIFICATION_CHANGED",
+            }
+            result = replace(
+                result, status="BLOCKED",
+                reason_codes=tuple(sorted(set((*result.reason_codes,
+                                               *(code_by_reason.get(reason, "FINAL_READBACK_CHANGED")
+                                                 for reason in blockers))))),
+                reasons=tuple(dict.fromkeys((*result.reasons, *blockers))),
+            ).validate()
         path = root / ".p_ases" / "final-delivery" / str(args.issue) / f"{result.sha256}.json"
         _write_immutable(path, _canonical(result.as_dict()) + b"\n", root=root)
         _json({**result.as_dict(), "subject_sha256": subject.sha256, "path": str(path),
@@ -2061,22 +2277,54 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
         return _blocked_result((str(exc),))
 
 
-def _delivery_finalize(args: argparse.Namespace, repository: str, github: GitHub) -> int:
+def _formal_reviews_sha256(reviews: Any) -> str:
+    if not isinstance(reviews, list) or any(not isinstance(row, dict) for row in reviews):
+        raise CLIError("GitHub formal review collection is malformed")
+    if any(type(row.get("id")) is not int or row["id"] < 1 for row in reviews):
+        raise CLIError("GitHub formal review identity is incomplete")
+    ordered = sorted(reviews, key=lambda row: row["id"])
+    if len({row["id"] for row in ordered}) != len(ordered):
+        raise CLIError("GitHub formal review collection contains duplicate IDs")
+    return hashlib.sha256(_canonical(ordered)).hexdigest()
+
+
+def _solo_owner_merge_actor_matches(pull_request: Any, owner_id: int) -> bool:
+    if type(owner_id) is not int or owner_id < 1 or not isinstance(pull_request, dict):
+        return False
+    merged_by = pull_request.get("merged_by")
+    return (isinstance(merged_by, dict) and merged_by.get("type") == "User"
+            and type(merged_by.get("id")) is int and merged_by.get("id") == owner_id)
+
+
+def _delivery_finalize(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
     try:
         pr = github.pull_request(args.pr)
         issue = github.issue(args.issue)
+        profile = load_profile(root)
+        review_mode = profile.final_delivery_review_mode
         merge_sha = pr.get("merge_commit_sha") if isinstance(pr, dict) else None
-        main = github.repository_metadata().get("default_branch")
+        metadata = github.repository_metadata()
+        main = metadata.get("default_branch")
         main_row = github.branch(main)
         main_sha = main_row["commit"]["sha"]
-        close_lines = [int(value) for value in OWN_PR_CLOSING_LINE.findall(pr.get("body", ""))]
+        body = pr.get("body") if isinstance(pr, dict) else None
+        close_lines = [int(value) for value in OWN_PR_CLOSING_LINE.findall(body)] if isinstance(body, str) else []
+        close_refs = [int(value) for value in PR_CLOSING_REF.findall(body)] if isinstance(body, str) else []
         reasons = []
         if pr.get("state") != "closed" or pr.get("merged_at") is None:
             reasons.append("PR has not been merged")
-        if close_lines != [args.issue]:
+        if close_lines != [args.issue] or close_refs != [args.issue]:
             reasons.append("PR does not have exactly one standalone Closes #N for the Issue")
         if issue.get("state") != "closed":
             reasons.append("GitHub has not closed the Issue after merge")
+        if review_mode == "solo_owner":
+            try:
+                owner_id, _identity = _verified_solo_owner_id(github, repository, pr)
+            except (CLIError, GitHubError) as exc:
+                owner_id = None
+                reasons.append(f"solo-owner merge identity could not be verified: {exc}")
+            if owner_id is not None and not _solo_owner_merge_actor_matches(pr, owner_id):
+                reasons.append("solo-owner PR was not merged by the authenticated repository owner")
         if not isinstance(merge_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", merge_sha):
             reasons.append("merged PR has no full merge commit SHA")
         else:
@@ -2978,7 +3226,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.verb == "final":
                 return _delivery_final(args, repository, root, github)
             if args.verb == "finalize":
-                return _delivery_finalize(args, repository, github)
+                return _delivery_finalize(args, repository, root, github)
             if args.verb == "parent":
                 return _delivery_parent(args, repository, root, github)
             if args.verb == "parent-evidence":

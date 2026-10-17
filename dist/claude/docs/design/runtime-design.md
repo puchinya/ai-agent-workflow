@@ -85,6 +85,8 @@ Legacy design note: detailed module behavior below describes the former flat Age
 
 The dependency direction is CLI -> domain modules -> injected GitHub/process boundaries. Pure validators do not make network calls. `git.py` invokes Git only through argument arrays and never invokes the trusted shell-hook boundary for Git operations. GitHub functions return parsed JSON or raise explicit operation errors; they do not print payloads. Runtime code never imports files from the reference repository.
 
+The optional Schema 2 Final Delivery review mode is parsed only by `profile.py`, as specified in [the runtime profile contract](../specs/runtime-spec.md#final-delivery-profile-contract). Branch-policy API reads stay in `github.py`; pure policy normalization and comparison stay in `branch_policy.py`. The mode-specific rules and evidence flow are owned by [DES-FD-001 through DES-FD-007](workflow-design.md#des-fd-001).
+
 <a id="des-rt-002"></a>
 <a id="des-rt-002-data-flow-and-ownership"></a>
 ## 4 DES-RT-002 Data flow and ownership

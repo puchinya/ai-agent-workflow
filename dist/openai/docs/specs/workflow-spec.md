@@ -24,11 +24,20 @@
 - [8 P-ASES human review and final delivery](#8-p-ases-human-review-and-final-delivery)
   - [8.1 REQ-WF-009 Exact-subject User Review](#81-req-wf-009-exact-subject-user-review)
   - [8.2 REQ-WF-010 Parent Integration and Final Delivery](#82-req-wf-010-parent-integration-and-final-delivery)
-- [9 Consumer Activation workflow contract](#9-consumer-activation-workflow-contract)
-  - [9.1 REQ-F01-001 Repository boundary](#91-req-f01-001-repository-boundary)
-  - [9.2 REQ-F01-003 Append-only approval and Activation history](#92-req-f01-003-append-only-approval-and-activation-history)
-  - [9.3 REQ-F01-005 Eligibility by Activation time](#93-req-f01-005-eligibility-by-activation-time)
-  - [9.4 REQ-F01-007 Successor Activation](#94-req-f01-007-successor-activation)
+- [9 Final Delivery review and branch policy](#9-final-delivery-review-and-branch-policy)
+  - [9.1 REQ-FD-001 Protection-state evidence](#91-req-fd-001-protection-state-evidence)
+  - [9.2 REQ-FD-002 Exact required-check policy](#92-req-fd-002-exact-required-check-policy)
+  - [9.3 REQ-FD-003 External reviewer compatibility mode](#93-req-fd-003-external-reviewer-compatibility-mode)
+  - [9.4 REQ-FD-004 Solo owner review mode](#94-req-fd-004-solo-owner-review-mode)
+  - [9.5 REQ-FD-005 Solo owner effective ruleset](#95-req-fd-005-solo-owner-effective-ruleset)
+  - [9.6 REQ-FD-006 Explicit merge and finalization](#96-req-fd-006-explicit-merge-and-finalization)
+  - [9.7 REQ-FD-007 Profile compatibility and activation](#97-req-fd-007-profile-compatibility-and-activation)
+  - [9.8 REQ-FD-008 Independent coverage and delivery scope](#98-req-fd-008-independent-coverage-and-delivery-scope)
+- [10 9 Consumer Activation workflow contract](#10-9-consumer-activation-workflow-contract)
+  - [10.1 9.1 REQ-F01-001 Repository boundary](#101-91-req-f01-001-repository-boundary)
+  - [10.2 9.2 REQ-F01-003 Append-only approval and Activation history](#102-92-req-f01-003-append-only-approval-and-activation-history)
+  - [10.3 9.3 REQ-F01-005 Eligibility by Activation time](#103-93-req-f01-005-eligibility-by-activation-time)
+  - [10.4 9.4 REQ-F01-007 Successor Activation](#104-94-req-f01-007-successor-activation)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -43,10 +52,18 @@
 - [REQ-WF-008](#req-wf-008) — 6 REQ-WF-008 Security and privacy
 - [REQ-WF-009](#req-wf-009) — 8.1 REQ-WF-009 Exact-subject User Review
 - [REQ-WF-010](#req-wf-010) — 8.2 REQ-WF-010 Parent Integration and Final Delivery
-- [REQ-F01-001](#req-f01-001) — 9.1 REQ-F01-001 Repository boundary
-- [REQ-F01-003](#req-f01-003) — 9.2 REQ-F01-003 Append-only approval and Activation history
-- [REQ-F01-005](#req-f01-005) — 9.3 REQ-F01-005 Eligibility by Activation time
-- [REQ-F01-007](#req-f01-007) — 9.4 REQ-F01-007 Successor Activation
+- [REQ-FD-001](#req-fd-001) — 9.1 REQ-FD-001 Protection-state evidence
+- [REQ-FD-002](#req-fd-002) — 9.2 REQ-FD-002 Exact required-check policy
+- [REQ-FD-003](#req-fd-003) — 9.3 REQ-FD-003 External reviewer compatibility mode
+- [REQ-FD-004](#req-fd-004) — 9.4 REQ-FD-004 Solo owner review mode
+- [REQ-FD-005](#req-fd-005) — 9.5 REQ-FD-005 Solo owner effective ruleset
+- [REQ-FD-006](#req-fd-006) — 9.6 REQ-FD-006 Explicit merge and finalization
+- [REQ-FD-007](#req-fd-007) — 9.7 REQ-FD-007 Profile compatibility and activation
+- [REQ-FD-008](#req-fd-008) — 9.8 REQ-FD-008 Independent coverage and delivery scope
+- [REQ-F01-001](#req-f01-001) — 10.1 9.1 REQ-F01-001 Repository boundary
+- [REQ-F01-003](#req-f01-003) — 10.2 9.2 REQ-F01-003 Append-only approval and Activation history
+- [REQ-F01-005](#req-f01-005) — 10.3 9.3 REQ-F01-005 Eligibility by Activation time
+- [REQ-F01-007](#req-f01-007) — 10.4 9.4 REQ-F01-007 Successor Activation
 <!-- heading-map:end -->
 
 
@@ -233,6 +250,8 @@ P-ASES-HEAD: <current full SHA-40>
 
 The authenticated current human must have authored the comment; an inline comment's `commit_id` must equal the named SHA. Quoted, extended, malformed, stale-head, bot, unauthorized, and natural-language comments do not trigger the execution transition. Other comments remain questions. Changes requested on the current scope return the same Issue and PR to execution; a separately triaged scope change returns to requirements. Questions, pending reviews, unresolved discussion threads, stale HEAD/ADC/Readiness, and incomplete API reads remain blockers.
 
+Final User Review follows the approved repository profile's `external_reviewer` or explicit `solo_owner` mode. `external_reviewer` retains a formal GitHub approval by someone other than the PR author. In `solo_owner`, only a verified authenticated personal repository owner who is also the PR author may approve through the exact subject-bound Issue comment defined by REQ-FD-004; a PR self-approval alone is not User Review. Both modes require independent review, current Readiness, and every other technical gate. The exact approval must be posted after the immutable User Review session begins, and its Issue/comment identity and bytes must survive direct/list/direct readback.
+
 <a id="req-wf-010"></a>
 <a id="req-wf-010-parent-integration-and-final-delivery"></a>
 ### 8.2 REQ-WF-010 Parent Integration and Final Delivery
@@ -260,7 +279,7 @@ P-ASES-SUBJECT: <current parent User Review SHA-256>
 
 `CHANGES_REQUESTED` may be used in the first line to withhold parent approval. Only the authenticated current human on the open parent Issue can decide. Edited/deleted comments, a decision predating the session, or a changed ADC, child merge, or Integration subject invalidates prior approval. Child User Review snapshot discovery accepts only `<64 lowercase hex>.json` filenames, verifies that the filename digest equals the parsed snapshot digest, and rejects unexpected files; `session.json` and `*.result.json` are not feedback snapshots. Parent approval only makes the result ready for a separate explicit activation decision; it does not close or activate the parent or authorize merge/release.
 
-Final Delivery keeps human User Review, GitHub's required formal review decision, exact-HEAD Required Check evidence, branch protection, explicit merge authorization, merge readback, Issue closure, and parent activation as separate gates. A delivery result never performs a merge, release, Issue close, or parent activation. Finalization only reports what GitHub confirms after a separately authorized merge.
+Final Delivery keeps human User Review, GitHub's required formal review decision, exact-HEAD Required Check evidence, effective branch policy, explicit merge authorization, merge readback, Issue closure, and parent activation as separate gates. A delivery result never performs a merge, release, Issue close, or parent activation. Finalization only reports what GitHub confirms after a separately authorized merge. The default external-reviewer flow and the opt-in personal solo-owner flow, including the fail-closed policy states and exact check/App matching, are specified in REQ-FD-001 through REQ-FD-008.
 
 Gate selection is recorded immutably when work starts and remains fixed if the PR HEAD changes or a check becomes blocked. `p-ases-v1` applies only to Issues created after activation. Activation requires all six child PRs to be merged by the repository owner with explicit user authorization, all six Issues closed, parent integration documentation/tests/16 Skills/distribution checks passing, and an explicit activation approval comment authored by the repository owner. A unique `PASES_ACTIVATION_V1` record binds the repository, child Issues and PR merge SHAs, integration-evidence digest, gate version, and activation commit.
 
@@ -276,29 +295,86 @@ When migrating a legacy Issue-body ADC pointer to the append-only journal, retai
 
 Consumer Activation is separate from the fixed migration Activation. The consumer repository's approved Activation Issue ADC and append-only approval/record comments authorize only later-created non-PR Issues in that repository. New Gate Selections carry the exact Activation record identity; successor policy keeps prior selections pinned.
 
+<a id="f02-final-delivery-review-policy"></a>
+<a id="final-delivery-review-and-branch-policy"></a>
+## 9 Final Delivery review and branch policy
+
+<a id="req-fd-001"></a>
+<a id="req-fd-001-protection-state-evidence"></a>
+### 9.1 REQ-FD-001 Protection-state evidence
+
+Final Delivery identifies effective branch policy as `VERIFIED`, `NOT_CONFIGURED`, `UNAVAILABLE`, `UNVERIFIED`, or `MISMATCH`, and reports a stable reason code, target branch, evidence sources, and any required administrator action. A 403 is unavailable evidence; a 404 alone is unverified evidence. Neither means protection is absent or satisfied. Unknown, inaccessible, or mismatched policy blocks delivery.
+
+<a id="req-fd-002"></a>
+<a id="req-fd-002-exact-required-check-policy"></a>
+### 9.2 REQ-FD-002 Exact required-check policy
+
+The profile's configured `(check name, trusted App ID)` pairs, successful current-PR-HEAD Check Runs, and the effective GitHub branch policy must match exactly. Missing or incorrect App identity, missing or extra required checks, duplicate or stale checks, non-success status, and inaccessible evidence block. A consumer's check names are read from its profile; this repository's observed names and App ID are not hard-coded as universal defaults.
+
+<a id="req-fd-003"></a>
+<a id="req-fd-003-external-reviewer-compatibility-mode"></a>
+### 9.3 REQ-FD-003 External reviewer compatibility mode
+
+The default `external_reviewer` mode requires effective GitHub review protection, an active formal `APPROVED` review on the current PR HEAD by a user other than the PR author, an independent review PASS, and an approved User Review. Dismissed, stale, unauthorized, or ambiguous reviews do not satisfy the formal review requirement.
+
+<a id="req-fd-004"></a>
+<a id="req-fd-004-solo-owner-review-mode"></a>
+### 9.4 REQ-FD-004 Solo owner review mode
+
+`solo_owner` is opt-in and is valid only for a personal user-owned repository where the authenticated GitHub user, repository owner, and PR author have the same positive stable user ID. It does not require a formal GitHub self-approval. Instead, the authenticated owner must post the exact two-line `P-ASES-DECISION: APPROVED` / `P-ASES-SUBJECT: <sha256>` Issue comment after User Review starts. The approval is bound to the current review subject and must be immutable, correctly attributed, undeleted, and identical across direct/list/direct readback. The owner comment does not replace independent review, Readiness, Verification, required checks, or other technical gates. A formal `CHANGES_REQUESTED`, unresolved discussion, or other current blocking feedback still blocks.
+
+<a id="req-fd-005"></a>
+<a id="req-fd-005-solo-owner-effective-ruleset"></a>
+### 9.5 REQ-FD-005 Solo owner effective ruleset
+
+`solo_owner` requires a readable, active GitHub ruleset applicable to the selected base branch. It must require a pull request, require the exact configured checks with trusted App identity, set formal approval count to zero, prohibit force pushes, and contain no bypass actors. Legacy branch protection alone cannot establish this mode. Missing, ambiguous, inactive, inaccessible, conflicting, or nonmatching rulesets block. P-ASES never writes protection settings or silently relaxes existing protection; any administrator change is a separately approved operation.
+
+<a id="req-fd-006"></a>
+<a id="req-fd-006-explicit-merge-and-finalization"></a>
+### 9.6 REQ-FD-006 Explicit merge and finalization
+
+The only passing Final Delivery state is `READY_FOR_EXPLICIT_MERGE_AUTHORIZATION`, and its result always has `merge_authorized: false`. A human separately authorizes and performs the GitHub merge. `delivery finalize` only reads back the merged state and must revalidate the exact subject. In `solo_owner`, `merged_by` must match the verified personal repository owner ID. Changed PR HEAD, ADC, Readiness, User Review, required checks, or branch policy invalidates the prior result. Final Delivery never merges, closes Issues, changes rulesets, or releases artifacts.
+
+<a id="req-fd-007"></a>
+<a id="req-fd-007-profile-compatibility-and-activation"></a>
+### 9.7 REQ-FD-007 Profile compatibility and activation
+
+The optional `final_delivery.review_mode` profile setting is owned and validated only by the runtime profile contract. Schema 2 profiles without it keep the `external_reviewer` default; only `external_reviewer` and `solo_owner` are valid values. Issues and PRs cannot override the mode. Changing a committed consumer profile to `solo_owner` requires the applicable Activation successor and administrator approval; the runtime never trusts a CLI-supplied identity or profile text as proof of GitHub ownership.
+
+<a id="req-fd-008"></a>
+<a id="req-fd-008-independent-coverage-and-delivery-scope"></a>
+### 9.8 REQ-FD-008 Independent coverage and delivery scope
+
+Each REQ-FD requirement is traced through a design decision, independent Oracle, executable test, and canonical source path before `ready`. Tests cover positive and negative policy, identity, exact-subject, transport, staleness, and compatibility boundaries. Host distributions are regenerated from canonical sources. Delivery remains scoped to one approved Issue and one PR with a standalone `Closes #60` line; completion includes exact-HEAD self-review and independent review, while merge remains a separate explicit action.
+
 <a id="consumer-activation-workflow-contract"></a>
-## 9 Consumer Activation workflow contract
+<a id="9-consumer-activation-workflow-contract"></a>
+## 10 9 Consumer Activation workflow contract
 
 <a id="req-f01-001"></a>
 <a id="req-f01-001-repository-boundary"></a>
-### 9.1 REQ-F01-001 Repository boundary
+<a id="91-req-f01-001-repository-boundary"></a>
+### 10.1 9.1 REQ-F01-001 Repository boundary
 
 Migration issue numbers, child sets, branch pairs, and parent evidence MUST NOT supply authority in another repository.
 
 <a id="req-f01-003"></a>
 <a id="req-f01-003-append-only-approval-and-activation-history"></a>
-### 9.2 REQ-F01-003 Append-only approval and Activation history
+<a id="92-req-f01-003-append-only-approval-and-activation-history"></a>
+### 10.2 9.2 REQ-F01-003 Append-only approval and Activation history
 
 Consumer approval and Activation history are append-only comments. A record identifies the exact approved ADC, canonical Activation profile digest, setup PR merge and verified `merged_at`, admin, predecessor, and the exact trusted Required Check Run IDs with their name, App ID, head SHA, status, conclusion, and timestamps. For each required check, issuance selects the latest matching run created no later than `merged_at`, ordered by `(created_at, Check Run ID)` to resolve timestamp ties deterministically. The selected run must be completed successfully with `completed_at <= merged_at`. A failed or pending latest run at merge blocks Activation even if a later rerun succeeds; only a qualifying pre-merge run ID may be pinned. Verified PR `merged_at`, rather than the later comment publication time, is the effective Activation time. Historical reads fetch each recorded Check Run by ID and compare its pinned evidence and merge-time bound; later reruns do not replace the issuance-time evidence.
 
 <a id="req-f01-005"></a>
 <a id="req-f01-005-eligibility-by-activation-time"></a>
-### 9.3 REQ-F01-005 Eligibility by Activation time
+<a id="93-req-f01-005-eligibility-by-activation-time"></a>
+### 10.3 9.3 REQ-F01-005 Eligibility by Activation time
 
 New P-ASES work is eligible only for same-repository non-PR Issues created strictly after verified setup PR `merged_at`. For a successor chain, choose the latest Activation whose verified merge time precedes the Issue creation time. Re-running gate-policy for an Issue with an existing valid Gate Selection reuses that exact historical Activation record and selection. Pre-Activation Issues remain untouched.
 
 <a id="req-f01-007"></a>
 <a id="req-f01-007-successor-activation"></a>
-### 9.4 REQ-F01-007 Successor Activation
+<a id="94-req-f01-007-successor-activation"></a>
+### 10.4 9.4 REQ-F01-007 Successor Activation
 
 Policy or locator changes require a new setup PR and merge, append a successor Activation effective at its verified `merged_at`, and preserve prior records and selections. The successor governs only Issues created after that merge time.

@@ -19,6 +19,13 @@
 - [9 Alternatives considered](#9-alternatives-considered)
 - [10 Migration gate routing](#10-migration-gate-routing)
 - [11 DES-WF-006 Human review and final delivery](#11-des-wf-006-human-review-and-final-delivery)
+  - [11.1 DES-FD-001 Mode selection and compatibility](#111-des-fd-001-mode-selection-and-compatibility)
+  - [11.2 DES-FD-002 Effective branch-policy evidence](#112-des-fd-002-effective-branch-policy-evidence)
+  - [11.3 DES-FD-003 Exact check-set comparison](#113-des-fd-003-exact-check-set-comparison)
+  - [11.4 DES-FD-004 Mode-specific formal review](#114-des-fd-004-mode-specific-formal-review)
+  - [11.5 DES-FD-005 Subject-bound owner User Review](#115-des-fd-005-subject-bound-owner-user-review)
+  - [11.6 DES-FD-006 Final Delivery V2 and invalidation](#116-des-fd-006-final-delivery-v2-and-invalidation)
+  - [11.7 DES-FD-007 Settings and Activation boundary](#117-des-fd-007-settings-and-activation-boundary)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -29,6 +36,13 @@
 - [DES-WF-004](#des-wf-004) — 7 DES-WF-004 Failure handling
 - [DES-WF-005](#des-wf-005) — 8 DES-WF-005 Authorization boundary and PR handoff
 - [DES-WF-006](#des-wf-006) — 11 DES-WF-006 Human review and final delivery
+- [DES-FD-001](#des-fd-001) — 11.1 DES-FD-001 Mode selection and compatibility
+- [DES-FD-002](#des-fd-002) — 11.2 DES-FD-002 Effective branch-policy evidence
+- [DES-FD-003](#des-fd-003) — 11.3 DES-FD-003 Exact check-set comparison
+- [DES-FD-004](#des-fd-004) — 11.4 DES-FD-004 Mode-specific formal review
+- [DES-FD-005](#des-fd-005) — 11.5 DES-FD-005 Subject-bound owner User Review
+- [DES-FD-006](#des-fd-006) — 11.6 DES-FD-006 Final Delivery V2 and invalidation
+- [DES-FD-007](#des-fd-007) — 11.7 DES-FD-007 Settings and Activation boundary
 <!-- heading-map:end -->
 
 
@@ -186,3 +200,47 @@ When the Bootstrap evaluator lives on a downstream stacked PR, run its CLI from 
 `integration.py` owns the fixed parent child set, native dependency DAG, merged PR/Issue readback, main ancestry, and typed Integration Verification/Acceptance evidence. `parent_gate.py` owns shared reconstruction of these evidence bundles from GitHub Actions run, job, step, and Check Run APIs; the #26 comments are discoverable pointers/cache and cannot prove execution on their own. This resolves Git's self-reference conflict by keeping proof outside the named commit, while deletion or edit fails closed. `delivery parent-evidence <issue> <kind> <run-id>` reconstructs new evidence from those API records and requires the latest matching run and attempt on exact main. New Verification requires all four configured matrix jobs, App ID 15368, and successful compile, committed/generated distribution checks, unit tests, documentation validation, distribution build/validation, generated-path stability, and committed-diff whitespace steps. New Acceptance requires the latest exact-main `parent-integration.yml` workflow_dispatch run and successful specification/design/test-oracle traceability, exact 16-Skill package, generated-distribution consistency, and distribution validation. Each referenced job Check Run URL must name the same repository and resolve to that App's completed/success Check Run on the exact SHA. The reader rejects caller-supplied PASS JSON even when all supplied artifact hashes match. When validating an already-issued Activation, `parent_gate.py` uses the exact run ID/attempt embedded in the referenced V2 evidence comment and the attempt-specific GitHub Actions run/jobs APIs; it verifies that attempt's workflow, event, branch, repository, SHA, jobs, steps, and Check Runs without comparing it to the latest attempt. If the historical attempt cannot be fetched or any API provenance is incomplete, it blocks with no comment/cache fallback. Thus retries do not erase valid historical evidence while issuance still rejects stale results. Each Activation read emits a debug diagnostic with the GitHub API request count and cumulative client-observed latency; these metrics do not affect or skip evidence checks. Since parent #26 predates ADC pointer journals, the shared module obtains its pinned ADC digest and source declaration from the approved child #31 ADC and verifies the pinned migration-contract source. The Issue evidence comment remains editable/deletable GitHub storage: exact comment ID/body/actor/repository/subject are double-read, detected mutation blocks, and no intrinsic immutability is claimed. The dedicated parent-label migration remains read-only by default and mutates labels only under explicit `--apply`; parent delivery never applies it implicitly. After Integration PASS, parent User Review binds the ADC, six child merge pairs, and Integration result digest; approval never activates, closes, or merges the parent.
 
 The CLI performs phase transitions only after re-reading the Issue and confirming its current labels. An in-scope request returns the same Issue to execution; an explicitly triaged new scope returns it to requirements. Finalize is a readback command and has no merge or close mutation. Parent final delivery remains blocked until child Integration and the separate parent review/activation gates are satisfied.
+
+Final Delivery policy assessment is a read-only gate over one exact Issue/ADC/PR/HEAD subject. It reads effective GitHub policy and current review/check evidence, computes a deterministic V2 result, and reads all subject inputs again before publishing. `READY_FOR_EXPLICIT_MERGE_AUTHORIZATION` records readiness only; merge remains a separate human action and `finalize` reads the resulting GitHub state.
+
+<a id="des-fd-001"></a>
+<a id="des-fd-001-mode-selection-and-compatibility"></a>
+### 11.1 DES-FD-001 Mode selection and compatibility
+
+`profile.py::ProjectProfile` owns the repository's review mode, with Schema 2's omitted `final_delivery.review_mode` resolving to `external_reviewer`. The mode is immutable for an evaluation and cannot be overridden by an Issue, PR, CLI argument, or evidence payload. `solo_owner` is an explicit personal-repository opt-in; no repository or user identity is inferred from a label or login string.
+
+<a id="des-fd-002"></a>
+<a id="des-fd-002-effective-branch-policy-evidence"></a>
+### 11.2 DES-FD-002 Effective branch-policy evidence
+
+`github.py` owns branch, legacy protection, active applicable ruleset, ruleset-detail, and authenticated-user reads. It preserves transport failure status and API provenance. Pure `branch_policy.py::assess_branch_policy` normalizes those observations with the configured required-check policy into a stable status, reason codes, branch/mode/source identity, and digest. A 403 becomes `UNAVAILABLE`; a lone 404 becomes `UNVERIFIED`; incomplete or contradictory evidence never becomes `VERIFIED`. `NOT_CONFIGURED` requires consistent readable evidence, not an authorization failure.
+
+<a id="des-fd-003"></a>
+<a id="des-fd-003-exact-check-set-comparison"></a>
+### 11.3 DES-FD-003 Exact check-set comparison
+
+The policy evaluator compares exact `(name, trusted App ID)` pairs from the repository profile, successful Check Runs for the current PR HEAD, and the checks required by effective GitHub policy. A missing App ID, duplicate, stale or pending result, extra/missing policy check, or inaccessible source is a blocker. The observed check names and App ID in this repository are examples from its profile, not cross-repository constants.
+
+<a id="des-fd-004"></a>
+<a id="des-fd-004-mode-specific-formal-review"></a>
+### 11.4 DES-FD-004 Mode-specific formal review
+
+`external_reviewer` requires policy-protected formal approval on the current HEAD from a user other than the PR author. `solo_owner` requires the GitHub repository owner to be a personal User and the owner, authenticated user, and PR author to share the same positive stable user ID. It accepts no formal self-approval shortcut; it still blocks on formal `CHANGES_REQUESTED`, unresolved discussion, and other blocking feedback. The active applicable ruleset must express PR-required, approval count zero, exact required checks, no force push, and no bypass.
+
+<a id="des-fd-005"></a>
+<a id="des-fd-005-subject-bound-owner-user-review"></a>
+### 11.5 DES-FD-005 Subject-bound owner User Review
+
+The existing User Review Issue-feedback carrier is reused only in `solo_owner`. The exact whole-body `P-ASES-DECISION: APPROVED` and `P-ASES-SUBJECT: <64 lowercase hex>` pair must come from the authenticated owner after session start. Actor ID/type, subject digest, Issue URL, creation/update time, deletion state, and unique comment identity are verified with direct/list/direct reads. The CLI does not post the approval. Existing feedback snapshots, stale-subject checks, and independent-review evidence remain separate.
+
+<a id="des-fd-006"></a>
+<a id="des-fd-006-final-delivery-v2-and-invalidation"></a>
+### 11.6 DES-FD-006 Final Delivery V2 and invalidation
+
+`delivery.py` evaluates immutable inputs and emits a V2 observation with the exact subject, review mode, effective-policy status and digest, required-check evidence digest, result, and stable reason codes. The CLI re-reads the Issue/ADC/PR/base/HEAD, User Review session and feedback, Verification/Checks, authenticated identity, and policy before publication; any change blocks. Final Delivery never sets merge authorization. `finalize` separately reads the real merge and, in `solo_owner`, verifies `merged_by` against the owner ID. Prior results do not survive a changed HEAD, ADC, review, check, or policy.
+
+<a id="des-fd-007"></a>
+<a id="des-fd-007-settings-and-activation-boundary"></a>
+### 11.7 DES-FD-007 Settings and Activation boundary
+
+All policy reads and diagnostics are read-only. P-ASES does not create or edit branch protections or rulesets, reduce approval policy, or bypass a failed gate. A repository administrator changes GitHub protection through a separately approved action. A committed switch to `solo_owner` follows the applicable Consumer Activation successor and approval process; this design does not change Activation evaluation or rewrite historical records.

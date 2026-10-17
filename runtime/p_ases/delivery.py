@@ -13,11 +13,12 @@ from typing import Any, Iterable
 
 from .acceptance import AcceptanceResult
 from .audits import AuditError, IndependentReview, SelfAudit
+from .branch_policy import BranchPolicyError, EffectiveBranchPolicy
 from .checkpoint import CheckpointError, PRBinding
 from .context import WorkContext, WorkContextError
 from .evidence_store import VerificationSubject
 from .path_safety import path_has_symlink
-from .verification import VerificationResult, VERDICTS
+from .verification import RequiredCheckPolicy, VerificationResult, VERDICTS
 
 
 class ReadinessError(ValueError):
@@ -166,9 +167,17 @@ class FinalDeliveryResult:
 
     status: str
     subject: VerificationSubject
+    review_mode: str
+    branch_policy_status: str
+    branch_policy_sha256: str | None
+    branch_policy_branch: str | None
+    branch_policy_sources: tuple[str, ...]
+    branch_policy_source_errors: tuple[tuple[str, int | None], ...]
+    branch_policy_reason_codes: tuple[str, ...]
+    branch_policy_required_actions: tuple[str, ...]
     user_review_sha256: str | None
     required_check_result_sha256: str | None
-    branch_protection_sha256: str | None
+    reason_codes: tuple[str, ...]
     reasons: tuple[str, ...]
 
     def validate(self) -> "FinalDeliveryResult":
@@ -177,20 +186,58 @@ class FinalDeliveryResult:
             raise ReadinessError("Final Delivery status is invalid")
         if type(self.reasons) is not tuple or any(not isinstance(x, str) or not x for x in self.reasons):
             raise ReadinessError("Final Delivery reasons are invalid")
-        digests = (self.user_review_sha256, self.required_check_result_sha256, self.branch_protection_sha256)
+        if self.review_mode not in {"external_reviewer", "solo_owner"}:
+            raise ReadinessError("Final Delivery review mode is invalid")
+        if self.branch_policy_status not in {"VERIFIED", "NOT_CONFIGURED", "UNAVAILABLE", "UNVERIFIED", "MISMATCH"}:
+            raise ReadinessError("Final Delivery branch-policy status is invalid")
+        if self.branch_policy_branch is not None and (
+                not isinstance(self.branch_policy_branch, str) or not self.branch_policy_branch):
+            raise ReadinessError("Final Delivery branch-policy branch is invalid")
+        for name, rows in (("sources", self.branch_policy_sources),
+                           ("reason codes", self.branch_policy_reason_codes),
+                           ("required actions", self.branch_policy_required_actions)):
+            if (type(rows) is not tuple or any(not isinstance(x, str) or not x for x in rows)
+                    or rows != tuple(sorted(set(rows)))):
+                raise ReadinessError(f"Final Delivery branch-policy {name} are invalid")
+        if (type(self.branch_policy_source_errors) is not tuple
+                or any(type(row) is not tuple or len(row) != 2 or not isinstance(row[0], str) or not row[0]
+                       or row[1] is not None and (type(row[1]) is not int or row[1] < 100 or row[1] > 599)
+                       for row in self.branch_policy_source_errors)
+                or self.branch_policy_source_errors != tuple(sorted(set(self.branch_policy_source_errors)))):
+            raise ReadinessError("Final Delivery branch-policy source errors are invalid")
+        if self.branch_policy_status == "VERIFIED" and self.branch_policy_required_actions:
+            raise ReadinessError("verified Final Delivery branch policy cannot require administrator action")
+        digests = (self.user_review_sha256, self.required_check_result_sha256, self.branch_policy_sha256)
         if any(value is not None and (not isinstance(value, str) or not SHA256.fullmatch(value)) for value in digests):
             raise ReadinessError("Final Delivery evidence digest is invalid")
-        if ((self.status == "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION") != (not self.reasons)
-                or self.status == "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION" and any(x is None for x in digests)):
+        if (type(self.reason_codes) is not tuple or any(not isinstance(x, str) or not x for x in self.reason_codes)
+                or self.reason_codes != tuple(sorted(set(self.reason_codes)))):
+            raise ReadinessError("Final Delivery reason codes are invalid")
+        if (type(self.reasons) is not tuple or any(not isinstance(x, str) or not x for x in self.reasons)):
+            raise ReadinessError("Final Delivery reasons are invalid")
+        if ((self.status == "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION") != (not self.reason_codes and not self.reasons)
+                or self.status == "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION"
+                and (any(x is None for x in digests) or self.branch_policy_status != "VERIFIED"
+                     or self.branch_policy_branch is None or not self.branch_policy_sources)):
             raise ReadinessError("Final Delivery status and evidence are inconsistent")
         return self
 
     @property
     def sha256(self) -> str:
         self.validate()
-        value = {"branch_protection_sha256": self.branch_protection_sha256,
+        value = {"branch_policy_sha256": self.branch_policy_sha256,
+                 "branch_policy_branch": self.branch_policy_branch,
+                 "branch_policy_reason_codes": list(self.branch_policy_reason_codes),
+                 "branch_policy_required_actions": list(self.branch_policy_required_actions),
+                 "branch_policy_source_errors": [
+                     {"http_status": code, "source": source}
+                     for source, code in self.branch_policy_source_errors
+                 ],
+                 "branch_policy_sources": list(self.branch_policy_sources),
+                 "branch_policy_status": self.branch_policy_status,
                  "required_check_result_sha256": self.required_check_result_sha256,
-                 "reasons": list(self.reasons), "schema": "PASES_FINAL_DELIVERY_V1",
+                 "reason_codes": list(self.reason_codes), "reasons": list(self.reasons),
+                 "review_mode": self.review_mode, "schema": "PASES_FINAL_DELIVERY_V2",
                  "status": self.status, "subject": self.subject.as_dict(),
                  "user_review_sha256": self.user_review_sha256,
                  "merge_authorized": False}
@@ -198,11 +245,21 @@ class FinalDeliveryResult:
 
     def as_dict(self) -> dict[str, Any]:
         self.validate()
-        return {"branch_protection_sha256": self.branch_protection_sha256,
+        return {"branch_policy_sha256": self.branch_policy_sha256,
+                "branch_policy_branch": self.branch_policy_branch,
+                "branch_policy_reason_codes": list(self.branch_policy_reason_codes),
+                "branch_policy_required_actions": list(self.branch_policy_required_actions),
+                "branch_policy_source_errors": [
+                    {"http_status": code, "source": source}
+                    for source, code in self.branch_policy_source_errors
+                ],
+                "branch_policy_sources": list(self.branch_policy_sources),
+                "branch_policy_status": self.branch_policy_status,
                 "final_delivery_sha256": self.sha256,
                 "merge_authorized": False,
                 "required_check_result_sha256": self.required_check_result_sha256,
-                "reasons": list(self.reasons), "schema": "PASES_FINAL_DELIVERY_V1",
+                "reason_codes": list(self.reason_codes), "reasons": list(self.reasons),
+                "review_mode": self.review_mode, "schema": "PASES_FINAL_DELIVERY_V2",
                 "status": self.status, "subject": self.subject.as_dict(),
                 "user_review_sha256": self.user_review_sha256}
 
@@ -217,65 +274,197 @@ def evaluate_final_delivery(
     current_pr_draft: bool,
     github_review_decision: str | None,
     github_review_head_sha40: str | None,
-    branch_protection: dict[str, Any] | None,
-    required_check_names: Iterable[str],
+    github_reviews: Iterable[dict[str, Any]],
+    branch_policy: EffectiveBranchPolicy | None,
+    required_check_policy: RequiredCheckPolicy,
+    review_mode: str,
+    repository_owner_type: str | None,
+    repository_owner_id: int | None,
+    authenticated_user_id: int | None,
+    pr_author_id: int | None,
     mergeable: bool | None,
 ) -> FinalDeliveryResult:
-    """Require human review, GitHub review, checks, and branch protection separately."""
+    """Require mode-specific human review, exact checks, and verified effective policy."""
     subject.validate()
     reasons: list[str] = []
+    reason_codes: set[str] = set()
     user_review_sha: str | None = None
     if user_review is None:
         reasons.append("exact-subject final User Review evidence is missing")
+        reason_codes.add("USER_REVIEW_MISSING")
     else:
         try:
             user_review.validate()
             review_subject = user_review.subject.verification_subject
             if user_review.status != "APPROVED" or review_subject != subject:
                 reasons.append("User Review is not APPROVED for the exact Verification subject")
+                reason_codes.add("USER_REVIEW_NOT_APPROVED_FOR_SUBJECT")
+            elif (review_mode == "solo_owner" and not user_review.selected_approval_event.startswith("issue-comment:")
+                  or review_mode == "external_reviewer"
+                  and not user_review.selected_approval_event.startswith(("pr-review:", "chat:"))):
+                reasons.append("User Review approval carrier does not match the repository mode")
+                reason_codes.add("USER_REVIEW_CARRIER_MODE_MISMATCH")
             else:
                 user_review_sha = user_review.sha256
         except (AttributeError, TypeError, ValueError):
             reasons.append("final User Review evidence is malformed")
+            reason_codes.add("USER_REVIEW_MALFORMED")
     check_result_sha: str | None = None
     if not isinstance(verification, VerificationResult):
         reasons.append("current #29 Verification result is missing")
+        reason_codes.add("VERIFICATION_MISSING")
     else:
         try:
             verification.validate()
             if verification.status != "PASS" or verification.subject != subject:
                 reasons.append("#29 Verification is not PASS for the exact final subject")
+                reason_codes.add("VERIFICATION_SUBJECT_NOT_PASS")
             elif verification.check_result_sha256 is None:
                 reasons.append("#29 Required Check Run evidence is missing")
+                reason_codes.add("REQUIRED_CHECK_EVIDENCE_MISSING")
             else:
                 check_result_sha = verification.check_result_sha256
-        except ValueError:
+                try:
+                    if not isinstance(required_check_policy, RequiredCheckPolicy):
+                        raise ValueError("trusted Required Check policy is missing")
+                    required_check_policy.validate()
+                    if verification.required_check_policy_sha256 != required_check_policy.sha256:
+                        reasons.append("#29 Verification uses a different Required Check policy")
+                        reason_codes.add("REQUIRED_CHECK_POLICY_STALE")
+                except ValueError:
+                    reasons.append("trusted Required Check policy is invalid")
+                    reason_codes.add("REQUIRED_CHECK_POLICY_INVALID")
+        except (AttributeError, TypeError, ValueError):
             reasons.append("#29 Verification result is malformed")
+            reason_codes.add("VERIFICATION_MALFORMED")
+    if not isinstance(required_check_policy, RequiredCheckPolicy):
+        reasons.append("trusted Required Check policy is missing")
+        reason_codes.add("REQUIRED_CHECK_POLICY_MISSING")
+    if review_mode not in {"external_reviewer", "solo_owner"}:
+        reasons.append("repository Final Delivery review mode is invalid")
+        reason_codes.add("REVIEW_MODE_INVALID")
     if current_pr_head_sha40 != subject.pr_head_sha40:
         reasons.append("PR HEAD changed after the final review subject")
+        reason_codes.add("PR_HEAD_STALE")
     if current_pr_state != "open" or current_pr_draft is not False:
         reasons.append("PR is not open and non-draft")
-    if github_review_decision != "APPROVED" or github_review_head_sha40 != subject.pr_head_sha40:
-        reasons.append("GitHub formal review decision is not APPROVED for the current HEAD")
-    if not isinstance(branch_protection, dict):
-        reasons.append("GitHub branch protection could not be read")
+        reason_codes.add("PR_NOT_OPEN_NON_DRAFT")
+    if github_review_head_sha40 != subject.pr_head_sha40:
+        reasons.append("GitHub aggregate review readback belongs to a stale PR HEAD")
+        reason_codes.add("FORMAL_REVIEW_HEAD_STALE")
+    try:
+        reviews = tuple(github_reviews)
+    except TypeError:
+        reviews = ()
+        reasons.append("GitHub formal review collection is unavailable")
+        reason_codes.add("FORMAL_REVIEW_COLLECTION_UNAVAILABLE")
+    changed_requested = any(isinstance(row, dict) and row.get("state") == "CHANGES_REQUESTED"
+                            and row.get("commit_id") == subject.pr_head_sha40 for row in reviews)
+    if changed_requested or github_review_decision == "CHANGES_REQUESTED":
+        reasons.append("GitHub has a current formal CHANGES_REQUESTED review")
+        reason_codes.add("FORMAL_CHANGES_REQUESTED")
+    if review_mode == "external_reviewer":
+        if github_review_decision != "APPROVED":
+            reasons.append("GitHub formal review decision is not APPROVED for the current HEAD")
+            reason_codes.add("FORMAL_REVIEW_NOT_APPROVED")
+        reviewer_ok = False
+        author_id_valid = type(pr_author_id) is int and pr_author_id > 0
+        for row in reviews:
+            if not isinstance(row, dict):
+                continue
+            user = row.get("user")
+            actor_id = user.get("id") if isinstance(user, dict) else None
+            submitted = row.get("submitted_at")
+            updated = row.get("updated_at")
+            if (row.get("state") == "APPROVED" and row.get("commit_id") == subject.pr_head_sha40
+                    and isinstance(user, dict) and user.get("type") == "User"
+                    and type(actor_id) is int and actor_id > 0 and author_id_valid
+                    and actor_id != pr_author_id and isinstance(submitted, str) and submitted
+                    and (updated is None or updated == submitted)):
+                reviewer_ok = True
+                break
+        if not reviewer_ok:
+            reasons.append("no active formal approval by a different user on the current HEAD")
+            reason_codes.add("INDEPENDENT_FORMAL_REVIEW_MISSING")
+        if branch_policy is not None and branch_policy.minimum_approvals is not None \
+                and branch_policy.minimum_approvals < 1:
+            reasons.append("effective policy does not require external formal approval")
+            reason_codes.add("FORMAL_REVIEW_POLICY_MISSING")
     else:
-        required = tuple(sorted(set(required_check_names)))
-        status_checks = branch_protection.get("required_status_checks")
-        contexts = status_checks.get("contexts") if isinstance(status_checks, dict) else None
-        review_policy = branch_protection.get("required_pull_request_reviews")
-        if not required or not isinstance(contexts, list) or set(contexts) != set(required):
-            reasons.append("branch protection does not require the exact configured Check set")
-        if (not isinstance(review_policy, dict)
-                or type(review_policy.get("required_approving_review_count")) is not int
-                or review_policy["required_approving_review_count"] < 1):
-            reasons.append("branch protection does not require a formal pull-request review")
-    protection_sha = None if not isinstance(branch_protection, dict) else hashlib.sha256(_canonical(branch_protection)).hexdigest()
+        if github_review_decision not in {None, "REVIEW_REQUIRED", "APPROVED"}:
+            reasons.append("GitHub aggregate review state is unknown in solo-owner mode")
+            reason_codes.add("FORMAL_REVIEW_STATE_UNKNOWN")
+        identity_ids = (repository_owner_id, authenticated_user_id, pr_author_id)
+        if (repository_owner_type != "User" or any(type(value) is not int or value < 1 for value in identity_ids)
+                or len(set(identity_ids)) != 1):
+            reasons.append("repository owner, authenticated user, and PR author are not the same personal User")
+            reason_codes.add("SOLO_OWNER_IDENTITY_MISMATCH")
+        other_current_reviews = [row for row in reviews if isinstance(row, dict)
+                                 and row.get("commit_id") == subject.pr_head_sha40
+                                 and row.get("state") in {"APPROVED", "CHANGES_REQUESTED", "COMMENTED"}
+                                 and isinstance(row.get("user"), dict)
+                                 and row["user"].get("type") == "User"
+                                 and type(row["user"].get("id")) is int
+                                 and row["user"]["id"] != repository_owner_id]
+        if other_current_reviews:
+            reasons.append("another user has a formal review on the current PR HEAD")
+            reason_codes.add("OTHER_FORMAL_REVIEW_PRESENT")
+    policy_sha: str | None = None
+    policy_status = "UNVERIFIED"
+    policy_branch: str | None = None
+    policy_sources: tuple[str, ...] = ()
+    policy_source_errors: tuple[tuple[str, int | None], ...] = ()
+    policy_reason_codes: tuple[str, ...] = ()
+    policy_required_actions: tuple[str, ...] = ()
+    if not isinstance(branch_policy, EffectiveBranchPolicy):
+        reasons.append("effective GitHub branch policy is unavailable")
+        reason_codes.add("BRANCH_POLICY_UNAVAILABLE")
+    else:
+        try:
+            branch_policy.validate()
+            policy_status = branch_policy.status
+            policy_sha = branch_policy.sha256
+            policy_branch = branch_policy.branch
+            policy_sources = branch_policy.source
+            policy_source_errors = branch_policy.source_errors
+            policy_reason_codes = branch_policy.reason_codes
+            policy_required_actions = branch_policy.required_actions
+            if branch_policy.status != "VERIFIED":
+                reasons.append(f"effective GitHub branch policy is {branch_policy.status}")
+                reason_codes.add("BRANCH_POLICY_" + branch_policy.status)
+                reason_codes.update("POLICY_" + code for code in branch_policy.reason_codes)
+            if branch_policy.review_mode != review_mode:
+                reasons.append("effective branch policy was evaluated for a different review mode")
+                reason_codes.add("BRANCH_POLICY_MODE_MISMATCH")
+            if branch_policy.repository.casefold() != subject.repository.casefold():
+                reasons.append("effective branch policy belongs to a different repository")
+                reason_codes.add("BRANCH_POLICY_REPOSITORY_MISMATCH")
+            if isinstance(required_check_policy, RequiredCheckPolicy) and branch_policy.required_checks != tuple(
+                    sorted(required_check_policy.checks)):
+                reasons.append("effective branch policy requires a different Check/App set")
+                reason_codes.add("BRANCH_POLICY_CHECK_SET_MISMATCH")
+            if branch_policy.pull_request_required is not True:
+                reasons.append("effective branch policy does not require a pull request")
+                reason_codes.add("PULL_REQUEST_POLICY_MISSING")
+            if review_mode == "solo_owner" and (
+                    branch_policy.minimum_approvals != 0 or branch_policy.force_push_disabled is not True
+                    or branch_policy.bypass_actor_count != 0):
+                reasons.append("solo-owner branch policy lacks approval-count-zero, no-force-push, or no-bypass proof")
+                reason_codes.add("SOLO_OWNER_RULESET_REQUIREMENTS_MISMATCH")
+        except (BranchPolicyError, ValueError):
+            reasons.append("effective GitHub branch policy is malformed")
+            reason_codes.add("BRANCH_POLICY_MALFORMED")
     if mergeable is not True:
         reasons.append("GitHub has not confirmed the PR as mergeable")
+        reason_codes.add("PR_MERGEABILITY_UNVERIFIED")
+    reasons = list(dict.fromkeys(reasons))
+    codes = tuple(sorted(reason_codes))
     status = "BLOCKED" if reasons else "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION"
-    return FinalDeliveryResult(status, subject, user_review_sha, check_result_sha,
-                               protection_sha, tuple(dict.fromkeys(reasons))).validate()
+    return FinalDeliveryResult(
+        status, subject, review_mode, policy_status, policy_sha,
+        policy_branch, policy_sources, policy_source_errors, policy_reason_codes, policy_required_actions,
+        user_review_sha, check_result_sha, codes, tuple(reasons),
+    ).validate()
 
 
 def evaluate_readiness(

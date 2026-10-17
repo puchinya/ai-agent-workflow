@@ -15,7 +15,7 @@ POLICY = RequiredCheckPolicy((("ci", 15368),)).validate()
 
 
 def solo_ruleset(*, branch="main", approvals=0, enforcement="active", bypass=(),
-                 check_rows=(("ci", 15368),), include=None):
+                 check_rows=(("ci", 15368),), include=None, force_push=True):
     rules = [
         {"type": "pull_request", "parameters": {"required_approving_review_count": approvals}},
         {"type": "required_status_checks", "parameters": {
@@ -23,15 +23,18 @@ def solo_ruleset(*, branch="main", approvals=0, enforcement="active", bypass=(),
                 {"context": name, "integration_id": app_id} for name, app_id in check_rows
             ],
         }},
-        {"type": "non_fast_forward", "parameters": {}},
     ]
+    if force_push:
+        rules.append({"type": "non_fast_forward", "parameters": {}})
     details = {
-        "id": 17, "target": "branch", "enforcement": enforcement,
+        "id": 17, "source": "octo/repo", "source_type": "Repository",
+        "target": "branch", "enforcement": enforcement,
         "conditions": {"ref_name": {"include": include or [f"refs/heads/{branch}"], "exclude": []}},
         "bypass_actors": list(bypass), "rules": rules,
     }
     effective = [
-        {"ruleset_id": 17, "type": row["type"], "parameters": row["parameters"]}
+        {"ruleset_id": 17, "ruleset_source_type": "Repository", "ruleset_source": "octo/repo",
+         "type": row["type"], "parameters": row["parameters"]}
         for row in rules
     ]
     return effective, [details]
@@ -97,6 +100,32 @@ class BranchPolicyTests(unittest.TestCase):
         result = assess(mode="external_reviewer", legacy=legacy, effective=[], rulesets=[])
         self.assertEqual(result.status, "VERIFIED")
         self.assertEqual(result.review_mode, "external_reviewer")
+
+    def test_external_reviewer_accepts_stronger_ruleset_approval_and_records_actual_count(self):
+        rules, details = solo_ruleset(approvals=2, force_push=False,
+                                     bypass=({"actor_id": 1, "actor_type": "RepositoryRole",
+                                              "bypass_mode": "always"},))
+        result = assess(mode="external_reviewer", effective=rules, rulesets=details)
+        self.assertEqual(result.status, "VERIFIED")
+        self.assertEqual(result.minimum_approvals, 2)
+        self.assertEqual(result.bypass_actor_count, 1)
+        self.assertFalse(result.force_push_disabled)
+
+    def test_status_diagnostics_keep_source_errors_and_admin_actions(self):
+        unavailable = assess(errors={"legacy_protection": 403})
+        self.assertEqual(unavailable.source_errors, (("legacy_protection", 403),))
+        self.assertIn("branch", unavailable.source)
+        self.assertTrue(unavailable.required_actions)
+        not_configured = assess(branch_info={"protected": False}, effective=[], rulesets=[],
+                                errors={"legacy_protection": 404})
+        self.assertEqual(not_configured.status, "NOT_CONFIGURED")
+        self.assertIn("effective-rules", not_configured.source)
+        self.assertIn("ruleset-details", not_configured.source)
+
+    def test_ruleset_source_mismatch_is_not_verified(self):
+        rules, details = solo_ruleset()
+        details[0]["source"] = "other/repo"
+        self.assertEqual(assess(effective=rules, rulesets=details).status, "MISMATCH")
 
     def test_check_policy_names_are_not_repository_constants(self):
         custom = RequiredCheckPolicy((("consumer-build", 9876),)).validate()

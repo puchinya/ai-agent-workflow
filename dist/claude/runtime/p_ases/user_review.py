@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
+from urllib.parse import urlsplit
 
 from .delivery import ReadinessResult
 from .evidence_store import VerificationSubject
@@ -70,6 +71,20 @@ def _comment_decision(row: dict[str, Any], channel: str, body: str) -> tuple[str
                 return "questions", row.get("commit_id"), None
             return "changes_requested", named_head, None
     return "questions", row.get("commit_id") if channel == "diff-comment" else None, None
+
+
+def _is_subject_issue_comment(event: "FeedbackEvent", subject: "UserReviewSubject") -> bool:
+    verification_subject = subject.verification_subject
+    try:
+        url = urlsplit(event.source_url)
+        port = url.port
+        comment_id = url.fragment.removeprefix("issuecomment-")
+    except ValueError:
+        return False
+    return (url.scheme == "https" and url.hostname == "github.com" and port is None
+            and url.username is None and url.password is None and not url.query
+            and url.path == f"/{verification_subject.repository}/issues/{verification_subject.issue_number}"
+            and comment_id == event.event_id)
 
 
 @dataclass(frozen=True)
@@ -362,6 +377,8 @@ def evaluate_user_review(
     allowed_human_user_ids: Iterable[int],
     previous_feedback_sha256: str | None = None,
     required_after: str | None = None,
+    review_mode: str = "external_reviewer",
+    owner_id: int | None = None,
     all_feedback_surfaces_read: bool = True,
     new_scope_requested: bool = False,
     unresolved_thread_ids: Iterable[str] = (),
@@ -373,6 +390,13 @@ def evaluate_user_review(
     ids = tuple(allowed_human_user_ids)
     if not ids or any(type(x) is not int or x < 1 for x in ids) or len(set(ids)) != len(ids):
         raise UserReviewError("trusted human user ID allowlist must be nonempty and unique")
+    if review_mode not in {"external_reviewer", "solo_owner"}:
+        raise UserReviewError("final-delivery review mode is unknown")
+    if review_mode == "solo_owner" and (
+            type(owner_id) is not int or owner_id < 1 or owner_id not in ids):
+        raise UserReviewError("solo-owner User Review requires the verified owner in the authenticated identity set")
+    if review_mode == "solo_owner" and required_after is None:
+        raise UserReviewError("solo-owner User Review requires an immutable session start time")
     reasons: list[str] = []
     unresolved = tuple(sorted(set(unresolved_thread_ids)))
     if any(not isinstance(value, str) or not value for value in unresolved):
@@ -397,7 +421,8 @@ def evaluate_user_review(
     deletion_times = [event.deleted_at for event in rows if event.deleted and event.deleted_at is not None]
     if unresolved:
         reasons.append("unresolved GitHub review threads remain")
-    eligible = [event for event in rows if event.actor_id in ids and event.actor_type == "User"
+    permitted_ids = (owner_id,) if review_mode == "solo_owner" else ids
+    eligible = [event for event in rows if event.actor_id in permitted_ids and event.actor_type == "User"
                 and not event.deleted and (event.channel != "chat" or
                     (event.host_attestation_sha256 is not None and event.subject_sha256 == subject.sha256))]
     eligible.sort(key=lambda x: (_time(x.updated_at), _time(x.created_at), x.channel, x.event_id))
@@ -409,6 +434,10 @@ def evaluate_user_review(
             reasons.append("latest approval predates or is simultaneous with this exact User Review session")
         if latest.edited:
             reasons.append("latest formal approval was edited; a fresh approval is required")
+        if (review_mode == "solo_owner" and latest.channel == "issue-comment"
+                and (required_after is None or _time(latest.created_at) <= _time(required_after)
+                     or latest.updated_at != latest.created_at)):
+            reasons.append("solo-owner Issue approval is edited or predates this exact User Review session")
         if any(event.kind == "questions" and _time(event.updated_at) >= _time(latest.updated_at)
                for event in eligible):
             reasons.append("authorized human questions are not resolved by a later formal approval")
@@ -427,8 +456,17 @@ def evaluate_user_review(
             return UserReviewResult("CHANGES_REQUESTED", subject, digest,
                                     tuple(reasons + ["authorized user requested changes; reuse same PR"]),
                                     "execution", None, unresolved).validate()
-    if (latest and latest.channel in {"pr-review", "chat"} and latest.kind == "approved"
-            and latest.head_sha40 == current_pr_head_sha40 and not reasons):
+    approval_carrier_valid = False
+    if latest and review_mode == "solo_owner":
+        approval_carrier_valid = (
+            latest.channel == "issue-comment" and latest.actor_id == owner_id
+            and latest.subject_sha256 == subject.sha256 and latest.head_sha40 is None
+            and latest.updated_at == latest.created_at and _is_subject_issue_comment(latest, subject)
+        )
+    elif latest:
+        approval_carrier_valid = latest.channel in {"pr-review", "chat"}
+    if (latest and approval_carrier_valid and latest.kind == "approved" and not reasons
+            and (review_mode == "solo_owner" or latest.head_sha40 == current_pr_head_sha40)):
         return UserReviewResult("APPROVED", subject, digest, (), "user-review",
                                 f"{latest.channel}:{latest.event_id}", unresolved).validate()
     if latest and latest.kind == "approved" and latest.head_sha40 != current_pr_head_sha40:

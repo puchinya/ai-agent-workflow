@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import hashlib
 import io
 import sys
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -13,9 +15,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases.adc import publish_adc
-from p_ases.cli import CLI_ADVANCE_TARGETS, _parser, main
+from p_ases.cli import (CLI_ADVANCE_TARGETS, _parser, _solo_owner_merge_actor_matches,
+                        _verify_solo_owner_issue_approval, main)
+from p_ases.evidence_store import VerificationSubject
 from p_ases.github import GitHubError
 from p_ases.phase_evidence import PhaseEvidenceError
+from p_ases.user_review import FeedbackEvent, FeedbackSnapshot, UserReviewSubject
+from p_ases.delivery import ReadinessResult
 from test_adc_intake import FakeGitHub, adc_bytes
 
 
@@ -31,6 +37,51 @@ def ordinary_context(github, adc=None):
 
 
 class PasesCLITests(unittest.TestCase):
+    def test_solo_owner_finalize_requires_the_verified_human_merge_actor(self):
+        owner_pr = {"merged_by": {"id": 42, "type": "User"}}
+        self.assertTrue(_solo_owner_merge_actor_matches(owner_pr, 42))
+        self.assertFalse(_solo_owner_merge_actor_matches({"merged_by": {"id": 99, "type": "User"}}, 42))
+        self.assertFalse(_solo_owner_merge_actor_matches({"merged_by": {"id": 42, "type": "Bot"}}, 42))
+        self.assertFalse(_solo_owner_merge_actor_matches({"merged_by": None}, 42))
+
+    def test_solo_owner_issue_approval_uses_direct_list_direct_identity_readback(self):
+        verification_subject = VerificationSubject(
+            "octo/repo", 60, 61, 77, "a" * 64, "b" * 64, "c" * 40,
+        ).validate()
+        readiness = ReadinessResult("PASS", verification_subject, (), ("d" * 64,), "e" * 64).validate()
+        subject = UserReviewSubject(verification_subject, readiness.sha256).validate()
+        body = f"P-ASES-DECISION: APPROVED\nP-ASES-SUBJECT: {subject.sha256}"
+        created = "2026-10-12T00:02:00Z"
+        html_url = "https://github.com/octo/repo/issues/60#issuecomment-501"
+        issue_url = "https://api.github.com/repos/octo/repo/issues/60"
+        user = {"id": 42, "login": "owner", "type": "User"}
+        comment = {"id": 501, "body": body, "created_at": created, "updated_at": created,
+                   "html_url": html_url, "issue_url": issue_url, "user": user}
+        event = FeedbackEvent(
+            "issue-comment", "501", 42, "owner", "User", created, created, "approved", None,
+            hashlib.sha256(body.encode("utf-8")).hexdigest(), html_url,
+            subject_sha256=subject.sha256,
+        ).validate()
+        snapshot = FeedbackSnapshot(subject, (event,), (), "2026-10-12T00:03:00Z").validate()
+
+        class GitHub:
+            def __init__(self):
+                self.direct_count = 0
+                self.list_count = 0
+
+            def issue_comments(self, _issue):
+                self.list_count += 1
+                return [deepcopy(comment)]
+
+            def issue_comment(self, _issue, _comment):
+                self.direct_count += 1
+                return deepcopy(comment)
+
+        github = GitHub()
+        _verify_solo_owner_issue_approval(github, "octo/repo", 60, snapshot, 42)
+        self.assertEqual(github.list_count, 2)
+        self.assertEqual(github.direct_count, 2)
+
     def test_cli_exposes_exactly_twelve_namespaces_and_adds_project_context(self):
         namespaces = _parser()._subparsers._group_actions[0].choices
         self.assertEqual(set(namespaces), {

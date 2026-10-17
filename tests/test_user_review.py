@@ -429,9 +429,36 @@ class UserReviewTests(unittest.TestCase):
                 arguments.update(options)
                 self.assertNotEqual(evaluate((event,), **arguments).status, "APPROVED")
 
+    def test_solo_owner_issue_approval_requires_canonical_github_permalink(self):
+        event = owner_issue_approval(created_at="2026-10-12T00:02:00Z",
+                                     updated_at="2026-10-12T00:02:00Z")
+        for url in (
+            "https://attacker.example/octo/repo/issues/31#issuecomment-77",
+            "https://github.com/octo/repo/issues/30#issuecomment-77",
+            "https://github.com/octo/repo/issues/31?redirect=1#issuecomment-77",
+        ):
+            with self.subTest(url=url):
+                self.assertNotEqual(evaluate((replace(event, source_url=url),), review_mode="solo_owner",
+                                             owner_id=42, required_after="2026-10-12T00:01:00Z").status,
+                                    "APPROVED")
+
+    def test_solo_owner_issue_approval_requires_canonical_github_permalink(self):
+        event = owner_issue_approval(created_at="2026-10-12T00:02:00Z",
+                                     updated_at="2026-10-12T00:02:00Z")
+        for url in (
+            "https://attacker.example/octo/repo/issues/31#issuecomment-77",
+            "https://github.com/octo/repo/issues/30#issuecomment-77",
+            "https://github.com/octo/repo/issues/31?redirect=1#issuecomment-77",
+        ):
+            with self.subTest(url=url):
+                self.assertNotEqual(evaluate((replace(event, source_url=url),), review_mode="solo_owner",
+                                             owner_id=42, required_after="2026-10-12T00:01:00Z").status,
+                                    "APPROVED")
+
     def test_formal_self_approval_alone_does_not_satisfy_solo_owner_review(self):
         self.assertNotEqual(evaluate(rows(reviews=(github_review(),)), review_mode="solo_owner",
-                                     owner_id=42).status, "APPROVED")
+                                     owner_id=42, required_after="2026-10-11T23:59:00Z").status,
+                            "APPROVED")
 
 
 if __name__ == "__main__":

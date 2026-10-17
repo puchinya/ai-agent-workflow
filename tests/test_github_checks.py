@@ -228,8 +228,11 @@ class GitHubCheckRunTests(unittest.TestCase):
             FakeGitHub(()).workflow_run_jobs(30, 0)
 
     def test_effective_branch_rules_paginate_with_explicit_page_identity(self):
-        first = [{"type": "pull_request", "ruleset_id": value} for value in range(100)]
-        second = [{"type": "non_fast_forward", "ruleset_id": 101}]
+        first = [{"type": "pull_request", "ruleset_id": value,
+                  "ruleset_source_type": "Repository", "ruleset_source": "octo/repo"}
+                 for value in range(1, 101)]
+        second = [{"type": "non_fast_forward", "ruleset_id": 101,
+                   "ruleset_source_type": "Organization", "ruleset_source": "octo"}]
         github = FakeGitHub((first, second))
         result = github.effective_branch_rules("release/1.0")
         self.assertEqual(len(result), 101)
@@ -240,8 +243,9 @@ class GitHubCheckRunTests(unittest.TestCase):
         ])
 
     def test_ruleset_details_use_verified_repository_or_organization_source(self):
-        repository = {"id": 17, "target": "branch", "enforcement": "active", "rules": []}
-        organization = {**repository, "source_type": "Organization"}
+        repository = {"id": 17, "source": "octo/repo", "source_type": "Repository",
+                      "target": "branch", "enforcement": "active", "rules": [], "bypass_actors": []}
+        organization = {**repository, "source": "octo", "source_type": "Organization"}
         repo_api = FakeGitHub((repository,))
         org_api = FakeGitHub((organization,))
         self.assertEqual(repo_api.ruleset_details(17, source_type="Repository"), repository)

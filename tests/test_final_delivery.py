@@ -24,8 +24,7 @@ SOLO_USER_REVIEW = UserReviewResult("APPROVED", USER_SUBJECT, "f" * 64, (), "use
                                    "issue-comment:77").validate()
 CHECK_POLICY = RequiredCheckPolicy((("ci", 15368),)).validate()
 VERIFICATION = VerificationResult(
-    "PASS", SUBJECT, (), "1" * 64, "2" * 64, ("3" * 64,), (),
-    required_check_policy_sha256=CHECK_POLICY.sha256,
+    "PASS", SUBJECT, (), CHECK_POLICY.sha256, "2" * 64, ("3" * 64,), (),
 ).validate()
 
 
@@ -46,10 +45,12 @@ def active_policy(mode="external_reviewer", approvals=1):
         }},
         {"type": "non_fast_forward", "parameters": {}},
     ]
-    details = {"id": 17, "target": "branch", "enforcement": "active",
+    details = {"id": 17, "source": "octo/repo", "source_type": "Repository",
+               "target": "branch", "enforcement": "active",
                "conditions": {"ref_name": {"include": ["refs/heads/main"], "exclude": []}},
                "bypass_actors": [], "rules": rules}
-    effective = [{"ruleset_id": 17, "type": row["type"], "parameters": row["parameters"]}
+    effective = [{"ruleset_id": 17, "ruleset_source_type": "Repository",
+                  "ruleset_source": "octo/repo", "type": row["type"], "parameters": row["parameters"]}
                  for row in rules]
     return assess_branch_policy(
         repository="octo/repo", branch="main", review_mode=mode,
@@ -89,6 +90,9 @@ class FinalDeliveryTests(unittest.TestCase):
         self.assertEqual(value["review_mode"], "external_reviewer")
         self.assertEqual(value["branch_policy_status"], "VERIFIED")
         self.assertEqual(value["branch_policy_sha256"], active_policy().sha256)
+        self.assertEqual(value["branch_policy_branch"], "main")
+        self.assertIn("effective-rules", value["branch_policy_sources"])
+        self.assertEqual(value["branch_policy_required_actions"], [])
         self.assertEqual(len(result.sha256), 64)
 
     def test_formal_review_effective_policy_or_exact_head_failure_blocks(self):
@@ -138,6 +142,18 @@ class FinalDeliveryTests(unittest.TestCase):
         self.assertEqual(evaluate(**(base | {"user_review": USER_REVIEW})).status, "BLOCKED")
         self.assertEqual(evaluate(**(base | {"user_review": SOLO_USER_REVIEW})).status,
                          "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION")
+
+    def test_solo_owner_does_not_ignore_another_users_current_head_review(self):
+        inputs = dict(
+            user_review=SOLO_USER_REVIEW, review_mode="solo_owner",
+            branch_policy=active_policy("solo_owner", approvals=0),
+            github_review_decision="REVIEW_REQUIRED", github_reviews=(formal_review(reviewer=99),),
+            repository_owner_type="User", repository_owner_id=42,
+            authenticated_user_id=42, pr_author_id=42,
+        )
+        result = evaluate(**inputs)
+        self.assertEqual(result.status, "BLOCKED")
+        self.assertIn("OTHER_FORMAL_REVIEW_PRESENT", result.reason_codes)
 
     def test_policy_change_blocks_and_v2_merge_authorization_remains_false(self):
         blocked = evaluate(branch_policy=active_policy(approvals=0))
