@@ -33,7 +33,7 @@ def records(n, offset=0):
 
 
 class UserReviewGitHubAdapterTests(unittest.TestCase):
-    def test_cloud_user_review_relay_uses_native_exact_head_github_approval(self):
+    def test_native_exact_head_github_approval_flows_through_feedback_evaluator(self):
         head = "a" * 40
         verification_subject = VerificationSubject(
             "octo/repo", 31, 37, 123, "b" * 64, "c" * 64, head).validate()
@@ -69,7 +69,7 @@ class UserReviewGitHubAdapterTests(unittest.TestCase):
             required_after="2026-10-12T00:00:30Z")
         self.assertEqual(result.status, "APPROVED")
         self.assertEqual(result.selected_approval_event, "pr-review:88")
-        self.assertEqual(result.subject.sha256, readiness.sha256)
+        self.assertEqual(result.subject, subject)
 
     def test_cli_review_sync_maps_explicit_pr_and_diff_comments_to_same_execution_loop(self):
         head = "a" * 40
