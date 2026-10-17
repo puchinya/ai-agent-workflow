@@ -27,7 +27,7 @@ FIELDS_V2 = FIELDS_V1 | {"feedback_sha256", "plan_sha256"}
 FIELDS_V3 = FIELDS_V2 | {"approval_scope_sha256"}
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 SHA40 = re.compile(r"[0-9a-f]{40}\Z")
-DECISION_MARKERS = re.compile(r"PASES_USER_REVIEW_DECISION_[A-Z0-9_]+")
+USER_REVIEW_SCHEMA_PREFIX = "PASES_USER_REVIEW_DECISION_"
 
 
 class UserReviewRelayError(ValueError):
@@ -109,8 +109,28 @@ def parse_user_review_decision(body: Any) -> dict[str, Any]:
 
 
 def has_user_review_decision_marker(body: Any) -> bool:
-    """Return true for the known carrier or any malformed/unknown version marker."""
-    return isinstance(body, str) and DECISION_MARKERS.search(body) is not None
+    """Return true only for JSON carrier-shaped data with a decision schema.
+
+    Contract prose can mention schema names. A carrier is the canonical JSON
+    object whose top-level ``schema`` identifies the record; incidental text
+    elsewhere in a comment is not an approval record.
+    """
+    return _user_review_decision_marker(body) is not None
+
+
+def _user_review_decision_marker(body: Any) -> str | None:
+    if not isinstance(body, str) or not body.lstrip().startswith("{"):
+        return None
+    try:
+        payload = json.loads(body, object_pairs_hook=_unique)
+    except (ValueError, TypeError):
+        # Malformed JSON that presents itself as a decision carrier remains a
+        # blocker; ordinary prose containing the same text is ignored.
+        return "PASES_USER_REVIEW_DECISION_MALFORMED" if USER_REVIEW_SCHEMA_PREFIX in body else None
+    if not isinstance(payload, dict):
+        return None
+    schema = payload.get("schema")
+    return schema if isinstance(schema, str) and schema.startswith(USER_REVIEW_SCHEMA_PREFIX) else None
 
 
 @dataclass(frozen=True)
@@ -207,10 +227,10 @@ def verify_user_review_decision_history(
         body = _field(comment, "body")
         if not isinstance(body, str):
             raise UserReviewRelayError("missing GitHub Issue comment body")
-        markers = DECISION_MARKERS.findall(body)
-        if not markers:
+        marker = _user_review_decision_marker(body)
+        if marker is None:
             continue
-        if len(markers) != 1 or markers[0] not in {
+        if marker not in {
                 USER_REVIEW_DECISION_SCHEMA, USER_REVIEW_DECISION_SCHEMA_V2,
                 USER_REVIEW_DECISION_SCHEMA_V3}:
             raise UserReviewRelayError("unknown or malformed dedicated User Review marker")
@@ -275,10 +295,10 @@ def _history_rows(history: UserReviewDecisionHistory, repository: str, issue_num
     collected: list[tuple[int, dict[str, Any], tuple[Any, ...]]] = []
     for row in history.listed_comments:
         body = _field(row, "body")
-        markers = DECISION_MARKERS.findall(body) if isinstance(body, str) else []
-        if not markers:
+        marker = _user_review_decision_marker(body)
+        if marker is None:
             continue
-        if len(markers) != 1 or markers[0] not in {
+        if marker not in {
                 USER_REVIEW_DECISION_SCHEMA, USER_REVIEW_DECISION_SCHEMA_V2,
                 USER_REVIEW_DECISION_SCHEMA_V3}:
             raise UserReviewRelayError("unknown or malformed dedicated User Review marker")

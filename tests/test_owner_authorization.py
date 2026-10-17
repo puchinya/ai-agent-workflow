@@ -132,6 +132,10 @@ class OwnerAuthorizationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             github = FakeGitHub()
+            github.comments[63].append({
+                "id": 99, "body": "Contract prose mentions `PASES_OWNER_DECISION_V1`.",
+                "user": {"id": OWNER_ID, "login": "puchinya", "type": "User"},
+            })
             details = {"predecessor_comment_id": 41, "predecessor_sha256": "9" * 64,
                        "predecessor_byte_length": 1234, "predecessor_state": "approved"}
             with patch("p_ases.owner_authorization.worktree_clean", return_value=True), \

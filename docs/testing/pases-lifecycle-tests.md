@@ -347,6 +347,8 @@ For the dedicated User Review carrier, assert the exact evaluator seam receives 
 
 For chat approval, capture only a current same-conversation user-role response after showing exact repository, Issue, operation, final ADC/plan SHA or PR+HEAD, and diff/gates. Correct explicit approval produces only a bound ephemeral grant; vague “continue”, assistant text, another conversation without trusted transfer, CLI flag, JSON/file, stale subject and non-owner actor produce zero writes. Assert scope hash is not represented as chat signature. When role metadata is unavailable, expect `CHAT_PROVENANCE_UNAVAILABLE`. V1/V2 histories remain unchanged; V3 direct/list/direct must verify exact owner, URL, time, plan/scope, and predecessor.
 
+Carrier discovery must ignore prose/comments that merely mention `PASES_OWNER_DECISION_*` or `PASES_USER_REVIEW_DECISION_*`; unknown/malformed schemas at the actual owner HTML-marker or User Review top-level JSON carrier position still block. Include the Issue #63 contract-comment shape that mentions the schema in prose.
+
 For self-authored `solo_owner` review, preserve delegated V1 and owner-local V2 as legacy records, and test V3 binding of repository/Issue/PR/HEAD/Readiness/ADC/session/prior-feedback/plan/scope. A separate read-only principal can verify the configured owner. Reject wrong owner/actor/PR author, later feedback, unresolved threads, cross-version replay, formal self-approval and incomplete pagination. Re-run Final Delivery against the full current snapshot and require the exact saved selected evidence.
 
 <a id="ora-f01-015"></a>

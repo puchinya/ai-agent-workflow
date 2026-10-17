@@ -14,6 +14,7 @@ from p_ases.owner_consent import (  # noqa: E402
     parse_owner_decision,
     read_verified_owner_decision,
     verify_owner_decision_history,
+    verify_owner_decision_history_tail,
 )
 
 
@@ -138,6 +139,19 @@ class OwnerDecisionRecordTests(unittest.TestCase):
         with self.assertRaises(OwnerDecisionError):
             verify_owner_decision_history(duplicate, **scope)
 
+    def test_history_ignores_prose_mentions_but_rejects_unknown_carrier_prefix(self):
+        prose = {
+            "id": 100, "body": "Contract text references `PASES_OWNER_DECISION_V1` as a schema name.",
+            "user": {"id": OWNER_ID, "type": "User"},
+        }
+        self.assertEqual(verify_owner_decision_history_tail([prose], REPOSITORY, 63, OWNER_ID), ())
+        unknown_carrier = {
+            "id": 101, "body": "<!-- PASES_OWNER_DECISION_V99\n{}\n-->",
+            "user": {"id": OWNER_ID, "type": "User"},
+        }
+        with self.assertRaisesRegex(OwnerDecisionError, "unknown or malformed"):
+            verify_owner_decision_history_tail([unknown_carrier], REPOSITORY, 63, OWNER_ID)
+
     def test_read_verified_owner_decision_checks_exact_github_origin_and_direct_list_direct(self):
         payload = parse_owner_decision(decision_body(operation="ADC_SUPERSEDE")).as_dict()
         comment = {
@@ -147,6 +161,10 @@ class OwnerDecisionRecordTests(unittest.TestCase):
             "url": f"https://api.github.com/repos/{REPOSITORY}/issues/comments/101",
             "issue_url": f"https://api.github.com/repos/{REPOSITORY}/issues/63",
             "html_url": f"https://github.com/{REPOSITORY}/issues/63#issuecomment-101",
+        }
+        prose = {
+            "id": 100, "body": "Contract text discusses `PASES_OWNER_DECISION_V1`.",
+            "user": {"id": OWNER_ID, "login": "puchinya", "type": "User"},
         }
 
         class FakeGitHub:
@@ -177,7 +195,7 @@ class OwnerDecisionRecordTests(unittest.TestCase):
                 return self.direct.get(comment_id)
 
         verified = read_verified_owner_decision(
-            FakeGitHub([comment]), issue_number=63, owner_id=OWNER_ID,
+            FakeGitHub([prose, comment]), issue_number=63, owner_id=OWNER_ID,
             operation="ADC_SUPERSEDE", subject_sha256=SUBJECT_SHA,
         )
         self.assertEqual(verified.comment_id, 101)

@@ -39,6 +39,7 @@ START_V3 = "<!-- PASES_OWNER_DECISION_V3\n"
 END = "\n-->"
 OWNER_ID = 3744776
 REPOSITORY_ID = 1401910271
+OWNER_DECISION_MARKER_PREFIX = "<!-- PASES_OWNER_DECISION_"
 
 
 class OwnerDecisionError(ValueError):
@@ -165,7 +166,9 @@ def parse_owner_decision(body: str) -> OwnerDecision:
 
 
 def _has_owner_decision_marker(body: Any) -> bool:
-    return isinstance(body, str) and "PASES_OWNER_DECISION_" in body
+    # Carrier markers are structural prefixes. Prose may discuss the schema
+    # names without creating an owner-decision record.
+    return isinstance(body, str) and body.startswith(OWNER_DECISION_MARKER_PREFIX)
 
 
 def _comment_fingerprint(row: Any, repository: str, issue_number: int) -> tuple[Any, ...]:
@@ -351,7 +354,7 @@ def verify_owner_decision_history_tail(
         body = row.get("body")
         if not isinstance(body, str):
             continue
-        if ("PASES_OWNER_DECISION_" in body
+        if (body.startswith(OWNER_DECISION_MARKER_PREFIX)
                 and not any(body.startswith(f"<!-- {schema}\n") for schema in SCHEMAS)):
             raise OwnerDecisionError("unknown or malformed owner decision marker")
         if not any(body.startswith(f"<!-- {schema}") for schema in SCHEMAS):

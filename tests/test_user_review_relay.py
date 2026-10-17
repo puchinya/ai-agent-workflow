@@ -37,6 +37,7 @@ from p_ases.user_review_relay import (
     USER_REVIEW_DECISION_SCHEMA_V3,
     UserReviewDecisionHistory,
     UserReviewRelayError,
+    has_user_review_decision_marker,
     parse_user_review_decision,
     publish_owner_local_user_review_decision,
     verify_user_review_decision_history,
@@ -192,6 +193,15 @@ def carrier_feedback_event(comment: SimpleNamespace) -> FeedbackEvent:
 
 
 class UserReviewRelayTests(unittest.TestCase):
+    def test_carrier_detection_ignores_prose_schema_mentions(self) -> None:
+        self.assertFalse(has_user_review_decision_marker(
+            "Contract prose mentions `PASES_USER_REVIEW_DECISION_V3` as a schema name."
+        ))
+        self.assertTrue(has_user_review_decision_marker(decision_body()))
+        self.assertTrue(has_user_review_decision_marker(
+            '{"schema":"PASES_USER_REVIEW_DECISION_V99"}'
+        ))
+
     def test_parses_only_canonical_dedicated_schema(self) -> None:
         body = decision_body()
         self.assertEqual(parse_user_review_decision(body)["schema"], USER_REVIEW_DECISION_SCHEMA)
@@ -207,7 +217,10 @@ class UserReviewRelayTests(unittest.TestCase):
 
     def test_verifies_genesis_for_the_actual_session_and_returns_typed_evidence(self) -> None:
         comment = github_comment(decision_body())
-        approval = verify(decision_history(comment))
+        prose = github_comment(
+            "Contract prose discusses `PASES_USER_REVIEW_DECISION_V3`.", comment_id=100,
+        )
+        approval = verify(decision_history(prose, comment))
 
         self.assertEqual(approval.comment_id, 101)
         self.assertEqual(approval.review_session_sha256, SESSION.sha256)

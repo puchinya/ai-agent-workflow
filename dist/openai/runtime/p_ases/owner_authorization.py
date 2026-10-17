@@ -22,7 +22,7 @@ from .owner_consent import (
     END, FIELDS_V2, FIELDS_V3, OPERATIONS, OWNER_ID, REPOSITORY_ID,
     SCHEMA_V2, SCHEMA_V3, START_V2, START_V3,
     OwnerDecisionError, read_verified_owner_decision,
-    verify_owner_decision_history_tail, _comment_fingerprint,
+    verify_owner_decision_history_tail, _comment_fingerprint, _has_owner_decision_marker,
 )
 
 REPOSITORY = "puchinya/ai-agent-workflow"
@@ -336,7 +336,7 @@ def _read_history(github: Any) -> tuple[tuple[int, Any], ...]:
         selected = []
         for row in rows:
             body = row.get("body") if isinstance(row, dict) else None
-            if isinstance(body, str) and "PASES_OWNER_DECISION_" in body:
+            if _has_owner_decision_marker(body):
                 selected.append(row)
         return selected
     first = marked(initial)
