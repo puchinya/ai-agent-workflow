@@ -173,7 +173,8 @@ def _read_ownership_history(github: GitHub, repository_id: int, owner_id: int,
         raise RulesetManagementError("Ruleset ownership comments contain invalid or duplicate IDs")
     result: list[tuple[int, dict[str, Any]]] = []
     predecessor: int | None = None
-    seen: set[tuple[int, str]] = set()
+    seen_approval_ids: set[int] = set()
+    seen_plan_shas: set[str] = set()
     for row in listed:
         comment_id = row["id"]
         first = github.issue_comment(activation_issue_number, comment_id)
@@ -232,10 +233,12 @@ def _read_ownership_history(github: GitHub, repository_id: int, owner_id: int,
                 or payload["repository_id"] != repository_id
                 or payload["repository"].casefold() != github.repo.casefold()
                 or payload["predecessor_comment_id"] != predecessor
-                or (payload["ruleset_id"], payload["ruleset_body_sha256"]) in seen):
+                or payload["approval_comment_id"] in seen_approval_ids
+                or payload["plan_sha256"] in seen_plan_shas):
             raise RulesetManagementError("Ruleset ownership evidence chain is invalid")
         predecessor = comment_id
-        seen.add((payload["ruleset_id"], payload["ruleset_body_sha256"]))
+        seen_approval_ids.add(payload["approval_comment_id"])
+        seen_plan_shas.add(payload["plan_sha256"])
         result.append((comment_id, payload))
     final_list = _comments_for_marker(github, activation_issue_number)
     if through_comment_id is not None:

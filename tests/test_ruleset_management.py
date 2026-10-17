@@ -536,6 +536,75 @@ class RulesetManagementTests(unittest.TestCase):
         with self.assertRaisesRegex(RulesetManagementError, "canonical|JSON"):
             _read_ownership_history(github, 1401910271, OWNER_ID, 57)
 
+    def test_ownership_history_allows_a_to_b_to_a_and_rejects_duplicate_operations(self):
+        from p_ases.ruleset_management import _read_ownership_history
+
+        def read_history(operation_specs):
+            comments = []
+            for index, (body_digest, plan_sha, predecessor) in enumerate(operation_specs):
+                approval_id = 10 + index * 2
+                record_id = approval_id + 1
+                approval_body = (f"PASES-RULESET-APPROVE: {plan_sha}\n"
+                                 f"PASES-REPOSITORY: {REPOSITORY}")
+                payload = {
+                    "actor_id": OWNER_ID, "actor_login": "puchinya",
+                    "approval_comment_id": approval_id, "plan_sha256": plan_sha,
+                    "predecessor_comment_id": predecessor,
+                    "effective_policy_sha256": "f" * 64,
+                    "repository": REPOSITORY, "repository_id": 1401910271,
+                    "ruleset_body_sha256": body_digest, "ruleset_id": 17,
+                    "schema": "PASES_RULESET_APPLIED_V1",
+                }
+                record_body = APPLIED_MARKER + _canonical(payload).decode("utf-8") + "\n-->"
+                for comment_id, body in ((approval_id, approval_body), (record_id, record_body)):
+                    comments.append({
+                        "id": comment_id, "body": body,
+                        "created_at": "2026-10-17T00:00:00Z",
+                        "updated_at": "2026-10-17T00:00:00Z",
+                        "issue_url": f"https://api.github.com/repos/{REPOSITORY}/issues/57",
+                        "html_url": f"https://github.com/{REPOSITORY}/issues/57#issuecomment-{comment_id}",
+                        "user": {"id": OWNER_ID, "login": "puchinya", "type": "User"},
+                    })
+
+            class OwnershipGitHub:
+                repo = REPOSITORY
+
+                def issue_comments(self, issue_number):
+                    if issue_number != 57:
+                        raise AssertionError("ownership history used the wrong Activation Issue")
+                    return copy.deepcopy(comments)
+
+                def issue_comment(self, issue_number, comment_id):
+                    if issue_number != 57:
+                        raise AssertionError("ownership history used the wrong Activation Issue")
+                    matches = [item for item in comments if item["id"] == comment_id]
+                    if len(matches) != 1:
+                        raise GitHubError("comment missing or duplicated")
+                    return copy.deepcopy(matches[0])
+
+            return _read_ownership_history(OwnershipGitHub(), 1401910271, OWNER_ID, 57)
+
+        body_a, body_b = "a" * 64, "b" * 64
+        history = read_history([
+            (body_a, "1" * 64, None),
+            (body_b, "2" * 64, 11),
+            (body_a, "3" * 64, 13),
+        ])
+        self.assertEqual([item[1]["ruleset_body_sha256"] for item in history],
+                         [body_a, body_b, body_a])
+
+        with self.assertRaisesRegex(RulesetManagementError, "evidence chain"):
+            read_history([
+                (body_a, "1" * 64, None),
+                (body_b, "1" * 64, 11),
+            ])
+        with self.assertRaisesRegex(RulesetManagementError, "evidence chain"):
+            read_history([
+                (body_a, "1" * 64, None),
+                (body_b, "2" * 64, 11),
+                (body_a, "3" * 64, 11),
+            ])
+
 
 if __name__ == "__main__":
     unittest.main()
