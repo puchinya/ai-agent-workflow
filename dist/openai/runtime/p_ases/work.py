@@ -7,6 +7,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from .adc import ADCError, verify_adc_forward_generations
 from .checkpoint import (
     CheckpointError, PRBinding, WorkCheckpoint, checkpoint_path, read_checkpoint,
     read_pr_binding, validate_ref, write_checkpoint, write_pr_binding,
@@ -110,13 +111,14 @@ def ensure_pull_request(repository_root: Path, github: GitHub, *, repository: st
         raise WorkError("remote branch HEAD differs from the exact local worktree HEAD")
     if remote_base != binding.base_sha:
         raise WorkError("remote base drifted from the immutable ExecutionBinding base")
-    binding_history = read_pr_binding_history(root, issue_number)
+    binding_history = read_pr_binding_history(root, issue_number, github=github)
     if binding_history:
         history_identity = binding_history[0][1]
         prior_head: str | None = None
+        prior_binding: PRBinding | None = None
         for _path, item in binding_history:
-            if not _same_pr_binding_identity(history_identity, item):
-                raise WorkError("immutable PRBinding history changes PR, base, Issue, or ADC identity")
+            if not _same_pr_execution_identity(history_identity, item):
+                raise WorkError("immutable PRBinding history changes PR, base, Issue, branch or repository identity")
             if prior_head is not None:
                 try:
                     descends = is_ancestor(root, prior_head, item.pr_head_sha40)
@@ -124,8 +126,17 @@ def ensure_pull_request(repository_root: Path, github: GitHub, *, repository: st
                     raise WorkError(f"could not verify immutable PRBinding HEAD history: {exc}") from exc
                 if not descends:
                     raise WorkError("immutable PRBinding HEAD history is not a forward-only chain")
+            if prior_binding is not None:
+                _verify_pr_binding_successor(github, issue_number, prior_binding, item)
             prior_head = item.pr_head_sha40
+            prior_binding = item
     stored_binding = binding_history[-1][1] if binding_history else None
+    if stored_binding is not None:
+        current_identity = PRBinding(repository, issue_number, binding.adc_comment_id, binding.adc_sha256,
+                                     binding.base_sha, branch_ref, stored_binding.pr_number, local_head)
+        if not _same_pr_execution_identity(stored_binding, current_identity):
+            raise WorkError("current ExecutionBinding changes the immutable PR execution identity")
+        _verify_pr_binding_successor(github, issue_number, stored_binding, current_identity)
     try:
         candidates = github.pull_requests_for_refs(base_ref=base_ref, head_ref=branch_ref)
     except GitHubError as exc:
@@ -180,8 +191,9 @@ def ensure_pull_request(repository_root: Path, github: GitHub, *, repository: st
     pr_binding = PRBinding(repository, issue_number, binding.adc_comment_id, binding.adc_sha256,
                            binding.base_sha, branch_ref, pr_number, local_head).validate()
     if stored_binding is not None and stored_binding != pr_binding:
-        if not _same_pr_binding_identity(stored_binding, pr_binding):
+        if not _same_pr_execution_identity(stored_binding, pr_binding):
             raise WorkError("existing immutable PRBinding history conflicts with the current PR identity")
+        _verify_pr_binding_successor(github, issue_number, stored_binding, pr_binding)
         if not is_ancestor(root, stored_binding.pr_head_sha40, local_head):
             raise WorkError("new PRBinding HEAD does not descend from the latest immutable PRBinding")
         version = len(binding_history) + 1
@@ -204,8 +216,9 @@ def execution_binding_path(work_directory: Path, issue_number: int) -> Path:
     return root / ".p_ases" / "state" / str(issue_number) / "execution-binding.json"
 
 
-def pr_binding_path(work_directory: Path, issue_number: int) -> Path:
-    history = read_pr_binding_history(work_directory, issue_number)
+def pr_binding_path(work_directory: Path, issue_number: int, *,
+                    github: GitHub | None = None) -> Path:
+    history = read_pr_binding_history(work_directory, issue_number, github=github)
     if history:
         return history[-1][0]
     return execution_binding_path(work_directory, issue_number).with_name("pr-binding-000001.json")
@@ -217,14 +230,32 @@ def _pr_binding_version_path(work_directory: Path, issue_number: int, version: i
     return execution_binding_path(work_directory, issue_number).with_name(f"pr-binding-{version:06d}.json")
 
 
-def _same_pr_binding_identity(left: PRBinding, right: PRBinding) -> bool:
+def _same_pr_execution_identity(left: PRBinding, right: PRBinding) -> bool:
     return (left.repository == right.repository and left.issue_number == right.issue_number
-            and left.adc_comment_id == right.adc_comment_id and left.adc_sha256 == right.adc_sha256
             and left.base_sha40 == right.base_sha40 and left.branch_ref == right.branch_ref
             and left.pr_number == right.pr_number)
 
 
-def read_pr_binding_history(work_directory: Path, issue_number: int) -> list[tuple[Path, PRBinding]]:
+def _verify_pr_binding_successor(github: GitHub, issue_number: int,
+                                 old: PRBinding, new: PRBinding) -> None:
+    if not _same_pr_execution_identity(old, new):
+        raise WorkError("PRBinding successor changes its frozen PR execution identity")
+    if (old.adc_comment_id, old.adc_sha256) == (new.adc_comment_id, new.adc_sha256):
+        return
+    try:
+        verified = verify_adc_forward_generations(
+            github, issue_number, prior_comment_id=old.adc_comment_id, prior_sha256=old.adc_sha256,
+            current_comment_id=new.adc_comment_id, current_sha256=new.adc_sha256,
+        )
+    except ADCError as exc:
+        raise WorkError(f"PRBinding ADC successor is not a complete approved forward generation: {exc}") from exc
+    if (not verified or verified[0].pointer.comment_id != old.adc_comment_id
+            or verified[-1].pointer.comment_id != new.adc_comment_id):
+        raise WorkError("PRBinding ADC successor generation range is incomplete")
+
+
+def read_pr_binding_history(work_directory: Path, issue_number: int, *,
+                            github: GitHub | None = None) -> list[tuple[Path, PRBinding]]:
     """Read a contiguous immutable PRBinding history, accepting the old single-file name."""
     directory = execution_binding_path(work_directory, issue_number).parent
     _reject_symlink_path(directory, "PRBinding history directory")
@@ -252,6 +283,23 @@ def read_pr_binding_history(work_directory: Path, issue_number: int) -> list[tup
         raise WorkError("PRBinding versions must be contiguous and monotonic")
     rows = [(legacy, read_pr_binding(legacy))] if legacy.exists() else []
     rows.extend((numbered[version], read_pr_binding(numbered[version])) for version in sorted(numbered))
+    prior: PRBinding | None = None
+    for _path, current in rows:
+        try:
+            if not is_ancestor(work_directory, current.base_sha40, current.pr_head_sha40):
+                raise WorkError("PRBinding HEAD does not descend from the frozen base SHA")
+            if prior is not None and not is_ancestor(work_directory, prior.pr_head_sha40, current.pr_head_sha40):
+                raise WorkError("PRBinding HEAD history is not a forward-only ancestry chain")
+        except GitError as exc:
+            raise WorkError(f"could not verify PRBinding Git ancestry: {exc}") from exc
+        prior = current
+    for (_previous_path, previous), (_current_path, current) in zip(rows, rows[1:]):
+        if not _same_pr_execution_identity(previous, current):
+            raise WorkError("immutable PRBinding history changes its frozen execution identity")
+        if (previous.adc_comment_id, previous.adc_sha256) != (current.adc_comment_id, current.adc_sha256):
+            if github is None:
+                raise WorkError("PRBinding ADC generations require current GitHub journal verification")
+            _verify_pr_binding_successor(github, issue_number, previous, current)
     return rows
 
 

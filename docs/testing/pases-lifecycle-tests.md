@@ -267,12 +267,12 @@ Policy or locator changes require a new setup PR and explicit admin merge. The s
 <a id="tst-f01-008"></a>
 ### 2.14 TST-F01-008 Effective V2 policy
 
-**Setup and action:** Configure explicit `solo_owner`, the four trusted Required Checks with App ID 15368, and the exact repository Ruleset. Vary wrong default branch, inactive enforcement, wrong check context/App ID, nonzero approvals, bypass actors, missing `non_fast_forward`, unresolved review threads, legacy conflict, and unavailable 403 reads. Attempt V2 setup and verification with each case.
+**Setup and action:** Configure explicit `solo_owner`, the four trusted Required Checks with App ID 15368, and the Activation Issue/history. Start with an empty Ruleset and invoke `consumer-activation-setup`; verify the exact committed setup branch and canonical policy plan are persisted but no V2 setup PR or Ruleset write exists. Exercise exact owner decision plus trusted Admin apply, then resume Activation and verify it reads the already-owned policy as zero-write `NOOP` before creating the policy-bound setup PR. Also test a matching owned Ruleset, an owned drift requiring one authorized PUT, stale profile/branch/plan subjects and automatic plan regeneration, a changed effective-policy digest against an existing open setup PR (preserve the old immutable proposal and create a new branch/plan/PR generation), missing check/App ID inputs, wrong default branch, inactive enforcement, wrong check context/App ID, nonzero approvals, bypass actors, missing `non_fast_forward`, unresolved review threads, unowned collision, legacy conflict, and unavailable 403 reads. In `external_reviewer`, verify a missing required-check identity is `INPUT_REQUIRED` with no setup PR and that the complete inventory reports the solo-owner managed Ruleset as `UNSUPPORTED` while preserving V1 behavior.
 
 <a id="ora-f01-008"></a>
 #### 2.14.1 ORA-F01-008 Expected result
 
-V2 is recorded only when branch, effective rules, Ruleset details, legacy protection, mode, checks, and admin identity are all readable and match. A 403 is `UNAVAILABLE`, never “not configured.”
+Empty policy is a resumable exact-plan/approval stage, not a missing-Ruleset setup failure; the V2 setup PR is absent until policy verification succeeds. Once owner decision and trusted Admin apply complete, the same Activation resumes, sees a zero-write NOOP, and only then creates the PR bound to Ruleset ID, applied-record ID, setup branch, and effective-policy digest. A stale policy-bound PR stays unchanged; the next authorized policy generation has a fresh exact branch/plan subject and a separate setup PR. V2 is recorded only when branch, effective rules, Ruleset details, legacy protection, mode, checks, and admin identity are all readable and match. A 403 is `UNAVAILABLE`, never “not configured.” Stale profile/branch/plan inputs, missing trusted checks, unowned collision, or legacy conflict cannot produce an ACTIVE result. The external-reviewer inventory is complete and reports only mode-inapplicable solo-owner policy as `UNSUPPORTED`; missing required checks remain `INPUT_REQUIRED` and cannot be reported as ACTIVE.
 
 <a id="tst-f01-009"></a>
 ### 2.15 TST-F01-009 Exact approved Ruleset plan
@@ -317,12 +317,12 @@ Existing Issue reads validate exactly the Activation prefix through their select
 <a id="tst-f01-013"></a>
 ### 2.19 TST-F01-013 Pre-merge bootstrap gates
 
-**Setup and action:** Use the #63 feature branch to generate/apply the initial exact plan before its PR merges. Verify the same commit's CI and independent review, then attempt User Review, Final Delivery, and merge without their normal evidence.
+**Setup and action:** Use the #63 feature branch to establish the initial exact Ruleset before PR #64 merges through the same plan, owner decision, trusted Admin apply, durable intent, ownership record, and effective-policy readback used by Activation. Verify the same commit's CI and independent review, then attempt User Review, Final Delivery, and merge without their normal evidence. After #64 merges, rerun normal V2 Activation against the identical owned policy.
 
 <a id="ora-f01-013"></a>
 #### 2.19.1 ORA-F01-013 Expected result
 
-The Ruleset can be established from the implementation branch after exact human plan approval. Bootstrap does not satisfy CI, independent review, User Review, Final Delivery, or explicit owner merge authorization.
+The Ruleset can be established from the implementation branch after exact human plan approval. Normal V2 Activation after merge recognizes the owned policy as NOOP and creates no second Ruleset. Bootstrap does not satisfy CI, independent review, User Review, Final Delivery, or separate exact-HEAD owner merge authorization.
 
 <a id="tst-f01-014"></a>
 <a id="220-tst-f01-014-activation-admin-session-and-approval-separation"></a>

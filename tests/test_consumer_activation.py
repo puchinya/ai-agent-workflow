@@ -14,7 +14,8 @@ sys.path.insert(0, str(ROOT / "runtime"))
 from p_ases.adc import ADCError, parse_adc, publish_adc, verify_adc  # noqa: E402
 from p_ases.consumer_activation import (  # noqa: E402
     APPROVAL_MARKER, ISSUE_MARKER, RECORD_MARKER, ConsumerActivationError, ConsumerActivationRecord,
-    RequiredCheckEvidence, _default_activation_adc, _default_profile,
+    RequiredCheckEvidence, _default_activation_adc, _default_profile, activation_checkpoint_path,
+    read_activation_checkpoint,
     read_consumer_activation_history, read_consumer_activation_record,
     setup_consumer_activation,
     verify_and_record_activation,
@@ -100,10 +101,15 @@ class FakeGitHub:
         self.setup_root: Path | None = None
 
     def repository_metadata(self):
-        return {"default_branch": "main", "id": 9001}
+        return {"default_branch": "main", "id": 9001, "full_name": REPO,
+                "owner": {"id": USER["id"], "login": "owner", "type": "User"}}
 
     def branch(self, branch):
-        return {"name": branch, "commit": {"sha": self.main_sha}}
+        sha = self.main_sha if branch == "main" else self.head_sha
+        return {"name": branch, "commit": {"sha": sha}}
+
+    def compare_commits(self, _base, _head):
+        return {"status": "ahead"}
 
     def compare_commits(self, base, head):
         return {"status": "identical" if base == head else "ahead"}
@@ -226,6 +232,12 @@ class FakeGitHub:
 def setup_fake(github: FakeGitHub, *, merge: bool = True) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
+        profile_path = root / ".agent" / "project.json"
+        profile_path.parent.mkdir(parents=True)
+        setup_profile = json.loads(github.profile_bytes)
+        if github.issue_row is None:
+            setup_profile.pop("activation", None)
+        profile_path.write_text(json.dumps(setup_profile, sort_keys=True, indent=2) + "\n", encoding="utf-8")
         with patch("p_ases.consumer_activation.worktree_clean", return_value=True), \
                 patch("p_ases.consumer_activation.discover_repository", return_value=REPO), \
                 patch("p_ases.consumer_activation.current_branch", return_value="main"), \
@@ -253,7 +265,9 @@ def local_consumer_checkout(parent: Path) -> tuple[Path, str]:
     run_git(root, "config", "user.name", "P-ASES tests")
     project = root / ".agent" / "project.json"
     project.parent.mkdir()
-    project.write_text(json.dumps(_default_profile(REPO), sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    profile = _default_profile(REPO)
+    profile["branch"]["required_checks"] = [{"name": "ci", "trusted_app_id": APP_ID}]
+    project.write_text(json.dumps(profile, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     run_git(root, "add", "--", ".agent/project.json")
     run_git(root, "commit", "--quiet", "-m", "baseline")
     base = head_sha40(root)
@@ -277,6 +291,204 @@ def clone_main_only(parent: Path, remote: Path) -> Path:
 
 
 class ConsumerActivationTests(unittest.TestCase):
+    def test_solo_owner_empty_ruleset_persists_exact_plan_and_waits_before_setup_pr(self):
+        github = FakeGitHub()
+        profile = _default_profile(REPO)
+        profile["branch"]["required_checks"] = [{"name": "ci", "trusted_app_id": APP_ID}]
+        profile["final_delivery"] = {"review_mode": "solo_owner"}
+        profile["activation"] = {"issue_number": ISSUE}
+        builder = unittest.mock.Mock(return_value={
+            "blockers": [], "diff": {"operation": "create"}, "plan_sha256": "d" * 64,
+            "policy_proof": {"status": "NOT_CONFIGURED"},
+        })
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch("p_ases.consumer_activation.worktree_clean", return_value=True), \
+                patch("p_ases.consumer_activation.discover_repository", return_value=REPO), \
+                patch("p_ases.consumer_activation.current_branch", return_value="main"), \
+                patch("p_ases.consumer_activation.head_sha40", return_value=MAIN_SHA), \
+                patch("p_ases.consumer_activation._ensure_setup_branch", return_value=(HEAD_SHA, False)), \
+                patch("p_ases.consumer_activation.switch_branch"), \
+                patch("p_ases.consumer_activation.build_ruleset_plan", builder), \
+                patch("p_ases.consumer_activation.write_ruleset_plan") as write_plan, \
+                patch("p_ases.consumer_activation.read_verified_managed_policy") as read_policy:
+            profile_path = Path(tmp) / ".agent" / "project.json"
+            profile_path.parent.mkdir()
+            profile_path.write_text(json.dumps(profile, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+            result = setup_consumer_activation(Path(tmp), github)
+            checkpoint = read_activation_checkpoint(activation_checkpoint_path(Path(tmp), ISSUE))
+        self.assertEqual(result["status"], "PENDING_APPROVAL")
+        self.assertEqual(result["stage"], "AWAIT_OWNER_POLICY_DECISION")
+        self.assertEqual(result["operation"], "CREATE")
+        self.assertEqual(result["required_setting_inventory"]["repository_ruleset"], "NEEDS_APPLY")
+        self.assertEqual(github.prs, {})
+        self.assertEqual(checkpoint.plan_sha256, "d" * 64)
+        self.assertEqual(checkpoint.stage, "AWAIT_OWNER_POLICY_DECISION")
+        self.assertEqual(checkpoint.setup_commit_sha40, HEAD_SHA)
+        self.assertEqual(builder.call_args.kwargs["profile_ref"], HEAD_SHA)
+        binding = builder.call_args.kwargs["activation_binding"]
+        self.assertEqual(binding["setup_commit_sha40"], HEAD_SHA)
+        self.assertEqual(binding["activation_issue_number"], ISSUE)
+        write_plan.assert_called_once()
+        read_policy.assert_not_called()
+
+    def test_solo_owner_policy_read_403_persists_owner_admin_continuation(self):
+        github = FakeGitHub()
+        profile = _default_profile(REPO)
+        profile["branch"]["required_checks"] = [{"name": "ci", "trusted_app_id": APP_ID}]
+        profile["final_delivery"] = {"review_mode": "solo_owner"}
+        profile["activation"] = {"issue_number": ISSUE}
+        plan = {"blockers": ["CURRENT_BRANCH_POLICY_READBACK_INCOMPLETE",
+                              "REPOSITORY_RULESET_INVENTORY_UNAVAILABLE"],
+                "diff": {"operation": "blocked"}, "plan_sha256": "d" * 64,
+                "policy_proof": {"status": "UNAVAILABLE"}}
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch("p_ases.consumer_activation.worktree_clean", return_value=True), \
+                patch("p_ases.consumer_activation.discover_repository", return_value=REPO), \
+                patch("p_ases.consumer_activation.current_branch", return_value="main"), \
+                patch("p_ases.consumer_activation.head_sha40", return_value=MAIN_SHA), \
+                patch("p_ases.consumer_activation._ensure_setup_branch", return_value=(HEAD_SHA, False)), \
+                patch("p_ases.consumer_activation.switch_branch"), \
+                patch("p_ases.consumer_activation.build_ruleset_plan", return_value=plan), \
+                patch("p_ases.consumer_activation.write_ruleset_plan") as write_plan:
+            profile_path = Path(tmp) / ".agent" / "project.json"
+            profile_path.parent.mkdir()
+            profile_path.write_text(json.dumps(profile, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+            result = setup_consumer_activation(Path(tmp), github)
+            checkpoint = read_activation_checkpoint(activation_checkpoint_path(Path(tmp), ISSUE))
+        self.assertEqual(result["status"], "ADMIN_POLICY_UNAVAILABLE")
+        self.assertEqual(result["stage"], "POLICY_PLAN")
+        self.assertEqual(checkpoint.status, "ADMIN_AUTH_REQUIRED")
+        self.assertIn("consumer-activation-admin-plan", result["next_permitted_step"])
+        self.assertEqual(github.prs, {})
+        write_plan.assert_not_called()
+
+    def test_solo_owner_noop_policy_is_double_read_before_setup_pr_creation(self):
+        github = FakeGitHub()
+        profile = _default_profile(REPO)
+        profile["branch"]["required_checks"] = [{"name": "ci", "trusted_app_id": APP_ID}]
+        profile["final_delivery"] = {"review_mode": "solo_owner"}
+        profile["activation"] = {"issue_number": ISSUE}
+        policy = {"ruleset_id": 123, "effective_policy_sha256": "c" * 64,
+                  "applied_record_id": 456}
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch("p_ases.consumer_activation.worktree_clean", return_value=True), \
+                patch("p_ases.consumer_activation.discover_repository", return_value=REPO), \
+                patch("p_ases.consumer_activation.current_branch", return_value="main"), \
+                patch("p_ases.consumer_activation.head_sha40", return_value=MAIN_SHA), \
+                patch("p_ases.consumer_activation._ensure_setup_branch", return_value=(HEAD_SHA, False)), \
+                patch("p_ases.consumer_activation.switch_branch"), \
+                patch("p_ases.consumer_activation.build_ruleset_plan", return_value={
+                    "blockers": [], "diff": {"operation": "noop"}, "plan_sha256": "e" * 64,
+                    "policy_proof": {"status": "VERIFIED"},
+                }), \
+                patch("p_ases.consumer_activation.write_ruleset_plan"), \
+                patch("p_ases.consumer_activation.read_verified_managed_policy",
+                      return_value=policy) as read_policy:
+            profile_path = Path(tmp) / ".agent" / "project.json"
+            profile_path.parent.mkdir()
+            profile_path.write_text(json.dumps(profile, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+            result = setup_consumer_activation(Path(tmp), github)
+            checkpoint = read_activation_checkpoint(activation_checkpoint_path(Path(tmp), ISSUE))
+        self.assertEqual(result["status"], "SETUP_PENDING")
+        self.assertEqual(result["stage"], "SETUP_PR_REVIEW_AND_MERGE")
+        self.assertEqual(len(github.prs), 1)
+        self.assertEqual(github.pr["head"]["sha"], HEAD_SHA)
+        self.assertEqual(read_policy.call_count, 2)
+        payload = github.pr["body"]
+        self.assertIn('"ruleset_id":123', payload)
+        self.assertIn('"ruleset_applied_record_id":456', payload)
+        self.assertEqual(checkpoint.status, "SETUP_PENDING")
+        self.assertEqual(checkpoint.policy_status, "VERIFIED")
+
+    def test_changed_policy_creates_a_new_policy_bound_setup_generation(self):
+        github = FakeGitHub()
+        profile = _default_profile(REPO)
+        profile["branch"]["required_checks"] = [{"name": "ci", "trusted_app_id": APP_ID}]
+        profile["final_delivery"] = {"review_mode": "solo_owner"}
+        profile["activation"] = {"issue_number": ISSUE}
+        old_policy = {"ruleset_id": 123, "effective_policy_sha256": "c" * 64,
+                      "applied_record_id": 456}
+        new_policy = {"ruleset_id": 123, "effective_policy_sha256": "d" * 64,
+                      "applied_record_id": 457}
+
+        def plan_builder(_root, _github, *, activation_binding, **_kwargs):
+            return {"blockers": [], "diff": {"operation": "noop"},
+                    "plan_sha256": "f" * 64 if "-g" in activation_binding["setup_branch"] else "e" * 64,
+                    "policy_proof": {"status": "VERIFIED"}}
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch("p_ases.consumer_activation.worktree_clean", return_value=True), \
+                patch("p_ases.consumer_activation.discover_repository", return_value=REPO), \
+                patch("p_ases.consumer_activation.current_branch", return_value="main"), \
+                patch("p_ases.consumer_activation.head_sha40", return_value=MAIN_SHA), \
+                patch("p_ases.consumer_activation._ensure_setup_branch", return_value=(HEAD_SHA, False)), \
+                patch("p_ases.consumer_activation.switch_branch"), \
+                patch("p_ases.consumer_activation.build_ruleset_plan", side_effect=plan_builder) as builder, \
+                patch("p_ases.consumer_activation.write_ruleset_plan"), \
+                patch("p_ases.consumer_activation.read_verified_managed_policy",
+                      side_effect=[old_policy, old_policy, new_policy, new_policy, new_policy, new_policy]):
+            profile_path = Path(tmp) / ".agent" / "project.json"
+            profile_path.parent.mkdir()
+            profile_path.write_text(json.dumps(profile, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+            first = setup_consumer_activation(Path(tmp), github)
+            old_pr = copy.deepcopy(github.prs[first["pr"]])
+            second = setup_consumer_activation(Path(tmp), github)
+            checkpoint = read_activation_checkpoint(activation_checkpoint_path(Path(tmp), ISSUE))
+
+        self.assertEqual(first["status"], "SETUP_PENDING")
+        self.assertEqual(second["status"], "SETUP_PENDING")
+        self.assertNotEqual(first["setup_branch"], second["setup_branch"])
+        self.assertEqual(github.prs[first["pr"]], old_pr)
+        self.assertEqual(github.prs[second["pr"]]["head"]["ref"], second["setup_branch"])
+        payload = github.prs[second["pr"]]["body"]
+        self.assertIn('"branch_policy_sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"',
+                      payload)
+        self.assertIn('"ruleset_applied_record_id":457', payload)
+        self.assertEqual(checkpoint.setup_pr_number, second["pr"])
+        self.assertEqual(checkpoint.effective_policy_sha256, new_policy["effective_policy_sha256"])
+        self.assertEqual(builder.call_count, 3)
+        self.assertEqual(builder.call_args_list[0].kwargs["activation_binding"]["setup_branch"],
+                         builder.call_args_list[1].kwargs["activation_binding"]["setup_branch"])
+        self.assertNotEqual(builder.call_args_list[1].kwargs["activation_binding"]["setup_branch"],
+                            builder.call_args_list[2].kwargs["activation_binding"]["setup_branch"])
+
+    def test_external_reviewer_inventory_is_explicit_and_missing_checks_do_not_create_pr(self):
+        github = FakeGitHub()
+        profile = _default_profile(REPO)
+        profile["activation"] = {"issue_number": ISSUE}
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch("p_ases.consumer_activation.worktree_clean", return_value=True), \
+                patch("p_ases.consumer_activation.discover_repository", return_value=REPO), \
+                patch("p_ases.consumer_activation.current_branch", return_value="main"), \
+                patch("p_ases.consumer_activation.head_sha40", return_value=MAIN_SHA):
+            profile_path = Path(tmp) / ".agent" / "project.json"
+            profile_path.parent.mkdir()
+            profile_path.write_text(json.dumps(profile, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+            missing = setup_consumer_activation(Path(tmp), github)
+        self.assertEqual(missing["status"], "INPUT_REQUIRED")
+        self.assertEqual(missing["required_setting_inventory"]["required_checks"], "BLOCKED")
+        self.assertEqual(missing["required_setting_inventory"]["repository_ruleset"], "UNSUPPORTED")
+        self.assertEqual(github.prs, {})
+
+        profile["branch"]["required_checks"] = [{"name": "ci", "trusted_app_id": APP_ID}]
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch("p_ases.consumer_activation.worktree_clean", return_value=True), \
+                patch("p_ases.consumer_activation.discover_repository", return_value=REPO), \
+                patch("p_ases.consumer_activation.current_branch", return_value="main"), \
+                patch("p_ases.consumer_activation.head_sha40", return_value=MAIN_SHA), \
+                patch("p_ases.consumer_activation._ensure_setup_branch", return_value=(HEAD_SHA, False)), \
+                patch("p_ases.consumer_activation.switch_branch"):
+            profile_path = Path(tmp) / ".agent" / "project.json"
+            profile_path.parent.mkdir()
+            profile_path.write_text(json.dumps(profile, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+            configured = setup_consumer_activation(Path(tmp), github)
+        self.assertEqual(configured["status"], "SETUP_PENDING")
+        inventory = configured["required_setting_inventory"]
+        self.assertEqual(inventory["review_mode"], "VERIFIED")
+        self.assertEqual(inventory["required_checks"], "VERIFIED")
+        self.assertEqual(inventory["repository_ruleset"], "UNSUPPORTED")
+        self.assertEqual(inventory["effective_default_branch_policy"], "UNSUPPORTED")
+
     def test_empty_consumer_creates_issue_proposed_adc_profile_pr_then_admin_merge_activates(self):
         github = FakeGitHub()
         self.assertEqual(parse_adc(_default_activation_adc(REPO, ISSUE), REPO, ISSUE).requirement_ids,
@@ -310,7 +522,10 @@ class ConsumerActivationTests(unittest.TestCase):
             commit_sha = pushed[0][0]
             self.assertEqual(changed_paths_between(root, base, commit_sha), (".agent/project.json",))
             self.assertEqual(activation_profile_bytes_at_commit(root, commit_sha),
-                             (json.dumps({**_default_profile(REPO), "activation": {"issue_number": ISSUE}},
+                             (json.dumps({**_default_profile(REPO),
+                                          "branch": {**_default_profile(REPO)["branch"],
+                                                     "required_checks": [{"name": "ci", "trusted_app_id": APP_ID}]},
+                                          "activation": {"issue_number": ISSUE}},
                                          sort_keys=True, indent=2) + "\n").encode())
 
             result = setup_consumer_activation(root, github)
@@ -665,6 +880,11 @@ class ConsumerActivationTests(unittest.TestCase):
                       side_effect=lambda _root, _ref, _head, content:
                       (setup_bytes.setdefault("profile", content) and (github.head_sha, False))), \
                 patch("p_ases.consumer_activation.switch_branch"), \
+                patch("p_ases.consumer_activation.build_ruleset_plan", return_value={
+                    "blockers": [], "diff": {"operation": "noop"}, "plan_sha256": "d" * 64,
+                    "policy_proof": {"status": "VERIFIED"},
+                }), \
+                patch("p_ases.consumer_activation.write_ruleset_plan"), \
                 patch("p_ases.consumer_activation.read_verified_managed_policy",
                       return_value=policy_evidence):
             profile_path = Path(tmp) / ".agent" / "project.json"
@@ -734,7 +954,8 @@ class ConsumerActivationTests(unittest.TestCase):
         v2 = ConsumerActivationRecord(
             **{**v1.__dict__, "record_created_at": "2026-10-14T12:05:00Z", "schema_version": 2,
                "review_mode": "solo_owner", "ruleset_id": 123, "branch_policy_sha256": "c" * 64,
-               "ruleset_applied_record_id": 456},
+               "ruleset_applied_record_id": 456,
+               "setup_branch": "pases/consumer-activation-71-aabb-initial-v2-bcccccccc"},
         )
         self.assertEqual(v1.activated_at, MERGED_AT)
         self.assertEqual(v2.activated_at, "2026-10-14T12:05:00Z")

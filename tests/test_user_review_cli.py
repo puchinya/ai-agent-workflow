@@ -55,6 +55,8 @@ class UserReviewCliRegressionTests(unittest.TestCase):
                         patch("p_ases.cli._load_plan", return_value=(object(), (), (), ())), \
                         patch("p_ases.cli._subject", return_value=VERIFICATION_SUBJECT), \
                         patch("p_ases.cli._readback_current_pr", return_value={"head_sha": HEAD}), \
+                        patch("p_ases.cli.load_profile", return_value=SimpleNamespace(
+                            final_delivery_review_mode="external_reviewer")), \
                         patch("p_ases.cli.read_readiness", return_value=READINESS), \
                         patch("p_ases.cli._review_payload_from_github", side_effect=feedback), \
                         patch("p_ases.cli._review_phase_transition"), \

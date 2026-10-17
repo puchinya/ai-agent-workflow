@@ -6,10 +6,14 @@ before writing; this module never creates an approval or modifies GitHub.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Iterable
+
+from .github import GitHubError
 
 SCHEMA = "PASES_OWNER_DECISION_V1"
 OPERATIONS = frozenset({"PHASE_REBASE", "ADC_SUPERSEDE", "RULESET_PLAN_APPLY", "PR_MERGE"})
@@ -27,6 +31,16 @@ END = "\n-->"
 
 class OwnerDecisionError(ValueError):
     """Invalid, ambiguous or unauthenticated delegated owner evidence."""
+
+
+@dataclass(frozen=True)
+class VerifiedOwnerDecision:
+    """One exact, immutable GitHub carrier verified against its Issue history."""
+
+    comment_id: int
+    decision: "OwnerDecision"
+    body_sha256: str
+    created_at: str
 
 
 def _positive(value: Any) -> bool:
@@ -94,12 +108,131 @@ def parse_owner_decision(body: str) -> OwnerDecision:
         raise OwnerDecisionError("owner decision PR subject is invalid")
     if data["operation"] in {"PHASE_REBASE", "ADC_SUPERSEDE"} and pr is not None:
         raise OwnerDecisionError("ADC operations must not bind a PR")
+    if data["operation"] == "RULESET_PLAN_APPLY" and pr is not None:
+        raise OwnerDecisionError("Ruleset plan decisions must not bind a PR")
     if data["operation"] == "PR_MERGE" and pr is None:
         raise OwnerDecisionError("merge decision must bind a PR")
     return OwnerDecision(
         data["repository"], data["issue_number"], data["operation"],
         data["subject_sha256"], data["owner_id"], pr, head, predecessor,
     )
+
+
+def _has_owner_decision_marker(body: Any) -> bool:
+    return isinstance(body, str) and "PASES_OWNER_DECISION_" in body
+
+
+def _comment_fingerprint(row: Any, repository: str, issue_number: int) -> tuple[Any, ...]:
+    if not isinstance(row, dict):
+        raise OwnerDecisionError("owner decision carrier is not an object")
+    comment_id = row.get("id")
+    user = row.get("user")
+    if not _positive(comment_id) or not isinstance(user, dict):
+        raise OwnerDecisionError("owner decision carrier identity is incomplete")
+    if (type(user.get("id")) is not int or user.get("id") < 1
+            or not isinstance(user.get("login"), str) or not user["login"]
+            or user.get("type") != "User"):
+        raise OwnerDecisionError("owner decision carrier has no stable human author")
+    body, created, updated = row.get("body"), row.get("created_at"), row.get("updated_at")
+    if not isinstance(body, str) or not isinstance(created, str) or created != updated:
+        raise OwnerDecisionError("owner decision carrier was edited or lacks exact timestamps")
+    if not created.endswith("Z"):
+        raise OwnerDecisionError("owner decision carrier timestamp is not UTC")
+    try:
+        parsed = datetime.fromisoformat(created[:-1] + "+00:00")
+    except ValueError as exc:
+        raise OwnerDecisionError("owner decision carrier timestamp is malformed") from exc
+    if parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+        raise OwnerDecisionError("owner decision carrier timestamp is not UTC")
+    expected = {
+        "url": f"https://api.github.com/repos/{repository}/issues/comments/{comment_id}",
+        "issue_url": f"https://api.github.com/repos/{repository}/issues/{issue_number}",
+        "html_url": f"https://github.com/{repository}/issues/{issue_number}#issuecomment-{comment_id}",
+    }
+    if any(row.get(key) != value for key, value in expected.items()):
+        raise OwnerDecisionError("owner decision carrier belongs to a different repository or Issue")
+    return (comment_id, body, created, updated, user["id"], user["login"].casefold(),
+            user["type"], row.get("url"), row.get("issue_url"), row.get("html_url"))
+
+
+def read_verified_owner_decision(
+    github: Any, *, issue_number: int, owner_id: int, operation: str,
+    subject_sha256: str, expected_pr_number: int | None = None,
+    expected_pr_head_sha40: str | None = None,
+) -> VerifiedOwnerDecision:
+    """Read one exact owner decision after full issue and direct/list/direct checks.
+
+    This is a read-only verifier. The relay credential and human chat decision
+    remain outside the Runtime; a GitHub comment alone never creates consent.
+    """
+    repository = getattr(github, "repo", None)
+    if (not isinstance(repository, str) or REPOSITORY.fullmatch(repository) is None
+            or not _positive(issue_number) or not _positive(owner_id) or operation not in OPERATIONS
+            or not isinstance(subject_sha256, str) or SHA256.fullmatch(subject_sha256) is None):
+        raise OwnerDecisionError("invalid requested owner decision scope")
+    if ((expected_pr_number is None) != (expected_pr_head_sha40 is None)
+            or (expected_pr_number is not None and (not _positive(expected_pr_number)
+                or not isinstance(expected_pr_head_sha40, str)
+                or SHA40.fullmatch(expected_pr_head_sha40) is None))):
+        raise OwnerDecisionError("expected PR identity must contain both number and HEAD")
+    if (operation == "PR_MERGE") != (expected_pr_number is not None):
+        raise OwnerDecisionError("PR_MERGE alone requires an exact PR number and HEAD")
+    try:
+        metadata = github.repository_metadata()
+        owner = metadata.get("owner") if isinstance(metadata, dict) else None
+        issue = github.issue(issue_number)
+        expected_repo_url = f"https://api.github.com/repos/{repository}"
+        full_name = metadata.get("full_name") if isinstance(metadata, dict) else None
+        if (not isinstance(metadata, dict) or not isinstance(full_name, str)
+                or full_name.casefold() != repository.casefold()
+                or not isinstance(owner, dict) or owner.get("type") != "User" or owner.get("id") != owner_id):
+            raise OwnerDecisionError("repository identity differs from the configured decision owner")
+        if (not isinstance(issue, dict) or issue.get("number") != issue_number or issue.get("state") != "open"
+                or issue.get("pull_request") is not None or issue.get("repository_url") != expected_repo_url):
+            raise OwnerDecisionError("owner decision target is not the configured open repository Issue")
+
+        initial = github.issue_comments(issue_number)
+        initial_candidates = [row for row in initial if _has_owner_decision_marker(
+            row.get("body") if isinstance(row, dict) else None)]
+        initial_ids: list[int] = []
+        for row in initial_candidates:
+            if not isinstance(row, dict) or not _positive(row.get("id")):
+                raise OwnerDecisionError("owner decision carrier has no valid comment ID")
+            initial_ids.append(row["id"])
+        if len(initial_ids) != len(set(initial_ids)):
+            raise OwnerDecisionError("owner decision carrier ID is duplicated")
+        direct_before = {comment_id: github.issue_comment(issue_number, comment_id)
+                         for comment_id in initial_ids}
+        listed = github.issue_comments(issue_number)
+        listed_candidates = [row for row in listed if _has_owner_decision_marker(
+            row.get("body") if isinstance(row, dict) else None)]
+        listed_ids = [row.get("id") if isinstance(row, dict) else None for row in listed_candidates]
+        if listed_ids != initial_ids:
+            raise OwnerDecisionError("complete owner decision history changed during direct/list/direct readback")
+        direct_after = {comment_id: github.issue_comment(issue_number, comment_id)
+                        for comment_id in initial_ids}
+        for row in listed_candidates:
+            fingerprint = _comment_fingerprint(row, repository, issue_number)
+            comment_id = fingerprint[0]
+            if (_comment_fingerprint(direct_before[comment_id], repository, issue_number) != fingerprint
+                    or _comment_fingerprint(direct_after[comment_id], repository, issue_number) != fingerprint):
+                raise OwnerDecisionError("owner decision carrier changed during direct/list/direct readback")
+        decision = verify_owner_decision_history(
+            listed, repository, issue_number, owner_id, operation, subject_sha256,
+        )
+        if (decision.pr_number != expected_pr_number
+                or decision.pr_head_sha40 != expected_pr_head_sha40):
+            raise OwnerDecisionError("owner decision PR identity differs from the requested operation")
+        selected = [(comment_id, row) for comment_id, row in zip(listed_ids, listed_candidates)
+                    if parse_owner_decision(row["body"]) == decision]
+        if len(selected) != 1:
+            raise OwnerDecisionError("exact owner decision carrier is missing or ambiguous")
+        comment_id, row = selected[0]
+        return VerifiedOwnerDecision(comment_id, decision,
+                                     hashlib.sha256(row["body"].encode("utf-8")).hexdigest(),
+                                     row["created_at"])
+    except (GitHubError, AttributeError) as exc:
+        raise OwnerDecisionError(str(exc)) from exc
 
 
 def verify_owner_decision_history(
@@ -121,7 +254,11 @@ def verify_owner_decision_history(
         if not isinstance(row, dict):
             raise OwnerDecisionError("malformed owner comment")
         body = row.get("body")
-        if not isinstance(body, str) or not body.startswith("<!-- PASES_OWNER_DECISION_V1"):
+        if not isinstance(body, str):
+            continue
+        if "PASES_OWNER_DECISION_" in body and not body.startswith("<!-- PASES_OWNER_DECISION_V1\n"):
+            raise OwnerDecisionError("unknown or malformed owner decision marker")
+        if not body.startswith("<!-- PASES_OWNER_DECISION_V1"):
             continue
         record = parse_owner_decision(body)
         if record.repository != repository or record.issue_number != issue_number:
@@ -147,6 +284,8 @@ def verify_owner_decision_history(
         prior = comment_id
     matches = [record for _id, record in scoped
                if record.operation == operation and record.subject_sha256 == subject_sha256]
+    if not matches:
+        raise OwnerDecisionError("missing exact owner operation/subject")
     if len(matches) != 1:
-        raise OwnerDecisionError("missing or ambiguous exact owner operation/subject")
+        raise OwnerDecisionError("ambiguous exact owner operation/subject")
     return matches[0]

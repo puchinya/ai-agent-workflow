@@ -24,10 +24,10 @@ RULESET_NAME = "P-ASES Final Delivery (managed)"
 APPLIED_MARKER = "<!-- PASES_RULESET_APPLIED_V1\n"
 PLAN_SCHEMA = "PASES_RULESET_PLAN_V1"
 PLAN_FIELDS = {
-    "activation_issue_number", "blockers", "default_branch", "default_branch_sha40", "diff",
+    "activation_binding", "activation_issue_number", "blockers", "default_branch", "default_branch_sha40", "diff",
     "existing_ruleset_id", "existing_ruleset_sha256", "owner_id", "plan_schema", "policy_evidence",
     "policy_proof", "predecessor_comment_id", "profile_review_mode", "profile_sha256", "repository", "repository_id",
-    "required_checks", "desired_ruleset", "existing_pr_impact", "plan_sha256",
+    "required_checks", "desired_ruleset", "existing_pr_impact", "profile_ref", "plan_sha256",
 }
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -328,7 +328,48 @@ def _existing_pr_impact(github: GitHub, default_branch: str) -> list[dict[str, A
     return result
 
 
-def build_ruleset_plan(root: Path, github: GitHub) -> dict[str, Any]:
+ACTIVATION_BINDING_SCHEMA = "PASES_ACTIVATION_RULESET_BINDING_V1"
+ACTIVATION_BINDING_FIELDS = {
+    "activation_issue_number", "adc_comment_id", "adc_sha256", "base_sha40", "predecessor_record_id",
+    "schema", "setup_branch", "setup_commit_sha40",
+}
+
+
+def _profile_from_bytes(raw: bytes) -> Any:
+    """Parse profile bytes from an exact Git tree without using the mutable worktree."""
+    try:
+        with tempfile.TemporaryDirectory(prefix="pases-ruleset-profile-") as tmp:
+            path = Path(tmp) / ".agent" / "project.json"
+            path.parent.mkdir()
+            path.write_bytes(raw)
+            return load_profile(Path(tmp))
+    except (OSError, ProfileError) as exc:
+        raise RulesetManagementError(f"bound project profile is invalid: {exc}") from exc
+
+
+def _validate_activation_binding(value: Any, activation_issue_number: int,
+                                 profile_ref: str) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if (not isinstance(value, dict) or set(value) != ACTIVATION_BINDING_FIELDS):
+        raise RulesetManagementError("Activation Ruleset binding has an unknown schema")
+    if (value.get("schema") != ACTIVATION_BINDING_SCHEMA
+            or value.get("activation_issue_number") != activation_issue_number
+            or type(value.get("adc_comment_id")) is not int or value["adc_comment_id"] < 1
+            or not isinstance(value.get("adc_sha256"), str) or not SHA256.fullmatch(value["adc_sha256"])
+            or not isinstance(value.get("base_sha40"), str) or not re.fullmatch(r"[0-9a-f]{40}", value["base_sha40"])
+            or value.get("setup_commit_sha40") != profile_ref
+            or not isinstance(value.get("setup_branch"), str)
+            or not value["setup_branch"].startswith("pases/consumer-activation-")
+            or (value.get("predecessor_record_id") is not None
+                and (type(value["predecessor_record_id"]) is not int
+                     or value["predecessor_record_id"] < 1))):
+        raise RulesetManagementError("Activation Ruleset binding is malformed or stale")
+    return value
+
+
+def build_ruleset_plan(root: Path, github: GitHub, *, profile_ref: str | None = None,
+                       activation_binding: dict[str, Any] | None = None) -> dict[str, Any]:
     """Read a canonical current-state plan. This function never mutates GitHub."""
     root = Path(root).resolve()
     blockers: list[str] = []
@@ -337,10 +378,31 @@ def build_ruleset_plan(root: Path, github: GitHub) -> dict[str, Any]:
     try:
         if discover_repository(root).casefold() != github.repo.casefold():
             raise RulesetManagementError("GitHub repository does not match the active workspace origin")
-        profile = load_profile(root)
+        load_profile(root)
     except (GitError, ProfileError) as exc:
         raise RulesetManagementError(f"Ruleset planning requires the valid active project profile: {exc}") from exc
+    try:
+        local_sha = head_sha40(root)
+        profile_ref = profile_ref or local_sha
+        if not isinstance(profile_ref, str) or not re.fullmatch(r"[0-9a-f]{40}", profile_ref):
+            raise RulesetManagementError("Ruleset profile subject must be an exact commit SHA")
+        if profile_ref != local_sha and activation_binding is None:
+            raise RulesetManagementError("a non-worktree profile subject requires an Activation binding")
+        committed_profile = github.regular_content_at_ref(".agent/project.json", profile_ref)
+        if activation_binding is not None:
+            setup_branch = activation_binding.get("setup_branch") if isinstance(activation_binding, dict) else None
+            remote = github.branch(setup_branch) if isinstance(setup_branch, str) else {}
+            remote_sha = remote.get("commit", {}).get("sha") if isinstance(remote, dict) else None
+            if remote_sha != profile_ref:
+                raise RulesetManagementError("Activation setup branch HEAD changed after profile subject selection")
+            base_sha = activation_binding.get("base_sha40") if isinstance(activation_binding, dict) else None
+            if github.compare_commits(base_sha, profile_ref).get("status") != "ahead":
+                raise RulesetManagementError("Activation setup profile is not descended from its bound base")
+        profile = _profile_from_bytes(committed_profile)
+    except (GitError, GitHubError, ProfileError) as exc:
+        raise RulesetManagementError(f"committed project profile could not be bound: {exc}") from exc
     activation_issue_number = profile.activation_issue_number
+    binding = _validate_activation_binding(activation_binding, activation_issue_number, profile_ref)
     if type(activation_issue_number) is not int or activation_issue_number < 1:
         blockers.append("ACTIVATION_LOCATOR_MISSING")
         activation_issue_number = None
@@ -353,10 +415,8 @@ def build_ruleset_plan(root: Path, github: GitHub) -> dict[str, Any]:
         checks = ()
 
     try:
-        local_sha = head_sha40(root)
-        committed_profile = github.regular_content_at_ref(".agent/project.json", local_sha)
         local_profile = (root / ".agent" / "project.json").read_bytes()
-        if committed_profile != local_profile:
+        if profile_ref == local_sha and committed_profile != local_profile:
             blockers.append("PROFILE_DIFFERS_FROM_COMMITTED_TREE")
         profile_sha = hashlib.sha256(committed_profile).hexdigest()
     except (GitError, GitHubError, OSError) as exc:
@@ -454,6 +514,7 @@ def build_ruleset_plan(root: Path, github: GitHub) -> dict[str, Any]:
         ),
     }
     plan = {
+        "activation_binding": binding,
         "activation_issue_number": activation_issue_number,
         "blockers": sorted(set(blockers)),
         "default_branch": default_branch,
@@ -467,6 +528,7 @@ def build_ruleset_plan(root: Path, github: GitHub) -> dict[str, Any]:
         "policy_proof": policy.as_dict() if isinstance(policy, EffectiveBranchPolicy) else None,
         "predecessor_comment_id": last_owner_record[0] if last_owner_record is not None else None,
         "profile_review_mode": profile.final_delivery_review_mode,
+        "profile_ref": profile_ref if binding is not None else None,
         "profile_sha256": profile_sha,
         "repository": github.repo,
         "repository_id": repository_id,
@@ -502,6 +564,15 @@ def validate_plan(value: Any) -> dict[str, Any]:
     if predecessor is not None:
         _positive(predecessor, "Ruleset ownership predecessor comment ID")
     _sha(value.get("profile_sha256"), "committed profile digest")
+    profile_ref = value.get("profile_ref")
+    binding = value.get("activation_binding")
+    if binding is None:
+        if profile_ref is not None:
+            raise RulesetManagementError("ordinary Ruleset plan must not pin an external Activation profile ref")
+    else:
+        if not isinstance(profile_ref, str) or not re.fullmatch(r"[0-9a-f]{40}", profile_ref):
+            raise RulesetManagementError("Activation Ruleset profile ref is malformed")
+        _validate_activation_binding(binding, value["activation_issue_number"], profile_ref)
     if (not isinstance(value.get("default_branch"), str) or not value["default_branch"]
             or not isinstance(value.get("default_branch_sha40"), str)
             or not re.fullmatch(r"[0-9a-f]{40}", value["default_branch_sha40"])):
@@ -839,7 +910,7 @@ def _recovery_preconditions_match(plan: dict[str, Any], current: dict[str, Any])
     fields = (
         "activation_issue_number", "default_branch", "default_branch_sha40", "existing_pr_impact",
         "owner_id", "profile_review_mode", "profile_sha256", "repository", "repository_id",
-        "required_checks",
+        "required_checks", "activation_binding", "profile_ref",
     )
     if any(current.get(field) != plan.get(field) for field in fields):
         return False
@@ -900,7 +971,8 @@ def _resume_ruleset_apply(root: Path, github: GitHub, plan: dict[str, Any],
                           approval_comment_id: int, actor: dict[str, Any]) -> dict[str, Any]:
     if plan["diff"]["operation"] not in {"create", "update"}:
         raise RulesetManagementError("only a Ruleset create or update can have an interrupted apply intent")
-    current = build_ruleset_plan(root, github)
+    current = build_ruleset_plan(root, github, profile_ref=plan.get("profile_ref"),
+                                 activation_binding=plan.get("activation_binding"))
     if not _recovery_preconditions_match(plan, current):
         raise RulesetManagementError("Ruleset recovery preconditions changed after the approved write started")
     unexpected_blockers = set(current.get("blockers", [])) - {
@@ -965,9 +1037,11 @@ def _resume_ruleset_apply(root: Path, github: GitHub, plan: dict[str, Any],
 
 
 def apply_ruleset_plan(root: Path, github: GitHub, plan_path: Path,
-                       approval_comment_id: int) -> dict[str, Any]:
+                       approval_comment_id: int, *, expected_plan_sha256: str | None = None) -> dict[str, Any]:
     """Apply one approved plan once, read it back, and append ownership evidence."""
     plan = read_plan(plan_path)
+    if expected_plan_sha256 is not None and plan["plan_sha256"] != expected_plan_sha256:
+        raise RulesetManagementError("Ruleset plan changed after exact owner decision verification")
     if plan["repository"].casefold() != github.repo.casefold():
         raise RulesetManagementError("Ruleset plan repository does not match the GitHub client")
     approval_comment_id = _positive(approval_comment_id, "Ruleset approval comment ID")
@@ -985,13 +1059,15 @@ def apply_ruleset_plan(root: Path, github: GitHub, plan_path: Path,
         return _resume_ruleset_apply(
             root, github, plan, intent_path, intent, approval_comment_id, actor,
         )
-    current = build_ruleset_plan(root, github)
+    current = build_ruleset_plan(root, github, profile_ref=plan.get("profile_ref"),
+                                 activation_binding=plan.get("activation_binding"))
     if current["plan_sha256"] != plan["plan_sha256"]:
         raise RulesetManagementError("Ruleset plan preconditions changed before apply")
     # The entire read-only plan and approval are fetched again immediately before any write.
     approval = _verify_exact_approval(github, plan, approval_comment_id)
     actor = _require_current_admin(github, plan["owner_id"])
-    current = build_ruleset_plan(root, github)
+    current = build_ruleset_plan(root, github, profile_ref=plan.get("profile_ref"),
+                                 activation_binding=plan.get("activation_binding"))
     if current["plan_sha256"] != plan["plan_sha256"]:
         raise RulesetManagementError("Ruleset plan preconditions changed during apply preflight")
     current_policy = current.get("policy_proof")

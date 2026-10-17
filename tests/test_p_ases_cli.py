@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT / "runtime"))
 from p_ases.adc import publish_adc
 from p_ases.cli import CLI_ADVANCE_TARGETS, _parser, main
 from p_ases.github import GitHubError
+from p_ases.owner_consent import OwnerDecisionError
 from p_ases.phase_evidence import PhaseEvidenceError
 from test_adc_intake import FakeGitHub, adc_bytes
 
@@ -60,6 +61,54 @@ class PasesCLITests(unittest.TestCase):
         ])
         self.assertEqual((apply.verb, apply.plan, apply.approval_comment_id),
                          ("consumer-activation-ruleset-apply", Path("/tmp/pases-plan.json"), 123))
+        no_approval = _parser().parse_args([
+            "delivery", "consumer-activation-ruleset-apply", "--plan", "/tmp/pases-plan.json",
+            "--root", str(ROOT),
+        ])
+        self.assertIsNone(no_approval.approval_comment_id)
+        admin_apply = _parser().parse_args([
+            "delivery", "consumer-activation-admin-apply", "--plan", "/tmp/pases-plan.json",
+            "--repo", "puchinya/ai-agent-workflow", "--root", str(ROOT),
+        ])
+        self.assertIsNone(admin_apply.approval_comment_id)
+
+    def test_ruleset_write_route_never_self_authorizes_from_a_plan_or_admin_credential(self):
+        plan = {
+            "repository": "puchinya/ai-agent-workflow", "repository_id": 1401910271,
+            "owner_id": 3744776, "activation_issue_number": 57,
+            "plan_sha256": "a" * 64, "diff": {"operation": "create"},
+        }
+        fake_github = SimpleNamespace(repo="puchinya/ai-agent-workflow")
+        with patch("p_ases.cli._runtime_root", return_value=ROOT), \
+                patch("p_ases.cli.discover_repository", return_value="puchinya/ai-agent-workflow"), \
+                patch("p_ases.cli.GitHub", return_value=fake_github), \
+                patch("p_ases.cli.read_ruleset_plan", return_value=plan), \
+                patch("p_ases.cli.read_verified_owner_decision",
+                      side_effect=OwnerDecisionError("missing exact owner operation/subject")), \
+                patch("p_ases.cli.apply_ruleset_plan") as apply_plan, \
+                patch("p_ases.cli._json") as emit:
+            result = main([
+                "delivery", "consumer-activation-ruleset-apply", "--plan", "/tmp/pases-plan.json",
+                "--approval-comment-id", "123", "--repo", "puchinya/ai-agent-workflow",
+                "--root", str(ROOT),
+            ])
+        self.assertEqual(result, 2)
+        self.assertEqual(emit.call_args.args[0]["status"], "PENDING_APPROVAL")
+        apply_plan.assert_not_called()
+
+    def test_activation_setup_pending_stage_is_not_a_success_exit_code(self):
+        fake_github = SimpleNamespace(repo="puchinya/ai-agent-workflow")
+        pending = {"status": "PENDING_APPROVAL", "stage": "AWAIT_OWNER_POLICY_DECISION",
+                   "plan_sha256": "a" * 64}
+        with patch("p_ases.cli._runtime_root", return_value=ROOT), \
+                patch("p_ases.cli.discover_repository", return_value="puchinya/ai-agent-workflow"), \
+                patch("p_ases.cli.GitHub", return_value=fake_github), \
+                patch("p_ases.cli.setup_consumer_activation", return_value=pending), \
+                patch("p_ases.cli._json") as emit:
+            status = main(["delivery", "consumer-activation-setup", "--repo",
+                           "puchinya/ai-agent-workflow", "--root", str(ROOT)])
+        self.assertEqual(status, 2)
+        self.assertEqual(emit.call_args.args[0], pending)
 
     def test_advance_cli_excludes_readiness_approval_and_close_targets(self):
         self.assertNotIn("user-review", CLI_ADVANCE_TARGETS)

@@ -63,8 +63,14 @@ class FakeGitHub:
         return {
             "number": number,
             "state": "open",
+            "repository_url": f"https://api.github.com/repos/{REPOSITORY}",
+            "body": "bootstrap fixture",
             "labels": [{"name": name} for name in self.labels],
         }
+
+    def repository_metadata(self) -> dict:
+        return {"id": 1401910271, "full_name": REPOSITORY,
+                "owner": {"id": OWNER_ID, "login": "puchinya", "type": "User"}}
 
     def authenticated_user(self) -> dict:
         # The read-only transport identity is independent of the owner decision actor.

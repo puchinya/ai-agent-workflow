@@ -324,18 +324,28 @@ class UserReviewResult:
         if self.selected_approval_evidence is not None:
             expected = {"evidence_type", "evidence_channel", "comment_id", "body_sha256",
                         "owner_id", "created_at", "review_session_sha256", "predecessor_comment_id"}
+            evidence = self.selected_approval_evidence
             if (not isinstance(self.selected_approval_evidence, dict)
-                    or set(self.selected_approval_evidence) != expected
-                    or self.selected_approval_evidence["evidence_type"] != "PASES_USER_REVIEW_DECISION_V1"
-                    or self.selected_approval_evidence["evidence_channel"] != "delegated_github_relay"
-                    or type(self.selected_approval_evidence["comment_id"]) is not int
-                    or self.selected_approval_evidence["comment_id"] < 1
-                    or type(self.selected_approval_evidence["owner_id"]) is not int
-                    or self.selected_approval_evidence["owner_id"] < 1
+                    or set(evidence) != expected
+                    or evidence["evidence_type"] != "PASES_USER_REVIEW_DECISION_V1"
+                    or evidence["evidence_channel"] != "delegated_github_relay"
+                    or type(evidence["comment_id"]) is not int
+                    or evidence["comment_id"] < 1
+                    or type(evidence["owner_id"]) is not int
+                    or evidence["owner_id"] < 1
+                    or not isinstance(evidence["body_sha256"], str)
+                    or not SHA256.fullmatch(evidence["body_sha256"])
+                    or not isinstance(evidence["review_session_sha256"], str)
+                    or not SHA256.fullmatch(evidence["review_session_sha256"])
+                    or not isinstance(evidence["created_at"], str)
+                    or (evidence["predecessor_comment_id"] is not None
+                        and (type(evidence["predecessor_comment_id"]) is not int
+                             or evidence["predecessor_comment_id"] < 1))
                     or self.selected_approval_event != "user-review-relay:"
-                       + str(self.selected_approval_evidence["comment_id"])
+                       + str(evidence["comment_id"])
                     or self.status != "APPROVED"):
                 raise UserReviewError("invalid dedicated relay approval evidence")
+            _time(evidence["created_at"])
         return self
 
     @property
@@ -438,6 +448,9 @@ def _evaluate_typed_relay_review(
         for row in rows:
             if row.deleted or row.edited:
                 reasons.append("GitHub feedback was deleted or edited")
+            if (row.channel == "pr-review" and row.kind == "approved"
+                    and row.actor_id == pr_author_user_id):
+                reasons.append("formal self-approval is not accepted as solo_owner User Review evidence")
             if (row.actor_id in allowed and row.kind in {"questions", "changes_requested", "blocked"}
                     and not (row.channel == "issue-comment" and row.event_id == str(approval.comment_id))
                     and _time(row.updated_at) >= _time(approval.created_at)):
@@ -481,7 +494,7 @@ def evaluate_user_review(
         subject = session.subject
         if snapshot.subject != subject:
             raise UserReviewError("feedback snapshot belongs to a different User Review subject")
-        if relay_approval is not None:
+        if relay_approval is not None or review_mode == "solo_owner":
             return _evaluate_typed_relay_review(
                 session, readiness, current_pr_head_sha40, snapshot,
                 review_mode=review_mode, pr_author_user_id=pr_author_user_id,

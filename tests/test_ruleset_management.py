@@ -15,7 +15,8 @@ sys.path.insert(0, str(ROOT / "runtime"))
 from p_ases.branch_policy import EffectiveBranchPolicy  # noqa: E402
 from p_ases.github import GitHubError  # noqa: E402
 from p_ases.ruleset_management import (  # noqa: E402
-    APPLIED_MARKER, RULESET_NAME, RulesetManagementError, _canonical, _desired_payload, _managed_body,
+    ACTIVATION_BINDING_SCHEMA, APPLIED_MARKER, RULESET_NAME, RulesetManagementError,
+    _canonical, _desired_payload, _managed_body,
     _body_digest, _publish_applied_record, _verify_exact_approval, apply_ruleset_plan,
     effective_policy_sha256, validate_plan, verify_applied_policy_record, write_plan,
 )
@@ -65,6 +66,7 @@ def make_plan(**updates):
     checks = [{"context": "ci", "integration_id": 15368}]
     desired = _desired_payload(REPOSITORY, (("ci", 15368),))
     value = {
+        "activation_binding": None,
         "activation_issue_number": 57,
         "blockers": [],
         "default_branch": "main",
@@ -84,6 +86,7 @@ def make_plan(**updates):
         "policy_proof": {"status": "NOT_CONFIGURED"},
         "predecessor_comment_id": None,
         "profile_review_mode": "solo_owner",
+        "profile_ref": None,
         "profile_sha256": "b" * 64,
         "repository": REPOSITORY,
         "repository_id": 1401910271,
@@ -97,6 +100,26 @@ def make_plan(**updates):
 
 
 class RulesetManagementTests(unittest.TestCase):
+    def test_activation_plan_binds_setup_branch_commit_and_adc_generation(self):
+        binding = {
+            "activation_issue_number": 57, "adc_comment_id": 1200, "adc_sha256": "b" * 64,
+            "base_sha40": "1" * 40, "predecessor_record_id": None,
+            "schema": ACTIVATION_BINDING_SCHEMA, "setup_branch": "pases/consumer-activation-57-aabb-initial-v2",
+            "setup_commit_sha40": "2" * 40,
+        }
+        plan = make_plan(activation_binding=binding, profile_ref="2" * 40)
+        plan["plan_sha256"] = hashlib.sha256(_canonical(
+            {key: value for key, value in plan.items() if key != "plan_sha256"}
+        )).hexdigest()
+        self.assertEqual(validate_plan(plan), plan)
+        changed = copy.deepcopy(plan)
+        changed["activation_binding"]["setup_commit_sha40"] = "3" * 40
+        changed["plan_sha256"] = hashlib.sha256(_canonical(
+            {key: value for key, value in changed.items() if key != "plan_sha256"}
+        )).hexdigest()
+        with self.assertRaisesRegex(RulesetManagementError, "binding"):
+            validate_plan(changed)
+
     def test_desired_ruleset_uses_exact_repository_policy(self):
         payload = _desired_payload(REPOSITORY, (("windows", 15368), ("ubuntu", 15368)))
         self.assertEqual(payload["name"], RULESET_NAME)
@@ -185,6 +208,15 @@ class RulesetManagementTests(unittest.TestCase):
             with self.assertRaisesRegex(RulesetManagementError, "approval comment"):
                 apply_ruleset_plan(Path(tmp), github, path, 900)
         self.assertEqual(github.write_calls, 0)
+
+    def test_apply_rejects_plan_sha_changed_after_read_only_authorization(self):
+        plan = make_plan()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "ruleset-plan.json"
+            write_plan(path, plan)
+            with self.assertRaisesRegex(RulesetManagementError, "changed after exact owner decision"):
+                apply_ruleset_plan(Path(tmp), FakeApprovalGitHub(None), path, 900,
+                                   expected_plan_sha256="b" * 64)
 
     def test_policy_source_403_is_recorded_and_never_seen_as_absent(self):
         from p_ases.ruleset_management import _read_policy

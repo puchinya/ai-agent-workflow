@@ -23,7 +23,8 @@ from .git import (
 from .path_safety import path_has_symlink
 from .profile import ProfileError, load_profile
 from .ruleset_management import (
-    RulesetManagementError, read_verified_managed_policy, verify_applied_policy_record,
+    ACTIVATION_BINDING_SCHEMA, RulesetManagementError, build_ruleset_plan, read_verified_managed_policy,
+    verify_applied_policy_record, write_plan as write_ruleset_plan,
 )
 
 
@@ -40,6 +41,173 @@ APPROVAL_MARKER_V2 = "<!-- PASES_CONSUMER_ACTIVATION_APPROVAL_V2\n"
 RECORD_MARKER_V2 = "<!-- PASES_CONSUMER_ACTIVATION_V2\n"
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
+ACTIVATION_CHECKPOINT_SCHEMA = "PASES_CONSUMER_ACTIVATION_CHECKPOINT_V1"
+ACTIVATION_STAGES = frozenset({
+    "DISCOVER_AND_PREFLIGHT", "PREPARE_SETUP_BRANCH", "POLICY_PLAN",
+    "AWAIT_OWNER_POLICY_DECISION", "APPLY_AND_READBACK", "SETUP_PR_REVIEW_AND_MERGE",
+    "ACTIVATION_RECORD",
+})
+
+
+@dataclass(frozen=True)
+class ActivationCheckpoint:
+    repository: str
+    repository_id: int
+    owner_id: int
+    activation_issue_number: int
+    adc_comment_id: int
+    adc_sha256: str
+    predecessor_record_id: int | None
+    default_branch: str
+    default_branch_sha40: str
+    review_mode: str
+    required_checks: tuple[tuple[str, int], ...]
+    stage: str
+    status: str
+    setup_branch: str | None = None
+    setup_commit_sha40: str | None = None
+    profile_sha256: str | None = None
+    plan_sha256: str | None = None
+    policy_status: str | None = None
+    ruleset_id: int | None = None
+    applied_record_id: int | None = None
+    effective_policy_sha256: str | None = None
+    setup_pr_number: int | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "activation_issue_number": self.activation_issue_number,
+            "adc_comment_id": self.adc_comment_id,
+            "adc_sha256": self.adc_sha256,
+            "applied_record_id": self.applied_record_id,
+            "default_branch": self.default_branch,
+            "default_branch_sha40": self.default_branch_sha40,
+            "effective_policy_sha256": self.effective_policy_sha256,
+            "owner_id": self.owner_id,
+            "plan_sha256": self.plan_sha256,
+            "policy_status": self.policy_status,
+            "predecessor_record_id": self.predecessor_record_id,
+            "profile_sha256": self.profile_sha256,
+            "repository": self.repository,
+            "repository_id": self.repository_id,
+            "required_checks": [{"context": name, "integration_id": app_id}
+                                for name, app_id in self.required_checks],
+            "review_mode": self.review_mode,
+            "ruleset_id": self.ruleset_id,
+            "schema": ACTIVATION_CHECKPOINT_SCHEMA,
+            "setup_branch": self.setup_branch,
+            "setup_commit_sha40": self.setup_commit_sha40,
+            "setup_pr_number": self.setup_pr_number,
+            "stage": self.stage,
+            "status": self.status,
+        }
+
+    def validate(self) -> "ActivationCheckpoint":
+        if (self.stage not in ACTIVATION_STAGES
+                or self.status not in {"RUNNING", "PENDING_APPROVAL", "ADMIN_AUTH_REQUIRED",
+                                       "SETUP_PENDING", "BLOCKED", "ACTIVE"}
+                or not isinstance(self.repository, str) or not self.repository
+                or type(self.repository_id) is not int or self.repository_id < 1
+                or type(self.owner_id) is not int or self.owner_id < 1
+                or type(self.activation_issue_number) is not int or self.activation_issue_number < 1
+                or type(self.adc_comment_id) is not int or self.adc_comment_id < 1
+                or not SHA256.fullmatch(self.adc_sha256)
+                or (self.predecessor_record_id is not None
+                    and (type(self.predecessor_record_id) is not int or self.predecessor_record_id < 1))
+                or not isinstance(self.default_branch, str) or not self.default_branch
+                or not SHA40.fullmatch(self.default_branch_sha40)
+                or self.review_mode != "solo_owner"
+                or not isinstance(self.required_checks, tuple) or not self.required_checks
+                or any(not isinstance(name, str) or not name or type(app_id) is not int or app_id < 1
+                       for name, app_id in self.required_checks)):
+            raise ConsumerActivationError("Activation checkpoint is malformed")
+        for label, value in (("setup commit", self.setup_commit_sha40),
+                             ("profile digest", self.profile_sha256), ("plan digest", self.plan_sha256),
+                             ("effective policy digest", self.effective_policy_sha256)):
+            if value is not None and not (SHA40 if label == "setup commit" else SHA256).fullmatch(value):
+                raise ConsumerActivationError(f"Activation checkpoint {label} is malformed")
+        for label, value in (("Ruleset ID", self.ruleset_id), ("applied record ID", self.applied_record_id),
+                             ("setup PR number", self.setup_pr_number)):
+            if value is not None and (type(value) is not int or value < 1):
+                raise ConsumerActivationError(f"Activation checkpoint {label} is malformed")
+        if self.setup_branch is not None and not self.setup_branch.startswith("pases/consumer-activation-"):
+            raise ConsumerActivationError("Activation checkpoint setup branch is malformed")
+        return self
+
+    @property
+    def sha256(self) -> str:
+        return hashlib.sha256(_canonical(self.as_dict())).hexdigest()
+
+
+def activation_checkpoint_path(root: Path, issue_number: int) -> Path:
+    return (Path(root).resolve() / ".p_ases" / "state" / str(_positive(issue_number, "Activation Issue number"))
+            / "activation-v2" / "checkpoint.json")
+
+
+def activation_plan_path(root: Path, issue_number: int) -> Path:
+    return activation_checkpoint_path(root, issue_number).with_name("ruleset-plan.json")
+
+
+def write_activation_checkpoint(path: Path, checkpoint: ActivationCheckpoint, *, root: Path) -> str:
+    checkpoint.validate()
+    destination = Path(path)
+    if path_has_symlink(destination, root=Path(root).resolve()):
+        raise ConsumerActivationError("Activation checkpoint path traverses a symbolic link")
+    payload = checkpoint.as_dict()
+    payload["checkpoint_sha256"] = checkpoint.sha256
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=destination.parent, prefix=f".{destination.name}.",
+                                         delete=False, mode="wb") as stream:
+            temporary = Path(stream.name)
+            stream.write(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8") + b"\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, destination)
+    except OSError as exc:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+        raise ConsumerActivationError("could not atomically persist Activation checkpoint") from exc
+    return checkpoint.sha256
+
+
+def read_activation_checkpoint(path: Path) -> ActivationCheckpoint:
+    try:
+        raw = Path(path).read_bytes()
+    except OSError as exc:
+        raise ConsumerActivationError("Activation checkpoint is unavailable") from exc
+    value = _json_object(raw, "Activation checkpoint")
+    expected = {
+        "activation_issue_number", "adc_comment_id", "adc_sha256", "applied_record_id", "checkpoint_sha256",
+        "default_branch", "default_branch_sha40", "effective_policy_sha256", "owner_id", "plan_sha256",
+        "policy_status", "predecessor_record_id", "profile_sha256", "repository", "repository_id",
+        "required_checks", "review_mode", "ruleset_id", "schema", "setup_branch", "setup_commit_sha40",
+        "setup_pr_number", "stage", "status",
+    }
+    if set(value) != expected or value.get("schema") != ACTIVATION_CHECKPOINT_SCHEMA:
+        raise ConsumerActivationError("Activation checkpoint has an unknown schema")
+    supplied = value.pop("checkpoint_sha256")
+    if supplied != hashlib.sha256(_canonical(value)).hexdigest():
+        raise ConsumerActivationError("Activation checkpoint digest does not match its contents")
+    checks = value.get("required_checks")
+    if not isinstance(checks, list) or any(not isinstance(row, dict) or set(row) != {"context", "integration_id"}
+                                            for row in checks):
+        raise ConsumerActivationError("Activation checkpoint Required Checks are malformed")
+    checkpoint = ActivationCheckpoint(
+        repository=value["repository"], repository_id=value["repository_id"], owner_id=value["owner_id"],
+        activation_issue_number=value["activation_issue_number"], adc_comment_id=value["adc_comment_id"],
+        adc_sha256=value["adc_sha256"], predecessor_record_id=value["predecessor_record_id"],
+        default_branch=value["default_branch"], default_branch_sha40=value["default_branch_sha40"],
+        review_mode=value["review_mode"],
+        required_checks=tuple((row["context"], row["integration_id"]) for row in checks),
+        stage=value["stage"], status=value["status"], setup_branch=value["setup_branch"],
+        setup_commit_sha40=value["setup_commit_sha40"], profile_sha256=value["profile_sha256"],
+        plan_sha256=value["plan_sha256"], policy_status=value["policy_status"],
+        ruleset_id=value["ruleset_id"], applied_record_id=value["applied_record_id"],
+        effective_policy_sha256=value["effective_policy_sha256"], setup_pr_number=value["setup_pr_number"],
+    ).validate()
+    return checkpoint
 
 
 def _timestamp(value: Any, label: str) -> datetime:
@@ -392,9 +560,11 @@ def _setup_payload(issue_number: int, adc: VerifiedADC, predecessor_record_id: i
 def _setup_payload_v2(issue_number: int, adc: VerifiedADC, predecessor_record_id: int | None,
                       profile_content: bytes, review_mode: str, ruleset_id: int,
                       policy_sha256: str, applied_record_id: int,
-                      checks: tuple[tuple[str, int], ...]) -> dict[str, Any]:
+                      checks: tuple[tuple[str, int], ...], setup_branch: str) -> dict[str, Any]:
     if review_mode != "solo_owner" or not checks:
         raise ConsumerActivationError("Activation V2 requires solo_owner and trusted Required Checks")
+    if not isinstance(setup_branch, str) or not setup_branch.startswith("pases/consumer-activation-"):
+        raise ConsumerActivationError("Activation V2 setup branch identity is invalid")
     return {
         "activation_issue_number": issue_number,
         "activation_profile_sha256": hashlib.sha256(profile_content).hexdigest(),
@@ -407,6 +577,7 @@ def _setup_payload_v2(issue_number: int, adc: VerifiedADC, predecessor_record_id
         "required_checks": [{"context": name, "integration_id": app_id} for name, app_id in checks],
         "review_mode": review_mode,
         "ruleset_id": ruleset_id,
+        "setup_branch": setup_branch,
         "schema": "PASES_CONSUMER_ACTIVATION_SETUP_V2",
     }
 
@@ -416,9 +587,18 @@ def _setup_marker(expected: dict[str, Any]) -> str:
 
 
 def _setup_branch(issue_number: int, adc_sha256: str, predecessor_record_id: int | None,
-                  *, version: int = 1) -> str:
+                  *, version: int = 1, base_sha40: str | None = None,
+                  generation_sha256: str | None = None) -> str:
     predecessor = "initial" if predecessor_record_id is None else str(predecessor_record_id)
     suffix = "" if version == 1 else f"-v{version}"
+    if version == 2:
+        if not isinstance(base_sha40, str) or not SHA40.fullmatch(base_sha40):
+            raise ConsumerActivationError("Activation V2 setup branch requires an exact default-branch base SHA")
+        suffix += f"-b{base_sha40[:8]}"
+        if generation_sha256 is not None:
+            if not SHA256.fullmatch(generation_sha256):
+                raise ConsumerActivationError("Activation V2 setup generation digest is invalid")
+            suffix += f"-g{generation_sha256[:8]}"
     return f"pases/consumer-activation-{issue_number}-{adc_sha256[:8]}-{predecessor}{suffix}"
 
 
@@ -443,10 +623,10 @@ def _check_setup_pr(github: GitHub, pr: dict[str, Any], expected: dict[str, Any]
     payload = _decode(pr.get("body"), _setup_marker(expected), "setup PR", allow_trailer=True)
     if (pr.get("state") != "open" or pr.get("merged") is True or pr.get("draft") is not False
             or payload != expected or not isinstance(base, dict) or base.get("ref") != default_branch
-            or not isinstance(head, dict) or head.get("ref") != _setup_branch(
-                expected["activation_issue_number"], expected["adc_sha256"],
-                expected["predecessor_record_id"],
-                version=2 if expected.get("schema") == "PASES_CONSUMER_ACTIVATION_SETUP_V2" else 1)
+            or not isinstance(head, dict) or head.get("ref") != (
+                expected.get("setup_branch") if expected.get("schema") == "PASES_CONSUMER_ACTIVATION_SETUP_V2"
+                else _setup_branch(expected["activation_issue_number"], expected["adc_sha256"],
+                                   expected["predecessor_record_id"], version=1))
             or not _repositories_match(base_repo, head_repo, github.repo, expected_id=repository_id)):
         raise ConsumerActivationError("existing setup PR is closed, forked, draft, or mismatched")
     files = github.pull_request_files(_positive(pr.get("number"), "setup PR number"))
@@ -558,6 +738,7 @@ def _validate_merged_setup(github: GitHub, pr_number: int, expected: dict[str, A
         head_repo = head.get("repo") if isinstance(head, dict) else None
         merger = pr.get("merged_by")
         merge_sha, merged_at = pr.get("merge_commit_sha"), pr.get("merged_at")
+        is_v2 = expected.get("schema") == "PASES_CONSUMER_ACTIVATION_SETUP_V2"
         if (pr.get("state") != "closed" or pr.get("merged") is not True or pr.get("draft") is not False
                 or _decode(pr.get("body"), _setup_marker(expected), "setup PR", allow_trailer=True) != expected
                 or not isinstance(default_branch, str) or not isinstance(base, dict)
@@ -565,6 +746,8 @@ def _validate_merged_setup(github: GitHub, pr_number: int, expected: dict[str, A
                 or type(repository_id) is not int or repository_id < 1
                 or not _repositories_match(base_repo, head_repo, github.repo, expected_id=repository_id)
                 or not isinstance(head.get("sha"), str) or not SHA40.fullmatch(head["sha"])
+                or (is_v2 and (not isinstance(expected.get("setup_branch"), str)
+                               or head.get("ref") != expected.get("setup_branch")))
                 or not isinstance(merge_sha, str) or not SHA40.fullmatch(merge_sha)
                 or not isinstance(merged_at, str)):
             raise ConsumerActivationError("merged setup PR identity is incomplete or mismatched")
@@ -583,7 +766,6 @@ def _validate_merged_setup(github: GitHub, pr_number: int, expected: dict[str, A
             raise ConsumerActivationError("setup PR must change exactly .agent/project.json")
         raw_profile = github.regular_content_at_ref(".agent/project.json", merge_sha)
         profile_value, checks = _validate_profile_bytes(raw_profile, expected["activation_issue_number"])
-        is_v2 = expected.get("schema") == "PASES_CONSUMER_ACTIVATION_SETUP_V2"
         if is_v2:
             if (hashlib.sha256(raw_profile).hexdigest() != expected["activation_profile_sha256"]
                     or profile_value.get("final_delivery") != {"review_mode": expected.get("review_mode")}
@@ -726,6 +908,7 @@ class ConsumerActivationRecord:
     ruleset_id: int | None = None
     branch_policy_sha256: str | None = None
     ruleset_applied_record_id: int | None = None
+    setup_branch: str | None = None
 
     def validate(self) -> "ConsumerActivationRecord":
         if not isinstance(self.repository, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", self.repository):
@@ -756,14 +939,16 @@ class ConsumerActivationRecord:
             _positive(self.predecessor_record_id, "predecessor Activation record")
         if self.schema_version == 1:
             if any(value is not None for value in (self.review_mode, self.ruleset_id, self.branch_policy_sha256,
-                                                   self.ruleset_applied_record_id)):
+                                                   self.ruleset_applied_record_id, self.setup_branch)):
                 raise ConsumerActivationError("V1 Activation record cannot contain V2 policy fields")
         elif self.schema_version == 2:
             if (self.review_mode != "solo_owner" or type(self.ruleset_id) is not int or self.ruleset_id < 1
                     or not isinstance(self.branch_policy_sha256, str)
                     or not SHA256.fullmatch(self.branch_policy_sha256)
                     or type(self.ruleset_applied_record_id) is not int
-                    or self.ruleset_applied_record_id < 1):
+                    or self.ruleset_applied_record_id < 1
+                    or not isinstance(self.setup_branch, str)
+                    or not self.setup_branch.startswith("pases/consumer-activation-")):
                 raise ConsumerActivationError("V2 Activation policy evidence is incomplete")
         else:
             raise ConsumerActivationError("Activation record version is unknown")
@@ -813,6 +998,7 @@ class ConsumerActivationRecord:
                 "review_mode": self.review_mode,
                 "ruleset_id": self.ruleset_id,
                 "ruleset_applied_record_id": self.ruleset_applied_record_id,
+                "setup_branch": self.setup_branch,
             })
         return value
 
@@ -828,7 +1014,7 @@ class ConsumerActivationRecord:
         version = 1 if value.get("schema") == "PASES_CONSUMER_ACTIVATION_V1" else (
             2 if value.get("schema") == "PASES_CONSUMER_ACTIVATION_V2" else None)
         expected = common if version == 1 else common | {
-            "branch_policy_sha256", "review_mode", "ruleset_id", "ruleset_applied_record_id",
+            "branch_policy_sha256", "review_mode", "ruleset_id", "ruleset_applied_record_id", "setup_branch",
         } if version == 2 else set()
         if not expected or set(value) != expected:
             raise ConsumerActivationError("Activation record has unknown schema or fields")
@@ -851,6 +1037,7 @@ class ConsumerActivationRecord:
             review_mode=value.get("review_mode"), ruleset_id=value.get("ruleset_id"),
             branch_policy_sha256=value.get("branch_policy_sha256"),
             ruleset_applied_record_id=value.get("ruleset_applied_record_id"),
+            setup_branch=value.get("setup_branch"),
         ).validate()
 
     @property
@@ -882,6 +1069,7 @@ def _approval_payload(record_fields: dict[str, Any], *, predecessor: int | None)
             "review_mode": record_fields["review_mode"],
             "ruleset_id": record_fields["ruleset_id"],
             "ruleset_applied_record_id": record_fields["ruleset_applied_record_id"],
+            "setup_branch": record_fields["setup_branch"],
         })
     return value
 
@@ -932,7 +1120,543 @@ def _ensure_setup_branch(root: Path, branch_ref: str, base_sha40: str, content: 
     return commit_sha, resumed
 
 
-def setup_consumer_activation(root: Path, github: GitHub) -> dict[str, Any]:
+def _checkpoint_v2(root: Path, *, repository: str, repository_id: int, owner_id: int,
+                   issue_number: int, adc: VerifiedADC, predecessor_record_id: int | None,
+                   default_branch: str, default_branch_sha40: str, checks: tuple[tuple[str, int], ...],
+                   stage: str, status: str, setup_branch: str | None = None,
+                   setup_commit_sha40: str | None = None, profile_sha256: str | None = None,
+                   plan_sha256: str | None = None, policy_status: str | None = None,
+                   ruleset_id: int | None = None, applied_record_id: int | None = None,
+                   effective_policy_sha256: str | None = None, setup_pr_number: int | None = None
+                   ) -> tuple[ActivationCheckpoint, Path, str]:
+    checkpoint = ActivationCheckpoint(
+        repository=repository, repository_id=repository_id, owner_id=owner_id,
+        activation_issue_number=issue_number, adc_comment_id=adc.pointer.comment_id,
+        adc_sha256=adc.pointer.sha256, predecessor_record_id=predecessor_record_id,
+        default_branch=default_branch, default_branch_sha40=default_branch_sha40,
+        review_mode="solo_owner", required_checks=checks, stage=stage, status=status,
+        setup_branch=setup_branch, setup_commit_sha40=setup_commit_sha40,
+        profile_sha256=profile_sha256, plan_sha256=plan_sha256,
+        policy_status=policy_status, ruleset_id=ruleset_id, applied_record_id=applied_record_id,
+        effective_policy_sha256=effective_policy_sha256, setup_pr_number=setup_pr_number,
+    ).validate()
+    path = activation_checkpoint_path(root, issue_number)
+    digest = write_activation_checkpoint(path, checkpoint, root=root)
+    return checkpoint, path, digest
+
+
+def _policy_inventory(operation: str, *, verified: bool, blockers: tuple[str, ...] = ()) -> dict[str, str]:
+    if verified:
+        return {"activation_profile": "VERIFIED", "review_mode": "VERIFIED",
+                "repository_ruleset": "VERIFIED", "effective_default_branch_policy": "VERIFIED",
+                "required_checks": "VERIFIED"}
+    if blockers:
+        return {"activation_profile": "VERIFIED", "review_mode": "VERIFIED",
+                "repository_ruleset": "BLOCKED", "effective_default_branch_policy": "BLOCKED",
+                "required_checks": "VERIFIED"}
+    if operation in {"create", "update"}:
+        return {"activation_profile": "VERIFIED", "review_mode": "VERIFIED",
+                "repository_ruleset": "NEEDS_APPLY", "effective_default_branch_policy": "NEEDS_APPLY",
+                "required_checks": "VERIFIED"}
+    return {"activation_profile": "VERIFIED", "review_mode": "VERIFIED",
+            "repository_ruleset": "BLOCKED", "effective_default_branch_policy": "BLOCKED",
+            "required_checks": "VERIFIED"}
+
+
+def activation_setting_inventory(review_mode: str, *, required_checks_verified: bool,
+                                 policy_verified: bool = False, blocked: bool = False) -> dict[str, str]:
+    """Report every Activation setting and distinguish unsupported V1 policy from unmet requirements."""
+    checks = "VERIFIED" if required_checks_verified else "BLOCKED"
+    profile = "VERIFIED" if required_checks_verified else "BLOCKED"
+    if review_mode == "solo_owner":
+        policy = "BLOCKED" if blocked else ("VERIFIED" if policy_verified else "NEEDS_APPLY")
+        return {"activation_profile": profile, "review_mode": "VERIFIED",
+                "repository_ruleset": policy, "effective_default_branch_policy": policy,
+                "required_checks": checks}
+    if review_mode == "external_reviewer":
+        return {"activation_profile": profile, "review_mode": "VERIFIED",
+                "repository_ruleset": "UNSUPPORTED", "effective_default_branch_policy": "UNSUPPORTED",
+                "required_checks": checks}
+    return {"activation_profile": "BLOCKED", "review_mode": "BLOCKED",
+            "repository_ruleset": "BLOCKED", "effective_default_branch_policy": "BLOCKED",
+            "required_checks": checks}
+
+
+def _stale_policy_bound_setup_pr(github: GitHub, pr: dict[str, Any], expected: dict[str, Any],
+                                 default_branch: str, repository_id: int) -> bool:
+    """Recognize only an otherwise exact open PR whose immutable policy binding is stale."""
+    policy_fields = {"branch_policy_sha256", "ruleset_applied_record_id", "ruleset_id"}
+    try:
+        payload = _decode(pr.get("body"), SETUP_MARKER_V2, "setup PR", allow_trailer=True)
+        base, head = pr.get("base"), pr.get("head")
+        base_repo = base.get("repo") if isinstance(base, dict) else None
+        head_repo = head.get("repo") if isinstance(head, dict) else None
+        if (pr.get("state") != "open" or pr.get("merged") is True or pr.get("draft") is not False
+                or not isinstance(base, dict) or base.get("ref") != default_branch
+                or not isinstance(head, dict) or head.get("ref") != expected.get("setup_branch")
+                or not _repositories_match(base_repo, head_repo, github.repo, expected_id=repository_id)):
+            return False
+        if ({key: value for key, value in payload.items() if key not in policy_fields}
+                != {key: value for key, value in expected.items() if key not in policy_fields}):
+            return False
+        actual_policy = {key: payload.get(key) for key in policy_fields}
+        expected_policy = {key: expected.get(key) for key in policy_fields}
+        if actual_policy == expected_policy:
+            return False
+        files = github.pull_request_files(_positive(pr.get("number"), "setup PR number"))
+        return len(files) == 1 and files[0].get("filename") == ".agent/project.json"
+    except (ConsumerActivationError, GitHubError):
+        return False
+
+
+def _activation_binding(issue_number: int, adc: VerifiedADC, predecessor: int | None,
+                        base_sha40: str, branch_ref: str, setup_commit: str) -> dict[str, Any]:
+    return {
+        "activation_issue_number": issue_number,
+        "adc_comment_id": adc.pointer.comment_id,
+        "adc_sha256": adc.pointer.sha256,
+        "base_sha40": base_sha40,
+        "predecessor_record_id": predecessor,
+        "schema": ACTIVATION_BINDING_SCHEMA,
+        "setup_branch": branch_ref,
+        "setup_commit_sha40": setup_commit,
+    }
+
+
+def _policy_read_access_blocked(error: BaseException | None = None,
+                                blockers: tuple[str, ...] = ()) -> bool:
+    access_codes = {
+        "CURRENT_BRANCH_POLICY_READBACK_INCOMPLETE", "REPOSITORY_RULESET_INVENTORY_UNAVAILABLE",
+        "MANAGED_RULESET_DETAIL_UNAVAILABLE", "DEFAULT_BRANCH_HEAD_UNVERIFIED",
+        "OPEN_PULL_REQUEST_IMPACT_READBACK_UNAVAILABLE",
+    }
+    if blockers and set(blockers).issubset(access_codes):
+        return True
+    current = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if getattr(current, "status_code", None) == 403:
+            return True
+        current = current.__cause__
+    return False
+
+
+def _setup_consumer_activation_v2_impl(
+    root: Path, github: GitHub, *, default_branch: str, repository_id: int,
+    owner_id: int, issue_number: int, adc: VerifiedADC, history: list[tuple[ConsumerActivationRecord, int]],
+    profile_value: dict[str, Any], profile_content: bytes, configured_issue: int | None,
+    required_checks: tuple[tuple[str, int], ...], policy_github: GitHub | None = None,
+) -> dict[str, Any]:
+    """Drive solo_owner Activation through a resumable plan/apply/readback lifecycle."""
+    policy_reader = policy_github or github
+    profile_sha256 = hashlib.sha256(profile_content).hexdigest()
+    latest = history[-1][0] if history else None
+    predecessor = history[-1][1] if history else None
+    checkpoint_path = activation_checkpoint_path(root, issue_number)
+    plan_path = activation_plan_path(root, issue_number)
+
+    # An already-recorded V2 is reusable only after two equal fresh policy reads.
+    if (latest is not None and latest.schema_version == 2 and configured_issue == issue_number
+            and adc.pointer.state == "approved" and latest.adc_sha256 == adc.pointer.sha256
+            and latest.activation_profile_sha256 == profile_sha256):
+        try:
+            first = read_verified_managed_policy(
+                policy_reader, default_branch, required_checks, "solo_owner", issue_number,
+            )
+            second = read_verified_managed_policy(
+                policy_reader, default_branch, required_checks, "solo_owner", issue_number,
+            )
+            if first == second and (latest.ruleset_id == first["ruleset_id"]
+                                    and latest.branch_policy_sha256 == first["effective_policy_sha256"]
+                                    and latest.ruleset_applied_record_id == first["applied_record_id"]):
+                _, saved_path, checkpoint_sha = _checkpoint_v2(
+                    root, repository=github.repo, repository_id=repository_id, owner_id=owner_id,
+                    issue_number=issue_number, adc=adc,
+                    predecessor_record_id=latest.predecessor_record_id,
+                    default_branch=default_branch,
+                    default_branch_sha40=github.branch(default_branch)["commit"]["sha"],
+                    checks=required_checks, stage="ACTIVATION_RECORD", status="ACTIVE",
+                    profile_sha256=profile_sha256, policy_status="VERIFIED",
+                    ruleset_id=first["ruleset_id"], applied_record_id=first["applied_record_id"],
+                    effective_policy_sha256=first["effective_policy_sha256"],
+                )
+                return {"status": "ACTIVE", "stage": "ACTIVATION_RECORD", "repository": github.repo,
+                        "issue": issue_number, "activation_comment_id": history[-1][1],
+                        "activated_at": latest.activated_at, "adc_comment_id": adc.pointer.comment_id,
+                        "adc_sha256": adc.pointer.sha256, "checkpoint_path": str(saved_path),
+                        "checkpoint_sha256": checkpoint_sha, "required_setting_inventory":
+                        _policy_inventory("noop", verified=True), "reused": True}
+        except (GitHubError, RulesetManagementError):
+            # A current V2 record remains historical. The transaction continues into a fresh plan.
+            pass
+
+    base_sha40 = head_sha40(root)
+    branch_ref = _setup_branch(issue_number, adc.pointer.sha256, predecessor, version=2,
+                               base_sha40=base_sha40)
+    _checkpoint_v2(
+        root, repository=github.repo, repository_id=repository_id, owner_id=owner_id,
+        issue_number=issue_number, adc=adc, predecessor_record_id=predecessor,
+        default_branch=default_branch, default_branch_sha40=base_sha40, checks=required_checks,
+        stage="DISCOVER_AND_PREFLIGHT", status="RUNNING", profile_sha256=profile_sha256,
+    )
+    before = (root / ".agent" / "project.json").read_bytes()
+    try:
+        setup_commit, resumed_branch = _ensure_setup_branch(root, branch_ref, base_sha40, profile_content)
+    except (GitHubError, GitError, OSError) as exc:
+        _checkpoint_v2(
+            root, repository=github.repo, repository_id=repository_id, owner_id=owner_id,
+            issue_number=issue_number, adc=adc, predecessor_record_id=predecessor,
+            default_branch=default_branch, default_branch_sha40=base_sha40, checks=required_checks,
+            stage="PREPARE_SETUP_BRANCH", status="BLOCKED", setup_branch=branch_ref,
+            profile_sha256=profile_sha256,
+        )
+        raise ConsumerActivationError(f"Activation setup branch preparation failed closed: {exc}") from exc
+    finally:
+        if current_branch(root) == branch_ref:
+            switch_branch(root, default_branch)
+        if not worktree_clean(root) and not (root / ".agent" / "project.json").exists():
+            _write_profile(root, before)
+    if not worktree_clean(root) or current_branch(root) != default_branch:
+        raise ConsumerActivationError("Activation setup did not restore the clean default-branch worktree")
+
+    binding = _activation_binding(issue_number, adc, predecessor, base_sha40, branch_ref, setup_commit)
+    _checkpoint_v2(
+        root, repository=github.repo, repository_id=repository_id, owner_id=owner_id,
+        issue_number=issue_number, adc=adc, predecessor_record_id=predecessor,
+        default_branch=default_branch, default_branch_sha40=base_sha40, checks=required_checks,
+        stage="POLICY_PLAN", status="RUNNING", setup_branch=branch_ref,
+        setup_commit_sha40=setup_commit, profile_sha256=profile_sha256,
+    )
+    try:
+        plan = build_ruleset_plan(root, policy_reader, profile_ref=setup_commit, activation_binding=binding)
+    except RulesetManagementError as exc:
+        if policy_reader is github and _policy_read_access_blocked(exc):
+            _, saved_path, checkpoint_sha = _checkpoint_v2(
+                root, repository=github.repo, repository_id=repository_id, owner_id=owner_id,
+                issue_number=issue_number, adc=adc, predecessor_record_id=predecessor,
+                default_branch=default_branch, default_branch_sha40=base_sha40, checks=required_checks,
+                stage="POLICY_PLAN", status="ADMIN_AUTH_REQUIRED", setup_branch=branch_ref,
+                setup_commit_sha40=setup_commit, profile_sha256=profile_sha256,
+            )
+            return {"status": "ADMIN_POLICY_UNAVAILABLE", "stage": "POLICY_PLAN",
+                    "repository": github.repo, "issue": issue_number,
+                    "setup_branch": branch_ref, "setup_commit_sha40": setup_commit,
+                    "checkpoint_path": str(saved_path), "checkpoint_sha256": checkpoint_sha,
+                    "required_setting_inventory": _policy_inventory(
+                        "blocked", verified=False, blockers=(str(exc),)),
+                    "reasons": [str(exc)],
+                    "next_permitted_step": "Run consumer-activation-admin-plan in the trusted owner-local TTY; it resumes this checkpoint."}
+        raise
+    if plan["blockers"]:
+        blockers = tuple(plan["blockers"])
+        if policy_reader is github and _policy_read_access_blocked(blockers=blockers):
+            _, saved_path, checkpoint_sha = _checkpoint_v2(
+                root, repository=github.repo, repository_id=repository_id, owner_id=owner_id,
+                issue_number=issue_number, adc=adc, predecessor_record_id=predecessor,
+                default_branch=default_branch, default_branch_sha40=base_sha40, checks=required_checks,
+                stage="POLICY_PLAN", status="ADMIN_AUTH_REQUIRED", setup_branch=branch_ref,
+                setup_commit_sha40=setup_commit, profile_sha256=profile_sha256,
+                plan_sha256=plan["plan_sha256"], policy_status=(
+                    plan.get("policy_proof", {}).get("status")
+                    if isinstance(plan.get("policy_proof"), dict) else None),
+            )
+            return {"status": "ADMIN_POLICY_UNAVAILABLE", "stage": "POLICY_PLAN",
+                    "repository": github.repo, "issue": issue_number,
+                    "plan_sha256": plan["plan_sha256"], "blockers": list(blockers),
+                    "plan_path": str(plan_path), "checkpoint_path": str(saved_path),
+                    "checkpoint_sha256": checkpoint_sha,
+                    "required_setting_inventory": _policy_inventory(
+                        "blocked", verified=False, blockers=blockers),
+                    "next_permitted_step": "Run consumer-activation-admin-plan in the trusted owner-local TTY; it resumes this checkpoint."}
+        _, saved_path, checkpoint_sha = _checkpoint_v2(
+            root, repository=github.repo, repository_id=repository_id, owner_id=owner_id,
+            issue_number=issue_number, adc=adc, predecessor_record_id=predecessor,
+            default_branch=default_branch, default_branch_sha40=base_sha40, checks=required_checks,
+            stage="POLICY_PLAN", status="BLOCKED", setup_branch=branch_ref,
+            setup_commit_sha40=setup_commit, profile_sha256=profile_sha256,
+            plan_sha256=plan["plan_sha256"], policy_status=(
+                plan.get("policy_proof", {}).get("status") if isinstance(plan.get("policy_proof"), dict) else None),
+        )
+        return {"status": "BLOCKED", "stage": "POLICY_PLAN", "repository": github.repo,
+                "issue": issue_number, "plan_sha256": plan["plan_sha256"],
+                "blockers": list(blockers), "checkpoint_path": str(saved_path),
+                "checkpoint_sha256": checkpoint_sha, "required_setting_inventory":
+                _policy_inventory("blocked", verified=False, blockers=blockers), "reused": resumed_branch}
+
+    write_ruleset_plan(plan_path, plan)
+    if plan["diff"]["operation"] in {"create", "update"}:
+        _, saved_path, checkpoint_sha = _checkpoint_v2(
+            root, repository=github.repo, repository_id=repository_id, owner_id=owner_id,
+            issue_number=issue_number, adc=adc, predecessor_record_id=predecessor,
+            default_branch=default_branch, default_branch_sha40=base_sha40, checks=required_checks,
+            stage="AWAIT_OWNER_POLICY_DECISION", status="PENDING_APPROVAL", setup_branch=branch_ref,
+            setup_commit_sha40=setup_commit, profile_sha256=profile_sha256,
+            plan_sha256=plan["plan_sha256"], policy_status=(
+                plan.get("policy_proof", {}).get("status") if isinstance(plan.get("policy_proof"), dict) else None),
+        )
+        return {"status": "PENDING_APPROVAL", "stage": "AWAIT_OWNER_POLICY_DECISION",
+                "repository": github.repo, "issue": issue_number, "plan_sha256": plan["plan_sha256"],
+                "operation": plan["diff"]["operation"].upper(), "plan_path": str(plan_path),
+                "setup_branch": branch_ref, "setup_commit_sha40": setup_commit,
+                "checkpoint_path": str(saved_path), "checkpoint_sha256": checkpoint_sha,
+                "next_permitted_step": "RULESET_PLAN_APPLY exact owner decision, then trusted local consumer-activation-admin-apply",
+                "required_setting_inventory": _policy_inventory(plan["diff"]["operation"], verified=False),
+                "reused": resumed_branch}
+
+    try:
+        policy_evidence = read_verified_managed_policy(
+            policy_reader, default_branch, required_checks, "solo_owner", issue_number,
+        )
+        repeated_policy = read_verified_managed_policy(
+            policy_reader, default_branch, required_checks, "solo_owner", issue_number,
+        )
+    except (GitHubError, RulesetManagementError) as exc:
+        _, saved_path, checkpoint_sha = _checkpoint_v2(
+            root, repository=github.repo, repository_id=repository_id, owner_id=owner_id,
+            issue_number=issue_number, adc=adc, predecessor_record_id=predecessor,
+            default_branch=default_branch, default_branch_sha40=base_sha40, checks=required_checks,
+            stage="APPLY_AND_READBACK", status="BLOCKED", setup_branch=branch_ref,
+            setup_commit_sha40=setup_commit, profile_sha256=profile_sha256,
+            plan_sha256=plan["plan_sha256"], policy_status="BLOCKED",
+        )
+        return {"status": "BLOCKED", "stage": "APPLY_AND_READBACK", "repository": github.repo,
+                "issue": issue_number, "plan_sha256": plan["plan_sha256"], "blockers": [str(exc)],
+                "checkpoint_path": str(saved_path), "checkpoint_sha256": checkpoint_sha,
+                "required_setting_inventory": _policy_inventory("blocked", verified=False,
+                                                                   blockers=(str(exc),)),
+                "reused": resumed_branch}
+    if policy_evidence != repeated_policy:
+        raise ConsumerActivationError("effective managed policy changed during Activation readback")
+
+    expected = _setup_payload_v2(
+        issue_number, adc, predecessor, profile_content, "solo_owner",
+        policy_evidence["ruleset_id"], policy_evidence["effective_policy_sha256"],
+        policy_evidence["applied_record_id"], required_checks, branch_ref,
+    )
+    candidates = github.pull_requests_for_refs(base_ref=default_branch, head_ref=branch_ref)
+    if len(candidates) > 1:
+        raise ConsumerActivationError("multiple setup PRs match the exact Activation branch")
+    if candidates and candidates[0].get("state") == "open":
+        if _stale_policy_bound_setup_pr(github, candidates[0], expected, default_branch, repository_id):
+            generation_sha256 = hashlib.sha256(_canonical({
+                "branch_policy_sha256": policy_evidence["effective_policy_sha256"],
+                "ruleset_applied_record_id": policy_evidence["applied_record_id"],
+                "ruleset_id": policy_evidence["ruleset_id"],
+            })).hexdigest()
+            branch_ref = _setup_branch(
+                issue_number, adc.pointer.sha256, predecessor, version=2,
+                base_sha40=base_sha40, generation_sha256=generation_sha256,
+            )
+            try:
+                setup_commit, resumed_branch = _ensure_setup_branch(
+                    root, branch_ref, base_sha40, profile_content,
+                )
+            except (GitHubError, GitError, OSError) as exc:
+                _checkpoint_v2(
+                    root, repository=github.repo, repository_id=repository_id, owner_id=owner_id,
+                    issue_number=issue_number, adc=adc, predecessor_record_id=predecessor,
+                    default_branch=default_branch, default_branch_sha40=base_sha40, checks=required_checks,
+                    stage="PREPARE_SETUP_BRANCH", status="BLOCKED", setup_branch=branch_ref,
+                    setup_commit_sha40=None, profile_sha256=profile_sha256,
+                )
+                raise ConsumerActivationError(
+                    f"new policy-bound Activation setup generation could not be prepared: {exc}"
+                ) from exc
+            finally:
+                if current_branch(root) != default_branch:
+                    switch_branch(root, default_branch)
+            if not worktree_clean(root):
+                raise ConsumerActivationError("new policy-bound Activation setup generation left a dirty worktree")
+            binding = _activation_binding(
+                issue_number, adc, predecessor, base_sha40, branch_ref, setup_commit,
+            )
+            _checkpoint_v2(
+                root, repository=github.repo, repository_id=repository_id, owner_id=owner_id,
+                issue_number=issue_number, adc=adc, predecessor_record_id=predecessor,
+                default_branch=default_branch, default_branch_sha40=base_sha40, checks=required_checks,
+                stage="POLICY_PLAN", status="RUNNING", setup_branch=branch_ref,
+                setup_commit_sha40=setup_commit, profile_sha256=profile_sha256,
+            )
+            plan = build_ruleset_plan(
+                root, policy_reader, profile_ref=setup_commit, activation_binding=binding,
+            )
+            if plan["blockers"]:
+                blockers = tuple(plan["blockers"])
+                _, saved_path, checkpoint_sha = _checkpoint_v2(
+                    root, repository=github.repo, repository_id=repository_id, owner_id=owner_id,
+                    issue_number=issue_number, adc=adc, predecessor_record_id=predecessor,
+                    default_branch=default_branch, default_branch_sha40=base_sha40, checks=required_checks,
+                    stage="POLICY_PLAN", status="BLOCKED", setup_branch=branch_ref,
+                    setup_commit_sha40=setup_commit, profile_sha256=profile_sha256,
+                    plan_sha256=plan["plan_sha256"], policy_status=(
+                        plan.get("policy_proof", {}).get("status")
+                        if isinstance(plan.get("policy_proof"), dict) else None),
+                )
+                return {"status": "BLOCKED", "stage": "POLICY_PLAN", "repository": github.repo,
+                        "issue": issue_number, "plan_sha256": plan["plan_sha256"],
+                        "blockers": list(blockers), "checkpoint_path": str(saved_path),
+                        "checkpoint_sha256": checkpoint_sha,
+                        "required_setting_inventory": _policy_inventory(
+                            "blocked", verified=False, blockers=blockers),
+                        "reused": resumed_branch}
+            write_ruleset_plan(plan_path, plan)
+            if plan["diff"]["operation"] in {"create", "update"}:
+                _, saved_path, checkpoint_sha = _checkpoint_v2(
+                    root, repository=github.repo, repository_id=repository_id, owner_id=owner_id,
+                    issue_number=issue_number, adc=adc, predecessor_record_id=predecessor,
+                    default_branch=default_branch, default_branch_sha40=base_sha40, checks=required_checks,
+                    stage="AWAIT_OWNER_POLICY_DECISION", status="PENDING_APPROVAL", setup_branch=branch_ref,
+                    setup_commit_sha40=setup_commit, profile_sha256=profile_sha256,
+                    plan_sha256=plan["plan_sha256"], policy_status=(
+                        plan.get("policy_proof", {}).get("status")
+                        if isinstance(plan.get("policy_proof"), dict) else None),
+                )
+                return {"status": "PENDING_APPROVAL", "stage": "AWAIT_OWNER_POLICY_DECISION",
+                        "repository": github.repo, "issue": issue_number,
+                        "plan_sha256": plan["plan_sha256"],
+                        "operation": plan["diff"]["operation"].upper(), "plan_path": str(plan_path),
+                        "setup_branch": branch_ref, "setup_commit_sha40": setup_commit,
+                        "checkpoint_path": str(saved_path), "checkpoint_sha256": checkpoint_sha,
+                        "next_permitted_step": "RULESET_PLAN_APPLY exact owner decision, then trusted local consumer-activation-admin-apply",
+                        "required_setting_inventory": _policy_inventory(plan["diff"]["operation"], verified=False),
+                        "reused": resumed_branch}
+            try:
+                policy_evidence = read_verified_managed_policy(
+                    policy_reader, default_branch, required_checks, "solo_owner", issue_number,
+                )
+                repeated_policy = read_verified_managed_policy(
+                    policy_reader, default_branch, required_checks, "solo_owner", issue_number,
+                )
+            except (GitHubError, RulesetManagementError) as exc:
+                raise ConsumerActivationError(
+                    f"new policy-bound Activation generation could not verify policy: {exc}"
+                ) from exc
+            if policy_evidence != repeated_policy:
+                raise ConsumerActivationError("effective managed policy changed while creating a successor setup generation")
+            expected = _setup_payload_v2(
+                issue_number, adc, predecessor, profile_content, "solo_owner",
+                policy_evidence["ruleset_id"], policy_evidence["effective_policy_sha256"],
+                policy_evidence["applied_record_id"], required_checks, branch_ref,
+            )
+            candidates = github.pull_requests_for_refs(base_ref=default_branch, head_ref=branch_ref)
+            if len(candidates) > 1:
+                raise ConsumerActivationError("multiple setup PRs match the successor policy generation")
+        if candidates and candidates[0].get("state") == "open":
+            pr = _check_setup_pr(github, candidates[0], expected, default_branch, repository_id)
+            _, saved_path, checkpoint_sha = _checkpoint_v2(
+                root, repository=github.repo, repository_id=repository_id, owner_id=owner_id,
+                issue_number=issue_number, adc=adc, predecessor_record_id=predecessor,
+                default_branch=default_branch, default_branch_sha40=base_sha40, checks=required_checks,
+                stage="SETUP_PR_REVIEW_AND_MERGE", status="SETUP_PENDING", setup_branch=branch_ref,
+                setup_commit_sha40=setup_commit, profile_sha256=profile_sha256,
+                plan_sha256=plan["plan_sha256"], policy_status="VERIFIED",
+                ruleset_id=policy_evidence["ruleset_id"], applied_record_id=policy_evidence["applied_record_id"],
+                effective_policy_sha256=policy_evidence["effective_policy_sha256"], setup_pr_number=pr["number"],
+            )
+            return {"status": "SETUP_PENDING", "stage": "SETUP_PR_REVIEW_AND_MERGE",
+                    "repository": github.repo, "issue": issue_number, "adc_comment_id": adc.pointer.comment_id,
+                    "adc_sha256": adc.pointer.sha256, "pr": pr["number"], "pr_url": pr.get("html_url"),
+                    "setup_branch": branch_ref, "setup_commit_sha40": setup_commit,
+                    "plan_sha256": plan["plan_sha256"], "checkpoint_path": str(saved_path),
+                    "checkpoint_sha256": checkpoint_sha,
+                    "required_setting_inventory": _policy_inventory("noop", verified=True),
+                    "next_permitted_step": "independent review, User Review, Final Delivery, and separate exact-HEAD PR_MERGE decision",
+                    "reused": True}
+    if candidates and candidates[0].get("merged") is True:
+        record, record_id = verify_and_record_activation(github, candidates[0]["number"], root=root)
+        return {"status": "ACTIVE", "stage": "ACTIVATION_RECORD", "repository": github.repo,
+                "issue": issue_number, "activation_comment_id": record_id, "activated_at": record.activated_at,
+                "pr": candidates[0]["number"], "checkpoint_path": str(checkpoint_path),
+                "required_setting_inventory": _policy_inventory("noop", verified=True), "reused": True}
+    if candidates:
+        raise ConsumerActivationError("an ambiguous closed setup PR already exists for this ADC generation")
+
+    if github.branch(branch_ref).get("commit", {}).get("sha") != setup_commit:
+        raise ConsumerActivationError("setup branch changed before policy-bound setup PR creation")
+    body = _body(_setup_marker(expected), expected) + "\n\nMerge this PR to approve the Activation ADC and authorize P-ASES for new Issues."
+    try:
+        created = github.create_pull_request(
+            title="P-ASES: prepare consumer Activation", body=body,
+            head_ref=branch_ref, base_ref=default_branch,
+        )
+        pr = github.pull_request(created["number"])
+    except GitHubError as exc:
+        recovered = github.pull_requests_for_refs(base_ref=default_branch, head_ref=branch_ref)
+        if len(recovered) != 1:
+            raise ConsumerActivationError("setup PR creation failed and exact recovery was ambiguous") from exc
+        pr = recovered[0]
+    pr = _check_setup_pr(github, pr, expected, default_branch, repository_id)
+    if pr.get("head", {}).get("sha") != setup_commit:
+        raise ConsumerActivationError("setup PR HEAD differs from the policy-bound profile commit")
+    _, saved_path, checkpoint_sha = _checkpoint_v2(
+        root, repository=github.repo, repository_id=repository_id, owner_id=owner_id,
+        issue_number=issue_number, adc=adc, predecessor_record_id=predecessor,
+        default_branch=default_branch, default_branch_sha40=base_sha40, checks=required_checks,
+        stage="SETUP_PR_REVIEW_AND_MERGE", status="SETUP_PENDING", setup_branch=branch_ref,
+        setup_commit_sha40=setup_commit, profile_sha256=profile_sha256,
+        plan_sha256=plan["plan_sha256"], policy_status="VERIFIED",
+        ruleset_id=policy_evidence["ruleset_id"], applied_record_id=policy_evidence["applied_record_id"],
+        effective_policy_sha256=policy_evidence["effective_policy_sha256"], setup_pr_number=pr["number"],
+    )
+    return {"status": "SETUP_PENDING", "stage": "SETUP_PR_REVIEW_AND_MERGE",
+            "repository": github.repo, "issue": issue_number, "adc_comment_id": adc.pointer.comment_id,
+            "adc_sha256": adc.pointer.sha256, "pr": pr["number"], "pr_url": pr.get("html_url"),
+            "setup_branch": branch_ref, "setup_commit_sha40": setup_commit,
+            "plan_sha256": plan["plan_sha256"], "checkpoint_path": str(checkpoint_path),
+            "checkpoint_sha256": checkpoint_sha, "required_checks_configured": True,
+            "required_setting_inventory": _policy_inventory("noop", verified=True),
+            "next_permitted_step": "independent review, User Review, Final Delivery, and separate exact-HEAD PR_MERGE decision",
+            "reused": resumed_branch}
+
+
+def _setup_consumer_activation_v2(
+    root: Path, github: GitHub, *, default_branch: str, repository_id: int,
+    owner_id: int, issue_number: int, adc: VerifiedADC, history: list[tuple[ConsumerActivationRecord, int]],
+    profile_value: dict[str, Any], profile_content: bytes, configured_issue: int | None,
+    required_checks: tuple[tuple[str, int], ...], policy_github: GitHub | None = None,
+) -> dict[str, Any]:
+    """Persist unexpected V2 transaction failures against the exact current checkpoint."""
+    try:
+        return _setup_consumer_activation_v2_impl(
+            root, github, default_branch=default_branch, repository_id=repository_id,
+            owner_id=owner_id, issue_number=issue_number, adc=adc, history=history,
+            profile_value=profile_value, profile_content=profile_content,
+            configured_issue=configured_issue, required_checks=required_checks,
+            policy_github=policy_github,
+        )
+    except Exception as exc:
+        path = activation_checkpoint_path(root, issue_number)
+        if path.is_file():
+            try:
+                checkpoint = read_activation_checkpoint(path)
+                predecessor = history[-1][1] if history else None
+                if (checkpoint.repository.casefold() == github.repo.casefold()
+                        and checkpoint.repository_id == repository_id and checkpoint.owner_id == owner_id
+                        and checkpoint.activation_issue_number == issue_number
+                        and checkpoint.adc_comment_id == adc.pointer.comment_id
+                        and checkpoint.adc_sha256 == adc.pointer.sha256
+                        and checkpoint.predecessor_record_id == predecessor):
+                    blocked = replace(checkpoint, status="BLOCKED")
+                    digest = write_activation_checkpoint(path, blocked, root=root)
+                    reason = str(exc) or exc.__class__.__name__
+                    return {
+                        "status": "BLOCKED", "stage": blocked.stage, "repository": github.repo,
+                        "issue": issue_number, "plan_sha256": blocked.plan_sha256,
+                        "setup_branch": blocked.setup_branch,
+                        "setup_commit_sha40": blocked.setup_commit_sha40,
+                        "checkpoint_path": str(path), "checkpoint_sha256": digest,
+                        "blockers": [reason],
+                        "required_setting_inventory": _policy_inventory(
+                            "blocked", verified=False, blockers=(reason,)),
+                        "next_permitted_step": "Resolve the blocker and rerun consumer-activation-setup; stale plan subjects must be rebuilt.",
+                    }
+            except (ConsumerActivationError, OSError):
+                pass
+        raise
+
+
+def setup_consumer_activation(root: Path, github: GitHub, *, policy_github: GitHub | None = None) -> dict[str, Any]:
     """Prepare a marked Activation Issue, proposed ADC, project.json setup PR; never activate pre-merge."""
     root = Path(root)
     if root.is_symlink() or not root.is_dir():
@@ -946,6 +1670,8 @@ def setup_consumer_activation(root: Path, github: GitHub) -> dict[str, Any]:
         raise ConsumerActivationError(f"could not resolve the active repository from this workspace: {exc}") from exc
     if local_repository.casefold() != github.repo.casefold():
         raise ConsumerActivationError("GitHub repository does not match the active workspace origin")
+    if policy_github is not None and policy_github.repo.casefold() != github.repo.casefold():
+        raise ConsumerActivationError("Activation policy reader targets a different repository")
     profile_path = root / ".agent" / "project.json"
     configured = None
     review_mode = "external_reviewer"
@@ -962,11 +1688,22 @@ def setup_consumer_activation(root: Path, github: GitHub) -> dict[str, Any]:
         metadata = github.repository_metadata()
         default_branch = metadata.get("default_branch")
         repository_id = _positive(metadata.get("id"), "repository ID")
+        owner = metadata.get("owner") if isinstance(metadata.get("owner"), dict) else {}
+        owner_id = _positive(owner.get("id"), "repository owner ID") if owner else None
+        full_name = metadata.get("full_name")
         if not isinstance(default_branch, str) or current_branch(root) != default_branch:
             raise ConsumerActivationError("Activation setup must start on the repository default branch")
         head = head_sha40(root)
         if github.branch(default_branch).get("commit", {}).get("sha") != head:
             raise ConsumerActivationError("local default branch must match GitHub default-branch HEAD")
+        if review_mode == "solo_owner":
+            if (not isinstance(full_name, str) or full_name.casefold() != github.repo.casefold()
+                    or not owner or owner.get("type") != "User" or owner_id is None):
+                raise ConsumerActivationError("solo_owner requires a stable repository owner identity")
+            if github.repo.casefold() == "puchinya/ai-agent-workflow" and (
+                    repository_id != 1401910271 or owner_id != 3744776
+                    or str(owner.get("login", "")).casefold() != "puchinya"):
+                raise ConsumerActivationError("fresh repository identity differs from the configured #63 owner")
         user = github.authenticated_user()
         _identity(user, "authenticated user")
         issue = _resolve_issue(github, configured)
@@ -984,40 +1721,72 @@ def setup_consumer_activation(root: Path, github: GitHub) -> dict[str, Any]:
         history = read_consumer_activation_history(github, github.repo, issue_number)
         value, content = _profile_for_setup(root, github.repo, issue_number)
         version = 2 if review_mode == "solo_owner" else 1
-        policy_evidence = None
-        checks: tuple[tuple[str, int], ...] = ()
         if version == 2:
             configured_profile = load_profile(root)
-            checks = tuple(sorted((name, app_id) for name, app_id in configured_profile.required_checks
-                                  if app_id is not None))
-            if len(checks) != len(configured_profile.required_checks):
-                raise ConsumerActivationError("Activation V2 requires trusted App IDs for every Required Check")
-            policy_evidence = read_verified_managed_policy(
-                github, default_branch, checks, review_mode, issue_number,
+            configured_checks = configured_profile.required_checks
+            missing = []
+            if not configured_checks:
+                missing.append(".agent/project.json:branch.required_checks")
+            if any(app_id is None for _name, app_id in configured_checks):
+                missing.append(".agent/project.json:branch.required_checks[].trusted_app_id")
+            checks = tuple(sorted((name, app_id) for name, app_id in configured_checks if app_id is not None))
+            if missing:
+                return {"status": "INPUT_REQUIRED", "stage": "DISCOVER_AND_PREFLIGHT",
+                        "repository": github.repo, "issue": issue_number,
+                        "required_setting_inventory": activation_setting_inventory(
+                            "solo_owner", required_checks_verified=False, blocked=True),
+                        "input_required": missing,
+                        "reasons": ["Use trusted committed Required Check names and App IDs; do not guess them."]}
+            if owner_id is None:
+                raise ConsumerActivationError("solo_owner repository owner stable ID is unavailable")
+            return _setup_consumer_activation_v2(
+                root, github, default_branch=default_branch, repository_id=repository_id,
+                owner_id=owner_id, issue_number=issue_number, adc=adc, history=history,
+                profile_value=value, profile_content=content,
+                configured_issue=configured, required_checks=checks, policy_github=policy_github,
             )
+        if profile_path.is_file():
+            try:
+                configured_profile = load_profile(root)
+            except ProfileError as exc:
+                raise ConsumerActivationError(f"existing project.json is invalid: {exc}") from exc
+            configured_checks = configured_profile.required_checks
+        else:
+            configured_checks = ()
+        missing = []
+        if not configured_checks:
+            missing.append(".agent/project.json:branch.required_checks")
+        if any(app_id is None for _name, app_id in configured_checks):
+            missing.append(".agent/project.json:branch.required_checks[].trusted_app_id")
+        checks = tuple(sorted((name, app_id) for name, app_id in configured_checks if app_id is not None))
+        if missing:
+            return {"status": "INPUT_REQUIRED", "stage": "DISCOVER_AND_PREFLIGHT",
+                    "repository": github.repo, "issue": issue_number,
+                    "required_setting_inventory": activation_setting_inventory(
+                        "external_reviewer", required_checks_verified=False),
+                    "input_required": missing,
+                    "reasons": ["Use trusted committed Required Check names and App IDs; do not guess."]}
         if (history and configured == issue_number and adc.pointer.state == "approved"
                 and history[-1][0].adc_sha256 == adc.pointer.sha256
-                and history[-1][0].schema_version == version
-                and (version == 1 or history[-1][0].activation_profile_sha256
-                     == hashlib.sha256(content).hexdigest())
-                and (version == 1 or history[-1][0].ruleset_id == policy_evidence["ruleset_id"]
-                     and history[-1][0].branch_policy_sha256 == policy_evidence["effective_policy_sha256"]
-                     and history[-1][0].ruleset_applied_record_id == policy_evidence["applied_record_id"])):
+                and history[-1][0].schema_version == version):
             active, record_id = history[-1]
+            recorded_checks = tuple(sorted((item.name, item.app_id) for item in active.required_check_runs))
+            if recorded_checks != checks:
+                return {"status": "BLOCKED", "stage": "DISCOVER_AND_PREFLIGHT",
+                        "repository": github.repo, "issue": issue_number,
+                        "activation_comment_id": record_id,
+                        "required_setting_inventory": activation_setting_inventory(
+                            review_mode, required_checks_verified=False, blocked=True),
+                        "reasons": ["current trusted Required Checks differ from the recorded Activation"]}
             return {"status": "ACTIVE", "repository": github.repo, "issue": issue_number,
                     "activation_comment_id": record_id, "activated_at": active.activated_at,
                     "adc_comment_id": adc.pointer.comment_id, "adc_sha256": adc.pointer.sha256,
+                    "required_setting_inventory": activation_setting_inventory(
+                        review_mode, required_checks_verified=True),
                     "reused": True}
         predecessor = history[-1][1] if history else None
-        if version == 2:
-            expected = _setup_payload_v2(
-                issue_number, adc, predecessor, content, review_mode,
-                policy_evidence["ruleset_id"], policy_evidence["effective_policy_sha256"],
-                policy_evidence["applied_record_id"], checks,
-            )
-        else:
-            expected = _setup_payload(issue_number, adc, predecessor)
-        branch_ref = _setup_branch(issue_number, adc.pointer.sha256, predecessor, version=version)
+        branch_ref = _setup_branch(issue_number, adc.pointer.sha256, predecessor, version=1)
+        expected = _setup_payload(issue_number, adc, predecessor)
         candidates = github.pull_requests_for_refs(base_ref=default_branch, head_ref=branch_ref)
         if len(candidates) > 1:
             raise ConsumerActivationError("multiple setup PRs match the exact Activation branch")
@@ -1025,12 +1794,19 @@ def setup_consumer_activation(root: Path, github: GitHub) -> dict[str, Any]:
             pr = _check_setup_pr(github, candidates[0], expected, default_branch, repository_id)
             return {"status": "SETUP_PENDING", "repository": github.repo, "issue": issue_number,
                     "adc_comment_id": adc.pointer.comment_id, "adc_sha256": adc.pointer.sha256,
-                    "pr": pr["number"], "pr_url": pr.get("html_url"), "reused": True}
+                    "pr": pr["number"], "pr_url": pr.get("html_url"),
+                    "required_setting_inventory": activation_setting_inventory(
+                        review_mode, required_checks_verified=True),
+                    "reused": True}
         if candidates and candidates[0].get("merged") is True:
             record, record_id = verify_and_record_activation(github, candidates[0]["number"])
             return {"status": "ACTIVE", "repository": github.repo, "issue": issue_number,
                     "activation_comment_id": record_id, "activated_at": record.activated_at,
-                    "pr": candidates[0]["number"], "reused": True}
+                    "pr": candidates[0]["number"],
+                    "required_setting_inventory": activation_setting_inventory(
+                        review_mode, required_checks_verified=True,
+                        policy_verified=record.schema_version == 2),
+                    "reused": True}
         if candidates:
             raise ConsumerActivationError("an ambiguous closed setup PR already exists for this ADC generation")
         before = profile_path.read_bytes() if profile_path.exists() else None
@@ -1066,6 +1842,8 @@ def setup_consumer_activation(root: Path, github: GitHub) -> dict[str, Any]:
                 "adc_comment_id": adc.pointer.comment_id, "adc_sha256": adc.pointer.sha256,
                     "pr": pr["number"], "pr_url": pr.get("html_url"), "setup_branch": branch_ref,
                 "required_checks_configured": bool(value.get("branch", {}).get("required_checks")),
+                "required_setting_inventory": activation_setting_inventory(
+                    review_mode, required_checks_verified=True),
                 "reasons": ([] if value.get("branch", {}).get("required_checks") else
                             ["Add trusted branch.required_checks in project.json before merging this setup PR."]),
                 "reused": resumed_branch}
@@ -1073,7 +1851,26 @@ def setup_consumer_activation(root: Path, github: GitHub) -> dict[str, Any]:
         raise ConsumerActivationError(f"Activation setup failed closed: {exc}") from exc
 
 
-def verify_and_record_activation(github: GitHub, pr_number: int) -> tuple[ConsumerActivationRecord, int]:
+def _record_checkpoint_active(root: Path | None, github: GitHub, record: ConsumerActivationRecord,
+                             pr_number: int) -> None:
+    if root is None or record.schema_version != 2:
+        return
+    path = activation_checkpoint_path(root, record.activation_issue_number)
+    if not path.exists():
+        return
+    checkpoint = read_activation_checkpoint(path)
+    if (checkpoint.repository.casefold() != github.repo.casefold()
+            or checkpoint.activation_issue_number != record.activation_issue_number
+            or checkpoint.setup_pr_number not in {None, pr_number}
+            or checkpoint.adc_sha256 != record.proposed_adc_sha256
+            or checkpoint.plan_sha256 is None):
+        raise ConsumerActivationError("Activation checkpoint does not match the verified setup PR record")
+    active = replace(checkpoint, stage="ACTIVATION_RECORD", status="ACTIVE")
+    write_activation_checkpoint(path, active, root=root)
+
+
+def verify_and_record_activation(github: GitHub, pr_number: int, *, root: Path | None = None
+                                 ) -> tuple[ConsumerActivationRecord, int]:
     """Verify an admin-merged setup PR, approve its exact ADC generation, and append history."""
     try:
         pr = github.pull_request(pr_number)
@@ -1094,6 +1891,7 @@ def verify_and_record_activation(github: GitHub, pr_number: int) -> tuple[Consum
                         or existing.proposed_adc_sha256 != setup["adc_sha256"]
                         or existing.merge_commit_sha40 != pr.get("merge_commit_sha")):
                     raise ConsumerActivationError("setup PR already has a conflicting Activation record")
+                _record_checkpoint_active(root, github, existing, pr_number)
                 return existing, existing_id
         checked_pr, _issue, proposed, check_evidence = _validate_merged_setup(
             github, pr_number, setup, require_current_adc=True, require_current_admin=True,
@@ -1146,6 +1944,7 @@ def verify_and_record_activation(github: GitHub, pr_number: int) -> tuple[Consum
                 "review_mode": setup["review_mode"],
                 "ruleset_id": setup["ruleset_id"],
                 "ruleset_applied_record_id": setup["ruleset_applied_record_id"],
+                "setup_branch": setup["setup_branch"],
             })
         approval_payload = _approval_payload(fields, predecessor=predecessor)
         comments = github.issue_comments(issue_number)
@@ -1186,6 +1985,7 @@ def verify_and_record_activation(github: GitHub, pr_number: int) -> tuple[Consum
             branch_policy_sha256=setup.get("branch_policy_sha256") if schema_version == 2 else None,
             ruleset_applied_record_id=(setup.get("ruleset_applied_record_id")
                                        if schema_version == 2 else None),
+            setup_branch=setup.get("setup_branch") if schema_version == 2 else None,
         ).validate()
         record_marker = RECORD_MARKER_V2 if schema_version == 2 else RECORD_MARKER
         if schema_version == 2:
@@ -1209,6 +2009,7 @@ def verify_and_record_activation(github: GitHub, pr_number: int) -> tuple[Consum
         result = read_consumer_activation_record(github, github.repo, issue_number)
         if result is None or result[1] != record_id or result[0].payload() != record.payload():
             raise ConsumerActivationError("Activation record did not pass complete readback")
+        _record_checkpoint_active(root, github, result[0], pr_number)
         return result[0], record_id
     except GitHubError as exc:
         raise ConsumerActivationError(f"post-merge Activation verification failed: {exc}") from exc
@@ -1347,6 +2148,7 @@ def read_consumer_activation_history(
                     "review_mode": record.review_mode,
                     "ruleset_id": record.ruleset_id,
                     "ruleset_applied_record_id": record.ruleset_applied_record_id,
+                    "setup_branch": record.setup_branch,
                 })
             pr, _issue, proposed, _pinned_checks = _validate_merged_setup(
                 github, record.setup_pr_number, expected_setup,

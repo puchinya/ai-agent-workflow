@@ -220,20 +220,39 @@ def evaluate_final_delivery(
     branch_protection: dict[str, Any] | None,
     required_check_names: Iterable[str],
     mergeable: bool | None,
+    review_mode: str = "external_reviewer",
+    effective_branch_policy: dict[str, Any] | None = None,
+    required_check_identities: Iterable[tuple[str, int]] = (),
+    expected_policy_branch: str | None = None,
 ) -> FinalDeliveryResult:
     """Require human review, GitHub review, checks, and branch protection separately."""
     subject.validate()
     reasons: list[str] = []
     user_review_sha: str | None = None
+    check_names = tuple(required_check_names)
+    check_identities = tuple(required_check_identities)
+    if review_mode not in {"external_reviewer", "solo_owner"}:
+        reasons.append("final-delivery review mode is unknown")
     if user_review is None:
         reasons.append("exact-subject final User Review evidence is missing")
     else:
         try:
             user_review.validate()
             review_subject = user_review.subject.verification_subject
-            if user_review.status != "APPROVED" or review_subject != subject:
+            exact_approved = user_review.status == "APPROVED" and review_subject == subject
+            if not exact_approved:
                 reasons.append("User Review is not APPROVED for the exact Verification subject")
-            else:
+            relay_evidence_ok = (
+                review_mode != "solo_owner"
+                or (isinstance(user_review.selected_approval_evidence, dict)
+                    and user_review.selected_approval_evidence.get("evidence_type")
+                    == "PASES_USER_REVIEW_DECISION_V1"
+                    and isinstance(user_review.selected_approval_event, str)
+                    and user_review.selected_approval_event.startswith("user-review-relay:"))
+            )
+            if not relay_evidence_ok:
+                reasons.append("solo_owner User Review lacks its typed dedicated relay carrier")
+            if exact_approved and relay_evidence_ok:
                 user_review_sha = user_review.sha256
         except (AttributeError, TypeError, ValueError):
             reasons.append("final User Review evidence is malformed")
@@ -255,12 +274,40 @@ def evaluate_final_delivery(
         reasons.append("PR HEAD changed after the final review subject")
     if current_pr_state != "open" or current_pr_draft is not False:
         reasons.append("PR is not open and non-draft")
-    if github_review_decision != "APPROVED" or github_review_head_sha40 != subject.pr_head_sha40:
+    if (review_mode == "external_reviewer"
+            and (github_review_decision != "APPROVED" or github_review_head_sha40 != subject.pr_head_sha40)):
         reasons.append("GitHub formal review decision is not APPROVED for the current HEAD")
-    if not isinstance(branch_protection, dict):
+    branch_evidence_sha: str | None = None
+    if review_mode == "solo_owner":
+        proof = effective_branch_policy
+        if not isinstance(branch_protection, dict) or not isinstance(proof, dict):
+            reasons.append("current effective Ruleset policy could not be read")
+        else:
+            observed_checks = proof.get("required_checks")
+            expected_checks = tuple(sorted(set(check_identities)))
+            try:
+                observed = tuple(sorted((row["name"], row["app_id"])
+                                        for row in observed_checks
+                                        if isinstance(row, dict) and set(row) == {"app_id", "name"}))
+            except (TypeError, KeyError):
+                observed = ()
+            if (proof.get("status") != "VERIFIED" or proof.get("review_mode") != "solo_owner"
+                    or proof.get("repository") != subject.repository
+                    or (expected_policy_branch is not None and proof.get("branch") != expected_policy_branch)
+                    or not expected_checks or observed != expected_checks
+                    or tuple(sorted(name for name, _app_id in observed))
+                       != tuple(sorted(set(check_names)))):
+                reasons.append("effective Ruleset policy is not verified for the exact trusted checks and PR base")
+            if (proof.get("minimum_approvals") != 0 or proof.get("force_push_disabled") is not True
+                    or proof.get("bypass_actor_count") != 0 or proof.get("pull_request_required") is not True):
+                reasons.append("effective solo_owner Ruleset does not enforce the exact safe PR policy")
+            branch_evidence_sha = hashlib.sha256(_canonical({
+                "branch_policy": proof, "policy_evidence": branch_protection,
+            })).hexdigest()
+    elif not isinstance(branch_protection, dict):
         reasons.append("GitHub branch protection could not be read")
     else:
-        required = tuple(sorted(set(required_check_names)))
+        required = tuple(sorted(set(check_names)))
         status_checks = branch_protection.get("required_status_checks")
         contexts = status_checks.get("contexts") if isinstance(status_checks, dict) else None
         review_policy = branch_protection.get("required_pull_request_reviews")
@@ -270,7 +317,9 @@ def evaluate_final_delivery(
                 or type(review_policy.get("required_approving_review_count")) is not int
                 or review_policy["required_approving_review_count"] < 1):
             reasons.append("branch protection does not require a formal pull-request review")
-    protection_sha = None if not isinstance(branch_protection, dict) else hashlib.sha256(_canonical(branch_protection)).hexdigest()
+    protection_sha = branch_evidence_sha
+    if review_mode == "external_reviewer" and isinstance(branch_protection, dict):
+        protection_sha = hashlib.sha256(_canonical(branch_protection)).hexdigest()
     if mergeable is not True:
         reasons.append("GitHub has not confirmed the PR as mergeable")
     status = "BLOCKED" if reasons else "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION"

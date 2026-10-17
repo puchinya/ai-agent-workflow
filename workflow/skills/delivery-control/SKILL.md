@@ -18,43 +18,29 @@ Owner: runtime/p_ases/delivery.py and gate_policy.py. Inputs are current PR iden
 
 ## Consumer Activation request
 
-When the user directly says `P-ASESを有効化して。` in a consumer repository, run setup from that active repository context:
+When the user directly says `P-ASESを有効化して。` in a consumer repository, run Activation from that active repository context:
 
 ```sh
 python -m p_ases delivery consumer-activation-setup
 ```
 
-The command resolves the repository from the workspace, creates or reuses one marked Activation Issue, publishes a proposed default Activation ADC only if none exists, adds `activation.issue_number` to `.agent/project.json` on a setup branch, and opens or reuses the reviewable PR. Do not ask the user to supply an Issue number. Setup does not activate the repository and does not change phase labels.
+The command resolves the repository and Activation identity, validates the committed profile and Required Checks, and returns a typed persisted stage, required-setting inventory, checkpoint, and next permitted step. Do not ask the user to supply an Issue number. The command may create or reuse the marked Activation Issue and proposed ADC under the existing append-only rules. For V2 it prepares only the setup branch and profile commit first; it does not create the V2 setup PR until the required policy is verified. `PENDING_APPROVAL`, `ADMIN_AUTH_REQUIRED`, `BLOCKED`, and `SETUP_PENDING` are resumable states, never Activation success. Do not ask the owner to edit an Issue, PR, Ruleset, label, or Settings page manually.
 
-For an explicitly configured `final_delivery.review_mode: solo_owner`, prepare the repository Ruleset only from a committed and pushed implementation branch. Start with the read-only preflight, then write the canonical plan outside the repository worktree:
-
-```sh
-python -m p_ases delivery consumer-activation-preflight
-python -m p_ases delivery consumer-activation-ruleset-plan --output /tmp/pases-ruleset-plan.json
-```
-
-Present the plan and its SHA-256. The repository owner must manually post this exact two-line comment on the Activation Issue configured by `.agent/project.json` at `activation.issue_number` (this repository currently configures #57):
-
-```text
-PASES-RULESET-APPROVE: <64-digit plan SHA-256>
-PASES-REPOSITORY: OWNER/REPOSITORY
-```
-
-The agent must not create or edit that approval. After the owner posts it, run apply with the plan path and exact comment ID:
+For the #63 `solo_owner` profile, Activation builds a canonical Ruleset plan bound to the committed setup-branch HEAD and persists it in the checkpoint. If a write is needed, present the exact plan SHA and request the distinct `RULESET_PLAN_APPLY` decision through the isolated owner relay. A generic “continue” or an Admin credential is not approval. The Codex executor must not create the Issue #57 approval evidence. Once the isolated relay records the decision and exact plan approval, the owner resumes that checkpoint from a trusted local TTY:
 
 ```sh
-python -m p_ases delivery consumer-activation-ruleset-apply --plan /tmp/pases-ruleset-plan.json --approval-comment-id COMMENT_ID
+python -m p_ases delivery consumer-activation-admin-apply --plan CHECKPOINT_PLAN_PATH --approval-comment-id RELAY_COMMENT_ID
 ```
 
-Apply rechecks the repository, profile, current policy, PR impact, owner identity, admin permission, and approval before a single Ruleset write. It persists an exact-plan intent before writing. If the process stops after that point, a retry verifies the same approval and predecessor, reads the exact Ruleset and effective policy, and appends or reuses its ownership record without another write. A same-name Ruleset without a matching intent remains unowned and blocks. A forbidden or incomplete read blocks; do not treat HTTP 403 as an unconfigured branch.
+Never request, print, or store the Admin credential in chat. The TTY command verifies the pinned owner, repository, permission, exact plan and relay evidence, then uses the existing one-write/durable-intent/readback path. If Admin policy reads are unavailable to the normal client, the same owner-local TTY continuation may generate the bound plan; no setup PR is created until policy readback is `VERIFIED`. An exact already-owned policy is `NOOP`, performs zero writes, and needs no write approval. If the local TTY or credentials are unavailable, keep Activation resumably blocked at provisioning and continue independent code/review work.
 
-Present the Issue and PR. The authenticated repository admin reviews the proposed ADC and the exact `.agent/project.json` change, configures `branch.required_checks` with the repository's real check names and trusted App IDs if the generated list is empty, then merges the setup PR. The agent must not merge it on this prompt alone. After the admin confirms the merge, run:
+After verified policy readback, Activation creates or reuses the exact V2 setup PR bound to the Ruleset ID, applied-record ID, and effective-policy digest. If required check names or trusted App IDs are missing, report `INPUT_REQUIRED` with their exact profile fields; never guess. Obtain the separate independent review, current Required Checks, User Review, Final Delivery, and exact-HEAD `PR_MERGE` decision before the isolated relay performs a merge. A successful Ruleset apply is not merge permission. After merge, run:
 
 ```sh
 python -m p_ases delivery consumer-activation-verify PR
 ```
 
-Run the verifier as the same authenticated human who merged the PR. It reconstructs the merge, required checks, ADC journal, admin identity, and default-branch ancestry before it appends Activation history. If verification blocks, report the exact reason and do not claim Activation. Once verified, a later Issue can be selected with:
+The verifier reconstructs the merge, Required Checks, ADC journal, admin identity, default-branch ancestry, and effective policy before appending Activation history. V2 becomes effective only at the Activation record comment's GitHub `created_at`, not at setup PR merge time. If verification blocks, report the exact reason and do not claim Activation. Once verified, a later Issue can be selected with:
 
 ```sh
 python -m p_ases delivery gate-policy ISSUE
@@ -62,7 +48,7 @@ python -m p_ases delivery gate-policy ISSUE
 
 Pre-Activation Issues remain untouched. Subsequent policy approval uses a successor setup PR; existing Gate Selections remain pinned to their original Activation record.
 
-When an explicit `solo_owner` policy has an applied Ruleset, setup creates a versioned V2 successor that binds the exact profile bytes, mode, trusted Required Checks/App IDs, Ruleset ID, and effective policy digest. V2 uses the GitHub Activation-record comment creation time; Issues created between setup merge and record publication remain on their prior eligible Activation. Existing V1 records and Gate Selections are read-only history.
+An already-owned matching Ruleset is read back as `NOOP`; after PR #64 bootstrap, normal V2 Activation must not create a second Ruleset. `external_reviewer` keeps its existing V1 behavior and does not receive unauthorized solo-owner policy writes; show the mode-specific setting inventory and block any unsupported or unmet mandatory requirement. Existing V1 records and Gate Selections remain read-only history.
 
 ## CLI
 

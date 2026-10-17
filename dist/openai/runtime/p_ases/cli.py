@@ -16,14 +16,16 @@ from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
-from .adc import ADCError, parse_adc, publish_adc, restore_adc, verify_adc
+from .adc import ADCError, parse_adc, publish_adc, restore_adc, verify_adc, verify_adc_generation
 from .admin_auth import AdminAuthError, temporary_admin_client
 from .consumer_activation import (
-    ConsumerActivationError, setup_consumer_activation, verify_and_record_activation,
+    ConsumerActivationError, activation_checkpoint_path, activation_setting_inventory, read_activation_checkpoint,
+    write_activation_checkpoint,
+    setup_consumer_activation, verify_and_record_activation,
 )
 from .ruleset_management import (
     RulesetManagementError, apply_ruleset_plan, build_ruleset_plan, preflight as ruleset_preflight,
-    write_plan as write_ruleset_plan,
+    read_plan as read_ruleset_plan, read_verified_managed_policy, write_plan as write_ruleset_plan,
 )
 from .git import GitError, current_branch, discover_repository, head_sha40, remote_branch_sha, worktree_clean
 from .document_format import DocumentFormatError, format_tree
@@ -140,6 +142,11 @@ from .user_review import (
     read_review_session, reject_unattested_chat_event, evaluate_user_review,
     review_session_path, write_feedback_snapshot, write_parent_feedback_snapshot,
     write_parent_review_session, write_review_session,
+)
+from .owner_consent import OwnerDecisionError, read_verified_owner_decision
+from .user_review_relay import (
+    UserReviewDecisionHistory, UserReviewRelayApproval, UserReviewRelayError,
+    has_user_review_decision_marker, verify_user_review_decision_history,
 )
 from .integration import (
     IntegrationError, IntegrationGateEvidence, ParentGateEvidenceComment, evaluate_parent_integration,
@@ -1100,7 +1107,7 @@ def _pr_ensure(args: argparse.Namespace, repository: str, root: Path, github: Gi
            "pr_binding_sha256": result.binding.sha256,
            "checkpoint_path": str(result.checkpoint_path),
            "checkpoint_sha256": result.checkpoint_sha256,
-           "reasons": [], "evidence_refs": [str(binding_path), str(pr_binding_path(root, args.issue)),
+           "reasons": [], "evidence_refs": [str(binding_path), str(pr_binding_path(root, args.issue, github=github)),
                                             str(result.checkpoint_path)]})
     return 0
 
@@ -1552,7 +1559,7 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
     binding_path = execution_binding_path(root, args.issue)
     try:
         binding = read_binding(binding_path)
-        pr_binding = read_pr_binding(pr_binding_path(root, args.issue))
+        pr_binding = read_pr_binding(pr_binding_path(root, args.issue, github=github))
         if binding.repository != repository or binding.issue_number != args.issue:
             raise CLIError("ExecutionBinding repository/Issue does not match")
         if (binding.adc_comment_id != (None if verified_adc is None else verified_adc.pointer.comment_id)
@@ -1709,7 +1716,7 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
         if binding is not None:
             try:
                 final_binding = read_binding(binding_path)
-                final_pr_binding = read_pr_binding(pr_binding_path(root, args.issue))
+                final_pr_binding = read_pr_binding(pr_binding_path(root, args.issue, github=github))
                 if final_binding != binding or final_pr_binding != pr_binding:
                     blockers.append("immutable ExecutionBinding or PRBinding changed before Readiness persistence")
             except (ExecutionError, CheckpointError, OSError) as exc:
@@ -1753,7 +1760,7 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
            "evidence_refs": [str(path), str(args.plan), str(args.verification), str(args.acceptance),
                              str(args.self_audit), str(args.independent_review),
                              str(execution_binding_path(root, args.issue)),
-                             str(pr_binding_path(root, args.issue)), *published_refs]})
+                             str(pr_binding_path(root, args.issue, github=github)), *published_refs]})
     return 0 if result.status == "PASS" else 2
 
 
@@ -1823,6 +1830,151 @@ def _read_review_record(path: Path) -> tuple[UserReviewSubject, UserReviewResult
     return result.subject, result, value["snapshot_sha256"]
 
 
+_ISSUE63_REPOSITORY_ID = 1401910271
+_ISSUE63_OWNER_ID = 3744776
+
+
+def _ruleset_operation_plan(github: GitHub, plan_path: Path) -> tuple[dict[str, Any], int | None]:
+    """Require the separate exact-plan owner decision before any Ruleset write path."""
+    plan = read_ruleset_plan(plan_path)
+    if (github.repo.casefold() != "puchinya/ai-agent-workflow"
+            or plan["repository_id"] != _ISSUE63_REPOSITORY_ID
+            or plan["owner_id"] != _ISSUE63_OWNER_ID or plan["activation_issue_number"] != 57):
+        raise CLIError("Ruleset owner relay is configured only for the approved #63 repository/Activation Issue")
+    if plan["diff"]["operation"] == "noop":
+        return plan, None
+    verified = read_verified_owner_decision(
+        github, issue_number=63, owner_id=_ISSUE63_OWNER_ID,
+        operation="RULESET_PLAN_APPLY", subject_sha256=plan["plan_sha256"],
+    )
+    return plan, verified.comment_id
+
+
+def _verify_activation_plan_checkpoint(root: Path, repository: str, plan: dict[str, Any]) -> None:
+    binding = plan.get("activation_binding")
+    if binding is None:
+        return
+    issue_number = plan.get("activation_issue_number")
+    checkpoint = read_activation_checkpoint(activation_checkpoint_path(root, issue_number))
+    checks = tuple(sorted((row.get("context"), row.get("integration_id"))
+                          for row in plan.get("required_checks", []) if isinstance(row, dict)))
+    if (checkpoint.repository.casefold() != repository.casefold()
+            or checkpoint.repository_id != plan.get("repository_id")
+            or checkpoint.owner_id != plan.get("owner_id")
+            or checkpoint.activation_issue_number != issue_number
+            or checkpoint.adc_comment_id != binding.get("adc_comment_id")
+            or checkpoint.adc_sha256 != binding.get("adc_sha256")
+            or checkpoint.default_branch_sha40 != binding.get("base_sha40")
+            or checkpoint.predecessor_record_id != binding.get("predecessor_record_id")
+            or checkpoint.setup_branch != binding.get("setup_branch")
+            or checkpoint.setup_commit_sha40 != binding.get("setup_commit_sha40")
+            or checkpoint.profile_sha256 != plan.get("profile_sha256")
+            or checkpoint.plan_sha256 != plan.get("plan_sha256")
+            or tuple(sorted(checkpoint.required_checks)) != checks
+            or checkpoint.stage not in {"POLICY_PLAN", "AWAIT_OWNER_POLICY_DECISION", "APPLY_AND_READBACK"}):
+        raise CLIError("Activation Ruleset plan is stale or does not match the current resumable checkpoint")
+
+
+def _verify_ruleset_noop(github: GitHub, plan: dict[str, Any]) -> dict[str, Any]:
+    checks = tuple((row["context"], row["integration_id"]) for row in plan["required_checks"])
+    first = read_verified_managed_policy(
+        github, plan["default_branch"], checks, plan["profile_review_mode"], plan["activation_issue_number"],
+    )
+    second = read_verified_managed_policy(
+        github, plan["default_branch"], checks, plan["profile_review_mode"], plan["activation_issue_number"],
+    )
+    if (first != second or first["ruleset_id"] != plan["existing_ruleset_id"]
+            or first["applied_record_id"] != plan["predecessor_comment_id"]
+            or first["ruleset_body_sha256"] != plan["existing_ruleset_sha256"]
+            or not isinstance(plan.get("policy_proof"), dict)
+            or first["policy"].as_dict() != plan["policy_proof"]):
+        raise CLIError("no-op Ruleset plan changed or lacks matching ownership/effective-policy evidence")
+    return first
+
+
+def _solo_owner_identity(github: GitHub, repository: str, issue_number: int,
+                         pr_number: int, expected_head_sha40: str) -> tuple[int, int, int]:
+    """Read configured owner, fresh PR author and independent read-only principal."""
+    if repository.casefold() != "puchinya/ai-agent-workflow" or issue_number != 63:
+        raise CLIError("solo_owner identity is only configured for puchinya/ai-agent-workflow Issue #63")
+    metadata = github.repository_metadata()
+    owner = metadata.get("owner") if isinstance(metadata, dict) else None
+    full_name = metadata.get("full_name") if isinstance(metadata, dict) else None
+    owner_login = owner.get("login") if isinstance(owner, dict) else None
+    if (not isinstance(metadata, dict) or metadata.get("id") != _ISSUE63_REPOSITORY_ID
+            or not isinstance(full_name, str) or full_name.casefold() != repository.casefold()
+            or not isinstance(owner, dict) or owner.get("type") != "User"
+            or owner.get("id") != _ISSUE63_OWNER_ID or not isinstance(owner_login, str)
+            or owner_login.casefold() != "puchinya"):
+        raise CLIError("fresh repository metadata differs from the configured Issue #63 owner identity")
+    pr = github.pull_request(pr_number)
+    head = pr.get("head") if isinstance(pr, dict) else None
+    author = pr.get("user") if isinstance(pr, dict) else None
+    if (not isinstance(head, dict) or head.get("sha") != expected_head_sha40
+            or not isinstance(author, dict) or author.get("type") != "User"
+            or author.get("id") != _ISSUE63_OWNER_ID):
+        raise CLIError("fresh PR author or HEAD differs from the configured solo_owner identity")
+    verifier = github.authenticated_user()
+    verifier_id = verifier.get("id")
+    if type(verifier_id) is not int or verifier_id < 1:
+        raise CLIError("read-only GitHub verifier principal is unavailable")
+    return _ISSUE63_OWNER_ID, author["id"], verifier_id
+
+
+def _read_user_review_relay_approval(
+    github: GitHub, *, session: UserReviewSession, readiness: Any,
+    owner_id: int, verifier_id: int,
+) -> UserReviewRelayApproval | None:
+    """Read all dedicated carriers as complete direct/list/direct evidence."""
+    subject = session.subject.verification_subject
+
+    def carrier_ids(rows: list[dict[str, Any]]) -> tuple[int, ...]:
+        selected: list[int] = []
+        for row in rows:
+            body = row.get("body") if isinstance(row, dict) else None
+            if not has_user_review_decision_marker(body):
+                continue
+            comment_id = row.get("id") if isinstance(row, dict) else None
+            if type(comment_id) is not int or comment_id < 1:
+                raise UserReviewRelayError("dedicated review carrier has no valid comment ID")
+            selected.append(comment_id)
+        if len(selected) != len(set(selected)):
+            raise UserReviewRelayError("dedicated review carrier ID is duplicated")
+        return tuple(selected)
+
+    initial = github.issue_comments(subject.issue_number)
+    initial_ids = carrier_ids(initial)
+    direct_before = {comment_id: github.issue_comment(subject.issue_number, comment_id)
+                     for comment_id in initial_ids}
+    listed = github.issue_comments(subject.issue_number)
+    listed_ids = carrier_ids(listed)
+    if listed_ids != initial_ids:
+        raise UserReviewRelayError("complete dedicated review history changed during readback")
+    direct_after = {comment_id: github.issue_comment(subject.issue_number, comment_id)
+                    for comment_id in listed_ids}
+    if not listed_ids:
+        return None
+    approval = verify_user_review_decision_history(
+        UserReviewDecisionHistory(tuple(listed), direct_before, direct_after, True),
+        repository=subject.repository, issue_number=subject.issue_number,
+        pr_number=subject.pr_number, repository_owner_user_id=owner_id,
+        authenticated_verifier_user_id=verifier_id, session=session,
+        readiness_sha256=session.subject.readiness_sha256,
+        adc_sha256=subject.adc_sha256, pr_head_sha40=subject.pr_head_sha40,
+    )
+    if readiness.status != "PASS" or readiness.sha256 != session.subject.readiness_sha256:
+        raise UserReviewRelayError("typed carrier was read for stale Review Readiness")
+    return approval
+
+
+def _same_snapshot_payload(left: FeedbackSnapshot, right: FeedbackSnapshot) -> bool:
+    """Compare the complete persisted payload while retaining its observation time."""
+    if left.subject != right.subject or left.events != right.events or left.unresolved_thread_ids != right.unresolved_thread_ids:
+        return False
+    normalized = replace(right, observed_at=left.observed_at).validate()
+    return normalized.sha256 == left.sha256
+
+
 def _review_phase_transition(github: GitHub, issue_number: int, kind: IssueKind,
                              result: UserReviewResult, operation: str) -> None:
     issue = github.issue(issue_number)
@@ -1887,48 +2039,91 @@ def _user_review_run(args: argparse.Namespace, repository: str, root: Path, gith
         if (readiness.status != "PASS" or readiness.subject != subject):
             raise CLIError("User Review cannot start without current exact-subject Review Readiness PASS")
         user_review_subject = UserReviewSubject(subject, readiness.sha256).validate()
-        session_started_at = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
-        session_path = review_session_path(root, UserReviewSession(user_review_subject, session_started_at))
-        if args.verb == "start":
-            session = write_review_session(session_path, UserReviewSession(user_review_subject, session_started_at))
+        profile = load_profile(root)
+        review_mode = profile.final_delivery_review_mode
+        if review_mode == "solo_owner":
+            owner_id, pr_author_id, verifier_id = _solo_owner_identity(
+                github, repository, args.issue, args.pr, args.head,
+            )
+            allowed_user_ids = (owner_id,)
         else:
-            session = read_review_session(session_path)
-            if session.subject != user_review_subject:
-                raise UserReviewError("User Review session belongs to a stale or different exact subject")
+            identity = github.authenticated_user()
+            owner_id = pr_author_id = verifier_id = None
+            allowed_user_ids = (identity["id"],)
+        session_path = review_session_path(root, user_review_subject)
+        if args.verb == "start":
+            session_started_at = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+            write_review_session(session_path, UserReviewSession(user_review_subject, session_started_at))
+        session = read_review_session(session_path)
+        if session.subject != user_review_subject:
+            raise UserReviewError("User Review session belongs to a stale or different exact subject")
         observed_at = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
         current = _review_payload_from_github(github, user_review_subject, observed_at=observed_at)
         previous = _latest_review_snapshot(root, user_review_subject)
         snapshot = merge_feedback_history(previous, current)
-        identity = github.authenticated_user()
-        result = evaluate_user_review(
-            user_review_subject, readiness, pr_identity["head_sha"], snapshot.events,
-            allowed_human_user_ids=(identity["id"],), all_feedback_surfaces_read=True,
-            required_after=session.started_at,
-            new_scope_requested=bool(getattr(args, "new_scope", False)),
-            unresolved_thread_ids=snapshot.unresolved_thread_ids,
-        )
+        if review_mode == "solo_owner":
+            relay_approval = _read_user_review_relay_approval(
+                github, session=session, readiness=readiness,
+                owner_id=owner_id, verifier_id=verifier_id,
+            )
+            result = evaluate_user_review(
+                session, readiness, pr_identity["head_sha"], snapshot,
+                review_mode=review_mode, pr_author_user_id=pr_author_id,
+                repository_owner_user_id=owner_id, authenticated_verifier_user_id=verifier_id,
+                allowed_human_user_ids=allowed_user_ids, relay_approval=relay_approval,
+                all_feedback_surfaces_read=True,
+                new_scope_requested=bool(getattr(args, "new_scope", False)),
+            )
+        else:
+            result = evaluate_user_review(
+                user_review_subject, readiness, pr_identity["head_sha"], snapshot.events,
+                allowed_human_user_ids=allowed_user_ids, all_feedback_surfaces_read=True,
+                required_after=session.started_at,
+                new_scope_requested=bool(getattr(args, "new_scope", False)),
+                unresolved_thread_ids=snapshot.unresolved_thread_ids,
+            )
         current_issue = github.issue(args.issue)
         current_adc = verify_adc(github, args.issue)
         current_pr_identity = _readback_current_pr(github, subject)
         current_readiness = read_readiness(args.readiness)
-        current_identity = github.authenticated_user()
+        if review_mode == "solo_owner":
+            current_owner_id, current_author_id, current_verifier_id = _solo_owner_identity(
+                github, repository, args.issue, args.pr, args.head,
+            )
+            second_relay_approval = _read_user_review_relay_approval(
+                github, session=session, readiness=current_readiness,
+                owner_id=current_owner_id, verifier_id=current_verifier_id,
+            )
+            identity_unchanged = ((current_owner_id, current_author_id, current_verifier_id)
+                                  == (owner_id, pr_author_id, verifier_id)
+                                  and second_relay_approval == relay_approval)
+        else:
+            current_identity = github.authenticated_user()
+            identity_unchanged = current_identity.get("id") == identity.get("id")
         second_observed = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
         second = _review_payload_from_github(github, user_review_subject, observed_at=second_observed)
         second = merge_feedback_history(previous, second)
         if (current_issue.get("state") != "open" or current_adc.pointer != verified_adc.pointer
                 or current_pr_identity != pr_identity or current_readiness != readiness
-                or current_identity.get("id") != identity.get("id")
-                or feedback_digest(second.events) != feedback_digest(snapshot.events)
-                or second.unresolved_thread_ids != snapshot.unresolved_thread_ids):
+                or not identity_unchanged or not _same_snapshot_payload(snapshot, second)):
             raise CLIError("Issue, ADC, PR, Readiness, identity, or feedback changed during User Review readback")
         if args.verb != "status":
             snapshot_path = feedback_snapshot_path(root, snapshot)
             write_feedback_snapshot(snapshot_path, snapshot)
+            saved_snapshot = read_feedback_snapshot(snapshot_path)
+            if saved_snapshot != snapshot or saved_snapshot.sha256 != snapshot.sha256:
+                raise UserReviewError("persisted full User Review feedback snapshot changed on readback")
+            result_schema = ("PASES_USER_REVIEW_RESULT_V2" if result.selected_approval_evidence is not None
+                             else "PASES_USER_REVIEW_RESULT_V1")
             record = {"result": result.as_dict(), "result_sha256": result.sha256,
-                      "schema": "PASES_USER_REVIEW_RESULT_V1", "snapshot_sha256": snapshot.sha256,
+                      "schema": result_schema, "snapshot_sha256": snapshot.sha256,
                       "subject": user_review_subject.as_dict()}
             record_path = _review_record_path(root, args.issue, user_review_subject, result, snapshot.sha256)
             _write_immutable(record_path, _canonical(record) + b"\n", root=root)
+            saved_subject, saved_result, saved_snapshot_sha256 = _read_review_record(record_path)
+            if (saved_subject != user_review_subject or saved_result != result
+                    or saved_snapshot_sha256 != snapshot.sha256):
+                raise UserReviewError("persisted User Review result differs from its typed evaluation")
             if args.verb in {"start", "sync"}:
                 _review_phase_transition(github, args.issue, IssueKind(args.kind), result, args.verb)
         else:
@@ -1938,12 +2133,14 @@ def _user_review_run(args: argparse.Namespace, repository: str, root: Path, gith
                "subject_sha256": user_review_subject.sha256, "result_sha256": result.sha256,
                "feedback_sha256": result.feedback_sha256, "next_phase": result.next_phase,
                "selected_approval_event": result.selected_approval_event,
+               "selected_approval_evidence": result.selected_approval_evidence,
                "unresolved_thread_ids": list(result.unresolved_thread_ids),
                "reasons": list(result.reasons),
                "evidence_refs": [str(session_path), str(snapshot_path), str(record_path),
                                  f"pull/{args.pr}", f"issue/{args.issue}"]})
         return 0 if result.status in {"APPROVED", "CHANGES_REQUESTED"} else 2
     except (ADCError, PlanError, OracleTraceError, EvidenceError, ReadinessError, UserReviewError,
+            UserReviewRelayError, OwnerDecisionError, ProfileError,
             PhaseError, GitHubError, CLIError, OSError, ValueError) as exc:
         blockers.append(str(exc))
         return _blocked_result(blockers)
@@ -1965,6 +2162,17 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
         plan, _reqs, _oracles, _tests = _load_plan(root, repository, args.issue, args.plan, verified_adc)
         subject = _subject(repository, args.issue, args.pr, args.head, verified_adc, plan)
         pr = _readback_current_pr(github, subject)
+        profile = load_profile(root)
+        review_mode = profile.final_delivery_review_mode
+        if review_mode == "solo_owner":
+            identity = _solo_owner_identity(github, repository, args.issue, args.pr, args.head)
+            owner_id, pr_author_id, verifier_id = identity
+            allowed_user_ids = (owner_id,)
+        else:
+            verifier = github.authenticated_user()
+            owner_id = pr_author_id = verifier_id = None
+            identity = (verifier.get("id"),)
+            allowed_user_ids = identity
         saved_readiness = read_readiness(args.readiness)
         readiness_args = argparse.Namespace(
             issue=args.issue, pr=args.pr, head=args.head, plan=args.plan,
@@ -1997,19 +2205,38 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
         if (saved_snapshot.sha256 != snapshot_sha or saved_snapshot.subject != user_subject
                 or feedback_digest(saved_snapshot.events) != saved_review.feedback_sha256):
             blockers.append("saved User Review snapshot is missing or inconsistent")
+        if (review_mode == "solo_owner" and saved_review.status == "APPROVED"
+                and (not isinstance(saved_review.selected_approval_evidence, dict)
+                     or saved_review.selected_approval_evidence.get("evidence_type")
+                     != "PASES_USER_REVIEW_DECISION_V1")):
+            blockers.append("solo_owner approved record is not backed by its dedicated V2 carrier")
         fresh_subject = UserReviewSubject(subject, readiness.sha256).validate()
         observed_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
         fresh = _review_payload_from_github(github, fresh_subject, observed_at=observed_at)
         previous = _latest_review_snapshot(root, fresh_subject)
         fresh = merge_feedback_history(previous, fresh)
-        identity = github.authenticated_user()
-        current_review = evaluate_user_review(
-            fresh_subject, readiness, pr["head_sha"], fresh.events,
-            allowed_human_user_ids=(identity["id"],), required_after=session.started_at,
-            unresolved_thread_ids=fresh.unresolved_thread_ids,
-        )
+        if review_mode == "solo_owner":
+            relay_approval = _read_user_review_relay_approval(
+                github, session=session, readiness=readiness,
+                owner_id=owner_id, verifier_id=verifier_id,
+            )
+            current_review = evaluate_user_review(
+                session, readiness, pr["head_sha"], fresh,
+                review_mode=review_mode, pr_author_user_id=pr_author_id,
+                repository_owner_user_id=owner_id, authenticated_verifier_user_id=verifier_id,
+                allowed_human_user_ids=allowed_user_ids, relay_approval=relay_approval,
+                all_feedback_surfaces_read=True,
+            )
+        else:
+            relay_approval = None
+            current_review = evaluate_user_review(
+                fresh_subject, readiness, pr["head_sha"], fresh.events,
+                allowed_human_user_ids=allowed_user_ids, required_after=session.started_at,
+                unresolved_thread_ids=fresh.unresolved_thread_ids,
+            )
         if (saved_review.status != "APPROVED" or current_review != saved_review
-                or feedback_digest(fresh.events) != saved_review.feedback_sha256):
+                or feedback_digest(fresh.events) != saved_review.feedback_sha256
+                or not _same_snapshot_payload(saved_snapshot, fresh)):
             blockers.append("current GitHub feedback no longer matches the saved approved User Review")
         verification = read_verification_result(args.verification)
         calculated_verification, _refs = _calculate_verification(
@@ -2019,8 +2246,16 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
             blockers.append("#29 Verification is stale or is not PASS for the exact subject")
         raw_pr = github.pull_request(args.pr)
         aggregate = github.pull_review_decision(args.pr)
-        protection = github.branch_protection(pr["base_ref"])
-        profile = load_profile(root)
+        ruleset_plan = None
+        policy_proof = None
+        if review_mode == "solo_owner":
+            ruleset_plan = build_ruleset_plan(root, github)
+            policy_proof = ruleset_plan.get("policy_proof")
+            if ruleset_plan.get("blockers") or ruleset_plan.get("diff", {}).get("operation") != "noop":
+                blockers.append("current managed Ruleset is not in exact owned no-op state")
+            protection = ruleset_plan.get("policy_evidence")
+        else:
+            protection = github.branch_protection(pr["base_ref"])
         required_names = tuple(name for name, _app_id in profile.required_checks)
         result = evaluate_final_delivery(
             subject=subject, user_review=current_review, verification=verification,
@@ -2028,6 +2263,10 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
             current_pr_draft=raw_pr.get("draft"), github_review_decision=aggregate.get("reviewDecision"),
             github_review_head_sha40=aggregate.get("headRefOid"), branch_protection=protection,
             required_check_names=required_names, mergeable=raw_pr.get("mergeable"),
+            review_mode=review_mode, effective_branch_policy=policy_proof,
+            required_check_identities=tuple((name, app_id) for name, app_id in profile.required_checks
+                                            if app_id is not None),
+            expected_policy_branch=pr["base_ref"],
         )
         if verify_adc(github, args.issue).pointer != verified_adc.pointer:
             blockers.append("approved ADC pointer changed during Final Delivery")
@@ -2035,19 +2274,50 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
             blockers.append("PR identity/base/head changed during Final Delivery")
         if github.pull_review_decision(args.pr) != aggregate:
             blockers.append("GitHub formal review decision or PR HEAD changed during Final Delivery")
-        if github.branch_protection(pr["base_ref"]) != protection:
+        if review_mode == "solo_owner":
+            final_ruleset_plan = build_ruleset_plan(root, github)
+            if (final_ruleset_plan.get("plan_sha256") != ruleset_plan.get("plan_sha256")
+                    or final_ruleset_plan.get("policy_proof") != policy_proof
+                    or final_ruleset_plan.get("policy_evidence") != protection
+                    or final_ruleset_plan.get("blockers")
+                    or final_ruleset_plan.get("diff", {}).get("operation") != "noop"):
+                blockers.append("managed Ruleset or effective policy changed during Final Delivery")
+        elif github.branch_protection(pr["base_ref"]) != protection:
             blockers.append("branch protection changed during Final Delivery")
         final_readiness = read_readiness(args.readiness)
-        final_identity = github.authenticated_user()
         final_session = read_review_session(session_path)
         final_observed = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
         final_feedback = _review_payload_from_github(github, fresh_subject, observed_at=final_observed)
         final_feedback = merge_feedback_history(previous, final_feedback)
-        if (final_readiness != readiness or final_identity.get("id") != identity.get("id")
-                or final_session != session
+        if review_mode == "solo_owner":
+            final_identity = _solo_owner_identity(github, repository, args.issue, args.pr, args.head)
+            final_relay_approval = _read_user_review_relay_approval(
+                github, session=final_session, readiness=final_readiness,
+                owner_id=final_identity[0], verifier_id=final_identity[2],
+            )
+            final_review = evaluate_user_review(
+                final_session, final_readiness, pr["head_sha"], final_feedback,
+                review_mode=review_mode, pr_author_user_id=final_identity[1],
+                repository_owner_user_id=final_identity[0], authenticated_verifier_user_id=final_identity[2],
+                allowed_human_user_ids=(final_identity[0],), relay_approval=final_relay_approval,
+                all_feedback_surfaces_read=True,
+            )
+            identity_unchanged = (final_identity == identity and final_relay_approval == relay_approval)
+        else:
+            final_identity_raw = github.authenticated_user()
+            final_review = evaluate_user_review(
+                fresh_subject, final_readiness, pr["head_sha"], final_feedback.events,
+                allowed_human_user_ids=(final_identity_raw["id"],), required_after=final_session.started_at,
+                unresolved_thread_ids=final_feedback.unresolved_thread_ids,
+            )
+            identity_unchanged = (final_identity_raw.get("id"),) == identity
+        persisted_subject, persisted_review, persisted_snapshot_sha = _read_review_record(args.user_review_record)
+        if (final_readiness != readiness or not identity_unchanged or final_session != session
+                or persisted_subject != user_subject or persisted_review != saved_review
+                or persisted_snapshot_sha != snapshot_sha or final_review != saved_review
                 or feedback_digest(final_feedback.events) != feedback_digest(fresh.events)
-                or final_feedback.unresolved_thread_ids != fresh.unresolved_thread_ids):
-            blockers.append("Readiness, authenticated user, or GitHub feedback changed during Final Delivery")
+                or not _same_snapshot_payload(saved_snapshot, final_feedback)):
+            blockers.append("Readiness, identity, relay history, session, result, or full feedback snapshot changed during Final Delivery")
         final_verification, _final_refs = _calculate_verification(
             argparse.Namespace(issue=args.issue, pr=args.pr, head=args.head, plan=args.plan),
             repository, root, github)
@@ -2066,7 +2336,8 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
                                  str(args.acceptance), str(args.self_audit), str(args.independent_review), str(path)]})
         return 0 if result.status == "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION" else 2
     except (ADCError, PlanError, OracleTraceError, EvidenceError, ReadinessError, VerificationError,
-            UserReviewError, ProfileError, GitHubError, CLIError, OSError, ValueError) as exc:
+            UserReviewError, UserReviewRelayError, OwnerDecisionError, ProfileError,
+            RulesetManagementError, GitHubError, CLIError, OSError, ValueError) as exc:
         return _blocked_result((str(exc),))
 
 
@@ -2855,7 +3126,7 @@ def _parser() -> argparse.ArgumentParser:
     ruleset_apply = delivery_commands.add_parser(
         "consumer-activation-ruleset-apply", help="apply one exact owner-approved Ruleset plan")
     ruleset_apply.add_argument("--plan", required=True, type=Path, help="canonical Ruleset plan JSON")
-    ruleset_apply.add_argument("--approval-comment-id", required=True, type=_positive_number)
+    ruleset_apply.add_argument("--approval-comment-id", type=_positive_number)
     ruleset_apply.add_argument("--repo", help="repository owner/name; defaults to origin")
     ruleset_apply.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
     admin_plan = delivery_commands.add_parser(
@@ -2866,7 +3137,7 @@ def _parser() -> argparse.ArgumentParser:
     admin_apply = delivery_commands.add_parser(
         "consumer-activation-admin-apply", help="owner-only local TTY exact-approved Ruleset apply")
     admin_apply.add_argument("--plan", required=True, type=Path)
-    admin_apply.add_argument("--approval-comment-id", required=True, type=_positive_number)
+    admin_apply.add_argument("--approval-comment-id", type=_positive_number)
     admin_apply.add_argument("--repo", help="repository owner/name; defaults to origin")
     admin_apply.add_argument("--root", type=Path, help="repository root; defaults to current checkout")
     bootstrap = delivery_commands.add_parser("bootstrap-check", help="evaluate the separate migration Bootstrap gate")
@@ -2991,23 +3262,58 @@ def main(argv: list[str] | None = None) -> int:
                 try:
                     result = setup_consumer_activation(root, github)
                     _json(result)
-                    return 0
+                    return 0 if result.get("status") == "ACTIVE" else 2
                 except ConsumerActivationError as exc:
-                    return _blocked_result((str(exc),))
+                    review_mode = "unknown"
+                    checks_verified = False
+                    try:
+                        profile = load_profile(root)
+                        review_mode = profile.final_delivery_review_mode
+                        checks_verified = bool(profile.required_checks) and all(
+                            app_id is not None for _name, app_id in profile.required_checks)
+                    except ProfileError:
+                        pass
+                    _json({"status": "BLOCKED", "stage": "DISCOVER_AND_PREFLIGHT",
+                           "repository": repository, "issue": getattr(args, "issue", None),
+                           "required_setting_inventory": activation_setting_inventory(
+                               review_mode, required_checks_verified=checks_verified, blocked=True),
+                           "reasons": [str(exc)]})
+                    return 2
             if args.verb == "consumer-activation-verify":
                 try:
                     if discover_repository(root).casefold() != repository.casefold():
                         raise ConsumerActivationError("GitHub repository does not match the active workspace origin")
-                    record, comment_id = verify_and_record_activation(github, args.pr)
+                    record, comment_id = verify_and_record_activation(github, args.pr, root=root)
                     _json({"status": "ACTIVATED", "repository": repository,
                            "issue": record.activation_issue_number, "pr": args.pr,
                            "activation_comment_id": comment_id, "activated_at": record.activated_at,
-                           "activation_sha256": record.sha256})
+                           "activation_sha256": record.sha256,
+                           "required_setting_inventory": activation_setting_inventory(
+                               record.review_mode or "external_reviewer",
+                               required_checks_verified=bool(record.required_check_runs),
+                               policy_verified=record.schema_version == 2)})
                     return 0
                 except ConsumerActivationError as exc:
                     return _blocked_result((str(exc),))
             if args.verb in {"consumer-activation-admin-plan", "consumer-activation-admin-apply"}:
                 try:
+                    authorized_plan_sha: str | None = None
+                    if args.verb == "consumer-activation-admin-apply":
+                        try:
+                            plan, _decision_id = _ruleset_operation_plan(github, args.plan)
+                        except OwnerDecisionError as exc:
+                            if "missing exact owner operation/subject" in str(exc):
+                                _json({"status": "PENDING_APPROVAL", "stage": "AWAIT_OWNER_POLICY_DECISION",
+                                       "plan_path": str(args.plan), "reasons": [str(exc)]})
+                                return 2
+                            raise
+                        _verify_activation_plan_checkpoint(root, repository, plan)
+                        authorized_plan_sha = plan["plan_sha256"]
+                        if plan["diff"]["operation"] != "noop" and args.approval_comment_id is None:
+                            _json({"status": "PENDING_APPROVAL", "stage": "AWAIT_OWNER_POLICY_DECISION",
+                                   "plan_path": str(args.plan), "plan_sha256": authorized_plan_sha,
+                                   "reasons": ["the isolated owner relay must return the exact Issue #57 approval comment ID"]})
+                            return 2
                     with temporary_admin_client(repository) as admin:
                         profile = load_profile(root)
                         if profile.activation_issue_number != 57:
@@ -3032,18 +3338,89 @@ def main(argv: list[str] | None = None) -> int:
                         admin.branch_protection(branch)
                         admin.repository_rulesets()
                         admin.effective_branch_rules(branch)
+                        if (args.verb == "consumer-activation-admin-apply"
+                                and plan["diff"]["operation"] == "noop"):
+                            current = build_ruleset_plan(
+                                root, admin, profile_ref=plan.get("profile_ref"),
+                                activation_binding=plan.get("activation_binding"),
+                            )
+                            if current["plan_sha256"] != authorized_plan_sha:
+                                raise RulesetManagementError("Ruleset NOOP plan changed before verified readback")
+                            if plan.get("activation_binding") is not None:
+                                activation = setup_consumer_activation(root, github, policy_github=admin)
+                                _json({"status": activation.get("status"), "operation": "NOOP",
+                                       "plan_sha256": authorized_plan_sha, "activation": activation})
+                                return 0 if activation.get("status") == "ACTIVE" else 2
+                            policy = _verify_ruleset_noop(admin, plan)
+                            _json({"status": "VERIFIED", "operation": "NOOP",
+                                   "plan_sha256": authorized_plan_sha, "ruleset_id": policy["ruleset_id"],
+                                   "applied_record_id": policy["applied_record_id"],
+                                   "effective_policy_sha256": policy["effective_policy_sha256"]})
+                            return 0
                         if args.verb == "consumer-activation-admin-plan":
-                            plan = build_ruleset_plan(root, admin)
+                            activation_binding = None
+                            profile_ref = None
+                            checkpoint_path = activation_checkpoint_path(root, 57)
+                            checkpoint = None
+                            if checkpoint_path.exists():
+                                checkpoint = read_activation_checkpoint(checkpoint_path)
+                                if (checkpoint.repository.casefold() != repository.casefold()
+                                        or checkpoint.repository_id != metadata.get("id")
+                                        or checkpoint.owner_id != owner_id
+                                        or checkpoint.stage not in {"POLICY_PLAN", "AWAIT_OWNER_POLICY_DECISION",
+                                                                    "APPLY_AND_READBACK"}
+                                        or checkpoint.setup_branch is None
+                                        or checkpoint.setup_commit_sha40 is None):
+                                    raise CLIError("Activation checkpoint is stale or not resumable at POLICY_PLAN")
+                                current_base = admin.branch(checkpoint.default_branch).get("commit", {}).get("sha")
+                                if current_base != checkpoint.default_branch_sha40:
+                                    raise CLIError("Activation checkpoint base is stale; rerun setup to rebuild the exact branch and plan")
+                                activation_binding = {
+                                    "activation_issue_number": checkpoint.activation_issue_number,
+                                    "adc_comment_id": checkpoint.adc_comment_id,
+                                    "adc_sha256": checkpoint.adc_sha256,
+                                    "base_sha40": checkpoint.default_branch_sha40,
+                                    "predecessor_record_id": checkpoint.predecessor_record_id,
+                                    "schema": "PASES_ACTIVATION_RULESET_BINDING_V1",
+                                    "setup_branch": checkpoint.setup_branch,
+                                    "setup_commit_sha40": checkpoint.setup_commit_sha40,
+                                }
+                                profile_ref = checkpoint.setup_commit_sha40
+                            plan = build_ruleset_plan(
+                                root, admin, profile_ref=profile_ref, activation_binding=activation_binding,
+                            )
                             if plan["blockers"]:
                                 return _blocked_result(tuple(plan["blockers"]))
                             write_ruleset_plan(args.output, plan)
+                            if checkpoint is not None:
+                                next_stage = ("APPLY_AND_READBACK" if plan["diff"]["operation"] == "noop"
+                                              else "AWAIT_OWNER_POLICY_DECISION")
+                                next_status = ("ADMIN_AUTH_REQUIRED" if next_stage == "APPLY_AND_READBACK"
+                                               else "PENDING_APPROVAL")
+                                checkpoint = replace(
+                                    checkpoint, stage=next_stage, status=next_status,
+                                    plan_sha256=plan["plan_sha256"],
+                                    policy_status=(plan.get("policy_proof", {}).get("status")
+                                                   if isinstance(plan.get("policy_proof"), dict) else None),
+                                )
+                                write_activation_checkpoint(checkpoint_path, checkpoint, root=root)
                             _json({"status": "PLANNED", "plan_sha256": plan["plan_sha256"],
-                                   "output": str(args.output), "operation": plan["diff"]["operation"]})
+                                   "output": str(args.output), "operation": plan["diff"]["operation"],
+                                   "activation_stage": (checkpoint.stage if checkpoint is not None else None)})
                             return 0
-                        result = apply_ruleset_plan(root, admin, args.plan, args.approval_comment_id)
+                        result = apply_ruleset_plan(
+                            root, admin, args.plan, args.approval_comment_id,
+                            expected_plan_sha256=authorized_plan_sha,
+                        )
+                        if plan.get("activation_binding") is not None:
+                            activation = setup_consumer_activation(root, github, policy_github=admin)
+                            _json({"status": activation.get("status"), "ruleset": result,
+                                   "activation": activation})
+                            return 0 if activation.get("status") == "ACTIVE" else 2
                         _json(result)
                         return 0
-                except (AdminAuthError, RulesetManagementError, ProfileError, GitHubError, CLIError) as exc:
+                except (AdminAuthError, RulesetManagementError, ProfileError, GitHubError, CLIError,
+                        OwnerDecisionError) as exc:
                     return _blocked_result((str(exc),))
             if args.verb == "consumer-activation-preflight":
                 try:
@@ -3067,10 +3444,25 @@ def main(argv: list[str] | None = None) -> int:
                     return _blocked_result((str(exc),))
             if args.verb == "consumer-activation-ruleset-apply":
                 try:
-                    result = apply_ruleset_plan(root, github, args.plan, args.approval_comment_id)
-                    _json(result)
-                    return 0
-                except RulesetManagementError as exc:
+                    plan, _decision_id = _ruleset_operation_plan(github, args.plan)
+                    if plan["diff"]["operation"] == "noop":
+                        policy = _verify_ruleset_noop(github, plan)
+                        _json({"status": "VERIFIED", "operation": "NOOP", "plan_sha256": plan["plan_sha256"],
+                               "ruleset_id": policy["ruleset_id"],
+                               "applied_record_id": policy["applied_record_id"],
+                               "effective_policy_sha256": policy["effective_policy_sha256"]})
+                        return 0
+                    _json({"status": "ADMIN_AUTH_REQUIRED", "stage": "APPLY_AND_READBACK",
+                           "plan_sha256": plan["plan_sha256"],
+                           "next_permitted_step": "Run consumer-activation-admin-apply in the trusted owner-local TTY."})
+                    return 2
+                except OwnerDecisionError as exc:
+                    if "missing exact owner operation/subject" in str(exc):
+                        _json({"status": "PENDING_APPROVAL", "stage": "AWAIT_OWNER_POLICY_DECISION",
+                               "plan_path": str(args.plan), "reasons": [str(exc)]})
+                        return 2
+                    return _blocked_result((str(exc),))
+                except (RulesetManagementError, CLIError) as exc:
                     return _blocked_result((str(exc),))
             if args.verb == "bootstrap-check":
                 return _delivery_bootstrap_check(args, repository, root, github)

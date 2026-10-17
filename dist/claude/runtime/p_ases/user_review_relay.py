@@ -21,6 +21,7 @@ FIELDS = frozenset({
 })
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 SHA40 = re.compile(r"[0-9a-f]{40}\Z")
+DECISION_MARKERS = re.compile(r"PASES_USER_REVIEW_DECISION_[A-Z0-9_]+")
 
 
 class UserReviewRelayError(ValueError):
@@ -82,6 +83,11 @@ def parse_user_review_decision(body: Any) -> dict[str, Any]:
                 and not _positive(payload["predecessor_comment_id"]))):
         raise UserReviewRelayError("invalid review-decision subject, owner, or schema")
     return payload
+
+
+def has_user_review_decision_marker(body: Any) -> bool:
+    """Return true for the known carrier or any malformed/unknown version marker."""
+    return isinstance(body, str) and DECISION_MARKERS.search(body) is not None
 
 
 @dataclass(frozen=True)
@@ -166,10 +172,11 @@ def verify_user_review_decision_history(
         body = _field(comment, "body")
         if not isinstance(body, str):
             raise UserReviewRelayError("missing GitHub Issue comment body")
-        if not body.startswith('{"'):
+        markers = DECISION_MARKERS.findall(body)
+        if not markers:
             continue
-        if USER_REVIEW_DECISION_SCHEMA not in body:
-            continue
+        if markers != [USER_REVIEW_DECISION_SCHEMA]:
+            raise UserReviewRelayError("unknown or malformed dedicated User Review marker")
         decision = parse_user_review_decision(body)
         if (decision["repository"] != repository or decision["issue_number"] != issue_number
                 or decision["pr_number"] != pr_number
