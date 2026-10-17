@@ -42,6 +42,25 @@ class PasesCLITests(unittest.TestCase):
                                         "--repo", "owner/repo"])
         self.assertEqual((context.verb, context.issue, context.repo), ("show", 32, "owner/repo"))
 
+    def test_consumer_ruleset_routes_parse_exact_approval_arguments(self):
+        preflight = _parser().parse_args([
+            "delivery", "consumer-activation-preflight", "--root", str(ROOT),
+        ])
+        self.assertEqual((preflight.namespace, preflight.verb),
+                         ("delivery", "consumer-activation-preflight"))
+        plan = _parser().parse_args([
+            "delivery", "consumer-activation-ruleset-plan", "--output", "/tmp/pases-plan.json",
+            "--root", str(ROOT),
+        ])
+        self.assertEqual((plan.verb, plan.output),
+                         ("consumer-activation-ruleset-plan", Path("/tmp/pases-plan.json")))
+        apply = _parser().parse_args([
+            "delivery", "consumer-activation-ruleset-apply", "--plan", "/tmp/pases-plan.json",
+            "--approval-comment-id", "123", "--root", str(ROOT),
+        ])
+        self.assertEqual((apply.verb, apply.plan, apply.approval_comment_id),
+                         ("consumer-activation-ruleset-apply", Path("/tmp/pases-plan.json"), 123))
+
     def test_advance_cli_excludes_readiness_approval_and_close_targets(self):
         self.assertNotIn("user-review", CLI_ADVANCE_TARGETS)
         self.assertNotIn("closed", CLI_ADVANCE_TARGETS)

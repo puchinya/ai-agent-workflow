@@ -29,6 +29,12 @@
   - [9.2 REQ-F01-003 Append-only approval and Activation history](#92-req-f01-003-append-only-approval-and-activation-history)
   - [9.3 REQ-F01-005 Eligibility by Activation time](#93-req-f01-005-eligibility-by-activation-time)
   - [9.4 REQ-F01-007 Successor Activation](#94-req-f01-007-successor-activation)
+  - [9.5 REQ-F01-008 Verified V2 Activation policy](#95-req-f01-008-verified-v2-activation-policy)
+  - [9.6 REQ-F01-009 Approved Ruleset management](#96-req-f01-009-approved-ruleset-management)
+  - [9.7 REQ-F01-010 Existing Issue preservation](#97-req-f01-010-existing-issue-preservation)
+  - [9.8 REQ-F01-011 V2 effective time](#98-req-f01-011-v2-effective-time)
+  - [9.9 REQ-F01-012 Activation history prefix](#99-req-f01-012-activation-history-prefix)
+  - [9.10 REQ-F01-013 Bootstrap and review gates](#910-req-f01-013-bootstrap-and-review-gates)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -47,6 +53,12 @@
 - [REQ-F01-003](#req-f01-003) — 9.2 REQ-F01-003 Append-only approval and Activation history
 - [REQ-F01-005](#req-f01-005) — 9.3 REQ-F01-005 Eligibility by Activation time
 - [REQ-F01-007](#req-f01-007) — 9.4 REQ-F01-007 Successor Activation
+- [REQ-F01-008](#req-f01-008) — 9.5 REQ-F01-008 Verified V2 Activation policy
+- [REQ-F01-009](#req-f01-009) — 9.6 REQ-F01-009 Approved Ruleset management
+- [REQ-F01-010](#req-f01-010) — 9.7 REQ-F01-010 Existing Issue preservation
+- [REQ-F01-011](#req-f01-011) — 9.8 REQ-F01-011 V2 effective time
+- [REQ-F01-012](#req-f01-012) — 9.9 REQ-F01-012 Activation history prefix
+- [REQ-F01-013](#req-f01-013) — 9.10 REQ-F01-013 Bootstrap and review gates
 <!-- heading-map:end -->
 
 
@@ -302,3 +314,33 @@ New P-ASES work is eligible only for same-repository non-PR Issues created stric
 ### 9.4 REQ-F01-007 Successor Activation
 
 Policy or locator changes require a new setup PR and merge, append a successor Activation effective at its verified `merged_at`, and preserve prior records and selections. The successor governs only Issues created after that merge time.
+
+<a id="req-f01-008"></a>
+### 9.5 REQ-F01-008 Verified V2 Activation policy
+
+Before recording a V2 Activation, the runtime MUST verify that the default branch has active effective protection matching the committed review mode and the complete trusted Required Check `(context, App ID)` set. It MUST read the branch, effective rules, Ruleset details, and legacy branch-protection endpoint with the same authenticated administrator identity. Missing or forbidden evidence is unavailable, not proof that protection is absent.
+
+<a id="req-f01-009"></a>
+### 9.6 REQ-F01-009 Approved Ruleset management
+
+Ruleset writes MUST use a canonical plan bound to repository and owner IDs, default branch, committed profile bytes, review mode, trusted checks, existing managed Ruleset identity and digest, desired API payload, current policy evidence, and open PR impact. A write requires a separate exact-plan approval comment authored by the repository owner on Activation Issue #57. The agent MUST NOT create that approval. Writes are limited to the uniquely owned repository Ruleset named `P-ASES Final Delivery (managed)`; organization Rulesets, other repository Rulesets, and legacy protection are read-only. Ambiguous ownership, collisions, stale plans, missing admin access, partial writes, or failed effective-policy readback MUST block without retrying or rolling back blindly.
+
+<a id="req-f01-010"></a>
+### 9.7 REQ-F01-010 Existing Issue preservation
+
+V1 Activation comments, their original `merged_at`, and every existing Issue ADC, Gate Selection, phase, PR binding, and evidence remain immutable. Runtime bug fixes and current CI, Ruleset, and review checks apply to existing Issues. An existing Issue continues to use its selected Activation and MUST NOT be moved to a successor Activation.
+
+<a id="req-f01-011"></a>
+### 9.8 REQ-F01-011 V2 effective time
+
+V2 setup, approval, and Activation records are append-only and versioned. V2 becomes effective at the GitHub `created_at` timestamp of the Activation record comment. An Issue created after setup PR merge but before that comment is not authorized by V2; if eligible under V1, it continues to use V1.
+
+<a id="req-f01-012"></a>
+### 9.9 REQ-F01-012 Activation history prefix
+
+Validation of an existing Gate Selection MUST validate only the authenticated Activation-history prefix ending at its selected record. Corruption after that record MUST NOT invalidate the existing Issue. Corruption within the selected prefix MUST block. New Gate Selections and successor Activation issuance MUST validate the complete history.
+
+<a id="req-f01-013"></a>
+### 9.10 REQ-F01-013 Bootstrap and review gates
+
+The #63 implementation branch MUST be able to create the initial Ruleset before its PR is merged. This bootstrap does not skip CI, independent review, User Review, Final Delivery, or owner merge authorization. The #60 implementation and PR #62 remain independent and are integrated after #63.

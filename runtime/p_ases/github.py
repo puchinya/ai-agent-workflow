@@ -14,7 +14,9 @@ from urllib.parse import quote, urlencode
 
 
 class GitHubError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 def _positive_int(value: Any, label: str) -> int:
@@ -72,7 +74,10 @@ class GitHub:
             self._api_elapsed_ms += (time.perf_counter() - started) * 1000
         if result.returncode:
             # gh stderr may include credentials or payload values; never return it.
-            raise GitHubError(f"GitHub API {verb} {endpoint} failed (gh exit status {result.returncode})")
+            match = re.search(r"\bHTTP\s+(\d{3})\b", result.stderr or "", re.IGNORECASE)
+            status_code = int(match.group(1)) if match else None
+            raise GitHubError(f"GitHub API {verb} {endpoint} failed (gh exit status {result.returncode})",
+                              status_code=status_code)
         if not result.stdout.strip():
             return None
         try:
@@ -299,6 +304,74 @@ class GitHub:
         result = self.request("GET", f"{self.prefix}/branches/{quote(branch, safe='')}/protection")
         if not isinstance(result, dict):
             raise GitHubError("branch protection response must be an object")
+        return result
+
+    def effective_branch_rules(self, branch: str) -> list[dict[str, Any]]:
+        """Read every GitHub ruleset rule that applies to one exact branch."""
+        if not isinstance(branch, str) or not branch or any(char in branch for char in "\x00\r\n"):
+            raise GitHubError("effective branch rules lookup requires a branch name")
+        rows = self._paginate(f"{self.prefix}/rules/branches/{quote(branch, safe='')}")
+        for row in rows:
+            if (not isinstance(row.get("type"), str) or not row["type"]
+                    or type(row.get("ruleset_id")) is not int or row["ruleset_id"] < 1
+                    or row.get("ruleset_source_type", row.get("source_type")) not in {"Repository", "Organization"}
+                    or not isinstance(row.get("ruleset_source", row.get("source")), str)
+                    or not row.get("ruleset_source", row.get("source"))
+                    or (row.get("parameters") is not None and not isinstance(row.get("parameters"), dict))):
+                raise GitHubError("effective branch rules response is incomplete")
+        return rows
+
+    def ruleset_details(self, ruleset_id: int, *, source_type: str) -> dict[str, Any]:
+        """Read full ruleset metadata from its repository or organization owner."""
+        ruleset_id = _positive_int(ruleset_id, "ruleset ID")
+        owner, _name = self.repo.split("/", 1)
+        if source_type == "Repository":
+            endpoint = f"{self.prefix}/rulesets/{ruleset_id}"
+        elif source_type == "Organization":
+            endpoint = f"orgs/{owner}/rulesets/{ruleset_id}"
+        else:
+            raise GitHubError("ruleset source type is unknown")
+        result = self.request("GET", endpoint)
+        if (not isinstance(result, dict) or result.get("id") != ruleset_id
+                or result.get("source_type") != source_type
+                or not isinstance(result.get("source"), str) or not result.get("source")
+                or result.get("target") != "branch"
+                or result.get("enforcement") not in {"active", "evaluate", "disabled"}
+                or not isinstance(result.get("rules"), list)
+                or not isinstance(result.get("bypass_actors"), list)):
+            raise GitHubError("GitHub ruleset detail response is incomplete or mismatched")
+        return result
+
+    def repository_rulesets(self) -> list[dict[str, Any]]:
+        """Read repository-scoped rulesets only; organization rules are never writable here."""
+        rows = self._paginate(f"{self.prefix}/rulesets")
+        for row in rows:
+            if (type(row.get("id")) is not int or row["id"] < 1
+                    or not isinstance(row.get("name"), str) or not row["name"]
+                    or row.get("target") != "branch"
+                    or row.get("enforcement") not in {"active", "evaluate", "disabled"}):
+                raise GitHubError("repository ruleset inventory is incomplete")
+        return rows
+
+    def create_repository_ruleset(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Create exactly one repository ruleset. Callers must enforce approval first."""
+        if not isinstance(payload, dict):
+            raise GitHubError("repository ruleset payload must be an object")
+        result = self.request("POST", f"{self.prefix}/rulesets", payload)
+        if (not isinstance(result, dict) or type(result.get("id")) is not int or result["id"] < 1
+                or result.get("name") != payload.get("name")):
+            raise GitHubError("created repository ruleset response is incomplete or mismatched")
+        return result
+
+    def update_repository_ruleset(self, ruleset_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        """Replace one repository ruleset by its previously verified stable ID."""
+        ruleset_id = _positive_int(ruleset_id, "ruleset ID")
+        if not isinstance(payload, dict):
+            raise GitHubError("repository ruleset payload must be an object")
+        result = self.request("PUT", f"{self.prefix}/rulesets/{ruleset_id}", payload)
+        if (not isinstance(result, dict) or result.get("id") != ruleset_id
+                or result.get("name") != payload.get("name")):
+            raise GitHubError("updated repository ruleset response is incomplete or mismatched")
         return result
 
     def branch(self, branch: str) -> dict[str, Any]:

@@ -658,6 +658,15 @@ class PhaseEvidenceActivationTests(unittest.TestCase):
                 patch("p_ases.phase_evidence.read_gate_selection", return_value=(302, self.gate, "body")):
             _check_activation(self.github, 40)
 
+        history_call = patch("p_ases.phase_evidence.read_consumer_activation_history",
+                             return_value=[(self.activation, 999)])
+        with history_call as read_history, \
+                patch("p_ases.phase_evidence.read_gate_selection", return_value=(302, self.gate, "body")):
+            _check_activation(self.github, 40)
+        read_history.assert_called_once_with(
+            self.github, self.repo, 25, through_record_id=999,
+        )
+
         stale_gate = GateSelection(
             self.repo, 40, PASES_POLICY, "2026-10-11T02:00:00Z", 998,
             self.activation.sha256, 25,

@@ -422,7 +422,10 @@ def _check_activation(github: GitHub, issue_number: int) -> None:
         activation_issue_number = pinned.activation_issue_number
         if activation_issue_number is None:
             raise PhaseEvidenceError("Gate Selection does not name its consumer Activation Issue")
-        history = read_consumer_activation_history(github, github.repo, activation_issue_number)
+        history = read_consumer_activation_history(
+            github, github.repo, activation_issue_number,
+            through_record_id=pinned.activation_comment_id,
+        )
         activation_row = next((row for row in history if row[1] == pinned.activation_comment_id), None)
         if activation_row is None:
             raise PhaseEvidenceError("Gate Selection does not point to a valid historical consumer Activation")

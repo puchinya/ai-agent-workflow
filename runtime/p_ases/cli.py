@@ -20,6 +20,10 @@ from .adc import ADCError, parse_adc, publish_adc, restore_adc, verify_adc
 from .consumer_activation import (
     ConsumerActivationError, setup_consumer_activation, verify_and_record_activation,
 )
+from .ruleset_management import (
+    RulesetManagementError, apply_ruleset_plan, build_ruleset_plan, preflight as ruleset_preflight,
+    write_plan as write_ruleset_plan,
+)
 from .git import GitError, current_branch, discover_repository, head_sha40, remote_branch_sha, worktree_clean
 from .document_format import DocumentFormatError, format_tree
 from .documents import DocumentError, validate_documents
@@ -2834,6 +2838,21 @@ def _parser() -> argparse.ArgumentParser:
     activation_verify.add_argument("pr", type=_positive_number)
     activation_verify.add_argument("--repo", help="repository owner/name; defaults to origin")
     activation_verify.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
+    activation_preflight = delivery_commands.add_parser(
+        "consumer-activation-preflight", help="read-only Consumer Activation and Ruleset preflight")
+    activation_preflight.add_argument("--repo", help="repository owner/name; defaults to origin")
+    activation_preflight.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
+    ruleset_plan = delivery_commands.add_parser(
+        "consumer-activation-ruleset-plan", help="write a canonical, read-only Ruleset plan")
+    ruleset_plan.add_argument("--output", required=True, type=Path, help="path for the canonical plan JSON")
+    ruleset_plan.add_argument("--repo", help="repository owner/name; defaults to origin")
+    ruleset_plan.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
+    ruleset_apply = delivery_commands.add_parser(
+        "consumer-activation-ruleset-apply", help="apply one exact owner-approved Ruleset plan")
+    ruleset_apply.add_argument("--plan", required=True, type=Path, help="canonical Ruleset plan JSON")
+    ruleset_apply.add_argument("--approval-comment-id", required=True, type=_positive_number)
+    ruleset_apply.add_argument("--repo", help="repository owner/name; defaults to origin")
+    ruleset_apply.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
     bootstrap = delivery_commands.add_parser("bootstrap-check", help="evaluate the separate migration Bootstrap gate")
     bootstrap.add_argument("issue", type=_positive_number)
     bootstrap.add_argument("pr", type=_positive_number)
@@ -2970,6 +2989,33 @@ def main(argv: list[str] | None = None) -> int:
                            "activation_sha256": record.sha256})
                     return 0
                 except ConsumerActivationError as exc:
+                    return _blocked_result((str(exc),))
+            if args.verb == "consumer-activation-preflight":
+                try:
+                    result = ruleset_preflight(root, github)
+                    _json(result)
+                    return 0 if not result["blockers"] else 2
+                except RulesetManagementError as exc:
+                    return _blocked_result((str(exc),))
+            if args.verb == "consumer-activation-ruleset-plan":
+                try:
+                    plan = build_ruleset_plan(root, github)
+                    if plan["blockers"]:
+                        _json({"status": "BLOCKED", "blockers": plan["blockers"],
+                               "plan_sha256": plan["plan_sha256"], "plan": plan})
+                        return 2
+                    write_ruleset_plan(args.output, plan)
+                    _json({"status": "PLANNED", "output": str(args.output),
+                           "plan_sha256": plan["plan_sha256"], "operation": plan["diff"]["operation"]})
+                    return 0
+                except RulesetManagementError as exc:
+                    return _blocked_result((str(exc),))
+            if args.verb == "consumer-activation-ruleset-apply":
+                try:
+                    result = apply_ruleset_plan(root, github, args.plan, args.approval_comment_id)
+                    _json(result)
+                    return 0
+                except RulesetManagementError as exc:
                     return _blocked_result((str(exc),))
             if args.verb == "bootstrap-check":
                 return _delivery_bootstrap_check(args, repository, root, github)

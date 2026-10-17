@@ -13,6 +13,12 @@
 - [3 DES-WF-001 Architecture](#3-des-wf-001-architecture)
 - [4 DES-WF-002 Data flow and ownership](#4-des-wf-002-data-flow-and-ownership)
 - [5 DES-F01 Consumer gate routing and history](#5-des-f01-consumer-gate-routing-and-history)
+  - [5.1 DES-F01-008 Effective branch-policy assessment](#51-des-f01-008-effective-branch-policy-assessment)
+  - [5.2 DES-F01-009 Exact-plan Ruleset writes](#52-des-f01-009-exact-plan-ruleset-writes)
+  - [5.3 DES-F01-010 V1 preservation and current checks](#53-des-f01-010-v1-preservation-and-current-checks)
+  - [5.4 DES-F01-011 Versioned V2 setup and record](#54-des-f01-011-versioned-v2-setup-and-record)
+  - [5.5 DES-F01-012 Record-comment effective time](#55-des-f01-012-record-comment-effective-time)
+  - [5.6 DES-F01-013 Bootstrap and independent delivery gates](#56-des-f01-013-bootstrap-and-independent-delivery-gates)
 - [6 DES-WF-003 Workspace execution flow](#6-des-wf-003-workspace-execution-flow)
 - [7 DES-WF-004 Failure handling](#7-des-wf-004-failure-handling)
 - [8 DES-WF-005 Authorization boundary and PR handoff](#8-des-wf-005-authorization-boundary-and-pr-handoff)
@@ -25,6 +31,12 @@
 **Stable heading map**
 - [DES-WF-001](#des-wf-001) — 3 DES-WF-001 Architecture
 - [DES-WF-002](#des-wf-002) — 4 DES-WF-002 Data flow and ownership
+- [DES-F01-008](#des-f01-008) — 5.1 DES-F01-008 Effective branch-policy assessment
+- [DES-F01-009](#des-f01-009) — 5.2 DES-F01-009 Exact-plan Ruleset writes
+- [DES-F01-010](#des-f01-010) — 5.3 DES-F01-010 V1 preservation and current checks
+- [DES-F01-011](#des-f01-011) — 5.4 DES-F01-011 Versioned V2 setup and record
+- [DES-F01-012](#des-f01-012) — 5.5 DES-F01-012 Record-comment effective time
+- [DES-F01-013](#des-f01-013) — 5.6 DES-F01-013 Bootstrap and independent delivery gates
 - [DES-WF-003](#des-wf-003) — 6 DES-WF-003 Workspace execution flow
 - [DES-WF-004](#des-wf-004) — 7 DES-WF-004 Failure handling
 - [DES-WF-005](#des-wf-005) — 8 DES-WF-005 Authorization boundary and PR handoff
@@ -110,6 +122,44 @@ Migration routing is selected only for the exact P-ASES repository plus its fixe
 Setup is a two-stage state machine: the exact PR merge by a current human admin approves policy, and the post-merge verifier then appends approval and Activation comments. Git stages only `.agent/project.json` after validating that it is the sole changed path; after push it reads back a clean worktree and the exact remote commit. If PR creation fails after push, retry resumes only a direct-child branch whose sole diff and committed profile bytes match the original setup subject. For a remote-only branch, retry fetches the exact ref and verifies its full commit SHA against the preceding `ls-remote` observation before creating a local branch, then repeats all parent, diff, profile, cleanliness, and remote-readback checks. No phase label changes during setup or Activation verification. Each successful Activation comment is linked to the previous record ID. For each Required Check, issuance selects the latest run created no later than the exact PR `merged_at`, with Check Run ID as the deterministic tie-breaker for equal `created_at`; that run must be completed successfully at or before merge. A pending or failed run at merge cannot be rescued by a post-merge rerun. History reads validate every comment, ADC generation, PR subject, main ancestry, pinned Required Check Run IDs/results and their completion-before-merge bound, merger, and predecessor, then compare complete marker snapshots before returning. A partial approval without its Activation record is never treated as active; an exact retry can finish that same PR only.
 
 The setup PR's verified `merged_at` controls strict Issue creation-time routing; the later record-comment timestamp is retained and checked as history. A later Activation appends a successor and does not change older Gate Selection payloads. New selection chooses the latest merged Activation before the Issue's `created_at`; re-running gate-policy follows an existing selection's exact Activation Comment ID and digest through history. Phase validation resolves the same historical authority. The consumer path stores the Activation Issue number in the Gate Selection while preserving the existing fixed-cohort payload shape.
+
+<a id="des-f01-008"></a>
+<a id="des-f01-008-effective-branch-policy-assessment"></a>
+### 5.1 DES-F01-008 Effective branch-policy assessment
+
+`branch_policy.py` remains pure: it combines the branch flag, legacy protection read, effective branch rules, Ruleset details, current profile mode, and exact trusted checks into the #62-compatible `EffectiveBranchPolicy`. `github.py` owns the GitHub reads and reports HTTP status codes without logging credentials. A 403 is `UNAVAILABLE`; only a verified 404 is evidence that legacy protection is absent. V2 issuance requires `VERIFIED` plus the active repository Ruleset and readable policy endpoints.
+
+<a id="des-f01-009"></a>
+<a id="des-f01-009-exact-plan-ruleset-writes"></a>
+### 5.2 DES-F01-009 Exact-plan Ruleset writes
+
+`ruleset_management.py` builds a canonical plan from committed `.agent/project.json`, repository/owner identity, branch state, the one same-name repository Ruleset, current policy evidence, and open PRs. The plan digest covers the desired exact GitHub payload and a create/update/no-op diff. Apply re-reads all plan inputs twice and verifies a separate, unedited owner comment on Activation Issue #57 that names the full plan digest. It writes only the unique owned repository Ruleset, then reads back its details and effective branch policy before appending a Ruleset-application record. A lost response is reconciled through one inventory/detail read; ambiguous state blocks without a second write or rollback.
+
+The managed state is `P-ASES Final Delivery (managed)` at repository scope, active on `~DEFAULT_BRANCH`, with no bypass actors, the exact trusted Required Check set, zero required approvals, resolved review threads, supported merge methods, and `non_fast_forward`. The exact body digest and owner-approval comment ID form append-only ownership evidence on #57. Future PUTs require the prior ruleset ID and digest from that evidence. Other Rulesets and legacy protection are never mutated.
+
+<a id="des-f01-010"></a>
+<a id="des-f01-010-v1-preservation-and-current-checks"></a>
+### 5.3 DES-F01-010 V1 preservation and current checks
+
+V1 record payloads, creation-time semantics, and existing Gate Selections retain their original representation. Existing Issues resolve their pinned record through a shared strict-prefix history reader, then run the current live policy and runtime checks. A later corrupt V2 record is outside an older Issue's validated prefix; corruption in the selected prefix still blocks. New selection and successor setup read the full Activation chain.
+
+<a id="des-f01-011"></a>
+<a id="des-f01-011-versioned-v2-setup-and-record"></a>
+### 5.4 DES-F01-011 Versioned V2 setup and record
+
+V2 uses separate setup, approval, and record markers. Its setup binds the raw committed profile bytes, explicit `solo_owner` mode, required `(context, App ID)` checks, managed Ruleset ID, and effective-policy digest. Verification reads current policy during merged-PR validation and repeats the full read immediately before publishing the Activation record; both snapshots must match the setup's Ruleset ID and policy digest. The record keeps the V1 merge and check evidence and adds those V2 fields. V1 serialization remains byte-for-byte stable. History validation ties a V2 record to an earlier matching Ruleset-application record.
+
+<a id="des-f01-012"></a>
+<a id="des-f01-012-record-comment-effective-time"></a>
+### 5.5 DES-F01-012 Record-comment effective time
+
+For V1, `activated_at` remains the setup PR `merged_at`. For V2, the record's GitHub comment `created_at` supplies `activated_at`; it is retained from direct/list/direct readback rather than inferred from a setup PR. Gate selection compares Issue `created_at` strictly with that time, so an Issue in the merge-to-record gap continues to use the previous eligible V1 record.
+
+<a id="des-f01-013"></a>
+<a id="des-f01-013-bootstrap-and-independent-delivery-gates"></a>
+### 5.6 DES-F01-013 Bootstrap and independent delivery gates
+
+The #63 branch contains the policy APIs and exact-plan writer needed to bootstrap its own repository Ruleset before merge. The initial Ruleset plan and human approval are still bound to the exact branch state. User Review, independent review, required CI, Final Delivery, and owner merge authorization remain separate gates. PR #62 later reuses the shared branch-policy and profile APIs without changing its #60 ADC or closing association.
 
 `ExecutionBinding` uses the current nine-field row, including `branch_ref`, either as a single record or inside the append-only history wrapper. The prior eight-field form is outside the supported contract and may be rejected by read/resume commands; callers must not assume compatibility, branch inference, migration, or automatic rewrite. At `ready`, a linked test source file must already exist in the branch commit, but it may be a failing scaffold awaiting implementation; the receipt binds its path and bytes without claiming a test pass. Execution may extend that source, and later verification establishes the outcome.
 

@@ -30,6 +30,7 @@
   - [9.1 REQ-F01-002 Activation locator](#91-req-f01-002-activation-locator)
   - [9.2 REQ-F01-004 Setup request and verification](#92-req-f01-004-setup-request-and-verification)
   - [9.3 REQ-F01-006 Historical Activation pin](#93-req-f01-006-historical-activation-pin)
+  - [9.4 Runtime Ruleset management](#94-runtime-ruleset-management)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -61,7 +62,7 @@ Define observable behavior for the Python 3.10+ P-ASES runtime, invoked as `pyth
 <a id="scope"></a>
 ## 2 Scope
 
-The public CLI namespaces are `project`, `context`, `adc`, `issue`, `docs`, `work`, `pr`, `verification`, `acceptance`, `audit`, `user-review`, and `delivery`. Their verbs are defined by `python -m p_ases --help` and the canonical Skills. The route set includes `project status`, `context show`, ADC validate/publish/verify/restore, Issue validate-split/split/advance/integration-check, docs validate/format, work base/branch/bind/recover, PR ensure, verification plan/collect/validate/final/published, acceptance prepare/validate/publish/verify, audit self/independent, user-review start/sync/record/status, and delivery readiness/final/finalize/parent/gate-policy/bootstrap-check/parent-evidence/parent-migrate-labels.
+The public CLI namespaces are `project`, `context`, `adc`, `issue`, `docs`, `work`, `pr`, `verification`, `acceptance`, `audit`, `user-review`, and `delivery`. Their verbs are defined by `python -m p_ases --help` and the canonical Skills. The route set includes `project status`, `context show`, ADC validate/publish/verify/restore, Issue validate-split/split/advance/integration-check, docs validate/format, work base/branch/bind/recover, PR ensure, verification plan/collect/validate/final/published, acceptance prepare/validate/publish/verify, audit self/independent, user-review start/sync/record/status, and delivery readiness/final/finalize/parent/gate-policy/bootstrap-check/parent-evidence/parent-migrate-labels/consumer-activation-setup/consumer-activation-verify/consumer-activation-preflight/consumer-activation-ruleset-plan/consumer-activation-ruleset-apply.
 
 The detailed command semantics retained in Sections 3.3–7 below are the explicitly legacy `agent-workflow` runtime specification. They preserve historical requirement identifiers for traceability; their retired command names, profile schema, and data contracts do not define the current P-ASES interface.
 
@@ -366,3 +367,9 @@ The required request is `P-ASESを有効化して。`. It creates or reuses the 
 ### 9.3 REQ-F01-006 Historical Activation pin
 
 Phase validation resolves an existing Gate Selection to its exact historical Activation record, even after a successor Activation. Existing ADC, kind/phase labels, frozen work binding, receipts, and exact-subject checks remain mandatory.
+
+### 9.4 Runtime Ruleset management
+
+`delivery consumer-activation-preflight` is read-only. `consumer-activation-ruleset-plan --output PATH` requires a clean worktree and binds a canonical JSON plan to the committed profile, repository and owner IDs, default branch and current SHA, trusted check/App-ID pairs, current effective policy evidence, managed Ruleset identity/body, and open-PR impact. The plan includes the exact Ruleset payload, operation, blockers, and SHA-256. `consumer-activation-ruleset-apply --plan PATH --approval-comment-id ID` revalidates the exact owner-authored, unedited two-line approval on Activation Issue #57, current repository/admin identity, all plan inputs, and readable policy sources before writing. A plan permits at most one repository Ruleset POST or PUT. After the write, runtime requires exact Ruleset detail and effective-policy readback before appending ownership evidence to #57. A lost or malformed response may be reconciled by exact fresh reads; an ambiguous state never triggers a second write or rollback. HTTP 403 is unavailable evidence and never means unconfigured.
+
+For `final_delivery.review_mode: solo_owner`, `consumer-activation-setup` and `consumer-activation-verify` use V2 setup, approval, and Activation records. V2 binds exact committed profile bytes, trusted Required Checks, Ruleset identity, and effective policy digest. V1 payload bytes and their `merged_at` effective time remain unchanged. Existing Gate Selections resolve through the strict Activation history prefix ending at their pinned record; new selection and successor issuance validate the full history.

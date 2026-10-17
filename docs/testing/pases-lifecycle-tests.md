@@ -35,6 +35,18 @@
     - [2.12.1 ORA-F01-006 Expected result](#2121-ora-f01-006-expected-result)
   - [2.13 TST-F01-007 Successor/reapproval](#213-tst-f01-007-successorreapproval)
     - [2.13.1 ORA-F01-007 Expected result](#2131-ora-f01-007-expected-result)
+  - [2.14 TST-F01-008 Effective V2 policy](#214-tst-f01-008-effective-v2-policy)
+    - [2.14.1 ORA-F01-008 Expected result](#2141-ora-f01-008-expected-result)
+  - [2.15 TST-F01-009 Exact approved Ruleset plan](#215-tst-f01-009-exact-approved-ruleset-plan)
+    - [2.15.1 ORA-F01-009 Expected result](#2151-ora-f01-009-expected-result)
+  - [2.16 TST-F01-010 Existing Issue non-retroactivity](#216-tst-f01-010-existing-issue-non-retroactivity)
+    - [2.16.1 ORA-F01-010 Expected result](#2161-ora-f01-010-expected-result)
+  - [2.17 TST-F01-011 V2 record creation time](#217-tst-f01-011-v2-record-creation-time)
+    - [2.17.1 ORA-F01-011 Expected result](#2171-ora-f01-011-expected-result)
+  - [2.18 TST-F01-012 Prefix and full-history validation](#218-tst-f01-012-prefix-and-full-history-validation)
+    - [2.18.1 ORA-F01-012 Expected result](#2181-ora-f01-012-expected-result)
+  - [2.19 TST-F01-013 Pre-merge bootstrap gates](#219-tst-f01-013-pre-merge-bootstrap-gates)
+    - [2.19.1 ORA-F01-013 Expected result](#2191-ora-f01-013-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -65,6 +77,18 @@
 - [ORA-F01-006](#ora-f01-006) — 2.12.1 ORA-F01-006 Expected result
 - [TST-F01-007](#tst-f01-007) — 2.13 TST-F01-007 Successor/reapproval
 - [ORA-F01-007](#ora-f01-007) — 2.13.1 ORA-F01-007 Expected result
+- [TST-F01-008](#tst-f01-008) — 2.14 TST-F01-008 Effective V2 policy
+- [ORA-F01-008](#ora-f01-008) — 2.14.1 ORA-F01-008 Expected result
+- [TST-F01-009](#tst-f01-009) — 2.15 TST-F01-009 Exact approved Ruleset plan
+- [ORA-F01-009](#ora-f01-009) — 2.15.1 ORA-F01-009 Expected result
+- [TST-F01-010](#tst-f01-010) — 2.16 TST-F01-010 Existing Issue non-retroactivity
+- [ORA-F01-010](#ora-f01-010) — 2.16.1 ORA-F01-010 Expected result
+- [TST-F01-011](#tst-f01-011) — 2.17 TST-F01-011 V2 record creation time
+- [ORA-F01-011](#ora-f01-011) — 2.17.1 ORA-F01-011 Expected result
+- [TST-F01-012](#tst-f01-012) — 2.18 TST-F01-012 Prefix and full-history validation
+- [ORA-F01-012](#ora-f01-012) — 2.18.1 ORA-F01-012 Expected result
+- [TST-F01-013](#tst-f01-013) — 2.19 TST-F01-013 Pre-merge bootstrap gates
+- [ORA-F01-013](#ora-f01-013) — 2.19.1 ORA-F01-013 Expected result
 <!-- heading-map:end -->
 
 
@@ -231,3 +255,63 @@ An existing selection remains bound to its exact historical record and gate-poli
 #### 2.13.1 ORA-F01-007 Expected result
 
 Policy or locator changes require a new setup PR and explicit admin merge. The successor links the previous record, governs only later-created Issues, and leaves earlier Activation records and Gate Selections unchanged. Removing the locator blocks new selections.
+
+<a id="tst-f01-008"></a>
+### 2.14 TST-F01-008 Effective V2 policy
+
+**Setup and action:** Configure explicit `solo_owner`, the four trusted Required Checks with App ID 15368, and the exact repository Ruleset. Vary wrong default branch, inactive enforcement, wrong check context/App ID, nonzero approvals, bypass actors, missing `non_fast_forward`, unresolved review threads, legacy conflict, and unavailable 403 reads. Attempt V2 setup and verification with each case.
+
+<a id="ora-f01-008"></a>
+#### 2.14.1 ORA-F01-008 Expected result
+
+V2 is recorded only when branch, effective rules, Ruleset details, legacy protection, mode, checks, and admin identity are all readable and match. A 403 is `UNAVAILABLE`, never “not configured.”
+
+<a id="tst-f01-009"></a>
+### 2.15 TST-F01-009 Exact approved Ruleset plan
+
+**Setup and action:** Generate a plan for empty, exact, owned-different, and same-name-unowned repository Ruleset states. Change repository ID, owner ID, default branch SHA, committed profile bytes, mode, checks/App IDs, Ruleset ID/digest, PR impact, and approval comment between planning and apply. Vary wrong author, edited/deleted/duplicated comment, wrong Issue, wrong repository, invalid plan digest, missing admin permission, API 403, lost POST/PUT response, and concurrent state changes.
+
+<a id="ora-f01-009"></a>
+#### 2.15.1 ORA-F01-009 Expected result
+
+Only the exact unedited owner approval for the unchanged canonical plan permits one POST or one PUT to the uniquely owned repository Ruleset. An exact current state is a no-op. All stale, unowned, ambiguous, unauthorized, raced, or unreadable states block without modifying other Rulesets or retrying blindly. Successful writes require exact detail and effective-policy readback plus append-only ownership evidence.
+
+<a id="tst-f01-010"></a>
+### 2.16 TST-F01-010 Existing Issue non-retroactivity
+
+**Setup and action:** Pin an Issue to V1, append V2, then corrupt only a successor record and call both gate-policy and phase evidence for the old Issue. Separately alter its selected V1 prefix and current live Ruleset. Compare Issue ADC, Gate Selection comment, labels, PRBinding, checkpoints, and prior evidence before and after.
+
+<a id="ora-f01-010"></a>
+#### 2.16.1 ORA-F01-010 Expected result
+
+Successor-only corruption does not invalidate a valid old V1 Issue. Corruption within its selected prefix or a current live policy mismatch blocks without rewriting its gate, labels, ADC, PR, or historical evidence.
+
+<a id="tst-f01-011"></a>
+### 2.17 TST-F01-011 V2 record creation time
+
+**Setup and action:** Compare Issue `created_at` with the V2 setup PR `merged_at` and Activation record comment `created_at`. Create Issues before merge, between merge and record publication, exactly at record time, and after record time.
+
+<a id="ora-f01-011"></a>
+#### 2.17.1 ORA-F01-011 Expected result
+
+V2 eligibility begins strictly after the Activation record comment's GitHub creation time. Issues in the merge-to-record interval continue using the latest eligible V1 Activation.
+
+<a id="tst-f01-012"></a>
+### 2.18 TST-F01-012 Prefix and full-history validation
+
+**Setup and action:** Create a two-record V1→V2 chain. Read an existing Gate Selection pinned to V1 while varying corruption after its V1 record, then repeat with corruption of the V1 record, approval, predecessor, setup PR, and Check Run evidence. Run new Issue selection and successor issuance against the same full chain.
+
+<a id="ora-f01-012"></a>
+#### 2.18.1 ORA-F01-012 Expected result
+
+Existing Issue reads validate exactly the prefix through their selected record and ignore later corruption. A new selection or successor issuance validates the full chain and blocks on any malformed record.
+
+<a id="tst-f01-013"></a>
+### 2.19 TST-F01-013 Pre-merge bootstrap gates
+
+**Setup and action:** Use the #63 feature branch to generate/apply the initial exact plan before its PR merges. Verify the same commit's CI and independent review, then attempt User Review, Final Delivery, and merge without their normal evidence.
+
+<a id="ora-f01-013"></a>
+#### 2.19.1 ORA-F01-013 Expected result
+
+The Ruleset can be established from the implementation branch after exact human plan approval. Bootstrap does not satisfy CI, independent review, User Review, Final Delivery, or explicit owner merge authorization.

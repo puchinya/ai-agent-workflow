@@ -41,6 +41,10 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
     - [2.14.1 ORA-RT-014 Expected result](#2141-ora-rt-014-expected-result)
   - [2.15 TST-RT-015 Error and boundary cases](#215-tst-rt-015-error-and-boundary-cases)
     - [2.15.1 ORA-RT-015 Fail-closed result](#2151-ora-rt-015-fail-closed-result)
+  - [2.16 TST-RT-016 Effective branch-policy assessment](#216-tst-rt-016-effective-branch-policy-assessment)
+    - [2.16.1 ORA-RT-016 Expected result](#2161-ora-rt-016-expected-result)
+  - [2.17 TST-RT-017 Canonical plan and write boundary](#217-tst-rt-017-canonical-plan-and-write-boundary)
+    - [2.17.1 ORA-RT-017 Expected result](#2171-ora-rt-017-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -75,6 +79,10 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
 - [ORA-RT-014](#ora-rt-014) — 2.14.1 ORA-RT-014 Expected result
 - [TST-RT-015](#tst-rt-015) — 2.15 TST-RT-015 Error and boundary cases
 - [ORA-RT-015](#ora-rt-015) — 2.15.1 ORA-RT-015 Fail-closed result
+- [TST-RT-016](#tst-rt-016) — 2.16 TST-RT-016 Effective branch-policy assessment
+- [ORA-RT-016](#ora-rt-016) — 2.16.1 ORA-RT-016 Expected result
+- [TST-RT-017](#tst-rt-017) — 2.17 TST-RT-017 Canonical plan and write boundary
+- [ORA-RT-017](#ora-rt-017) — 2.17.1 ORA-RT-017 Expected result
 <!-- heading-map:end -->
 
 
@@ -265,3 +273,23 @@ No credentials or Issue bodies are emitted, and local state stays scoped to its 
 #### 2.15.1 ORA-RT-015 Fail-closed result
 
 Every invalid boundary returns a nonzero bounded error before an unrelated local or GitHub mutation.
+
+<a id="tst-rt-016"></a>
+### 2.16 TST-RT-016 Effective branch-policy assessment
+
+**Setup and action:** Feed `assess_branch_policy` branch, legacy protection, effective rules, and Ruleset detail fixtures for exact `solo_owner` and `external_reviewer` policies. Vary missing sources, HTTP 403/404, duplicate Ruleset IDs/rules, branch scope, enforcement, source, bypass actors, Required Check contexts and App IDs, approval count, and force-push rule.
+
+<a id="ora-rt-016"></a>
+#### 2.16.1 ORA-RT-016 Expected result
+
+Policy status distinguishes `VERIFIED`, `NOT_CONFIGURED`, `UNAVAILABLE`, `UNVERIFIED`, and `MISMATCH` without treating forbidden reads as missing settings. Required Checks compare exact context/App ID pairs.
+
+<a id="tst-rt-017"></a>
+### 2.17 TST-RT-017 Canonical plan and write boundary
+
+**Setup and action:** Build plans from fake GitHub responses and validate canonical plan digest round trips. Mutate every bound identity/evidence field and simulate one POST, one PUT, no-op, lost response, and direct/list/direct approval mismatch. Inspect the fake transport's complete request sequence.
+
+<a id="ora-rt-017"></a>
+#### 2.17.1 ORA-RT-017 Expected result
+
+Plan digests change when any bound input changes. Only an exact, owner-authored approval can reach the one managed Ruleset write. Every ambiguous write result performs reads only and never triggers a second POST/PUT or rollback.

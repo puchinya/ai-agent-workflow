@@ -13,8 +13,9 @@ sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases.adc import ADCError, parse_adc, publish_adc, verify_adc  # noqa: E402
 from p_ases.consumer_activation import (  # noqa: E402
-    APPROVAL_MARKER, ISSUE_MARKER, RECORD_MARKER, ConsumerActivationError,
-    _default_activation_adc, _default_profile, read_consumer_activation_history, read_consumer_activation_record,
+    APPROVAL_MARKER, ISSUE_MARKER, RECORD_MARKER, ConsumerActivationError, ConsumerActivationRecord,
+    RequiredCheckEvidence, _default_activation_adc, _default_profile,
+    read_consumer_activation_history, read_consumer_activation_record,
     setup_consumer_activation,
     verify_and_record_activation,
 )
@@ -620,7 +621,8 @@ class ConsumerActivationTests(unittest.TestCase):
             github, REPO, 27, "2026-10-14T12:03:00Z", activation_issue_number=ISSUE,
         ))
 
-    def test_successor_activation_appends_chain_and_old_selection_keeps_old_record(self):
+    @patch("p_ases.consumer_activation.verify_applied_policy_record", return_value={})
+    def test_successor_activation_appends_chain_and_old_selection_keeps_old_record(self, _policy_record_mock):
         github = FakeGitHub()
         setup_fake(github)
         first, first_id = verify_and_record_activation(github, PR)
@@ -645,6 +647,12 @@ class ConsumerActivationTests(unittest.TestCase):
                              "started_at": "2026-10-14T12:59:01Z",
                              "completed_at": "2026-10-14T12:59:02Z",
                              "status": "completed", "conclusion": "success", "app": {"id": APP_ID}})
+        v2_profile = _default_profile(REPO)
+        v2_profile["branch"]["required_checks"] = [{"name": "ci", "trusted_app_id": APP_ID}]
+        v2_profile["final_delivery"] = {"review_mode": "solo_owner"}
+        v2_profile["activation"] = {"issue_number": ISSUE}
+        policy_evidence = {"ruleset_id": 123, "effective_policy_sha256": "c" * 64}
+        setup_bytes: dict[str, bytes] = {}
         with tempfile.TemporaryDirectory() as tmp, \
                 patch("p_ases.consumer_activation.worktree_clean", return_value=True), \
                 patch("p_ases.consumer_activation.discover_repository", return_value=REPO), \
@@ -653,8 +661,14 @@ class ConsumerActivationTests(unittest.TestCase):
                 patch("p_ases.consumer_activation.remote_branch_exists", return_value=False), \
                 patch("p_ases.consumer_activation.branch_exists", return_value=False), \
                 patch("p_ases.consumer_activation._ensure_setup_branch",
-                      side_effect=lambda *_args: (github.head_sha, False)), \
-                patch("p_ases.consumer_activation.switch_branch"):
+                      side_effect=lambda _root, _ref, _head, content:
+                      (setup_bytes.setdefault("profile", content) and (github.head_sha, False))), \
+                patch("p_ases.consumer_activation.switch_branch"), \
+                patch("p_ases.consumer_activation.read_verified_managed_policy",
+                      return_value=policy_evidence):
+            profile_path = Path(tmp) / ".agent" / "project.json"
+            profile_path.parent.mkdir()
+            profile_path.write_text(json.dumps(v2_profile, sort_keys=True, indent=2) + "\n", encoding="utf-8")
             result = setup_consumer_activation(Path(tmp), github)
         second_pr = result["pr"]
         self.assertNotEqual(second_pr, PR)
@@ -662,9 +676,12 @@ class ConsumerActivationTests(unittest.TestCase):
         second = github.prs[second_pr]
         second.update({"state": "closed", "merged": True, "merged_at": "2026-10-14T13:00:00Z",
                        "merged_by": copy.deepcopy(USER), "merge_commit_sha": second_merge})
-        github.profile_by_commit[second_merge] = github.profile_bytes
+        github.profile_by_commit[second_merge] = setup_bytes["profile"]
         github.main_sha = "f" * 40
-        successor, successor_id = verify_and_record_activation(github, second_pr)
+        with patch("p_ases.consumer_activation.read_verified_managed_policy",
+                   return_value=policy_evidence) as policy_reads:
+            successor, successor_id = verify_and_record_activation(github, second_pr)
+        self.assertEqual(policy_reads.call_count, 2)
         self.assertEqual(successor.predecessor_record_id, first_id)
         self.assertGreater(successor_id, first_id)
         history = read_consumer_activation_record(github, REPO, ISSUE)
@@ -690,6 +707,43 @@ class ConsumerActivationTests(unittest.TestCase):
             github, REPO, 30, "2026-10-14T13:03:00Z", activation_issue_number=ISSUE,
         )
         self.assertEqual(later_selection.activation_comment_id, successor_id)
+
+        successor_comment = next(row for row in github.comments if row["id"] == successor_id)
+        successor_comment["body"] += "\ncorrupt successor payload"
+        successor_comment["id"] = "invalid successor comment ID"
+        self.assertEqual(read_consumer_activation_history(
+            github, REPO, ISSUE, through_record_id=first_id,
+        ), [(first, first_id)])
+        self.assertEqual(choose_gate_for_new_issue(
+            github, REPO, 28, "2026-10-14T13:04:00Z", activation_issue_number=ISSUE,
+        ), selected_before)
+        with self.assertRaisesRegex(ConsumerActivationError, "canonical|history|schema"):
+            read_consumer_activation_history(github, REPO, ISSUE)
+
+    def test_v2_activation_uses_record_comment_created_at_as_effective_time(self):
+        v1 = ConsumerActivationRecord(
+            repository=REPO, activation_issue_number=ISSUE, proposed_adc_comment_id=100,
+            proposed_adc_sha256="a" * 64, proposed_adc_state="approved", adc_comment_id=100,
+            adc_sha256="a" * 64, activation_profile_sha256="b" * 64, setup_pr_number=PR,
+            setup_pr_id=PR + 1000, merge_commit_sha40=MERGE_SHA, merged_at=MERGED_AT,
+            merger_id=USER["id"], merger_login=USER["login"], merger_type="User",
+            approval_comment_id=101, predecessor_record_id=None,
+            required_check_runs=(sample_check_evidence(),),
+        )
+        v2 = ConsumerActivationRecord(
+            **{**v1.__dict__, "record_created_at": "2026-10-14T12:05:00Z", "schema_version": 2,
+               "review_mode": "solo_owner", "ruleset_id": 123, "branch_policy_sha256": "c" * 64},
+        )
+        self.assertEqual(v1.activated_at, MERGED_AT)
+        self.assertEqual(v2.activated_at, "2026-10-14T12:05:00Z")
+        self.assertEqual(v2.payload()["schema"], "PASES_CONSUMER_ACTIVATION_V2")
+
+
+def sample_check_evidence():
+    return RequiredCheckEvidence(
+        1, "ci", APP_ID, HEAD_SHA, "2026-10-14T11:59:00Z", "2026-10-14T11:59:01Z",
+        "2026-10-14T11:59:02Z", "completed", "success",
+    )
 
 
 if __name__ == "__main__":
