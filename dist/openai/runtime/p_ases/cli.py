@@ -148,6 +148,7 @@ from .user_review import (
     write_parent_review_session, write_review_session,
 )
 from .owner_consent import OwnerDecisionError, read_verified_owner_decision
+from .phase_rebaseline import PhaseRebaselineError, rebaseline_issue_phase
 from .user_review_relay import (
     UserReviewDecisionHistory, UserReviewRelayApproval, UserReviewRelayError,
     has_user_review_decision_marker, verify_user_review_decision_history,
@@ -2998,6 +2999,8 @@ def _parser() -> argparse.ArgumentParser:
     publish.add_argument("--repo", help="repository owner/name; defaults to origin")
     publish.add_argument("--state", choices=("draft", "approved"), default="draft")
     publish.add_argument("--supersede", action="store_true")
+    publish.add_argument("--approval-comment-id", type=_positive_number,
+                         help="exact PASES_OWNER_DECISION_V1 ADC_SUPERSEDE comment ID for Issue #63")
     verify = adc_commands.add_parser("verify")
     verify.add_argument("issue", type=_positive_number)
     verify.add_argument("--repo", help="repository owner/name; defaults to origin")
@@ -3010,6 +3013,11 @@ def _parser() -> argparse.ArgumentParser:
         "issue", help="validate Issue graphs and apply foundational phase labels"
     )
     issue_commands = issue.add_subparsers(dest="verb", required=True)
+    phase_rebaseline = issue_commands.add_parser(
+        "phase-rebaseline", help="apply/recover the approved-ADC-backed Issue #63 phase bootstrap"
+    )
+    phase_rebaseline.add_argument("issue", type=_positive_number)
+    phase_rebaseline.add_argument("--repo", help="repository owner/name; defaults to origin")
     validate_plan = issue_commands.add_parser("validate-split")
     validate_plan.add_argument("plan", type=Path)
     validate_plan.add_argument("--repo", help="repository owner/name; defaults to origin")
@@ -3601,12 +3609,56 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             github = GitHub(repository)
             if args.verb == "publish":
-                pointer = publish_adc(github, args.issue, args.source.read_bytes(),
-                                      state=args.state, explicitly_approved=(args.state == "approved"),
-                                      supersede=args.supersede)
+                data = args.source.read_bytes()
+                expected_current = None
+                issue63_target = (args.issue == 63
+                                  and repository.casefold() == "puchinya/ai-agent-workflow")
+                if issue63_target and args.state == "approved":
+                    if args.approval_comment_id is None:
+                        _json({"status": "PENDING_APPROVAL", "issue": args.issue,
+                               "operation": "ADC_SUPERSEDE",
+                               "reasons": ["an exact ADC_SUPERSEDE decision comment ID is required"]})
+                        return 2
+                    contract = parse_adc(data, repository, args.issue)
+                    try:
+                        decision = read_verified_owner_decision(
+                            github, issue_number=args.issue, owner_id=3744776,
+                            operation="ADC_SUPERSEDE", subject_sha256=contract.sha256,
+                        )
+                    except OwnerDecisionError as exc:
+                        if "missing exact owner operation/subject" in str(exc):
+                            _json({"status": "PENDING_APPROVAL", "issue": args.issue,
+                                   "operation": "ADC_SUPERSEDE", "adc_sha256": contract.sha256,
+                                   "reasons": [str(exc)]})
+                            return 2
+                        raise CLIError(str(exc)) from exc
+                    if decision.comment_id != args.approval_comment_id:
+                        raise CLIError("ADC_SUPERSEDE comment ID differs from the exact verified decision")
+                    expected_current = verify_adc(github, args.issue).pointer
+                    if expected_current.state != "approved":
+                        raise CLIError("ADC supersession requires the exact current approved predecessor")
+                    if not args.supersede:
+                        raise CLIError("ADC_SUPERSEDE requires --supersede")
+                pointer = publish_adc(github, args.issue, data,
+                                      state=args.state,
+                                      explicitly_approved=(args.state == "approved"),
+                                      supersede=args.supersede,
+                                      expected_current=expected_current)
+                phase_result = None
+                if issue63_target and pointer.state == "approved":
+                    try:
+                        phase_result = rebaseline_issue_phase(github, args.issue)
+                    except PhaseRebaselineError as exc:
+                        status = ("BLOCKED_PERMISSION" if str(exc).startswith("BLOCKED_PERMISSION:")
+                                  else "ADC_PUBLISHED_PHASE_BLOCKED")
+                        _json({"status": status, "issue": args.issue,
+                               "comment_id": pointer.comment_id, "adc_sha256": pointer.sha256,
+                               "byte_length": pointer.byte_length, "state": pointer.state,
+                               "reasons": [str(exc)]})
+                        return 2
                 _json({"status": "PUBLISHED", "issue": args.issue, "comment_id": pointer.comment_id,
                        "adc_sha256": pointer.sha256, "byte_length": pointer.byte_length,
-                       "state": pointer.state})
+                       "state": pointer.state, "phase_rebaseline": phase_result})
                 return 0
             if args.verb == "verify":
                 verified = verify_adc(github, args.issue)
@@ -3622,6 +3674,19 @@ def main(argv: list[str] | None = None) -> int:
                    "comment_id": verified.pointer.comment_id, "adc_sha256": verified.pointer.sha256,
                    "byte_length": verified.pointer.byte_length})
             return 0
+
+        if args.verb == "phase-rebaseline":
+            github = GitHub(repository)
+            try:
+                result = rebaseline_issue_phase(github, args.issue)
+                _json(result)
+                return 0
+            except PhaseRebaselineError as exc:
+                if str(exc).startswith("BLOCKED_PERMISSION:"):
+                    _json({"status": "BLOCKED_PERMISSION", "issue": args.issue,
+                           "reasons": [str(exc)]})
+                    return 2
+                return _blocked_result((str(exc),))
 
         if args.verb == "phase-evidence":
             root = _repo_root(str(args.root)).resolve()

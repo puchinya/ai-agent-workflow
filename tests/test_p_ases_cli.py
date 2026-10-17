@@ -132,6 +132,11 @@ class PasesCLITests(unittest.TestCase):
         self.assertNotIn("closed", help_text)
 
     def test_phase_evidence_route_and_advance_require_explicit_receipt_reference(self):
+        rebaseline = _parser().parse_args([
+            "issue", "phase-rebaseline", "63", "--repo", "puchinya/ai-agent-workflow",
+        ])
+        self.assertEqual((rebaseline.namespace, rebaseline.verb, rebaseline.issue),
+                         ("issue", "phase-rebaseline", 63))
         evidence = _parser().parse_args([
             "issue", "phase-evidence", "12", "requirements", "specification",
             "--repo", "octo/repo", "--root", str(ROOT),
@@ -143,6 +148,50 @@ class PasesCLITests(unittest.TestCase):
             "--phase-evidence-comment-id", "99", "--root", str(ROOT), "--repo", "octo/repo",
         ])
         self.assertEqual((advance.phase_evidence_comment_id, advance.root), (99, ROOT))
+
+    def test_issue_63_approved_adc_publish_requires_exact_supersede_and_runs_phase_bootstrap(self):
+        pointer = SimpleNamespace(comment_id=6228771810, sha256="a" * 64,
+                                  byte_length=7, state="approved")
+        predecessor = SimpleNamespace(comment_id=6228771805, sha256="b" * 64,
+                                      byte_length=7, state="approved")
+        decision = SimpleNamespace(comment_id=8123)
+        github = SimpleNamespace(repo="puchinya/ai-agent-workflow")
+        output = io.StringIO()
+        with patch("p_ases.cli.GitHub", return_value=github), \
+                patch("p_ases.cli.parse_adc", return_value=SimpleNamespace(sha256="a" * 64)), \
+                patch("p_ases.cli.read_verified_owner_decision", return_value=decision) as read_decision, \
+                patch("p_ases.cli.verify_adc", return_value=SimpleNamespace(pointer=predecessor)), \
+                patch("p_ases.cli.publish_adc", return_value=pointer) as publish, \
+                patch("p_ases.cli.rebaseline_issue_phase", return_value={"status": "APPLIED"}) as rebaseline, \
+                contextlib.redirect_stdout(output):
+            status = main([
+                "adc", "publish", "63", str(Path(__file__)),
+                "--repo", "puchinya/ai-agent-workflow", "--state", "approved", "--supersede",
+                "--approval-comment-id", str(decision.comment_id),
+            ])
+        self.assertEqual(status, 0)
+        self.assertIn('"phase_rebaseline": {\n    "status": "APPLIED"', output.getvalue())
+        read_decision.assert_called_once_with(
+            github, issue_number=63, owner_id=3744776,
+            operation="ADC_SUPERSEDE", subject_sha256="a" * 64,
+        )
+        publish.assert_called_once()
+        self.assertIs(publish.call_args.kwargs["expected_current"], predecessor)
+        rebaseline.assert_called_once_with(github, 63)
+
+    def test_issue_63_approved_adc_without_exact_supersede_is_pending_and_never_publishes(self):
+        github = SimpleNamespace(repo="puchinya/ai-agent-workflow")
+        output = io.StringIO()
+        with patch("p_ases.cli.GitHub", return_value=github), \
+                patch("p_ases.cli.publish_adc") as publish, \
+                contextlib.redirect_stdout(output):
+            status = main([
+                "adc", "publish", "63", str(Path(__file__)),
+                "--repo", "puchinya/ai-agent-workflow", "--state", "approved", "--supersede",
+            ])
+        self.assertEqual(status, 2)
+        self.assertIn('"status": "PENDING_APPROVAL"', output.getvalue())
+        publish.assert_not_called()
 
     def test_advance_refuses_caller_kind_mismatch_without_label_write(self):
         class GitHub:

@@ -60,6 +60,8 @@ class OwnerDecisionRecordTests(unittest.TestCase):
             parse_owner_decision(decision_body().replace('"issue_number":63', '"issue_number": 63'))
         with self.assertRaises(OwnerDecisionError):
             parse_owner_decision(decision_body(operation="USER_REVIEW"))
+        with self.assertRaises(OwnerDecisionError):
+            parse_owner_decision(decision_body(operation="PHASE_REBASE"))
 
     def test_history_rejects_wrong_owner_operation_subject_and_replay(self):
         comments = [
@@ -84,9 +86,9 @@ class OwnerDecisionRecordTests(unittest.TestCase):
             verify_owner_decision_history(duplicate, **scope)
 
     def test_read_verified_owner_decision_checks_exact_github_origin_and_direct_list_direct(self):
-        payload = parse_owner_decision(decision_body(operation="PHASE_REBASE")).as_dict()
+        payload = parse_owner_decision(decision_body(operation="ADC_SUPERSEDE")).as_dict()
         comment = {
-            "id": 101, "body": decision_body(operation="PHASE_REBASE"),
+            "id": 101, "body": decision_body(operation="ADC_SUPERSEDE"),
             "created_at": "2026-10-17T09:01:00Z", "updated_at": "2026-10-17T09:01:00Z",
             "user": {"id": OWNER_ID, "login": "puchinya", "type": "User"},
             "url": f"https://api.github.com/repos/{REPOSITORY}/issues/comments/101",
@@ -123,7 +125,7 @@ class OwnerDecisionRecordTests(unittest.TestCase):
 
         verified = read_verified_owner_decision(
             FakeGitHub([comment]), issue_number=63, owner_id=OWNER_ID,
-            operation="PHASE_REBASE", subject_sha256=SUBJECT_SHA,
+            operation="ADC_SUPERSEDE", subject_sha256=SUBJECT_SHA,
         )
         self.assertEqual(verified.comment_id, 101)
         self.assertEqual(verified.decision.as_dict(), payload)
@@ -141,17 +143,17 @@ class OwnerDecisionRecordTests(unittest.TestCase):
             with self.subTest(invalid=invalid), self.assertRaises(OwnerDecisionError):
                 read_verified_owner_decision(
                     FakeGitHub([invalid]), issue_number=63, owner_id=OWNER_ID,
-                    operation="PHASE_REBASE", subject_sha256=SUBJECT_SHA,
+                    operation="ADC_SUPERSEDE", subject_sha256=SUBJECT_SHA,
                 )
         with self.assertRaises(OwnerDecisionError):
             read_verified_owner_decision(
                 FakeGitHub([comment], direct={101: {**comment, "body": "different"}}),
-                issue_number=63, owner_id=OWNER_ID, operation="PHASE_REBASE", subject_sha256=SUBJECT_SHA,
+                issue_number=63, owner_id=OWNER_ID, operation="ADC_SUPERSEDE", subject_sha256=SUBJECT_SHA,
             )
         with self.assertRaises(OwnerDecisionError):
             read_verified_owner_decision(
                 FakeGitHub([comment], owner_id=OWNER_ID + 1), issue_number=63, owner_id=OWNER_ID,
-                operation="PHASE_REBASE", subject_sha256=SUBJECT_SHA,
+                operation="ADC_SUPERSEDE", subject_sha256=SUBJECT_SHA,
             )
 
     def test_verified_owner_decision_binds_exact_pr_and_rejects_unknown_marker(self):

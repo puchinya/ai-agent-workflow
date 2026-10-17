@@ -16,7 +16,7 @@ from typing import Any, Iterable
 from .github import GitHubError
 
 SCHEMA = "PASES_OWNER_DECISION_V1"
-OPERATIONS = frozenset({"PHASE_REBASE", "ADC_SUPERSEDE", "RULESET_PLAN_APPLY", "PR_MERGE"})
+OPERATIONS = frozenset({"ADC_SUPERSEDE", "RULESET_PLAN_APPLY", "PR_MERGE"})
 FIELDS = frozenset({
     "schema", "repository", "issue_number", "operation", "subject_sha256",
     "pr_number", "pr_head_sha40", "owner_id", "evidence_channel",
@@ -106,7 +106,7 @@ def parse_owner_decision(body: str) -> OwnerDecision:
         raise OwnerDecisionError("PR subject must contain both number and HEAD")
     if pr is not None and (not _positive(pr) or not isinstance(head, str) or SHA40.fullmatch(head) is None):
         raise OwnerDecisionError("owner decision PR subject is invalid")
-    if data["operation"] in {"PHASE_REBASE", "ADC_SUPERSEDE"} and pr is not None:
+    if data["operation"] == "ADC_SUPERSEDE" and pr is not None:
         raise OwnerDecisionError("ADC operations must not bind a PR")
     if data["operation"] == "RULESET_PLAN_APPLY" and pr is not None:
         raise OwnerDecisionError("Ruleset plan decisions must not bind a PR")

@@ -4,7 +4,7 @@
 Repository: `puchinya/ai-agent-workflow`
 Issue: [#63](https://github.com/puchinya/ai-agent-workflow/issues/63)
 既存実装PR: [#64](https://github.com/puchinya/ai-agent-workflow/pull/64)
-確認時HEAD: `3fca21dc3f259914a4cad893a7af5ae05ddbb737`（実行時に再取得する）
+確認時HEAD: `2910d49602ce512ef123fb58d722ec755bb76c2c`（実行時に再取得する）
 
 <!-- contents:start -->
 **Contents**
@@ -37,11 +37,11 @@ Issue: [#63](https://github.com/puchinya/ai-agent-workflow/issues/63)
 
 ## 2 Architecture Decisions
 
-1. **後続ADCをActivationより先に正式化する。** #63既存IssueとPR #64のみを維持する。Phaseの一回限りの再基準化（`phase:ready`→`phase:requirements`）が、後続ADC世代のspec/design/ready receiptsに必須なら、隔離済みbrokerによる正規の`PHASE_REBASE`操作を先に実施し、後続ADCをappend-only `ADC_SUPERSEDE`で正式発行する。個別承認は流用しない。正式化後は同一ADC世代のPhase証跡を仕様→設計→ready順に確立する。旧世代のADC/pointer/receipt/Gate Selectionを上書きしない。
+1. **後続ADCをActivationより先に正式化する。** #63既存IssueとPR #64のみを維持する。後続ADCをappend-only `ADC_SUPERSEDE`で正式発行し、approved pointerとforward generationを確認した後、通常の認証済みP-ASES executorが#63を`phase:ready`から`phase:requirements`へ一度だけ自動更新する。Intent/Appliedコメントは実行証跡であり、`PHASE_REBASE`承認・owner decisionは作らない。正式化後は同一ADC世代のPhase証跡を仕様→設計→ready順に確立する。旧世代のADC/pointer/receipt/Gate Selectionを上書きしない。
 2. **ActivationはStage 2で完全に終える。** **Rulesetを設定しただけ・Setup PRを開いただけ・`SETUP_PENDING`を返しただけは未完了。** `PASES_CONSUMER_ACTIVATION_V2`のappend-only record（Issue #57）を発行し、comment ID・内容・`created_at`・管理Ruleset ID／owned apply記録・有効policy digestをreadbackして`ACTIVE`を確定する。
 3. **Setup PRのマージはActivation内部。** Activation V2が要求する別のSetup PRは、PR #64より前に別途審査・正確なHEADに対するmerge承認を経てマージする。Setup PRの承認をPR #64の`PR_MERGE`承認へ流用しない。Setup PRマージ自体がActivationの完了を意味しない（post-merge verify / recordが必要）。
 4. **Activation自身がGitHub必須設定を整備。** `consumer-activation-setup`がrepository/profile検査、exact Ruleset plan、必要なowner承認とowner-local Admin TTY continuation、単一Rulesetへの一度限りのPOST/PUTまたはNOOP、policy double-read、Setup PRの作成・再開、post-merge recordを駆動する。独立した手動Ruleset設定を通常利用者に要求しない。変更対象は既定済みの単一 `P-ASES Final Delivery (managed)` Rulesetのみ。Required Checks 4件/App ID 15368、PR必須、review-thread解決、force push禁止、bypass無しを保つ。
-5. **承認と実装権限は分離。** Ownerの本チャットでの「後続ADCは承認する」は意向として受領する。実際の `ADC_SUPERSEDE`には修正後の正確なADCバイト列/SHA、対象Issue、predecessor pointerのreadbackと、当該SHAに結び付く認証済み本人承認が必要。`PHASE_REBASE`、`RULESET_PLAN_APPLY`、Setup PR merge、`USER_REVIEW`、PR #64 `PR_MERGE`は**別操作**であり、この承認から自動的に許可されない。決定記録をCodexがオーナーに成り代わって作成してはならない。隔離済みGitHub relayのcredential/tool boundaryを実証できなければ実writeはBLOCKED。
+5. **承認と実装権限は分離。** Ownerの本チャットでの「後続ADCは承認する」は意向として受領する。実際の `ADC_SUPERSEDE`には修正後の正確なADCバイト列/SHA、対象Issue、predecessor pointerのreadbackと、当該SHAに結び付く認証済み本人承認が必要。`RULESET_PLAN_APPLY`、Setup PR merge、`USER_REVIEW`、PR #64 `PR_MERGE`は**別操作**であり、この承認から自動的に許可されない。Phase更新は後続ADCの承認・公開後に自動実行し、Owner decisionとは扱わない。決定記録をCodexがオーナーに成り代わって作成してはならない。owner-decision relayのcredential/tool boundaryを実証できなければ承認記録のwriteはBLOCKED。Phase Intent/Appliedとlabel更新は、ADC公開後の通常認証済みP-ASES executor操作として行う。
 6. **Activationのmain進行とPRBindingの互換性。** Activation Setup PRマージが先に`main`を前進させ、`runtime/p_ases/work.py::ensure_pull_request`の凍結base SHAとの厳密一致が破れる。旧`ExecutionBinding`/`PRBinding`/frozen baseは書き換えない。正規Setup PR由来と独立検証できる前進（旧baseの子孫、Setup PR merge commitの正確な同定、変更ファイルは`.agent/project.json`のみ、内容がPR #64の期待profileと一致、GitHubに別PR介入なし）だけを追記専用current-base evidenceとして許可し、`pr ensure`・Readiness・Final Deliveryへ同一判定を適用する。一般的base driftや不明なmain変更はBLOCKする。旧実装の固定SHA比較を無条件に削除してはならない。
 7. **Activation前のADC・後のPR reviewは各々別Gate。** `ACTIVATION_ACTIVE`を検証してからPR #64の4 Required Checks/current HEAD、Self-Audit、Independent Review、User Review、Final Delivery、別`PR_MERGE`承認を再評価する。必要な承認またはGitHub管理認証がない間、コード実装/テストは継続できるが、Activation/merge完了を偽装しない。
 
@@ -61,7 +61,7 @@ Issue: [#63](https://github.com/puchinya/ai-agent-workflow/issues/63)
 ## 4 Implementation Sequence — 必ずこの順
 
 1. **実装**: PR #64に現在の契約修正、必要な互換機能、Oracle/テストを実装、コミット・push。CI/セルフレビューを通す。すでにPASSした部分を原因なく作り直さない。
-2. **後続ADC正式化**: 草案を最終順序と一致させ、実SHAをownerへreadbackし、対象SHAに束縛された`PHASE_REBASE`の別承認・一回限りのPhase rebaseline→別の`ADC_SUPERSEDE` exact SHA承認（このチャットでの承認意向を記録するが未提示のSHAを勝手に代用しない）→`publish_adc(...state="approved",supersede=True,explicitly_approved=True,expected_current=...)`の正規経路→`verify_adc` / forward generation / Phase receiptsをreadback。**この工程を完全に終えてからActivationへ進む。**
+2. **後続ADC正式化**: 草案を最終順序と一致させ、実SHAをownerへreadbackし、後続ADCの正確なSHAに対する`ADC_SUPERSEDE`承認（このチャットでの以前の承認意向を未提示SHAへ流用しない）→`publish_adc(...state="approved",supersede=True,explicitly_approved=True,expected_current=...)`の正規経路→`verify_adc` / forward generation→自動Phase Intent/一回限りのlabel PUT/Applied→Phase receiptsをreadback。**この工程を完全に終えてからActivationへ進む。**
 3. **Activation V2 完了**: issue #57の現在record、Ruleset inventory/legacy protection等を管理者権限でreadback、`consumer-activation-setup`のcheckpointを使用。必要なRuleset変更には別plan SHAを提示・`RULESET_PLAN_APPLY`の別承認・isolated relay証跡→owner-local TTY `consumer-activation-admin-apply`。Ruleset VERIFIED後に別Activation Setup PRを作成し、当該PRに対する別merge承認・merge。`consumer-activation-verify`によりV2 record発行、`ACTIVE`の証拠を取得。**Setup PRはこの工程内でmergeしてよいが、#64はまだmergeしない。**
 4. **PR #64マージ**: Activation V2 `ACTIVE`のlive readback、新base互換証跡、HEAD/current CI、Independent Review、User Review、Final Delivery、#64専用exact HEAD `PR_MERGE`承認を再確認し、正規GitHub merge APIでmerge。SHA/readback必須。
 5. **Issue #63クローズ**: PR #64 `Closes #63`を確認。自動closeの状態を読み取り、必要なら独立の正規Issue close操作で閉じ、再readbackする。
@@ -127,7 +127,7 @@ GitHub Actionsが同じHEADでUbuntu 3.10/3.14、Windows 3.14、macOS 3.14（App
 
 ## 10 Completion Report
 
-必須: 変更ファイル、全Checklistの結果、実行したテストと正確な結果、未検証OS、CI run URL、最終ADC digest・正式comment/pointer、`PHASE_REBASE`記録、Setup PR URL/merged SHA、Ruleset plan・適用record、V2 Activation record comment ID・有効時刻、PR #64 URL/merged SHA、Issue #63 close readback、承認別証跡、契約逸脱、実運用blocker、レビュー分類 **A（契約違反）/B（契約曖昧）/C（新要件）/D（任意改善）**。
+必須: 変更ファイル、全Checklistの結果、実行したテストと正確な結果、未検証OS、CI run URL、最終ADC digest・正式comment/pointer、`PASES_PHASE_REBASE_INTENT_V1` / `PASES_PHASE_REBASE_APPLIED_V1`実行記録、Setup PR URL/merged SHA、Ruleset plan・適用record、V2 Activation record comment ID・有効時刻、PR #64 URL/merged SHA、Issue #63 close readback、承認別証跡、契約逸脱、実運用blocker、レビュー分類 **A（契約違反）/B（契約曖昧）/C（新要件）/D（任意改善）**。
 
 **実装だけ完了してActivationが権限・承認により止まった場合は `IMPLEMENTATION_READY / ACTIVATION_DELIVERY_BLOCKED` と報告する。全段階の証跡がそろうまで `COMPLETED` としない。**
 
