@@ -122,7 +122,7 @@ The implementation Skill resolves the selected base ref and exact SHA before eva
 <a id="des-rt-006-failure-handling"></a>
 ## 5 DES-RT-006 Failure handling
 
-`gh api` receives argument arrays. Large body values travel through JSON temporary files, not command arguments. The environment owns authentication. Git commands use argv arrays. Default hook output is suppressed; diagnostic capture is removed on all handled paths and credential-redacted before a bounded failure tail is emitted. Issue identifiers, repository owner/name, remote refs, expected SHAs, returned comment/PR associations, hashes, and lengths are checked before success. Atomic writes preserve previous verified data on ordinary failures.
+All GitHub API I/O is invoked as `gh api` through `github.py`; JSON bodies use stdin with `--input -`, never command arguments or temporary payload files. Git repository operations use the existing Git boundary with argv arrays. Fetch, push, and remote-ref/object readback are the only GitHub-hosted transport exception and operate only on repository refs/objects; GitHub API state remains behind `gh`. Direct HTTP, SDK, connector and UI writes are excluded. The environment owns normal authentication; isolated Admin children receive only their private config/token context. Default hook output is suppressed; diagnostic capture is removed on all handled paths and credential-redacted before a bounded failure tail is emitted. Issue identifiers, repository owner/name, remote refs, expected SHAs, returned comment/PR associations, hashes, and lengths are checked before success. Atomic writes preserve previous verified data on ordinary failures.
 
 <a id="migration-gate-policy"></a>
 ## 6 Migration gate policy

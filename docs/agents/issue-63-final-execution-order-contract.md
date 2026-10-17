@@ -40,10 +40,12 @@ Issue: [#63](https://github.com/puchinya/ai-agent-workflow/issues/63)
 1. **後続ADCをActivationより先に正式化する。** #63既存IssueとPR #64のみを維持する。後続ADCをappend-only `ADC_SUPERSEDE`で正式発行し、approved pointerとforward generationを確認した後、通常の認証済みP-ASES executorが#63を`phase:ready`から`phase:requirements`へ一度だけ自動更新する。Intent/Appliedコメントは実行証跡であり、`PHASE_REBASE`承認・owner decisionは作らない。正式化後は同一ADC世代のPhase証跡を仕様→設計→ready順に確立する。旧世代のADC/pointer/receipt/Gate Selectionを上書きしない。
 2. **ActivationはStage 2で完全に終える。** **Rulesetを設定しただけ・Setup PRを開いただけ・`SETUP_PENDING`を返しただけは未完了。** `PASES_CONSUMER_ACTIVATION_V2`のappend-only record（Issue #57）を発行し、comment ID・内容・`created_at`・管理Ruleset ID／owned apply記録・有効policy digestをreadbackして`ACTIVE`を確定する。
 3. **Setup PRのマージはActivation内部。** Activation V2が要求する別のSetup PRは、PR #64より前に別途審査・正確なHEADに対するmerge承認を経てマージする。Setup PRの承認をPR #64の`PR_MERGE`承認へ流用しない。Setup PRマージ自体がActivationの完了を意味しない（post-merge verify / recordが必要）。
-4. **Activation自身がGitHub必須設定を整備。** `consumer-activation-setup`がrepository/profile検査、exact Ruleset plan、必要なowner承認とowner-local Admin TTY continuation、単一Rulesetへの一度限りのPOST/PUTまたはNOOP、policy double-read、Setup PRの作成・再開、post-merge recordを駆動する。独立した手動Ruleset設定を通常利用者に要求しない。変更対象は既定済みの単一 `P-ASES Final Delivery (managed)` Rulesetのみ。Required Checks 4件/App ID 15368、PR必須、review-thread解決、force push禁止、bypass無しを保つ。
+4. **Activation自身がGitHub必須設定を整備。** `consumer-activation-setup`がrepository/profile検査、exact Ruleset plan、別承認、isolated browser device Admin continuation、単一Rulesetへの一度限りのPOST/PUTまたはNOOP、policy double-read、Setup PRの作成・再開、post-merge recordを駆動する。Admin device flowはrunner-managed PTYでURL/codeを表示し、owner-local terminalを必須にしない。変更対象は既定済みの単一 `P-ASES Final Delivery (managed)` Rulesetのみ。Required Checks 4件/App ID 15368、PR必須、review-thread解決、force push禁止、bypass無しを保つ。
 5. **承認と実装権限は分離。** Ownerの本チャットでの「後続ADCは承認する」は意向として受領する。実際の `ADC_SUPERSEDE`には修正後の正確なADCバイト列/SHA、対象Issue、predecessor pointerのreadbackと、当該SHAに結び付く認証済み本人承認が必要。`RULESET_PLAN_APPLY`、Setup PR merge、`USER_REVIEW`、PR #64 `PR_MERGE`は**別操作**であり、この承認から自動的に許可されない。Phase更新は後続ADCの承認・公開後に自動実行し、Owner decisionとは扱わない。決定記録をCodexがオーナーに成り代わって作成してはならない。owner-decision relayのcredential/tool boundaryを実証できなければ承認記録のwriteはBLOCKED。Phase Intent/Appliedとlabel更新は、ADC公開後の通常認証済みP-ASES executor操作として行う。
 6. **Activationのmain進行とPRBindingの互換性。** Activation Setup PRマージが先に`main`を前進させ、`runtime/p_ases/work.py::ensure_pull_request`の凍結base SHAとの厳密一致が破れる。旧`ExecutionBinding`/`PRBinding`/frozen baseは書き換えない。正規Setup PR由来と独立検証できる前進（旧baseの子孫、Setup PR merge commitの正確な同定、変更ファイルは`.agent/project.json`のみ、内容がPR #64の期待profileと一致、GitHubに別PR介入なし）だけを追記専用current-base evidenceとして許可し、`pr ensure`・Readiness・Final Deliveryへ同一判定を適用する。一般的base driftや不明なmain変更はBLOCKする。旧実装の固定SHA比較を無条件に削除してはならない。
 7. **Activation前のADC・後のPR reviewは各々別Gate。** `ACTIVATION_ACTIVE`を検証してからPR #64の4 Required Checks/current HEAD、Self-Audit、Independent Review、User Review、Final Delivery、別`PR_MERGE`承認を再評価する。必要な承認またはGitHub管理認証がない間、コード実装/テストは継続できるが、Activation/merge完了を偽装しない。
+8. **GitHub APIとrepository transferを分ける。** Issue/PR/comment/review/check/Actions/Ruleset/policy/merge/label/close等のGitHub API read/writeは`runtime/p_ases/github.py`経由の`gh`のみ。JSON bodyは`gh api --input -`のstdinへ渡し、connector/plugin/SDK/direct HTTP/curl/UI writeを使わない。repositoryのfetch/push/remote-ref・object readbackは既存Git境界の`git`で行う唯一のGitHub-hosted transport例外。Git操作でIssue/PR等のAPI状態を読み書きしない。実環境に必要な認証済み`gh`がなければGitHub API操作未実施と報告し、別連携に切り替えない。
+9. **チャット承認はexact scopeごと。** 同一会話でユーザー本人の直接user-role応答を受け、repo/Issue/operation/ADCまたはplan SHA/PR+HEAD/scopeを提示して明示承認を得る。V3 `chat_confirmed_gh_v1`はoperator-reportedチャット承認とGitHub owner actorを記録し、チャット署名や独立relayを主張しない。承認TTY・SHA再入力・GitHub UI投稿は不要。hostの直接user-role provenanceが得られなければ`CHAT_PROVENANCE_UNAVAILABLE`で書込0。CLI `owner-authorize-commit`はfail-closed、in-process integrationだけがtyped grantを受け取る。
 
 <a id="禁止する旧順序"></a>
 ### 2.1 禁止する旧順序
@@ -62,16 +64,16 @@ Issue: [#63](https://github.com/puchinya/ai-agent-workflow/issues/63)
 
 1. **実装**: PR #64に現在の契約修正、必要な互換機能、Oracle/テストを実装、コミット・push。CI/セルフレビューを通す。すでにPASSした部分を原因なく作り直さない。
 2. **後続ADC正式化**: 草案を最終順序と一致させ、実SHAをownerへreadbackし、後続ADCの正確なSHAに対する`ADC_SUPERSEDE`承認（このチャットでの以前の承認意向を未提示SHAへ流用しない）→`publish_adc(...state="approved",supersede=True,explicitly_approved=True,expected_current=...)`の正規経路→`verify_adc` / forward generation→自動Phase Intent/一回限りのlabel PUT/Applied→Phase receiptsをreadback。**この工程を完全に終えてからActivationへ進む。**
-3. **Activation V2 完了**: issue #57の現在record、Ruleset inventory/legacy protection等を管理者権限でreadback、`consumer-activation-setup`のcheckpointを使用。必要なRuleset変更には別plan SHAを提示・`RULESET_PLAN_APPLY`の別承認・isolated relay証跡→owner-local TTY `consumer-activation-admin-apply`。Ruleset VERIFIED後に別Activation Setup PRを作成し、当該PRに対する別merge承認・merge。`consumer-activation-verify`によりV2 record発行、`ACTIVE`の証拠を取得。**Setup PRはこの工程内でmergeしてよいが、#64はまだmergeしない。**
-4. **PR #64マージ**: Activation V2 `ACTIVE`のlive readback、新base互換証跡、HEAD/current CI、Independent Review、User Review、Final Delivery、#64専用exact HEAD `PR_MERGE`承認を再確認し、正規GitHub merge APIでmerge。SHA/readback必須。
+3. **Activation V2 完了**: issue #57の現在record、Ruleset inventory/legacy protection等を管理者権限でreadbackし、`consumer-activation-setup` checkpointを再開する。必要なRuleset変更には別plan SHAと`RULESET_PLAN_APPLY`チャット承認が必要。V3 recordとexisting two-line #57 approvalをghで検証後、isolated browser device Admin applyを行う。Ruleset VERIFIED後に別Activation Setup PRを作成し、そのPRの別merge承認・mergeを経て、`consumer-activation-verify`でV2 recordを発行し`ACTIVE`をreadbackする。**Setup PRはActivation工程内でmergeしてよいが、#64はまだmergeしない。**
+4. **PR #64マージ**: Activation V2 `ACTIVE`のlive readback、新base互換証跡、HEAD/current CI、Independent Review、User Review、Final Delivery、#64専用exact HEAD `PR_MERGE`承認を再確認し、`gh`経由で一度だけmerge。SHA/readback必須。
 5. **Issue #63クローズ**: PR #64 `Closes #63`を確認。自動closeの状態を読み取り、必要なら独立の正規Issue close操作で閉じ、再readbackする。
 
 ## 5 Required Runtime Semantics
 
 - **No-op/retry**: V2 recordが既に存在し内容一致なら新規発行しない。Rulesetが完全一致ならNOOP。通信不達後はread-only recovery→一致すれば継続、不明ならBLOCK。二重Ruleset write・二重ADC publish・二重Activation recordを禁止。
 - **Stale subject**: ADC/plan/profile/branch/Setup PR/HEAD/Readinessに差異があれば以前のapprovalを失効扱いし、新対象をreadbackする。#63の古いADCを削除しない。
-- **Partial failure**: 403/TTYなし/relay分離未立証/credential不足/承認未成立では機密情報を要求せず、該当ステージを`BLOCKED`または`PENDING_APPROVAL`にする。独立コード作業は継続。PR #64のmerge/closeはしない。
-- **Ownership**: owner-local PATはCodex Cloud、PR、ログ、ファイル、CI、コマンド引数、`os.environ` に公開しない。PATが必要な操作は別の信頼済みTTY environmentから行い、作業後にGitHub上で明示的に失効させる。明示選択した`isolated-gh-device` Admin modeは、実TTY、0700 private `GH_CONFIG_DIR`、ambient token除去、normal `gh`設定不変、終了時のprivate config cleanupを必須とする。GitHub OAuth grantはcleanupで失効しない。同一OS userのsubprocessはstrong sandboxではない。device flowが使えなければ`ADMIN_DEVICE_LOGIN_UNAVAILABLE`で停止し、owner-local PAT pathを残す。
+- **Partial failure**: 403/chat provenance unavailable/device login unavailable/credential不足/承認未成立では機密情報を要求せず、該当段階を`BLOCKED`または`PENDING_APPROVAL`にする。独立コード作業は継続。PR #64のmerge/closeはしない。
+- **Ownership**: PATはCodex Cloud、PR、logs、files、CI、argv、`os.environ`へ露出させない。PATは明示的なnonstandard fallbackで、owner-local TTYが必要。標準`isolated-gh-device`はprivate mode-0700 `GH_CONFIG_DIR`、ambient token除去、normal `gh`不変、cleanupを使う。runner-managed PTYでbrowser URL/codeを表示できなければ`ADMIN_DEVICE_LOGIN_UNAVAILABLE`で停止。OAuth grantはcleanupで失効しない。同じOS userのsubprocessは強いsandboxではない。
 - **Historic**: #57 V1、#63旧ADC・Phase Decision・Gate Selection、#60/PR #62、旧PRBindingは不変。V2の有効時刻はrecord commentの`created_at`。
 
 ## 6 Non-goals / Forbidden Changes
@@ -117,9 +119,10 @@ GitHub Actionsが同じHEADでUbuntu 3.10/3.14、Windows 3.14、macOS 3.14（App
 - [ ] Activation Setup PRの正規mergeと#64のmerge許可が完全に別。
 - [ ] V2 record ID/created_at/owned Ruleset ID・policy digestまでverifyしてACTIVE。
 - [ ] Setup PR由来base advanceの例外は検証済み限定で、元Bindingと旧履歴を不変維持。
-- [ ] 管理者PATと独立broker tool routeはCodexに露出していない。
-- [ ] `isolated-gh-device`は明示選択、実TTY、0700 private config、ambient token除去、normal `gh`状態の不変、cleanupを満たし、Cloudで不可なら`ADMIN_DEVICE_LOGIN_UNAVAILABLE`をreadback。
+- [ ] チャットV3はoperator-reportedと明記し、chat署名を主張しない。Admin credentialはisolated child内のみ。
+- [ ] `isolated-gh-device`はAdmin標準、private mode-0700 config/ambient token除去/normal gh不変/cleanupを満たす。Cloud runner PTY live flowが未実施なら未検証とする。
 - [ ] 5種のowner decisionを相互流用せず、署名・Actorの偽装なし。
+- [ ] GitHub API I/Oはghのみ、repository fetch/push/ref transferは既存Git境界のgitのみ。chat approvalは同一会話のdirect user-role eventから exact scopeごとに取得。
 - [ ] 4 CI / unit / docs / traceability / dist / 16 Skillsを最新HEADで検証。
 - [ ] PR #64の現HEAD independent review / User Review / Final Delivery / PR_MERGEはActivation後に再実施。
 - [ ] PR #64のmerged SHA、Issue #63 CLOSED、およびActivationのSetup PR/V2 record URLをreadback。

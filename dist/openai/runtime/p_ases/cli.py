@@ -19,7 +19,7 @@ from typing import Any
 from .adc import ADCError, parse_adc, publish_adc, restore_adc, verify_adc, verify_adc_generation
 from .admin_auth import AdminAuthError, temporary_admin_client
 from .owner_authorization import (
-    OwnerAuthorizationError, authorize_plan, create_authorization_plan,
+    OwnerAuthorizationError, authorize_chat_confirmed_plan, authorize_plan, create_authorization_plan,
     read_authorization_plan, resume_authorization, write_authorization_plan,
 )
 from .consumer_activation import (
@@ -1905,7 +1905,7 @@ def _ruleset_operation_plan(github: GitHub, plan_path: Path) -> tuple[dict[str, 
         operation="RULESET_PLAN_APPLY", subject_sha256=plan["plan_sha256"],
         repository_id=_ISSUE63_REPOSITORY_ID,
     )
-    if (verified.decision.schema == "PASES_OWNER_DECISION_V2"
+    if (verified.decision.schema in {"PASES_OWNER_DECISION_V2", "PASES_OWNER_DECISION_V3"}
             and verified.decision.operation_plan_sha256 != plan["plan_sha256"]):
         raise OwnerDecisionError("owner-local RULESET_PLAN_APPLY decision is bound to another plan")
     return plan, verified.comment_id
@@ -1970,6 +1970,18 @@ def _owner_authorization_plan_command(args: argparse.Namespace, repository: str,
         subject_sha256 = hashlib.sha256(raw).hexdigest()
         if adc.issue_number != 63:
             raise OwnerAuthorizationError("ADC successor source is not for Issue #63")
+        try:
+            predecessor = verify_adc(github, 63).pointer
+        except ADCError as exc:
+            raise OwnerAuthorizationError("ADC_SUPERSEDE requires the current approved predecessor") from exc
+        if predecessor.state != "approved":
+            raise OwnerAuthorizationError("ADC_SUPERSEDE requires the current approved predecessor")
+        details = {
+            "predecessor_comment_id": predecessor.comment_id,
+            "predecessor_sha256": predecessor.sha256,
+            "predecessor_byte_length": predecessor.byte_length,
+            "predecessor_state": predecessor.state,
+        }
     elif operation == "RULESET_PLAN_APPLY":
         if args.ruleset_plan is None or args.subject_file is not None:
             raise OwnerAuthorizationError("RULESET_PLAN_APPLY plan requires --ruleset-plan")
@@ -2024,6 +2036,16 @@ def _validate_owner_authorization_source(args: argparse.Namespace, plan: dict[st
         parsed = parse_adc(raw, repository, 63)
         if parsed.issue_number != 63 or hashlib.sha256(raw).hexdigest() != plan["subject_sha256"]:
             raise OwnerAuthorizationError("ADC source bytes differ from the exact authorization plan")
+        try:
+            predecessor = verify_adc(github, 63).pointer
+        except ADCError as exc:
+            raise OwnerAuthorizationError("current approved ADC predecessor is unavailable") from exc
+        expected_predecessor = plan["details"]
+        if (predecessor.comment_id != expected_predecessor.get("predecessor_comment_id")
+                or predecessor.sha256 != expected_predecessor.get("predecessor_sha256")
+                or predecessor.byte_length != expected_predecessor.get("predecessor_byte_length")
+                or predecessor.state != expected_predecessor.get("predecessor_state")):
+            raise OwnerAuthorizationError("current approved ADC predecessor changed after plan creation")
     elif plan["operation"] == "RULESET_PLAN_APPLY":
         if args.ruleset_plan is None or args.ruleset_plan.is_symlink() or not args.ruleset_plan.is_file():
             raise OwnerAuthorizationError("RULESET_PLAN_APPLY commit requires the same regular --ruleset-plan")
@@ -2053,18 +2075,35 @@ def _validate_owner_authorization_source(args: argparse.Namespace, plan: dict[st
 
 def _owner_authorization_commit_command(args: argparse.Namespace, repository: str,
                                         root: Path, github: GitHub) -> int:
+    # A CLI process has no trustworthy ChatGPT user-role event. It must not
+    # accept consent through stdin, flags, or a JSON file. The V3 in-process
+    # orchestrator API is the only route that can bind a live chat response.
+    raise OwnerAuthorizationError(
+        "CHAT_CONFIRMATION_REQUIRED: obtain approval for the exact displayed scope in this chat, "
+        "then use the in-process chat authorization integration; CLI approval is disabled"
+    )
+
+
+def execute_chat_confirmed_authorization(
+    args: argparse.Namespace, repository: str, root: Path, github: GitHub, grant: Any,
+) -> dict[str, Any]:
+    """In-process chat host hook for an exact current user-role confirmation.
+
+    The command line intentionally cannot call this path. The chat integration
+    must construct ``grant`` from a direct approval event in this conversation;
+    the resulting V3 evidence remains operator-reported, not host-signed.
+    """
     plan = read_authorization_plan(args.plan)
     user_review_context = _validate_owner_authorization_source(args, plan, repository, github)
-    result = authorize_plan(
-        github, root, args.plan, user_review_context=user_review_context,
+    result = authorize_chat_confirmed_plan(
+        github, root, plan, grant, user_review_context=user_review_context,
         source_validator=lambda: _validate_owner_authorization_source(args, plan, repository, github),
     )
     if plan["operation"] == "ADC_SUPERSEDE":
         result = _publish_owner_approved_adc(args, repository, github, plan, result)
     elif plan["operation"] == "PR_MERGE":
         result = _perform_authorized_merge(args, root, github, plan, result)
-    _json(result)
-    return 0 if result.get("status") in {"AUTHORIZED", "PUBLISHED", "MERGED", "MERGED_READBACK"} else 2
+    return result
 
 
 def _publish_owner_approved_adc(args: argparse.Namespace, repository: str, github: GitHub,
@@ -2083,17 +2122,25 @@ def _publish_owner_approved_adc(args: argparse.Namespace, repository: str, githu
             github, issue_number=63, owner_id=_ISSUE63_OWNER_ID,
             operation="ADC_SUPERSEDE", subject_sha256=contract.sha256,
             expected_plan_sha256=plan["plan_sha256"], repository_id=_ISSUE63_REPOSITORY_ID,
+            expected_approval_scope_sha256=plan["approval_scope_sha256"],
+            expected_schema="PASES_OWNER_DECISION_V3",
         )
     except OwnerDecisionError as exc:
-        raise OwnerAuthorizationError("exact ADC_SUPERSEDE V2 decision did not pass readback") from exc
+        raise OwnerAuthorizationError("exact ADC_SUPERSEDE V3 decision did not pass readback") from exc
     if (verified_decision.comment_id != decision.get("owner_decision_comment_id")
-            or verified_decision.decision.schema != "PASES_OWNER_DECISION_V2"
-            or verified_decision.decision.evidence_channel != "owner_local_tty_v1"):
-        raise OwnerAuthorizationError("ADC publication requires this exact owner-local V2 decision")
+            or verified_decision.decision.schema != "PASES_OWNER_DECISION_V3"
+            or verified_decision.decision.evidence_channel != "chat_confirmed_gh_v1"):
+        raise OwnerAuthorizationError("ADC publication requires this exact chat-confirmed V3 decision")
     try:
         current = verify_adc(github, 63)
         if current.pointer.state != "approved":
             raise ADCError("ADC supersession requires the exact current approved predecessor")
+        predecessor = plan["details"]
+        if (current.pointer.comment_id != predecessor.get("predecessor_comment_id")
+                or current.pointer.sha256 != predecessor.get("predecessor_sha256")
+                or current.pointer.byte_length != predecessor.get("predecessor_byte_length")
+                or current.pointer.state != predecessor.get("predecessor_state")):
+            raise ADCError("current approved predecessor differs from the scope approved in chat")
         pointer = publish_adc(
             github, 63, data, state="approved", explicitly_approved=True,
             supersede=True, expected_current=current.pointer,
@@ -2233,8 +2280,8 @@ def _perform_authorized_merge(args: argparse.Namespace, root: Path, github: GitH
                               plan: dict[str, Any], decision: dict[str, Any]) -> dict[str, Any]:
     """Revalidate target gates and make at most one exact-HEAD merge request."""
     if (decision.get("status") != "AUTHORIZED" or decision.get("operation") != "PR_MERGE"
-            or decision.get("evidence_type") != "PASES_OWNER_DECISION_V2"
-            or decision.get("evidence_channel") != "owner_local_tty_v1"
+            or decision.get("evidence_type") != "PASES_OWNER_DECISION_V3"
+            or decision.get("evidence_channel") != "chat_confirmed_gh_v1"
             or decision.get("chat_signature") is not False
             or type(decision.get("owner_decision_comment_id")) is not int
             or decision["owner_decision_comment_id"] < 1):
@@ -2348,11 +2395,19 @@ def _owner_authorization_resume_command(args: argparse.Namespace, repository: st
     )
     approval = _read_user_review_relay_approval(
         github, session=session, readiness=readiness, owner_id=owner_id, verifier_id=verifier_id,
+        feedback_sha256=details["feedback_sha256"], plan_sha256=plan["plan_sha256"],
+        approval_scope_sha256=plan["approval_scope_sha256"],
     )
-    if (approval is None or approval.evidence_type != "PASES_USER_REVIEW_DECISION_V2"
+    if (approval is None or approval.evidence_type not in {
+            "PASES_USER_REVIEW_DECISION_V2", "PASES_USER_REVIEW_DECISION_V3"}
             or approval.plan_sha256 != plan["plan_sha256"]):
         _json({"status": "NOT_FOUND_OR_BLOCKED", "plan_sha256": plan["plan_sha256"],
-               "reasons": ["exact owner-local User Review V2 carrier is missing or stale"]})
+               "reasons": ["exact owner User Review carrier is missing or stale"]})
+        return 2
+    if (approval.evidence_type == "PASES_USER_REVIEW_DECISION_V3"
+            and approval.approval_scope_sha256 != plan["approval_scope_sha256"]):
+        _json({"status": "NOT_FOUND_OR_BLOCKED", "plan_sha256": plan["plan_sha256"],
+               "reasons": ["exact chat-confirmed User Review scope is missing or stale"]})
         return 2
     observed_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
     fresh = _review_payload_from_github(github, session.subject, observed_at=observed_at)
@@ -2369,7 +2424,9 @@ def _owner_authorization_resume_command(args: argparse.Namespace, repository: st
            "plan_sha256": plan["plan_sha256"], "subject_sha256": plan["subject_sha256"],
            "owner_decision_comment_id": approval.comment_id,
            "evidence_type": approval.evidence_type,
-           "evidence_channel": approval.evidence_channel, "chat_signature": False})
+           "evidence_channel": approval.evidence_channel,
+           "approval_scope_sha256": approval.approval_scope_sha256,
+           "chat_signature": False})
     return 0
 
 
@@ -2446,7 +2503,8 @@ def _solo_owner_identity(github: GitHub, repository: str, issue_number: int,
 
 def _read_user_review_relay_approval(
     github: GitHub, *, session: UserReviewSession, readiness: Any,
-    owner_id: int, verifier_id: int,
+    owner_id: int, verifier_id: int, feedback_sha256: str | None = None,
+    plan_sha256: str | None = None, approval_scope_sha256: str | None = None,
 ) -> UserReviewRelayApproval | None:
     """Read all dedicated carriers as complete direct/list/direct evidence."""
     subject = session.subject.verification_subject
@@ -2484,6 +2542,8 @@ def _read_user_review_relay_approval(
         authenticated_verifier_user_id=verifier_id, session=session,
         readiness_sha256=session.subject.readiness_sha256,
         adc_sha256=subject.adc_sha256, pr_head_sha40=subject.pr_head_sha40,
+        feedback_sha256=feedback_sha256, plan_sha256=plan_sha256,
+        approval_scope_sha256=approval_scope_sha256,
     )
     if readiness.status != "PASS" or readiness.sha256 != session.subject.readiness_sha256:
         raise UserReviewRelayError("typed carrier was read for stale Review Readiness")
@@ -2737,8 +2797,9 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
         if (review_mode == "solo_owner" and saved_review.status == "APPROVED"
                 and (not isinstance(saved_review.selected_approval_evidence, dict)
                      or saved_review.selected_approval_evidence.get("evidence_type")
-                     not in {"PASES_USER_REVIEW_DECISION_V1", "PASES_USER_REVIEW_DECISION_V2"})):
-            blockers.append("solo_owner approved record is not backed by its dedicated V2 carrier")
+                     not in {"PASES_USER_REVIEW_DECISION_V1", "PASES_USER_REVIEW_DECISION_V2",
+                             "PASES_USER_REVIEW_DECISION_V3"})):
+            blockers.append("solo_owner approved record is not backed by its dedicated carrier")
         fresh_subject = UserReviewSubject(subject, readiness.sha256).validate()
         observed_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
         fresh = _review_payload_from_github(github, fresh_subject, observed_at=observed_at)
@@ -3694,7 +3755,7 @@ def _parser() -> argparse.ArgumentParser:
     owner_plan.add_argument("--repo", help="repository owner/name; defaults to origin")
     owner_plan.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
     owner_commit = delivery_commands.add_parser(
-        "owner-authorize-commit", help="confirm and append one owner-local V2 decision")
+        "owner-authorize-commit", help="deprecated; chat approvals are accepted only by the in-process integration")
     owner_commit.add_argument("--plan", required=True, type=Path, help="exact canonical owner authorization plan")
     owner_commit.add_argument("--subject-file", type=Path, help="same ADC source used by ADC_SUPERSEDE plan")
     owner_commit.add_argument("--ruleset-plan", type=Path, help="same canonical Ruleset plan used for approval")
@@ -3721,18 +3782,18 @@ def _parser() -> argparse.ArgumentParser:
     owner_resume.add_argument("--repo", help="repository owner/name; defaults to origin")
     owner_resume.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
     admin_plan = delivery_commands.add_parser(
-        "consumer-activation-admin-plan", help="owner-operated interactive TTY Ruleset plan")
+        "consumer-activation-admin-plan", help="create a Ruleset plan with isolated browser device auth")
     admin_plan.add_argument("--output", required=True, type=Path)
-    admin_plan.add_argument("--auth-mode", choices=("pat", "isolated-gh-device"), default="pat",
-                             help="temporary Admin transport; device login uses a private per-command gh config")
+    admin_plan.add_argument("--auth-mode", choices=("pat", "isolated-gh-device"), default="isolated-gh-device",
+                             help="isolated browser device auth; pat is a nonstandard owner-local fallback")
     admin_plan.add_argument("--repo", help="repository owner/name; defaults to origin")
     admin_plan.add_argument("--root", type=Path, help="repository root; defaults to current checkout")
     admin_apply = delivery_commands.add_parser(
-        "consumer-activation-admin-apply", help="owner-operated interactive TTY exact-approved Ruleset apply")
+        "consumer-activation-admin-apply", help="apply an exact-approved Ruleset plan with isolated browser device auth")
     admin_apply.add_argument("--plan", required=True, type=Path)
     admin_apply.add_argument("--approval-comment-id", type=_positive_number)
-    admin_apply.add_argument("--auth-mode", choices=("pat", "isolated-gh-device"), default="pat",
-                             help="temporary Admin transport; device login uses a private per-command gh config")
+    admin_apply.add_argument("--auth-mode", choices=("pat", "isolated-gh-device"), default="isolated-gh-device",
+                             help="isolated browser device auth; pat is a nonstandard owner-local fallback")
     admin_apply.add_argument("--repo", help="repository owner/name; defaults to origin")
     admin_apply.add_argument("--root", type=Path, help="repository root; defaults to current checkout")
     bootstrap = delivery_commands.add_parser("bootstrap-check", help="evaluate the separate migration Bootstrap gate")
@@ -4055,7 +4116,7 @@ def main(argv: list[str] | None = None) -> int:
                         return 0
                     _json({"status": "ADMIN_AUTH_REQUIRED", "stage": "APPLY_AND_READBACK",
                            "plan_sha256": plan["plan_sha256"],
-                           "next_permitted_step": "Run consumer-activation-admin-apply in the trusted owner-local TTY."})
+                           "next_permitted_step": "Run consumer-activation-admin-apply with isolated browser device authentication; a runner-managed PTY must display the challenge."})
                     return 2
                 except OwnerDecisionError as exc:
                     if "missing exact owner operation/subject" in str(exc):

@@ -34,6 +34,7 @@ from p_ases.user_review import (
 from p_ases.user_review_relay import (
     USER_REVIEW_DECISION_SCHEMA,
     USER_REVIEW_DECISION_SCHEMA_V2,
+    USER_REVIEW_DECISION_SCHEMA_V3,
     UserReviewDecisionHistory,
     UserReviewRelayError,
     parse_user_review_decision,
@@ -93,6 +94,20 @@ def owner_local_decision_body(*, feedback_sha256: str, plan_sha256: str,
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
+def chat_confirmed_decision_body(*, feedback_sha256: str, plan_sha256: str,
+                                 approval_scope_sha256: str, **overrides: object) -> str:
+    payload = json.loads(decision_body())
+    payload.update({
+        "schema": USER_REVIEW_DECISION_SCHEMA_V3,
+        "evidence_channel": "chat_confirmed_gh_v1",
+        "feedback_sha256": feedback_sha256,
+        "plan_sha256": plan_sha256,
+        "approval_scope_sha256": approval_scope_sha256,
+    })
+    payload.update(overrides)
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
 def github_comment(
     body: str,
     *,
@@ -135,7 +150,7 @@ def decision_history(*comments: SimpleNamespace, complete: bool = True,
     )
 
 
-def verify(history: UserReviewDecisionHistory, session: UserReviewSession = SESSION):
+def verify(history: UserReviewDecisionHistory, session: UserReviewSession = SESSION, **expected):
     return verify_user_review_decision_history(
         history,
         repository=REPOSITORY,
@@ -147,6 +162,7 @@ def verify(history: UserReviewDecisionHistory, session: UserReviewSession = SESS
         readiness_sha256=READINESS.sha256,
         adc_sha256=ADC_SHA256,
         pr_head_sha40=PR_HEAD_SHA40,
+        **expected,
     )
 
 
@@ -487,6 +503,37 @@ class UserReviewRelayTests(unittest.TestCase):
             all_feedback_surfaces_read=False,
         )
         self.assertNotEqual(incomplete.status, "APPROVED")
+
+    def test_chat_confirmed_v3_binds_scope_and_keeps_verifier_identity_separate(self) -> None:
+        baseline = feedback_digest(())
+        scope_sha = "9" * 64
+        comment = github_comment(chat_confirmed_decision_body(
+            feedback_sha256=baseline, plan_sha256="f" * 64,
+            approval_scope_sha256=scope_sha,
+        ))
+        approval = verify(
+            decision_history(comment), feedback_sha256=baseline,
+            plan_sha256="f" * 64, approval_scope_sha256=scope_sha,
+        )
+        self.assertEqual(approval.evidence_type, USER_REVIEW_DECISION_SCHEMA_V3)
+        self.assertEqual(approval.evidence_channel, "chat_confirmed_gh_v1")
+        self.assertEqual(approval.approval_scope_sha256, scope_sha)
+        snapshot = feedback_snapshot(carrier_feedback_event(comment))
+        result = evaluate_user_review(
+            SESSION, READINESS, PR_HEAD_SHA40, snapshot,
+            review_mode="solo_owner", pr_author_user_id=OWNER_ID,
+            repository_owner_user_id=OWNER_ID,
+            authenticated_verifier_user_id=READ_ONLY_VERIFIER_ID,
+            allowed_human_user_ids=(OWNER_ID,), relay_approval=approval,
+        )
+        self.assertEqual(result.status, "APPROVED")
+        self.assertEqual(result.selected_approval_evidence["evidence_type"], USER_REVIEW_DECISION_SCHEMA_V3)
+        self.assertEqual(result.selected_approval_evidence["approval_scope_sha256"], scope_sha)
+        with self.assertRaises(UserReviewRelayError):
+            verify(
+                decision_history(comment), feedback_sha256=baseline,
+                plan_sha256="f" * 64, approval_scope_sha256="8" * 64,
+            )
 
     def test_result_persists_selected_carrier_and_complete_snapshot_digest(self) -> None:
         comment = github_comment(decision_body())

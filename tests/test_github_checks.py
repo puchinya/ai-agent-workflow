@@ -42,6 +42,33 @@ class FakeGitHub(GitHub):
 
 
 class GitHubCheckRunTests(unittest.TestCase):
+    def test_github_api_json_body_uses_gh_input_stdin(self):
+        github = GitHub("octo/repo")
+        completed = __import__("subprocess").CompletedProcess(
+            ["gh", "api"], 0, '{"id": 123}', "")
+        payload = {"body": "approval marker", "secret": "marker-secret"}
+        with patch("p_ases.github.subprocess.run", return_value=completed) as run:
+            result = github.request("POST", "repos/octo/repo/issues/26/comments", payload)
+        self.assertEqual(result, {"id": 123})
+        argv = run.call_args.args[0]
+        self.assertEqual(argv, [
+            "gh", "api", "--method", "POST", "repos/octo/repo/issues/26/comments",
+            "--input", "-",
+        ])
+        self.assertNotIn("approval marker", argv)
+        self.assertNotIn("marker-secret", argv)
+        self.assertEqual(run.call_args.kwargs["input"],
+                         '{"body":"approval marker","secret":"marker-secret"}')
+
+    def test_runtime_has_no_second_direct_http_client(self):
+        runtime = ROOT / "runtime" / "p_ases"
+        forbidden = ("urllib.request", "requests.", "httpx.", "http.client", "urlopen(")
+        for path in runtime.glob("*.py"):
+            source = path.read_text(encoding="utf-8").casefold()
+            for marker in forbidden:
+                with self.subTest(path=path.name, marker=marker):
+                    self.assertNotIn(marker, source)
+
     def test_api_metrics_count_requests_and_measure_client_latency(self):
         github = GitHub("octo/repo")
         completed = __import__("subprocess").CompletedProcess(

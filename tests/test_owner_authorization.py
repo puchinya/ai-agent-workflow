@@ -15,7 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases.owner_authorization import (
-    OwnerAuthorizationError, authorize_plan, create_authorization_plan,
+    OwnerAuthorizationError, authorize_chat_confirmed_plan, authorize_plan,
+    capture_direct_chat_confirmation, create_authorization_plan, resume_authorization,
     read_authorization_plan, write_authorization_plan,
 )
 from p_ases.github import GitHubError
@@ -119,11 +120,80 @@ class OwnerAuthorizationTests(unittest.TestCase):
                 patch("p_ases.owner_authorization.head_sha40", return_value=PLAN_HEAD):
             plan = create_authorization_plan(
                 github, root, operation="ADC_SUPERSEDE", subject_sha256=SUBJECT_SHA,
+                details={"predecessor_comment_id": 41, "predecessor_sha256": "9" * 64,
+                         "predecessor_byte_length": 1234, "predecessor_state": "approved"},
             )
         path = directory / "owner-plan.json"
         write_authorization_plan(path, plan)
         self.assertEqual(read_authorization_plan(path), plan)
         return path
+
+    def test_chat_grant_is_exact_and_publishes_only_v3_with_scope(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            github = FakeGitHub()
+            details = {"predecessor_comment_id": 41, "predecessor_sha256": "9" * 64,
+                       "predecessor_byte_length": 1234, "predecessor_state": "approved"}
+            with patch("p_ases.owner_authorization.worktree_clean", return_value=True), \
+                    patch("p_ases.owner_authorization.head_sha40", return_value=PLAN_HEAD):
+                plan = create_authorization_plan(
+                    github, root, operation="ADC_SUPERSEDE", subject_sha256=SUBJECT_SHA,
+                    details=details,
+                )
+                grant = capture_direct_chat_confirmation(
+                    plan, response="承認する", user_role="user", same_conversation=True,
+                )
+                with patch("p_ases.adc.verify_adc", return_value=SimpleNamespace(pointer=SimpleNamespace(
+                        state="approved", comment_id=41, sha256="9" * 64, byte_length=1234))):
+                    result = authorize_chat_confirmed_plan(github, root, plan, grant)
+            self.assertEqual(result["evidence_type"], "PASES_OWNER_DECISION_V3")
+            self.assertEqual(result["evidence_channel"], "chat_confirmed_gh_v1")
+            self.assertFalse(result["chat_signature"])
+            self.assertEqual(len(github.writes), 1)
+            body = github.writes[0][1]
+            self.assertIn("PASES_OWNER_DECISION_V3", body)
+            self.assertIn(plan["approval_scope_sha256"], body)
+
+    def test_resume_reports_v3_scope_and_channel_after_readback(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            github = FakeGitHub()
+            path = self.make_plan(root, github, root)
+            plan = read_authorization_plan(path)
+            grant = capture_direct_chat_confirmation(
+                plan, response="承認する", user_role="user", same_conversation=True,
+            )
+            with patch("p_ases.owner_authorization.worktree_clean", return_value=True), \
+                    patch("p_ases.owner_authorization.head_sha40", return_value=PLAN_HEAD), \
+                    patch("p_ases.adc.verify_adc", return_value=SimpleNamespace(pointer=SimpleNamespace(
+                        state="approved", comment_id=41, sha256="9" * 64, byte_length=1234))):
+                authorize_chat_confirmed_plan(github, root, plan, grant)
+                resumed = resume_authorization(github, path)
+            self.assertEqual(resumed["status"], "AUTHORIZED")
+            self.assertEqual(resumed["evidence_type"], "PASES_OWNER_DECISION_V3")
+            self.assertEqual(resumed["evidence_channel"], "chat_confirmed_gh_v1")
+            self.assertEqual(resumed["approval_scope_sha256"], plan["approval_scope_sha256"])
+
+    def test_chat_grant_rejects_vague_response_and_untrusted_provenance(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            github = FakeGitHub()
+            with patch("p_ases.owner_authorization.worktree_clean", return_value=True), \
+                    patch("p_ases.owner_authorization.head_sha40", return_value=PLAN_HEAD):
+                plan = create_authorization_plan(
+                    github, root, operation="ADC_SUPERSEDE", subject_sha256=SUBJECT_SHA,
+                    details={"predecessor_comment_id": 41, "predecessor_sha256": "9" * 64,
+                             "predecessor_byte_length": 1234, "predecessor_state": "approved"},
+                )
+                with self.assertRaisesRegex(OwnerAuthorizationError, "CHAT_CONFIRMATION_REQUIRED"):
+                    capture_direct_chat_confirmation(
+                        plan, response="続けて", user_role="user", same_conversation=True,
+                    )
+                with self.assertRaisesRegex(OwnerAuthorizationError, "CHAT_PROVENANCE_UNAVAILABLE"):
+                    capture_direct_chat_confirmation(
+                        plan, response="承認する", user_role="assistant", same_conversation=True,
+                    )
+            self.assertEqual(github.writes, [])
 
     def test_non_tty_cloud_and_shared_token_are_zero_write(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -192,8 +262,8 @@ class OwnerAuthorizationTests(unittest.TestCase):
             plan = {"plan_sha256": "f" * 64, "source_head_sha40": PLAN_HEAD,
                     "target_issue_number": 63, "pr_number": 64, "pr_head_sha40": "d" * 40}
             decision = {"status": "AUTHORIZED", "operation": "PR_MERGE",
-                        "evidence_type": "PASES_OWNER_DECISION_V2",
-                        "evidence_channel": "owner_local_tty_v1", "chat_signature": False,
+                        "evidence_type": "PASES_OWNER_DECISION_V3",
+                        "evidence_channel": "chat_confirmed_gh_v1", "chat_signature": False,
                         "owner_decision_comment_id": 123}
             with patch("p_ases.cli._owner_merge_gate", return_value={"status": "READY"}):
                 first = _perform_authorized_merge(object(), root, github, plan, decision)
@@ -207,17 +277,21 @@ class OwnerAuthorizationTests(unittest.TestCase):
             source = Path(temporary) / "successor.md"
             source.write_bytes(b"exact successor bytes\n")
             contract = SimpleNamespace(sha256=hashlib.sha256(source.read_bytes()).hexdigest())
-            previous = SimpleNamespace(pointer=SimpleNamespace(state="approved", comment_id=12))
+            previous = SimpleNamespace(pointer=SimpleNamespace(
+                state="approved", comment_id=12, sha256="b" * 64, byte_length=1200))
             published_pointer = SimpleNamespace(state="approved", comment_id=13,
                                                  sha256=contract.sha256)
             published = SimpleNamespace(pointer=published_pointer,
                                         contract=SimpleNamespace(content=source.read_bytes()))
             verified_decision = SimpleNamespace(
                 comment_id=123,
-                decision=SimpleNamespace(schema="PASES_OWNER_DECISION_V2",
-                                         evidence_channel="owner_local_tty_v1"),
+                decision=SimpleNamespace(schema="PASES_OWNER_DECISION_V3",
+                                         evidence_channel="chat_confirmed_gh_v1"),
             )
-            plan = {"subject_sha256": contract.sha256, "plan_sha256": "a" * 64}
+            plan = {"subject_sha256": contract.sha256, "plan_sha256": "a" * 64,
+                    "approval_scope_sha256": "d" * 64,
+                    "details": {"predecessor_comment_id": 12, "predecessor_sha256": "b" * 64,
+                                "predecessor_byte_length": 1200, "predecessor_state": "approved"}}
             decision = {"owner_decision_comment_id": 123}
             args = SimpleNamespace(subject_file=source)
             with patch("p_ases.cli.parse_adc", return_value=contract), \
@@ -240,8 +314,8 @@ class OwnerAuthorizationTests(unittest.TestCase):
             plan = {"plan_sha256": "a" * 64, "source_head_sha40": PLAN_HEAD,
                     "target_issue_number": 63, "pr_number": 64, "pr_head_sha40": "d" * 40}
             decision = {"status": "AUTHORIZED", "operation": "PR_MERGE",
-                        "evidence_type": "PASES_OWNER_DECISION_V2",
-                        "evidence_channel": "owner_local_tty_v1", "chat_signature": False,
+                        "evidence_type": "PASES_OWNER_DECISION_V3",
+                        "evidence_channel": "chat_confirmed_gh_v1", "chat_signature": False,
                         "owner_decision_comment_id": 123}
             with patch("p_ases.cli._owner_merge_gate", return_value={"status": "READY"}):
                 with self.assertRaisesRegex(OwnerAuthorizationError, "no retry was attempted"):

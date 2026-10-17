@@ -1,8 +1,8 @@
-"""Owner-local TTY authorization transport for exact GitHub operations.
+"""Exact-scope owner authorization plans and GitHub decision records.
 
-This module does not claim that a GitHub record is a ChatGPT signature. The
-owner authenticates to GitHub on their own host and confirms the displayed
-canonical plan on a local interactive terminal.
+V1/V2 remain read-compatible. The standard V3 path records an operator-reported
+direct chat confirmation followed by a GitHub-authenticated owner action. The
+runtime cannot cryptographically attest the chat host or its user-role metadata.
 """
 from __future__ import annotations
 
@@ -12,25 +12,28 @@ import os
 import re
 import stat
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
 from .git import GitError, head_sha40, worktree_clean
 from .github import GitHubError
 from .owner_consent import (
-    END, FIELDS_V2, OPERATIONS, OWNER_ID, REPOSITORY_ID, SCHEMA_V2, START_V2,
+    END, FIELDS_V2, FIELDS_V3, OPERATIONS, OWNER_ID, REPOSITORY_ID,
+    SCHEMA_V2, SCHEMA_V3, START_V2, START_V3,
     OwnerDecisionError, read_verified_owner_decision,
     verify_owner_decision_history_tail, _comment_fingerprint,
 )
 
 REPOSITORY = "puchinya/ai-agent-workflow"
 ISSUE_NUMBER = 63
-PLAN_SCHEMA = "PASES_OWNER_AUTHORIZATION_PLAN_V1"
+PLAN_SCHEMA = "PASES_OWNER_AUTHORIZATION_PLAN_V2"
 PLAN_OPERATIONS = OPERATIONS | {"USER_REVIEW"}
 PLAN_FIELDS = frozenset({
     "schema", "repository", "repository_id", "owner_id", "issue_number",
     "operation", "subject_sha256", "pr_number", "pr_head_sha40",
-    "target_issue_number", "source_head_sha40", "details", "plan_sha256",
+    "target_issue_number", "source_head_sha40", "details",
+    "approval_scope_sha256", "plan_sha256",
 })
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 SHA40 = re.compile(r"[0-9a-f]{40}\Z")
@@ -39,6 +42,79 @@ RULESET_APPROVAL_PREFIX = "PASES-RULESET-APPROVE: "
 
 class OwnerAuthorizationError(ValueError):
     """Invalid exact plan, unavailable owner transport, or failed readback."""
+
+
+@dataclass(frozen=True)
+class ChatApprovalGrant:
+    """Ephemeral operator-reported confirmation from this direct chat session.
+
+    This is an in-memory orchestration value, not a signed host attestation.
+    It must be created only after the current owner directly approves the exact
+    scope in the same conversation.
+    """
+
+    operation: str
+    repository: str
+    issue_number: int
+    subject_sha256: str
+    plan_sha256: str
+    approval_scope_sha256: str
+    pr_number: int | None
+    pr_head_sha40: str | None
+    outcome: str
+    source: str
+
+
+def _approval_scope_payload(plan: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema": "PASES_CHAT_APPROVAL_SCOPE_V1",
+        "repository": plan["repository"], "repository_id": plan["repository_id"],
+        "owner_id": plan["owner_id"], "issue_number": plan["issue_number"],
+        "operation": plan["operation"], "subject_sha256": plan["subject_sha256"],
+        "pr_number": plan["pr_number"], "pr_head_sha40": plan["pr_head_sha40"],
+        "target_issue_number": plan["target_issue_number"],
+        "source_head_sha40": plan["source_head_sha40"], "details": plan["details"],
+    }
+
+
+def _approval_scope_sha256(plan: dict[str, Any]) -> str:
+    return hashlib.sha256(_canonical(_approval_scope_payload(plan))).hexdigest()
+
+
+def authorization_presentation(plan: dict[str, Any]) -> dict[str, Any]:
+    """Return the exact structured scope the agent must show before asking."""
+    checked = _validate_plan(plan)
+    return {
+        **_approval_scope_payload(checked),
+        "plan_sha256": checked["plan_sha256"],
+        "approval_scope_sha256": checked["approval_scope_sha256"],
+        "assurance": "operator-reported direct chat confirmation plus GitHub-authenticated action; not a signed chat-host attestation",
+    }
+
+
+def capture_direct_chat_confirmation(
+    plan: dict[str, Any], *, response: str, user_role: str,
+    same_conversation: bool,
+) -> ChatApprovalGrant:
+    """Capture a direct same-conversation answer; caller is the chat operator.
+
+    The runtime checks the declared role, answer and exact plan binding, but it
+    cannot independently authenticate chat-role metadata. This function must
+    never be exposed as an approval CLI flag or accept a file as consent.
+    """
+    checked = _validate_plan(plan)
+    if user_role != "user" or same_conversation is not True:
+        raise OwnerAuthorizationError("CHAT_PROVENANCE_UNAVAILABLE: direct same-conversation user role is required")
+    normalized = response.strip().casefold() if isinstance(response, str) else ""
+    if normalized not in {"approve", "approved", "承認する", "このshaを承認する", "この計画を承認する", "この草案を承認する"}:
+        raise OwnerAuthorizationError("CHAT_CONFIRMATION_REQUIRED: response is not an explicit approval")
+    return ChatApprovalGrant(
+        operation=checked["operation"], repository=checked["repository"],
+        issue_number=checked["issue_number"], subject_sha256=checked["subject_sha256"],
+        plan_sha256=checked["plan_sha256"], approval_scope_sha256=checked["approval_scope_sha256"],
+        pr_number=checked["pr_number"], pr_head_sha40=checked["pr_head_sha40"],
+        outcome="APPROVED", source="operator_reported_direct_user_message",
+    )
 
 
 def _canonical(value: Any) -> bytes:
@@ -154,6 +230,7 @@ def create_authorization_plan(
         "pr_head_sha40": pr_head_sha40, "target_issue_number": target_issue_number,
         "source_head_sha40": source_head, "details": details,
     }
+    payload["approval_scope_sha256"] = _approval_scope_sha256(payload)
     return {**payload, "plan_sha256": hashlib.sha256(_canonical(payload)).hexdigest()}
 
 
@@ -193,12 +270,27 @@ def _validate_plan(value: Any) -> dict[str, Any]:
             or not isinstance(plan.get("source_head_sha40"), str)
             or SHA40.fullmatch(plan["source_head_sha40"]) is None
             or not isinstance(plan.get("details"), dict)
+            or not isinstance(plan.get("approval_scope_sha256"), str)
+            or SHA256.fullmatch(plan["approval_scope_sha256"]) is None
+            or plan["approval_scope_sha256"] != _approval_scope_sha256(plan)
             or not isinstance(supplied, str) or SHA256.fullmatch(supplied) is None
             or hashlib.sha256(_canonical(plan)).hexdigest() != supplied):
         raise OwnerAuthorizationError("authorization plan digest or subject is invalid")
     details = plan["details"]
-    if plan["operation"] == "ADC_SUPERSEDE" and details != {}:
-        raise OwnerAuthorizationError("ADC_SUPERSEDE plan has unexpected details")
+    if plan["operation"] == "ADC_SUPERSEDE" and details != {
+            "predecessor_comment_id": details.get("predecessor_comment_id"),
+            "predecessor_sha256": details.get("predecessor_sha256"),
+            "predecessor_byte_length": details.get("predecessor_byte_length"),
+            "predecessor_state": details.get("predecessor_state"),
+    }:
+        raise OwnerAuthorizationError("ADC_SUPERSEDE plan predecessor fields are invalid")
+    if plan["operation"] == "ADC_SUPERSEDE":
+        if (not _positive(details["predecessor_comment_id"])
+                or not isinstance(details["predecessor_sha256"], str)
+                or SHA256.fullmatch(details["predecessor_sha256"]) is None
+                or not _positive(details["predecessor_byte_length"])
+                or details["predecessor_state"] != "approved"):
+            raise OwnerAuthorizationError("ADC_SUPERSEDE plan must bind its current approved predecessor")
     if plan["operation"] == "RULESET_PLAN_APPLY" and (
             details != {"activation_issue_number": 57} or plan["target_issue_number"] != 57):
         raise OwnerAuthorizationError("Ruleset authorization plan must bind Activation Issue #57")
@@ -286,7 +378,7 @@ def _check_owner_local_tty(stdin: Any) -> None:
         )
 
 
-def _decision_body(plan: dict[str, Any], predecessor: int | None) -> str:
+def _decision_body_v2(plan: dict[str, Any], predecessor: int | None) -> str:
     payload = {
         "schema": SCHEMA_V2, "repository": REPOSITORY, "issue_number": ISSUE_NUMBER,
         "operation": plan["operation"], "subject_sha256": plan["subject_sha256"],
@@ -300,6 +392,35 @@ def _decision_body(plan: dict[str, Any], predecessor: int | None) -> str:
     if set(payload) != FIELDS_V2:
         raise OwnerAuthorizationError("owner decision V2 schema contract is inconsistent")
     return f"{START_V2}{_canonical(payload).decode('utf-8')}\n-->"
+
+
+def _decision_body_v3(plan: dict[str, Any], predecessor: int | None,
+                      grant: ChatApprovalGrant) -> str:
+    if (grant.outcome != "APPROVED"
+            or grant.operation != plan["operation"]
+            or grant.repository != plan["repository"]
+            or grant.issue_number != plan["issue_number"]
+            or grant.subject_sha256 != plan["subject_sha256"]
+            or grant.plan_sha256 != plan["plan_sha256"]
+            or grant.approval_scope_sha256 != plan["approval_scope_sha256"]
+            or grant.pr_number != plan["pr_number"]
+            or grant.pr_head_sha40 != plan["pr_head_sha40"]
+            or grant.source != "operator_reported_direct_user_message"):
+        raise OwnerAuthorizationError("CHAT_CONFIRMATION_REQUIRED: grant does not bind this exact operation")
+    payload = {
+        "schema": SCHEMA_V3, "repository": REPOSITORY, "issue_number": ISSUE_NUMBER,
+        "operation": plan["operation"], "subject_sha256": plan["subject_sha256"],
+        "plan_sha256": plan["plan_sha256"],
+        "operation_plan_sha256": (plan["subject_sha256"]
+                                  if plan["operation"] == "RULESET_PLAN_APPLY" else None),
+        "approval_scope_sha256": plan["approval_scope_sha256"],
+        "pr_number": plan["pr_number"], "pr_head_sha40": plan["pr_head_sha40"],
+        "owner_id": OWNER_ID, "evidence_channel": "chat_confirmed_gh_v1",
+        "predecessor_comment_id": predecessor,
+    }
+    if set(payload) != FIELDS_V3:
+        raise OwnerAuthorizationError("owner decision V3 schema contract is inconsistent")
+    return f"{START_V3}{_canonical(payload).decode('utf-8')}\n-->"
 
 
 def _verify_ruleset_plan_approval(github: Any, plan: dict[str, Any], *, write_missing: bool) -> int:
@@ -436,7 +557,7 @@ def authorize_plan(
             raise OwnerAuthorizationError("operation subject is already authorized under a different record")
     else:
         predecessor = history[-1][0] if history else None
-        body = _decision_body(plan, predecessor)
+        body = _decision_body_v2(plan, predecessor)
         try:
             github.create_issue_comment(ISSUE_NUMBER, body)
         except GitHubError as exc:
@@ -474,6 +595,140 @@ def authorize_plan(
     return result
 
 
+def authorize_chat_confirmed_plan(
+    github: Any, root: Path, plan: dict[str, Any], grant: ChatApprovalGrant, *,
+    user_review_context: dict[str, Any] | None = None,
+    source_validator: Callable[[], Any] | None = None,
+) -> dict[str, Any]:
+    """Append one V3 decision from an ephemeral same-chat confirmation grant.
+
+    This is intentionally an in-process API: the CLI cannot authenticate a
+    ChatGPT user-role event and therefore must never accept approval through a
+    command-line switch or JSON file. The record describes operator-reported
+    chat confirmation and the authenticated GitHub actor, not a signed chat.
+    """
+    checked = _validate_plan(plan)
+    if not isinstance(grant, ChatApprovalGrant):
+        raise OwnerAuthorizationError("CHAT_CONFIRMATION_REQUIRED: typed direct-chat grant is missing")
+    # Bind every field before any GitHub write and verify the carrier body can
+    # only be formed for this exact scope.
+    _decision_body_v3(checked, None, grant)
+    try:
+        if not worktree_clean(Path(root)) or head_sha40(Path(root)) != checked["source_head_sha40"]:
+            raise OwnerAuthorizationError("fixed reviewed source HEAD changed or worktree is dirty")
+    except GitError as exc:
+        raise OwnerAuthorizationError(str(exc)) from exc
+    identity = github.authenticated_user()
+    if identity.get("type") != "User" or identity.get("id") != OWNER_ID:
+        raise OwnerAuthorizationError("authenticated GitHub actor is not the configured owner")
+    refreshed = create_authorization_plan(
+        github, root, operation=checked["operation"], subject_sha256=checked["subject_sha256"],
+        issue_number=checked["issue_number"], target_issue_number=checked["target_issue_number"],
+        pr_number=checked["pr_number"], pr_head_sha40=checked["pr_head_sha40"],
+        details=checked["details"],
+    )
+    if refreshed != checked:
+        raise OwnerAuthorizationError("live repository, Issue, PR, source, or plan changed after chat approval")
+    if checked["operation"] == "ADC_SUPERSEDE":
+        from .adc import ADCError, verify_adc
+        try:
+            predecessor = verify_adc(github, ISSUE_NUMBER).pointer
+        except ADCError as exc:
+            raise OwnerAuthorizationError("current approved ADC predecessor is unavailable") from exc
+        details = checked["details"]
+        if (predecessor.state != "approved"
+                or predecessor.comment_id != details.get("predecessor_comment_id")
+                or predecessor.sha256 != details.get("predecessor_sha256")
+                or predecessor.byte_length != details.get("predecessor_byte_length")
+                or predecessor.state != details.get("predecessor_state")):
+            raise OwnerAuthorizationError("current approved ADC predecessor changed after plan creation")
+    if source_validator is not None:
+        revalidated_context = source_validator()
+        if checked["operation"] == "USER_REVIEW":
+            user_review_context = revalidated_context
+
+    if checked["operation"] == "USER_REVIEW":
+        if not isinstance(user_review_context, dict):
+            raise OwnerAuthorizationError("USER_REVIEW requires its exact validated session and feedback context")
+        details = checked["details"]
+        session = user_review_context.get("session")
+        if (getattr(session, "sha256", None) != details.get("review_session_sha256")
+                or getattr(getattr(session, "subject", None), "readiness_sha256", None)
+                   != details.get("readiness_sha256")
+                or checked["pr_head_sha40"] != details.get("pr_head_sha40")
+                or checked["subject_sha256"] != user_review_context.get("subject_sha256")):
+            raise OwnerAuthorizationError("validated User Review context differs from the approved plan")
+        from .user_review_relay import publish_chat_confirmed_user_review_decision
+        approval = publish_chat_confirmed_user_review_decision(
+            github, repository=REPOSITORY, issue_number=ISSUE_NUMBER,
+            pr_number=checked["pr_number"], repository_owner_user_id=OWNER_ID,
+            session=session, readiness_sha256=details["readiness_sha256"],
+            adc_sha256=details["adc_sha256"], pr_head_sha40=details["pr_head_sha40"],
+            feedback_sha256=details["feedback_sha256"], plan_sha256=checked["plan_sha256"],
+            approval_scope_sha256=checked["approval_scope_sha256"],
+        )
+        return {
+            "status": "AUTHORIZED", "operation": "USER_REVIEW",
+            "plan_sha256": checked["plan_sha256"], "subject_sha256": checked["subject_sha256"],
+            "approval_scope_sha256": checked["approval_scope_sha256"],
+            "owner_decision_comment_id": approval.comment_id,
+            "evidence_type": approval.evidence_type,
+            "evidence_channel": approval.evidence_channel, "chat_signature": False,
+        }
+
+    history = _read_history(github)
+    same_subject = [(comment_id, decision) for comment_id, decision in history
+                    if decision.operation == checked["operation"]
+                    and decision.subject_sha256 == checked["subject_sha256"]
+                    and decision.pr_number == checked["pr_number"]
+                    and decision.pr_head_sha40 == checked["pr_head_sha40"]]
+    if same_subject:
+        raise OwnerAuthorizationError("operation subject already has an owner decision; no replay or second V3 record")
+    predecessor = history[-1][0] if history else None
+    body = _decision_body_v3(checked, predecessor, grant)
+    try:
+        github.create_issue_comment(ISSUE_NUMBER, body)
+    except GitHubError as exc:
+        # Resolve an uncertain POST with reads only; never retry it.
+        try:
+            verified = read_verified_owner_decision(
+                github, issue_number=ISSUE_NUMBER, owner_id=OWNER_ID,
+                operation=checked["operation"], subject_sha256=checked["subject_sha256"],
+                expected_pr_number=checked["pr_number"], expected_pr_head_sha40=checked["pr_head_sha40"],
+                expected_plan_sha256=checked["plan_sha256"], repository_id=REPOSITORY_ID,
+                expected_approval_scope_sha256=checked["approval_scope_sha256"],
+                expected_schema=SCHEMA_V3,
+            )
+        except OwnerDecisionError as verify_error:
+            raise OwnerAuthorizationError("V3 decision POST is ambiguous; no retry was attempted") from verify_error
+        if verified.decision.evidence_channel != "chat_confirmed_gh_v1":
+            raise OwnerAuthorizationError("readback selected an incompatible approval channel") from exc
+    else:
+        verified = read_verified_owner_decision(
+            github, issue_number=ISSUE_NUMBER, owner_id=OWNER_ID,
+            operation=checked["operation"], subject_sha256=checked["subject_sha256"],
+            expected_pr_number=checked["pr_number"], expected_pr_head_sha40=checked["pr_head_sha40"],
+            expected_plan_sha256=checked["plan_sha256"], repository_id=REPOSITORY_ID,
+            expected_approval_scope_sha256=checked["approval_scope_sha256"],
+            expected_schema=SCHEMA_V3,
+        )
+    if verified.decision.evidence_channel != "chat_confirmed_gh_v1":
+        raise OwnerAuthorizationError("V3 decision readback has an incompatible evidence channel")
+    result: dict[str, Any] = {
+        "status": "AUTHORIZED", "operation": checked["operation"],
+        "plan_sha256": checked["plan_sha256"], "subject_sha256": checked["subject_sha256"],
+        "approval_scope_sha256": checked["approval_scope_sha256"],
+        "owner_decision_comment_id": verified.comment_id,
+        "evidence_type": SCHEMA_V3, "evidence_channel": "chat_confirmed_gh_v1",
+        "chat_signature": False,
+    }
+    if checked["operation"] == "RULESET_PLAN_APPLY":
+        result["ruleset_approval_comment_id"] = _verify_ruleset_plan_approval(
+            github, checked, write_missing=True,
+        )
+    return result
+
+
 def resume_authorization(github: Any, plan_path: Path) -> dict[str, Any]:
     """Read-only reconciliation for a decision that may have been posted."""
     plan = read_authorization_plan(plan_path)
@@ -486,11 +741,19 @@ def resume_authorization(github: Any, plan_path: Path) -> dict[str, Any]:
         )
     except OwnerDecisionError as exc:
         return {"status": "NOT_FOUND_OR_BLOCKED", "plan_sha256": plan["plan_sha256"], "reasons": [str(exc)]}
+    decision = verified.decision
+    if (decision.schema == SCHEMA_V3
+            and decision.approval_scope_sha256 != plan["approval_scope_sha256"]):
+        return {"status": "NOT_FOUND_OR_BLOCKED", "plan_sha256": plan["plan_sha256"],
+                "reasons": ["V3 approval scope differs from the current canonical plan"]}
     result: dict[str, Any] = {
         "status": "AUTHORIZED", "operation": plan["operation"], "plan_sha256": plan["plan_sha256"],
         "subject_sha256": plan["subject_sha256"], "owner_decision_comment_id": verified.comment_id,
-        "evidence_type": SCHEMA_V2, "evidence_channel": "owner_local_tty_v1", "chat_signature": False,
+        "evidence_type": decision.schema, "evidence_channel": decision.evidence_channel,
+        "chat_signature": False,
     }
+    if decision.schema == SCHEMA_V3:
+        result["approval_scope_sha256"] = decision.approval_scope_sha256
     if plan["operation"] == "RULESET_PLAN_APPLY":
         result["ruleset_approval_comment_id"] = _verify_ruleset_plan_approval(
             github, plan, write_missing=False,

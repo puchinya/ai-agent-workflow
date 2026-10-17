@@ -1,9 +1,10 @@
-"""Explicit, short-lived owner-operated GitHub administration sessions.
+"""Explicit, short-lived isolated GitHub administration sessions.
 
-The default PAT path passes a credential only to this client's ``gh api`` child.
-The optional device path uses a private temporary ``GH_CONFIG_DIR`` for its
-``gh auth login`` and later API children. Neither path changes normal ``gh``
-authentication, and neither path is an owner decision or a strong OS sandbox.
+The standard browser-device path uses a runner-managed interactive terminal and
+a private temporary ``GH_CONFIG_DIR`` for ``gh auth login`` and later API
+children. Neither path changes normal ``gh`` authentication, and neither path
+is an owner decision or a strong OS sandbox. The PAT route is a nonstandard
+legacy fallback that still requires an owner-local terminal.
 """
 from __future__ import annotations
 
@@ -59,7 +60,7 @@ def _device_terminal(stdin: Any) -> Any:
         visible_output = False
         terminal = None
     if terminal is None or not visible_output:
-        raise AdminAuthError("ADMIN_DEVICE_LOGIN_UNAVAILABLE: interactive device-code TTY is unavailable")
+        raise AdminAuthError("ADMIN_DEVICE_LOGIN_UNAVAILABLE: runner-managed device-code terminal is unavailable")
     return terminal
 
 
@@ -199,15 +200,15 @@ def temporary_admin_client(
     repo: str, *, stdin: Any = None,
     getpass_fn: Callable[[str], str] = getpass,
     github_factory: Callable[[str], GitHub] = GitHub,
-    auth_mode: str = "pat",
+    auth_mode: str = "isolated-gh-device",
 ) -> Iterator[GitHub]:
-    """Yield an owner-operated client in the selected isolated auth mode.
+    """Yield an isolated client in the selected authentication mode.
 
-    ``pat`` preserves the existing owner-created short-lived PAT flow. The
-    opt-in ``isolated-gh-device`` flow never changes the parent CLI profile and
-    stores GitHub CLI auth only below a newly created mode-0700 config directory.
-    Cloud/device failure blocks with ``ADMIN_DEVICE_LOGIN_UNAVAILABLE``; the
-    caller must explicitly use the owner-local PAT path on a trusted local host.
+    ``isolated-gh-device`` is the standard route. It uses a runner-managed
+    terminal to display the browser URL/code and stores GitHub CLI auth only
+    below a new mode-0700 config directory. ``pat`` is a nonstandard legacy
+    fallback requiring a trusted owner-local terminal. Device login failure
+    blocks with ``ADMIN_DEVICE_LOGIN_UNAVAILABLE`` and never falls back silently.
     """
     if repo != ADMIN_REPOSITORY:
         raise AdminAuthError("temporary Admin is limited to the configured repository")

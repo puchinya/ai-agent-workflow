@@ -102,7 +102,7 @@ class AdminAuthenticationTests(unittest.TestCase):
              patch("p_ases.github.subprocess.run", side_effect=fake_run):
             parent_before = {key: os.environ.get(key) for key in parent_auth}
             with temporary_admin_client(
-                "puchinya/ai-agent-workflow", stdin=Mock(isatty=lambda: True),
+                "puchinya/ai-agent-workflow", auth_mode="pat", stdin=Mock(isatty=lambda: True),
                 getpass_fn=lambda _prompt: token, github_factory=GitHub,
             ) as github:
                 github.request("GET", "user")
@@ -117,7 +117,7 @@ class AdminAuthenticationTests(unittest.TestCase):
         self.assertNotIn(token, child_environments[1].values())
         self.assertNotIn(token, repr(github))
 
-    def test_device_mode_is_opt_in_and_uses_one_private_config_for_gh_children(self):
+    def test_device_mode_uses_one_private_config_for_gh_children(self):
         self.assertEqual(ADMIN_AUTH_MODES, ("pat", "isolated-gh-device"))
         token_env = {
             "GH_TOKEN": "ambient-gh", "GITHUB_TOKEN": "ambient-github",
@@ -142,7 +142,7 @@ class AdminAuthenticationTests(unittest.TestCase):
              patch("p_ases.admin_auth.sys.stdout", Mock(isatty=lambda: True)):
             parent_before = {key: os.environ.get(key) for key in token_env}
             with temporary_admin_client(
-                "puchinya/ai-agent-workflow", auth_mode="isolated-gh-device",
+                "puchinya/ai-agent-workflow",
                 stdin=Mock(isatty=lambda: True), github_factory=GitHub,
             ) as github:
                 config_dir = Path(calls[0][1]["GH_CONFIG_DIR"])

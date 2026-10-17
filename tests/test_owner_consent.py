@@ -53,6 +53,20 @@ def owner_local_decision_body(**overrides: object) -> str:
     return f"<!-- PASES_OWNER_DECISION_V2\n{canonical}\n-->"
 
 
+def chat_confirmed_decision_body(**overrides: object) -> str:
+    payload = json.loads(decision_body().removeprefix("<!-- PASES_OWNER_DECISION_V1\n").removesuffix("\n-->"))
+    payload.update({
+        "schema": "PASES_OWNER_DECISION_V3",
+        "evidence_channel": "chat_confirmed_gh_v1",
+        "plan_sha256": "e" * 64,
+        "operation_plan_sha256": None,
+        "approval_scope_sha256": "d" * 64,
+    })
+    payload.update(overrides)
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return f"<!-- PASES_OWNER_DECISION_V3\n{canonical}\n-->"
+
+
 class OwnerDecisionRecordTests(unittest.TestCase):
     def test_canonical_record_binds_exact_operation_and_subject(self):
         body = decision_body()
@@ -78,6 +92,17 @@ class OwnerDecisionRecordTests(unittest.TestCase):
             verify_owner_decision_history(
                 [v1, v2], REPOSITORY, 63, OWNER_ID, "ADC_SUPERSEDE", SUBJECT_SHA,
             )
+
+    def test_v3_records_operator_reported_chat_without_claiming_chat_signature(self):
+        record = parse_owner_decision(chat_confirmed_decision_body())
+        self.assertEqual(record.schema, "PASES_OWNER_DECISION_V3")
+        self.assertEqual(record.evidence_channel, "chat_confirmed_gh_v1")
+        self.assertEqual(record.approval_scope_sha256, "d" * 64)
+        self.assertNotIn("chat_signature", record.as_dict())
+        with self.assertRaises(OwnerDecisionError):
+            parse_owner_decision(chat_confirmed_decision_body(evidence_channel="owner_local_tty_v1"))
+        with self.assertRaises(OwnerDecisionError):
+            parse_owner_decision(chat_confirmed_decision_body(approval_scope_sha256="invalid"))
 
     def test_rejects_noncanonical_json_unknown_fields_and_wrong_channel(self):
         with self.assertRaises(OwnerDecisionError):

@@ -1473,7 +1473,7 @@ def _setup_consumer_activation_v2_impl(
                     "required_setting_inventory": _policy_inventory(
                         "blocked", verified=False, blockers=(str(exc),)),
                     "reasons": [str(exc)],
-                    "next_permitted_step": "Run consumer-activation-admin-plan in the trusted owner-local TTY; it resumes this checkpoint."}
+                    "next_permitted_step": "Resume with consumer-activation-admin-plan using isolated browser device authentication; a runner-managed PTY must display the challenge."}
         raise
     if plan["blockers"]:
         blockers = tuple(plan["blockers"])
@@ -1495,7 +1495,7 @@ def _setup_consumer_activation_v2_impl(
                     "checkpoint_sha256": checkpoint_sha,
                     "required_setting_inventory": _policy_inventory(
                         "blocked", verified=False, blockers=blockers),
-                    "next_permitted_step": "Run consumer-activation-admin-plan in the trusted owner-local TTY; it resumes this checkpoint."}
+                    "next_permitted_step": "Resume with consumer-activation-admin-plan using isolated browser device authentication; a runner-managed PTY must display the challenge."}
         _, saved_path, checkpoint_sha = _checkpoint_v2(
             root, repository=github.repo, repository_id=repository_id, owner_id=owner_id,
             issue_number=issue_number, adc=adc, predecessor_record_id=predecessor,

@@ -332,13 +332,17 @@ class UserReviewResult:
             elif evidence_type == "PASES_USER_REVIEW_DECISION_V2":
                 expected = base_expected | {"feedback_sha256", "plan_sha256"}
                 expected_channel = "owner_local_tty_v1"
+            elif evidence_type == "PASES_USER_REVIEW_DECISION_V3":
+                expected = base_expected | {"feedback_sha256", "plan_sha256", "approval_scope_sha256"}
+                expected_channel = "chat_confirmed_gh_v1"
             else:
                 expected = base_expected
                 expected_channel = None
             if (not isinstance(self.selected_approval_evidence, dict)
                     or set(evidence) != expected
                     or evidence_type not in {
-                        "PASES_USER_REVIEW_DECISION_V1", "PASES_USER_REVIEW_DECISION_V2"}
+                        "PASES_USER_REVIEW_DECISION_V1", "PASES_USER_REVIEW_DECISION_V2",
+                        "PASES_USER_REVIEW_DECISION_V3"}
                     or evidence["evidence_channel"] != expected_channel
                     or type(evidence["comment_id"]) is not int
                     or evidence["comment_id"] < 1
@@ -356,10 +360,14 @@ class UserReviewResult:
                        + str(evidence["comment_id"])
                     or self.status != "APPROVED"):
                 raise UserReviewError("invalid dedicated relay approval evidence")
-            if (evidence_type == "PASES_USER_REVIEW_DECISION_V2"
+            if (evidence_type in {"PASES_USER_REVIEW_DECISION_V2", "PASES_USER_REVIEW_DECISION_V3"}
                     and any(not isinstance(evidence.get(key), str) or not SHA256.fullmatch(evidence[key])
                             for key in ("feedback_sha256", "plan_sha256"))):
                 raise UserReviewError("invalid owner-local V2 User Review digests")
+            if (evidence_type == "PASES_USER_REVIEW_DECISION_V3"
+                    and (not isinstance(evidence.get("approval_scope_sha256"), str)
+                         or not SHA256.fullmatch(evidence["approval_scope_sha256"]))):
+                raise UserReviewError("invalid chat-confirmed V3 User Review scope digest")
             _time(evidence["created_at"])
         return self
 
@@ -460,7 +468,7 @@ def _evaluate_typed_relay_review(
                     and row.updated_at == approval.created_at and not row.edited and not row.deleted]
         if len(matching) != 1:
             reasons.append("dedicated carrier is absent or changed in complete feedback snapshot")
-        if approval.evidence_type == "PASES_USER_REVIEW_DECISION_V2":
+        if approval.evidence_type in {"PASES_USER_REVIEW_DECISION_V2", "PASES_USER_REVIEW_DECISION_V3"}:
             prior_events = [row for row in rows
                             if not (row.channel == "issue-comment" and row.event_id == str(approval.comment_id))]
             if (not isinstance(approval.feedback_sha256, str)

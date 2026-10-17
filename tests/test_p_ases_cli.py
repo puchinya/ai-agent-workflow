@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
@@ -72,7 +72,7 @@ class PasesCLITests(unittest.TestCase):
             "--repo", "puchinya/ai-agent-workflow", "--root", str(ROOT),
         ])
         self.assertIsNone(admin_apply.approval_comment_id)
-        self.assertEqual(admin_apply.auth_mode, "pat")
+        self.assertEqual(admin_apply.auth_mode, "isolated-gh-device")
         admin_plan = _parser().parse_args([
             "delivery", "consumer-activation-admin-plan", "--output", "/tmp/pases-plan.json",
             "--auth-mode", "isolated-gh-device", "--root", str(ROOT),
@@ -150,6 +150,25 @@ class PasesCLITests(unittest.TestCase):
         self.assertEqual(result, 2)
         self.assertEqual(emit.call_args.args[0]["status"], "PENDING_APPROVAL")
         apply_plan.assert_not_called()
+
+    def test_owner_authorize_commit_cli_fails_closed_without_reading_stdin_or_writing(self):
+        fake_github = SimpleNamespace(repo="puchinya/ai-agent-workflow", writes=0)
+        stdin = Mock()
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory() as temp_dir, \
+                patch("p_ases.cli._runtime_root", return_value=Path(temp_dir)), \
+                patch("p_ases.cli.discover_repository", return_value="puchinya/ai-agent-workflow"), \
+                patch("p_ases.cli.GitHub", return_value=fake_github), \
+                patch("p_ases.cli.sys.stdin", stdin), \
+                contextlib.redirect_stdout(output):
+            status = main([
+                "delivery", "owner-authorize-commit", "--plan", str(Path(temp_dir) / "plan.json"),
+                "--repo", "puchinya/ai-agent-workflow", "--root", temp_dir,
+            ])
+        self.assertEqual(status, 2)
+        self.assertIn("CHAT_CONFIRMATION_REQUIRED", output.getvalue())
+        stdin.read.assert_not_called()
+        self.assertEqual(fake_github.writes, 0)
 
     def test_activation_setup_pending_stage_is_not_a_success_exit_code(self):
         fake_github = SimpleNamespace(repo="puchinya/ai-agent-workflow")

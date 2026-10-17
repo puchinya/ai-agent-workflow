@@ -1,8 +1,10 @@
-"""Verify User Review decision carriers from the delegated and owner-local paths.
+"""Verify User Review decision carriers from V1, V2, and chat-confirmed V3.
 
 V1 remains delegated relay evidence. V2 is owner-local TTY evidence and does
-not claim a ChatGPT signature. The evaluator still checks the complete current
-feedback snapshot and exact review subject.
+not claim a ChatGPT signature. V3 records operator-reported direct chat
+confirmation plus a GitHub-authenticated action; it is not a signed chat-host
+attestation. The evaluator checks the complete current feedback snapshot and
+exact review subject for every version.
 """
 from __future__ import annotations
 
@@ -15,12 +17,14 @@ from typing import Any, Mapping
 
 USER_REVIEW_DECISION_SCHEMA = "PASES_USER_REVIEW_DECISION_V1"
 USER_REVIEW_DECISION_SCHEMA_V2 = "PASES_USER_REVIEW_DECISION_V2"
+USER_REVIEW_DECISION_SCHEMA_V3 = "PASES_USER_REVIEW_DECISION_V3"
 FIELDS_V1 = frozenset({
     "schema", "repository", "issue_number", "pr_number", "decision",
     "owner_id", "review_session_id", "readiness_sha256", "adc_sha256",
     "pr_head_sha40", "evidence_channel", "predecessor_comment_id",
 })
 FIELDS_V2 = FIELDS_V1 | {"feedback_sha256", "plan_sha256"}
+FIELDS_V3 = FIELDS_V2 | {"approval_scope_sha256"}
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 SHA40 = re.compile(r"[0-9a-f]{40}\Z")
 DECISION_MARKERS = re.compile(r"PASES_USER_REVIEW_DECISION_[A-Z0-9_]+")
@@ -71,11 +75,16 @@ def parse_user_review_decision(body: Any) -> dict[str, Any]:
     except (ValueError, TypeError) as exc:
         raise UserReviewRelayError("invalid dedicated review JSON") from exc
     schema = payload.get("schema") if isinstance(payload, dict) else None
-    fields = FIELDS_V1 if schema == USER_REVIEW_DECISION_SCHEMA else FIELDS_V2
-    channel = "delegated_github_relay" if schema == USER_REVIEW_DECISION_SCHEMA else "owner_local_tty_v1"
+    if schema == USER_REVIEW_DECISION_SCHEMA:
+        fields, channel = FIELDS_V1, "delegated_github_relay"
+    elif schema == USER_REVIEW_DECISION_SCHEMA_V2:
+        fields, channel = FIELDS_V2, "owner_local_tty_v1"
+    else:
+        fields, channel = FIELDS_V3, "chat_confirmed_gh_v1"
     if not isinstance(payload, dict) or set(payload) != fields or _canonical(payload) != body:
         raise UserReviewRelayError("dedicated review fields or canonical bytes differ")
-    if (payload["schema"] not in {USER_REVIEW_DECISION_SCHEMA, USER_REVIEW_DECISION_SCHEMA_V2}
+    if (payload["schema"] not in {USER_REVIEW_DECISION_SCHEMA, USER_REVIEW_DECISION_SCHEMA_V2,
+                                   USER_REVIEW_DECISION_SCHEMA_V3}
             or payload["decision"] != "APPROVED"
             or payload["evidence_channel"] != channel
             or not isinstance(payload["repository"], str)
@@ -88,10 +97,14 @@ def parse_user_review_decision(body: Any) -> dict[str, Any]:
             or (payload["predecessor_comment_id"] is not None
                 and not _positive(payload["predecessor_comment_id"]))):
         raise UserReviewRelayError("invalid review-decision subject, owner, or schema")
-    if schema == USER_REVIEW_DECISION_SCHEMA_V2 and not all(
+    if schema in {USER_REVIEW_DECISION_SCHEMA_V2, USER_REVIEW_DECISION_SCHEMA_V3} and not all(
             isinstance(payload[key], str) and SHA256.fullmatch(payload[key])
             for key in ("feedback_sha256", "plan_sha256")):
         raise UserReviewRelayError("owner-local User Review plan/feedback digest is invalid")
+    if schema == USER_REVIEW_DECISION_SCHEMA_V3 and (
+            not isinstance(payload["approval_scope_sha256"], str)
+            or not SHA256.fullmatch(payload["approval_scope_sha256"])):
+        raise UserReviewRelayError("chat-confirmed User Review scope digest is invalid")
     return payload
 
 
@@ -120,6 +133,7 @@ class UserReviewRelayApproval:
     evidence_type: str = USER_REVIEW_DECISION_SCHEMA
     feedback_sha256: str | None = None
     plan_sha256: str | None = None
+    approval_scope_sha256: str | None = None
 
     def as_selected_evidence(self) -> dict[str, Any]:
         evidence = {
@@ -130,9 +144,11 @@ class UserReviewRelayApproval:
             "review_session_sha256": self.review_session_sha256,
             "predecessor_comment_id": self.predecessor_comment_id,
         }
-        if self.evidence_type == USER_REVIEW_DECISION_SCHEMA_V2:
+        if self.evidence_type in {USER_REVIEW_DECISION_SCHEMA_V2, USER_REVIEW_DECISION_SCHEMA_V3}:
             evidence["feedback_sha256"] = self.feedback_sha256
             evidence["plan_sha256"] = self.plan_sha256
+        if self.evidence_type == USER_REVIEW_DECISION_SCHEMA_V3:
+            evidence["approval_scope_sha256"] = self.approval_scope_sha256
         return evidence
 
 
@@ -167,6 +183,7 @@ def verify_user_review_decision_history(
     repository_owner_user_id: int, authenticated_verifier_user_id: int,
     session: Any, readiness_sha256: str, adc_sha256: str, pr_head_sha40: str,
     feedback_sha256: str | None = None, plan_sha256: str | None = None,
+    approval_scope_sha256: str | None = None,
 ) -> UserReviewRelayApproval:
     if (not isinstance(history, UserReviewDecisionHistory)
             or history.pagination_complete is not True
@@ -194,7 +211,8 @@ def verify_user_review_decision_history(
         if not markers:
             continue
         if len(markers) != 1 or markers[0] not in {
-                USER_REVIEW_DECISION_SCHEMA, USER_REVIEW_DECISION_SCHEMA_V2}:
+                USER_REVIEW_DECISION_SCHEMA, USER_REVIEW_DECISION_SCHEMA_V2,
+                USER_REVIEW_DECISION_SCHEMA_V3}:
             raise UserReviewRelayError("unknown or malformed dedicated User Review marker")
         decision = parse_user_review_decision(body)
         if (decision["repository"] != repository or decision["issue_number"] != issue_number
@@ -228,10 +246,14 @@ def verify_user_review_decision_history(
                     or decision["adc_sha256"] != adc_sha256
                     or decision["pr_head_sha40"] != pr_head_sha40):
                 raise UserReviewRelayError("carrier predates session or has stale approval subject")
-            if decision["schema"] == USER_REVIEW_DECISION_SCHEMA_V2:
+            if decision["schema"] in {USER_REVIEW_DECISION_SCHEMA_V2, USER_REVIEW_DECISION_SCHEMA_V3}:
                 if ((feedback_sha256 is not None and decision["feedback_sha256"] != feedback_sha256)
                         or (plan_sha256 is not None and decision["plan_sha256"] != plan_sha256)):
                     raise UserReviewRelayError("owner-local User Review feedback or plan digest is stale")
+            if (decision["schema"] == USER_REVIEW_DECISION_SCHEMA_V3
+                    and approval_scope_sha256 is not None
+                    and decision["approval_scope_sha256"] != approval_scope_sha256):
+                raise UserReviewRelayError("chat-confirmed User Review scope is stale")
             current.append((comment_id, decision, identity))
     if len(current) != 1:
         raise UserReviewRelayError("expected exactly one current-session carrier")
@@ -242,6 +264,7 @@ def verify_user_review_decision_history(
         review_session_sha256=session.sha256, predecessor_comment_id=decision["predecessor_comment_id"],
         evidence_channel=decision["evidence_channel"], evidence_type=decision["schema"],
         feedback_sha256=decision.get("feedback_sha256"), plan_sha256=decision.get("plan_sha256"),
+        approval_scope_sha256=decision.get("approval_scope_sha256"),
     )
 
 
@@ -256,7 +279,8 @@ def _history_rows(history: UserReviewDecisionHistory, repository: str, issue_num
         if not markers:
             continue
         if len(markers) != 1 or markers[0] not in {
-                USER_REVIEW_DECISION_SCHEMA, USER_REVIEW_DECISION_SCHEMA_V2}:
+                USER_REVIEW_DECISION_SCHEMA, USER_REVIEW_DECISION_SCHEMA_V2,
+                USER_REVIEW_DECISION_SCHEMA_V3}:
             raise UserReviewRelayError("unknown or malformed dedicated User Review marker")
         decision = parse_user_review_decision(body)
         if (decision["repository"] != repository or decision["issue_number"] != issue_number
@@ -305,13 +329,34 @@ def user_review_decision_v2_body(
     return body
 
 
+def user_review_decision_v3_body(
+    *, repository: str, issue_number: int, pr_number: int, owner_id: int,
+    review_session_id: str, readiness_sha256: str, adc_sha256: str,
+    pr_head_sha40: str, feedback_sha256: str, plan_sha256: str,
+    approval_scope_sha256: str, predecessor_comment_id: int | None,
+) -> str:
+    payload = {
+        "schema": USER_REVIEW_DECISION_SCHEMA_V3, "repository": repository,
+        "issue_number": issue_number, "pr_number": pr_number, "decision": "APPROVED",
+        "owner_id": owner_id, "review_session_id": review_session_id,
+        "readiness_sha256": readiness_sha256, "adc_sha256": adc_sha256,
+        "pr_head_sha40": pr_head_sha40, "feedback_sha256": feedback_sha256,
+        "plan_sha256": plan_sha256, "approval_scope_sha256": approval_scope_sha256,
+        "evidence_channel": "chat_confirmed_gh_v1",
+        "predecessor_comment_id": predecessor_comment_id,
+    }
+    body = _canonical(payload)
+    parse_user_review_decision(body)
+    return body
+
+
 def publish_owner_local_user_review_decision(
     github: Any, *, repository: str, issue_number: int, pr_number: int,
     repository_owner_user_id: int, session: Any, readiness_sha256: str,
     adc_sha256: str, pr_head_sha40: str, feedback_sha256: str,
-    plan_sha256: str,
+    plan_sha256: str, approval_scope_sha256: str | None = None,
 ) -> UserReviewRelayApproval:
-    """Append one V2 carrier after the caller has performed exact local TTY confirmation."""
+    """Append a legacy V2 or exact V3 carrier after its typed approval gate."""
     session.validate()
 
     def read_history() -> UserReviewDecisionHistory:
@@ -348,13 +393,25 @@ def publish_owner_local_user_review_decision(
     if any(decision["review_session_id"] == session.sha256 for _id, decision, _row in rows):
         raise UserReviewRelayError("this immutable User Review session already has a decision")
     predecessor = rows[-1][0] if rows else None
-    body = user_review_decision_v2_body(
-        repository=repository, issue_number=issue_number, pr_number=pr_number,
-        owner_id=repository_owner_user_id, review_session_id=session.sha256,
-        readiness_sha256=readiness_sha256, adc_sha256=adc_sha256,
-        pr_head_sha40=pr_head_sha40, feedback_sha256=feedback_sha256,
-        plan_sha256=plan_sha256, predecessor_comment_id=predecessor,
-    )
+    if approval_scope_sha256 is None:
+        body = user_review_decision_v2_body(
+            repository=repository, issue_number=issue_number, pr_number=pr_number,
+            owner_id=repository_owner_user_id, review_session_id=session.sha256,
+            readiness_sha256=readiness_sha256, adc_sha256=adc_sha256,
+            pr_head_sha40=pr_head_sha40, feedback_sha256=feedback_sha256,
+            plan_sha256=plan_sha256, predecessor_comment_id=predecessor,
+        )
+        expected_schema = USER_REVIEW_DECISION_SCHEMA_V2
+    else:
+        body = user_review_decision_v3_body(
+            repository=repository, issue_number=issue_number, pr_number=pr_number,
+            owner_id=repository_owner_user_id, review_session_id=session.sha256,
+            readiness_sha256=readiness_sha256, adc_sha256=adc_sha256,
+            pr_head_sha40=pr_head_sha40, feedback_sha256=feedback_sha256,
+            plan_sha256=plan_sha256, approval_scope_sha256=approval_scope_sha256,
+            predecessor_comment_id=predecessor,
+        )
+        expected_schema = USER_REVIEW_DECISION_SCHEMA_V3
     write_error: Exception | None = None
     try:
         github.create_issue_comment(issue_number, body)
@@ -368,12 +425,28 @@ def publish_owner_local_user_review_decision(
             authenticated_verifier_user_id=repository_owner_user_id,
             session=session, readiness_sha256=readiness_sha256, adc_sha256=adc_sha256,
             pr_head_sha40=pr_head_sha40, feedback_sha256=feedback_sha256,
-            plan_sha256=plan_sha256,
+            plan_sha256=plan_sha256, approval_scope_sha256=approval_scope_sha256,
         )
-        if approval.evidence_type != USER_REVIEW_DECISION_SCHEMA_V2:
-            raise UserReviewRelayError("readback did not select the owner-local V2 carrier")
+        if approval.evidence_type != expected_schema:
+            raise UserReviewRelayError("readback did not select the requested User Review carrier version")
         return approval
     except Exception as read_error:
         if write_error is not None:
             raise UserReviewRelayError("owner-local User Review POST is ambiguous; no retry was attempted") from read_error
         raise
+
+
+def publish_chat_confirmed_user_review_decision(
+    github: Any, *, repository: str, issue_number: int, pr_number: int,
+    repository_owner_user_id: int, session: Any, readiness_sha256: str,
+    adc_sha256: str, pr_head_sha40: str, feedback_sha256: str,
+    plan_sha256: str, approval_scope_sha256: str,
+) -> UserReviewRelayApproval:
+    """Publish V3 after the caller verifies an exact direct-chat grant."""
+    return publish_owner_local_user_review_decision(
+        github, repository=repository, issue_number=issue_number, pr_number=pr_number,
+        repository_owner_user_id=repository_owner_user_id, session=session,
+        readiness_sha256=readiness_sha256, adc_sha256=adc_sha256,
+        pr_head_sha40=pr_head_sha40, feedback_sha256=feedback_sha256,
+        plan_sha256=plan_sha256, approval_scope_sha256=approval_scope_sha256,
+    )
