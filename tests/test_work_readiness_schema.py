@@ -12,6 +12,7 @@ from p_ases.acceptance import AcceptanceObservation, AcceptanceResult, evaluate_
 from p_ases.audits import AuditItem, IndependentReview, ReviewFinding, SelfAudit
 from p_ases.checkpoint import PRBinding
 from p_ases.context import WorkContext
+from p_ases.current_base import CurrentBaseAdvanceEvidence
 from p_ases.delivery import PRReadback, ReadinessResult, evaluate_readiness, read_readiness, readiness_path, write_readiness
 from p_ases.evidence_store import VerificationSubject
 from p_ases.execution import ExecutionBinding, binding_digest
@@ -125,6 +126,42 @@ class WorkReadinessSchemaTests(unittest.TestCase):
         )
         self.assertEqual(result.status, "BLOCKED")
         self.assertIn("WAITING_DEPENDENCY #28", result.reasons[0])
+
+    def test_activation_base_advance_requires_a_typed_evidence_link(self):
+        subject, context, source_binding, pr, passed, check, acceptance, audit, review = setup()
+        advanced_base = "f" * 40
+        advanced_pr = PRReadback(**{**pr.__dict__, "base_sha40": advanced_base})
+        args = dict(
+            subject=subject, pr=advanced_pr, pr_binding=source_binding, work_context=context,
+            verification=passed, acceptance=acceptance, self_audit=audit,
+            required_item_ids=("REQ-08", "REQ-09", "checklist:exact-head"),
+            independent_review=review, required_checks_sha256=check.sha256,
+        )
+        self.assertEqual(evaluate_readiness(**args).status, "BLOCKED")
+        proof = CurrentBaseAdvanceEvidence(
+            repository=subject.repository, issue_number=subject.issue_number,
+            pr_number=subject.pr_number, pr_id=900, branch_ref=source_binding.branch_ref,
+            frozen_base_sha40=BASE, current_base_sha40=advanced_base,
+            activation_issue_number=57, activation_record_id=901, activation_record_sha256="1" * 64,
+            setup_pr_number=902, setup_pr_id=903, setup_branch="pases/consumer-activation-57-abc12345",
+            setup_head_sha40="1" * 40, setup_merge_sha40="2" * 40,
+            original_pr_binding_sha256=source_binding.sha256,
+            original_pr_head_sha40=source_binding.pr_head_sha40,
+            transition_pr_head_sha40=subject.pr_head_sha40,
+            activation_profile_sha256="3" * 64,
+            original_code_patch_sha256="4" * 64, transition_code_patch_sha256="4" * 64,
+        ).validate()
+        advanced_binding = PRBinding(
+            source_binding.repository, source_binding.issue_number, source_binding.adc_comment_id,
+            source_binding.adc_sha256, source_binding.base_sha40, source_binding.branch_ref,
+            source_binding.pr_number, source_binding.pr_head_sha40,
+            advanced_base, proof.sha256,
+        ).validate()
+        result = evaluate_readiness(
+            **{**args, "pr_binding": advanced_binding}, current_base_advance=proof,
+        )
+        self.assertEqual(result.status, "PASS")
+        self.assertIn(proof.sha256, result.evidence_sha256s)
 
     def test_independent_review_requires_a_distinct_context_and_no_unresolved_ab(self):
         subject, *_ = setup()

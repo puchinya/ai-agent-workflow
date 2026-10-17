@@ -33,6 +33,10 @@ from .documents import DocumentError, validate_documents
 from .github import GitHub, GitHubError
 from .execution import ExecutionError, binding_digest, read_binding
 from .checkpoint import CheckpointError, PRBinding, read_pr_binding
+from .current_base import (
+    CurrentBaseAdvanceEvidence, CurrentBaseError, current_base_advance_path,
+    verify_current_base_advance,
+)
 from .context import WorkContext
 from .profile import ProfileError, load_profile
 from .gate_policy import (
@@ -1102,7 +1106,10 @@ def _pr_ensure(args: argparse.Namespace, repository: str, root: Path, github: Gi
     _json({"status": "PR_READY", "repository": repository, "issue": args.issue,
            "pr": pull.get("number"), "url": pull.get("html_url"), "state": pull.get("state"),
            "draft": pull.get("draft"), "base_ref": args.base_ref,
-           "base_sha40": result.binding.base_sha40, "head_ref": args.branch_ref,
+           "base_sha40": result.pull_request.get("base", {}).get("sha"),
+           "frozen_base_sha40": result.binding.base_sha40,
+           "current_base_advance_sha256": result.binding.current_base_advance_sha256,
+           "head_ref": args.branch_ref,
            "head_sha40": result.binding.pr_head_sha40, "reused": result.reused,
            "pr_binding_sha256": result.binding.sha256,
            "checkpoint_path": str(result.checkpoint_path),
@@ -1251,6 +1258,28 @@ def _readback_readiness_pr(github: GitHub, repository: str, issue_number: int,
         head_ref=head.get("ref"), head_sha40=head.get("sha"),
         head_repository=head_repo["full_name"], closing_issue_number=issue_number,
     ).validate()
+
+
+def _current_base_evidence_for_pr(root: Path, github: GitHub, repository: str,
+                                  issue_number: int, execution_binding: Any,
+                                  pr_binding: PRBinding, raw_pr: dict[str, Any]
+                                  ) -> CurrentBaseAdvanceEvidence | None:
+    base = raw_pr.get("base") if isinstance(raw_pr, dict) else None
+    current_base = base.get("sha") if isinstance(base, dict) else None
+    if (current_base == execution_binding.base_sha and pr_binding.current_base_sha40 is None
+            and pr_binding.current_base_advance_sha256 is None):
+        return None
+    profile = load_profile(root)
+    if profile.activation_issue_number is None:
+        raise CLIError("Activation-owned base advance has no configured Activation Issue")
+    try:
+        return verify_current_base_advance(
+            root, github, repository=repository, issue_number=issue_number,
+            execution_binding=execution_binding, prior_pr_binding=pr_binding,
+            current_pr=raw_pr, activation_issue_number=profile.activation_issue_number,
+        )
+    except CurrentBaseError as exc:
+        raise CLIError(f"current base is not the exact verified Activation transition: {exc}") from exc
 
 
 def _read_audit_references(root: Path, audit: SelfAudit | IndependentReview) -> tuple[str, ...]:
@@ -1568,6 +1597,15 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
     except (ExecutionError, CheckpointError, CLIError, OSError) as exc:
         blockers.append(f"current immutable work/PR binding readback failed: {exc}")
 
+    current_base_evidence = None
+    if binding is not None and pr_binding is not None and pr_readback is not None:
+        try:
+            current_base_evidence = _current_base_evidence_for_pr(
+                root, github, repository, args.issue, binding, pr_binding, github.pull_request(args.pr),
+            )
+        except (CLIError, CurrentBaseError, ProfileError, GitHubError, OSError, ValueError) as exc:
+            blockers.append(f"current Activation base transition readback failed: {exc}")
+
     work_context = None
     if binding is not None:
         try:
@@ -1685,6 +1723,17 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
                 blockers.append("PR identity/base/head changed before Review Readiness persistence")
         except (GitHubError, CLIError, ReadinessError) as exc:
             blockers.append(f"PR final readback failed before Readiness persistence: {exc}")
+        if current_base_evidence is not None and binding is not None and pr_binding is not None:
+            try:
+                final_pr_binding = read_pr_binding(pr_binding_path(root, args.issue, github=github))
+                final_base_evidence = _current_base_evidence_for_pr(
+                    root, github, repository, args.issue, binding, final_pr_binding, github.pull_request(args.pr),
+                )
+                if final_base_evidence != current_base_evidence:
+                    blockers.append("Activation current-base evidence changed before Readiness persistence")
+            except (CheckpointError, CLIError, CurrentBaseError, ProfileError,
+                    GitHubError, OSError, ValueError) as exc:
+                blockers.append(f"Activation current-base final readback failed before Readiness persistence: {exc}")
         try:
             if (current_branch(root) != (None if pr_readback is None else pr_readback.head_ref)
                     or head_sha40(root) != subject.pr_head_sha40 or not worktree_clean(root)
@@ -1750,6 +1799,7 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
         verification=verification, acceptance=acceptance, self_audit=self_audit,
         required_item_ids=required_item_ids, independent_review=independent_review,
         required_checks_sha256=check_sha, blocker_reasons=blockers,
+        current_base_advance=current_base_evidence,
     )
     path = readiness_path(root, result)
     write_readiness(path, result)
@@ -1760,7 +1810,9 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
            "evidence_refs": [str(path), str(args.plan), str(args.verification), str(args.acceptance),
                              str(args.self_audit), str(args.independent_review),
                              str(execution_binding_path(root, args.issue)),
-                             str(pr_binding_path(root, args.issue, github=github)), *published_refs]})
+                             str(pr_binding_path(root, args.issue, github=github)),
+                             *([str(current_base_advance_path(root, args.issue))]
+                               if current_base_evidence is not None else []), *published_refs]})
     return 0 if result.status == "PASS" else 2
 
 
@@ -2163,6 +2215,12 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
         subject = _subject(repository, args.issue, args.pr, args.head, verified_adc, plan)
         pr = _readback_current_pr(github, subject)
         profile = load_profile(root)
+        delivery_binding = read_binding(execution_binding_path(root, args.issue))
+        delivery_pr_binding = read_pr_binding(pr_binding_path(root, args.issue, github=github))
+        raw_pr = github.pull_request(args.pr)
+        current_base_evidence = _current_base_evidence_for_pr(
+            root, github, repository, args.issue, delivery_binding, delivery_pr_binding, raw_pr,
+        )
         review_mode = profile.final_delivery_review_mode
         if review_mode == "solo_owner":
             identity = _solo_owner_identity(github, repository, args.issue, args.pr, args.head)
@@ -2267,11 +2325,20 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
             required_check_identities=tuple((name, app_id) for name, app_id in profile.required_checks
                                             if app_id is not None),
             expected_policy_branch=pr["base_ref"],
+            current_base_advance=current_base_evidence,
+            current_pr_base_sha40=pr["base_sha"],
+            frozen_base_sha40=delivery_binding.base_sha,
         )
         if verify_adc(github, args.issue).pointer != verified_adc.pointer:
             blockers.append("approved ADC pointer changed during Final Delivery")
         if _readback_current_pr(github, subject) != pr:
             blockers.append("PR identity/base/head changed during Final Delivery")
+        final_pr_binding = read_pr_binding(pr_binding_path(root, args.issue, github=github))
+        final_base_evidence = _current_base_evidence_for_pr(
+            root, github, repository, args.issue, delivery_binding, final_pr_binding, github.pull_request(args.pr),
+        )
+        if final_base_evidence != current_base_evidence:
+            blockers.append("Activation current-base evidence changed during Final Delivery")
         if github.pull_review_decision(args.pr) != aggregate:
             blockers.append("GitHub formal review decision or PR HEAD changed during Final Delivery")
         if review_mode == "solo_owner":
@@ -2327,13 +2394,16 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
             result = FinalDeliveryResult("BLOCKED", subject, result.user_review_sha256,
                                          result.required_check_result_sha256,
                                          result.branch_protection_sha256,
-                                         tuple((*result.reasons, *blockers))).validate()
+                                         tuple((*result.reasons, *blockers)),
+                                         result.current_base_advance_sha256).validate()
         path = root / ".p_ases" / "final-delivery" / str(args.issue) / f"{result.sha256}.json"
         _write_immutable(path, _canonical(result.as_dict()) + b"\n", root=root)
         _json({**result.as_dict(), "subject_sha256": subject.sha256, "path": str(path),
                "merge_authorized": False,
                "evidence_refs": [str(session_path), str(args.readiness), str(args.user_review_record), str(args.verification),
-                                 str(args.acceptance), str(args.self_audit), str(args.independent_review), str(path)]})
+                                 str(args.acceptance), str(args.self_audit), str(args.independent_review),
+                                 *([str(current_base_advance_path(root, args.issue))]
+                                   if current_base_evidence is not None else []), str(path)]})
         return 0 if result.status == "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION" else 2
     except (ADCError, PlanError, OracleTraceError, EvidenceError, ReadinessError, VerificationError,
             UserReviewError, UserReviewRelayError, OwnerDecisionError, ProfileError,

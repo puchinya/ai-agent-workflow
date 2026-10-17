@@ -400,6 +400,19 @@ class GitHub:
             raise GitHubError("GitHub commit comparison response is incomplete")
         return result
 
+    def commit_details(self, commit_sha40: str) -> dict[str, Any]:
+        """Read exact Git commit parent identities for constrained history proofs."""
+        if not isinstance(commit_sha40, str) or not re.fullmatch(r"[0-9a-f]{40}", commit_sha40):
+            raise GitHubError("commit lookup requires a full SHA-40")
+        result = self.request("GET", f"{self.prefix}/git/commits/{commit_sha40}")
+        parents = result.get("parents") if isinstance(result, dict) else None
+        if (not isinstance(result, dict) or result.get("sha") != commit_sha40
+                or not isinstance(parents, list)
+                or any(not isinstance(row, dict) or not isinstance(row.get("sha"), str)
+                       or not re.fullmatch(r"[0-9a-f]{40}", row["sha"]) for row in parents)):
+            raise GitHubError("GitHub commit parent readback is incomplete or mismatched")
+        return result
+
     def pull_requests_all(self) -> list[dict[str, Any]]:
         """Read full PR set for exact parent-integration merge evidence."""
         return self._paginate(f"{self.prefix}/pulls?state=all")

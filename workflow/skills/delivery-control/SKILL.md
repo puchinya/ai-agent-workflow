@@ -18,6 +18,12 @@ Owner: runtime/p_ases/delivery.py and gate_policy.py. Inputs are current PR iden
 
 ## Consumer Activation request
 
+### Issue #63 delivery order
+
+For Issue #63, complete the implementation on PR #64 first. Then finalize and read back the successor ADC's exact bytes and SHA, obtain separate exact-SHA `PHASE_REBASE` and `ADC_SUPERSEDE` approvals, publish/read back that generation, and establish its Phase receipts. Complete Consumer Activation V2 through `ACTIVE` next. Its Setup PR must be reviewed and merged with its own exact-HEAD decision; this is separate from PR #64's merge. Only after the V2 record comment, `created_at`, Ruleset ID and effective policy all read back may PR #64's current HEAD gates and separate `PR_MERGE` decision be evaluated. Merge #64, preserve its standalone `Closes #63`, then read back Issue #63 closure. Never report completion while ADC approval, broker boundary, Activation, review, or merge evidence is blocked.
+
+Activation may advance the frozen base from A to B through its one profile-only Setup PR. Preserve the original ExecutionBinding and V1 PRBinding bytes. Accept that change only with the exact create-only current-base evidence that binds the Activation V2 record, Setup PR merge, profile bytes, target PR identity, and unchanged PR code patch. Readiness and Final Delivery must repeat the same live checks. Any other base drift blocks.
+
 When the user directly says `P-ASESを有効化して。` in a consumer repository, run Activation from that active repository context:
 
 ```sh
@@ -48,7 +54,7 @@ python -m p_ases delivery gate-policy ISSUE
 
 Pre-Activation Issues remain untouched. Subsequent policy approval uses a successor setup PR; existing Gate Selections remain pinned to their original Activation record.
 
-An already-owned matching Ruleset is read back as `NOOP`; after PR #64 bootstrap, normal V2 Activation must not create a second Ruleset. `external_reviewer` keeps its existing V1 behavior and does not receive unauthorized solo-owner policy writes; show the mode-specific setting inventory and block any unsupported or unmet mandatory requirement. Existing V1 records and Gate Selections remain read-only history.
+An already-owned matching Ruleset is read back as `NOOP`; the #63 Activation runs before PR #64 merges and must not create a duplicate Ruleset. `external_reviewer` keeps its existing V1 behavior and does not receive unauthorized solo-owner policy writes; show the mode-specific setting inventory and block any unsupported or unmet mandatory requirement. Existing V1 records and Gate Selections remain read-only history.
 
 ## CLI
 

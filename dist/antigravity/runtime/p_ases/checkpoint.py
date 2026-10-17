@@ -65,6 +65,8 @@ class PRBinding:
     branch_ref: str
     pr_number: int
     pr_head_sha40: str
+    current_base_sha40: str | None = None
+    current_base_advance_sha256: str | None = None
 
     def validate(self) -> "PRBinding":
         if not isinstance(self.repository, str) or not REPOSITORY.fullmatch(self.repository):
@@ -79,12 +81,19 @@ class PRBinding:
         _digest(self.adc_sha256, "PRBinding ADC SHA-256")
         _digest(self.base_sha40, "PRBinding base SHA", SHA40)
         _digest(self.pr_head_sha40, "PRBinding PR HEAD", SHA40)
+        if (self.current_base_sha40 is None) != (self.current_base_advance_sha256 is None):
+            raise CheckpointError("PRBinding current-base proof fields must be present together")
+        if self.current_base_sha40 is not None:
+            _digest(self.current_base_sha40, "PRBinding current base SHA", SHA40)
+            _digest(self.current_base_advance_sha256, "PRBinding current-base evidence SHA-256")
+            if self.current_base_sha40 == self.base_sha40:
+                raise CheckpointError("PRBinding current base must differ from the frozen base")
         validate_ref(self.branch_ref)
         return self
 
     def payload(self) -> dict[str, Any]:
         self.validate()
-        return {
+        value = {
             "adc_comment_id": self.adc_comment_id,
             "adc_sha256": self.adc_sha256,
             "base_sha40": self.base_sha40,
@@ -93,8 +102,12 @@ class PRBinding:
             "pr_head_sha40": self.pr_head_sha40,
             "pr_number": self.pr_number,
             "repository": self.repository,
-            "schema": "PASES_PR_BINDING_V1",
+            "schema": "PASES_PR_BINDING_V1" if self.current_base_sha40 is None else "PASES_PR_BINDING_V2",
         }
+        if self.current_base_sha40 is not None:
+            value["current_base_advance_sha256"] = self.current_base_advance_sha256
+            value["current_base_sha40"] = self.current_base_sha40
+        return value
 
     @property
     def sha256(self) -> str:
@@ -176,17 +189,22 @@ def read_pr_binding(path: Path) -> PRBinding:
         value = json.loads(raw.decode("utf-8", errors="strict"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise CheckpointError("PRBinding is missing or invalid JSON") from exc
-    expected = {
+    common = {
         "adc_comment_id", "adc_sha256", "base_sha40", "branch_ref", "issue_number",
         "pr_binding_sha256", "pr_head_sha40", "pr_number", "repository", "schema",
     }
-    if not isinstance(value, dict) or set(value) != expected or value.get("schema") != "PASES_PR_BINDING_V1":
+    expected = common if isinstance(value, dict) and value.get("schema") == "PASES_PR_BINDING_V1" else common | {
+        "current_base_advance_sha256", "current_base_sha40",
+    } if isinstance(value, dict) and value.get("schema") == "PASES_PR_BINDING_V2" else set()
+    if not isinstance(value, dict) or set(value) != expected:
         raise CheckpointError("PRBinding has unknown/missing fields or schema")
     binding = PRBinding(
         repository=value["repository"], issue_number=value["issue_number"],
         adc_comment_id=value["adc_comment_id"], adc_sha256=value["adc_sha256"],
         base_sha40=value["base_sha40"], branch_ref=value["branch_ref"],
         pr_number=value["pr_number"], pr_head_sha40=value["pr_head_sha40"],
+        current_base_sha40=value.get("current_base_sha40"),
+        current_base_advance_sha256=value.get("current_base_advance_sha256"),
     ).validate()
     if value["pr_binding_sha256"] != binding.sha256 or binding.to_bytes() != raw:
         raise CheckpointError("PRBinding digest or canonical byte representation does not match")

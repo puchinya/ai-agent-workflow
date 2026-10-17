@@ -317,12 +317,14 @@ Existing Issue reads validate exactly the Activation prefix through their select
 <a id="tst-f01-013"></a>
 ### 2.19 TST-F01-013 Pre-merge bootstrap gates
 
-**Setup and action:** Use the #63 feature branch to establish the initial exact Ruleset before PR #64 merges through the same plan, owner decision, trusted Admin apply, durable intent, ownership record, and effective-policy readback used by Activation. Verify the same commit's CI and independent review, then attempt User Review, Final Delivery, and merge without their normal evidence. After #64 merges, rerun normal V2 Activation against the identical owned policy.
+**Setup and action:** Exercise the required order: implementation, successor ADC publication and generation-scoped Phase receipts, Activation V2 `ACTIVE` (including its separately reviewed/merged Setup PR), PR #64 merge, then Issue #63 closure readback. Keep PR #64 open after the Setup PR merge and attempt its merge before `ACTIVE`; that must block. After `ACTIVE`, independently remove or stale each #64 CI, Independent Review, User Review, Final Delivery, and exact-HEAD `PR_MERGE` input and verify merge remains blocked. Keep #60/PR #62 and all old #57/#63 evidence unchanged.
 
 <a id="ora-f01-013"></a>
 #### 2.19.1 ORA-F01-013 Expected result
 
-The Ruleset can be established from the implementation branch after exact human plan approval. Normal V2 Activation after merge recognizes the owned policy as NOOP and creates no second Ruleset. Bootstrap does not satisfy CI, independent review, User Review, Final Delivery, or separate exact-HEAD owner merge authorization.
+ADC formalization and its Phase receipts precede Activation. Activation reaches `ACTIVE` only after the exact Setup PR merge, V2 record comment ID/`created_at`, Ruleset ID and effective policy all read back. A Setup PR merge alone cannot authorize #64. PR #64 merge requires its own exact HEAD gates and distinct `PR_MERGE`; Issue closure is read back only after #64 merge.
+
+For the Activation-owned base transition, construct A, one profile-only setup commit, its exact merge commit B, and PR #64 HEAD with B integrated. Verify `pr ensure` appends a V2 PRBinding and readiness accepts the same typed evidence while the original ExecutionBinding and V1 PRBinding bytes stay unchanged. Reject ordinary main drift, any intervening or extra main commit, a wrong Setup PR ID or merge SHA, a profile mismatch at B or target HEAD, a changed code patch, a different target PR identity, and an absent/tampered evidence file. Final Delivery must re-read the same live evidence; changing current main or target base after Readiness blocks it.
 
 <a id="tst-f01-014"></a>
 <a id="220-tst-f01-014-activation-admin-session-and-approval-separation"></a>
