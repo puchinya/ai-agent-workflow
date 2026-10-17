@@ -383,6 +383,8 @@ def _evaluate_typed_relay_review(
     authenticated_verifier_user_id: int | None,
     allowed_human_user_ids: Iterable[int],
     all_feedback_surfaces_read: bool,
+    previous_feedback_sha256: str | None,
+    new_scope_requested: bool,
     approval: Any,
 ) -> UserReviewResult:
     """Keep delegated owner evidence separate from formal and attested chat."""
@@ -392,6 +394,10 @@ def _evaluate_typed_relay_review(
     rows = snapshot.events
     digest = feedback_digest(rows)
     reasons: list[str] = []
+    if new_scope_requested:
+        reasons.append("new requirements scope requires separate execution decision")
+    if previous_feedback_sha256 is not None and previous_feedback_sha256 != digest:
+        reasons.append("feedback snapshot changed since the previous decision")
     allowed = tuple(allowed_human_user_ids)
     if not isinstance(approval, UserReviewRelayApproval):
         reasons.append("verified typed owner relay approval is missing")
@@ -483,6 +489,8 @@ def evaluate_user_review(
                 authenticated_verifier_user_id=authenticated_verifier_user_id,
                 allowed_human_user_ids=allowed_human_user_ids,
                 all_feedback_surfaces_read=all_feedback_surfaces_read,
+                previous_feedback_sha256=previous_feedback_sha256,
+                new_scope_requested=new_scope_requested,
                 approval=relay_approval,
             )
         events = snapshot.events
