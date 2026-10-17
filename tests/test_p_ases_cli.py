@@ -204,28 +204,33 @@ class PasesCLITests(unittest.TestCase):
         def assess_policy(_github, _repository, _branch, profile):
             return (solo_owner_policy if profile.final_delivery_review_mode == "solo_owner" else policy)
 
-        with patch("p_ases.cli._approved_issue_adc", return_value=({}, checked_adc)), \
-                patch("p_ases.cli._load_plan", return_value=(object(), (), (), ())), \
-                patch("p_ases.cli._subject", return_value=subject), \
-                patch("p_ases.cli._readback_current_pr", return_value=pr), \
-                patch("p_ases.cli.read_readiness", return_value=readiness), \
-                patch("p_ases.cli._delivery_readiness", side_effect=readiness_command), \
-                patch("p_ases.cli._read_review_record",
-                      return_value=(review_subject, review, snapshot.sha256)), \
-                patch("p_ases.cli.review_session_path", return_value=Path("session.json")), \
-                patch("p_ases.cli.read_review_session", return_value=session), \
-                patch("p_ases.cli.read_feedback_snapshot", return_value=snapshot), \
-                patch("p_ases.cli.load_profile", side_effect=[initial_profile, changed_profile, changed_profile]), \
-                patch("p_ases.cli._review_payload_from_github", return_value=snapshot), \
-                patch("p_ases.cli._latest_review_snapshot", return_value=None), \
-                patch("p_ases.cli.evaluate_user_review", return_value=review), \
-                patch("p_ases.cli.read_verification_result", return_value=verification), \
-                patch("p_ases.cli._calculate_verification", return_value=(verification, ())), \
-                patch("p_ases.cli._assess_current_branch_policy", side_effect=assess_policy) as assess_policy_mock, \
-                patch("p_ases.cli.verify_adc", return_value=checked_adc), \
-                patch("p_ases.cli._write_immutable"), \
-                patch("p_ases.cli._json", side_effect=lambda payload: print(json.dumps(payload))), \
-                contextlib.redirect_stdout(stdout):
+        with contextlib.ExitStack() as stack:
+            for target, kwargs in (
+                ("_approved_issue_adc", {"return_value": ({}, checked_adc)}),
+                ("_load_plan", {"return_value": (object(), (), (), ())}),
+                ("_subject", {"return_value": subject}),
+                ("_readback_current_pr", {"return_value": pr}),
+                ("read_readiness", {"return_value": readiness}),
+                ("_delivery_readiness", {"side_effect": readiness_command}),
+                ("_read_review_record", {"return_value": (review_subject, review, snapshot.sha256)}),
+                ("review_session_path", {"return_value": Path("session.json")}),
+                ("read_review_session", {"return_value": session}),
+                ("read_feedback_snapshot", {"return_value": snapshot}),
+                ("load_profile", {"side_effect": [initial_profile, changed_profile, changed_profile]}),
+                ("_review_payload_from_github", {"return_value": snapshot}),
+                ("_latest_review_snapshot", {"return_value": None}),
+                ("evaluate_user_review", {"return_value": review}),
+                ("read_verification_result", {"return_value": verification}),
+                ("_calculate_verification", {"return_value": (verification, ())}),
+                ("_assess_current_branch_policy", {"side_effect": assess_policy}),
+                ("verify_adc", {"return_value": checked_adc}),
+                ("_write_immutable", {}),
+                ("_json", {"side_effect": lambda payload: print(json.dumps(payload))}),
+            ):
+                mocked = stack.enter_context(patch(f"p_ases.cli.{target}", **kwargs))
+                if target == "_assess_current_branch_policy":
+                    assess_policy_mock = mocked
+            stack.enter_context(contextlib.redirect_stdout(stdout))
             status = _delivery_final(args, repository, ROOT, GitHub())
 
         result = json.loads(stdout.getvalue())
