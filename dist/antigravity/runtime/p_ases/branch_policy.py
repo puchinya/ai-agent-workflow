@@ -137,7 +137,9 @@ def _ruleset_summary(
         row_type = row.get("ruleset_source_type", row.get("source_type"))
         row_source = row.get("ruleset_source", row.get("source"))
         if (row.get("ruleset_id") == identifier
-                and (row_type != details.get("source_type") or row_source != details.get("source"))):
+                and (row_type != details.get("source_type")
+                     or not isinstance(row_source, str)
+                     or row_source.casefold() != details["source"].casefold())):
             reasons.append("EFFECTIVE_RULE_SOURCE_MISMATCH")
     matches = _branch_matches(details, branch, default_branch)
     if matches is None:
@@ -434,7 +436,7 @@ def assess_branch_policy(
                 status = "VERIFIED"
 
     action_map = {
-        "UNAVAILABLE": "Restore read access for the GitHub policy endpoint(s) listed in source_errors, then rerun Final Delivery.",
+        "UNAVAILABLE": "A repository owner must grant read access to the GitHub policy endpoint(s) listed in source_errors, or provide an authorized admin-run readback, then rerun Final Delivery.",
         "UNVERIFIED": "Have a repository owner verify the exact branch policy and provide the missing branch, legacy-protection, or ruleset evidence.",
         "NOT_CONFIGURED": "Have a repository owner configure an approved branch policy matching the trusted Required Check profile.",
         "MISMATCH": "Have a repository owner align the effective branch rules with the trusted Required Check profile and selected review mode.",

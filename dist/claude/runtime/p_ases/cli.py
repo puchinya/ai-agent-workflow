@@ -1852,7 +1852,7 @@ def _verify_solo_owner_issue_approval(github: GitHub, repository: str, issue_num
             or parsed_html is None or parsed_html.scheme != "https" or parsed_html.hostname != "github.com"
             or html_port is not None or parsed_html.username is not None or parsed_html.password is not None
             or parsed_html.query
-            or parsed_html.path != f"/{repository}/issues/{issue_number}"
+            or parsed_html.path.casefold() != f"/{repository}/issues/{issue_number}".casefold()
             or parsed_html.fragment != f"issuecomment-{comment_id}"
             or parsed_issue is None or parsed_issue.scheme != "https" or parsed_issue.hostname != "api.github.com"
             or issue_port is not None or parsed_issue.username is not None or parsed_issue.password is not None
