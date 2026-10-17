@@ -17,6 +17,7 @@ from p_ases.adc import ADCError  # noqa: E402
 from p_ases.cli import _parser, main  # noqa: E402
 from p_ases.execution import ExecutionBinding, write_binding  # noqa: E402
 from p_ases.github import GitHubError  # noqa: E402
+from p_ases.profile import ProfileError, load_profile  # noqa: E402
 from p_ases.work import execution_binding_path  # noqa: E402
 
 
@@ -89,6 +90,40 @@ class ProjectContextCLITests(unittest.TestCase):
             status, result = self.run_json(["project", "status", "--root", str(root)])
             self.assertEqual(status, 2)
             self.assertEqual(result["status"], "UNAVAILABLE")
+
+    def test_schema_two_final_delivery_mode_is_optional_strict_and_read_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = root / ".agent/project.json"
+            config.parent.mkdir()
+            config.write_text(json.dumps(self.profile()), encoding="utf-8")
+            before = config.read_bytes()
+            self.assertEqual(load_profile(root).final_delivery_review_mode, "external_reviewer")
+            self.assertEqual(config.read_bytes(), before)
+
+            for mode in ("external_reviewer", "solo_owner"):
+                configured = self.profile() | {"final_delivery": {"review_mode": mode}}
+                config.write_text(json.dumps(configured), encoding="utf-8")
+                self.assertEqual(load_profile(root).final_delivery_review_mode, mode)
+
+            invalid_values = (
+                self.profile() | {"final_delivery": "solo_owner"},
+                self.profile() | {"final_delivery": {"review_mode": "guess"}},
+                self.profile() | {"final_delivery": {"review_mode": "solo_owner", "owner_id": 42}},
+            )
+            for value in invalid_values:
+                with self.subTest(value=value):
+                    config.write_text(json.dumps(value), encoding="utf-8")
+                    with self.assertRaises(ProfileError):
+                        load_profile(root)
+
+            duplicate = json.dumps(self.profile())[:-1] + (
+                ',"final_delivery":{"review_mode":"external_reviewer"},'
+                '"final_delivery":{"review_mode":"solo_owner"}}'
+            )
+            config.write_text(duplicate, encoding="utf-8")
+            with self.assertRaises(ProfileError):
+                load_profile(root)
 
     def test_gate_policy_rejects_malformed_profile_before_github_issue_read(self):
         from unittest.mock import Mock

@@ -90,13 +90,13 @@ Define reproducible conditions and expected results independently of implementat
 <a id="tst-rt-001-project-profile-validation"></a>
 ### 2.1 TST-RT-001 Project profile validation
 
-**Setup and action:** Run `project status` with a valid, missing, and malformed `.agent/project.json` profile; inspect repository files before and after each invocation.
+**Setup and action:** Run `project status` with a valid, missing, and malformed `.agent/project.json` profile; inspect repository files before and after each invocation. For Schema 2, omit `final_delivery`, select each valid mode, and vary the mode object type, unknown fields/value, and duplicate keys.
 
 <a id="ora-rt-001"></a>
 <a id="ora-rt-001-expected-result"></a>
 #### 2.1.1 ORA-RT-001 Expected result
 
-The valid profile reports `READY`; missing or malformed profiles report `UNAVAILABLE` with nonzero status. No case creates, repairs, or rewrites profile state.
+The valid profile reports `READY`; missing or malformed profiles report `UNAVAILABLE` with nonzero status. An omitted Schema 2 review mode resolves to `external_reviewer`; `external_reviewer` and `solo_owner` are the only accepted explicit values. Invalid mode shapes fail closed before GitHub reads. No case creates, repairs, or rewrites profile state.
 
 <a id="tst-rt-002"></a>
 <a id="tst-rt-002-context-routing"></a>
@@ -258,10 +258,10 @@ No credentials or Issue bodies are emitted, and local state stays scoped to its 
 <a id="tst-rt-015-error-and-boundary-cases"></a>
 ### 2.15 TST-RT-015 Error and boundary cases
 
-**Setup and action:** Submit missing, malformed, stale, wrong-repository, and ambiguous inputs to their public runtime commands.
+**Setup and action:** Submit missing, malformed, stale, wrong-repository, and ambiguous inputs to their public runtime commands. Exercise effective-rules, ruleset-detail, and legacy-protection transport with HTTP 403/404, malformed pages, and a failure between the initial and final policy reads.
 
 <a id="ora-rt-015"></a>
 <a id="ora-rt-015-fail-closed-result"></a>
 #### 2.15.1 ORA-RT-015 Fail-closed result
 
-Every invalid boundary returns a nonzero bounded error before an unrelated local or GitHub mutation.
+Every invalid boundary returns a nonzero bounded error before an unrelated local or GitHub mutation. A 403 remains `UNAVAILABLE`, a lone 404 remains `UNVERIFIED`, and neither status is converted into an unprotected PASS; API failure diagnostics expose no credentials or response body.

@@ -227,6 +227,43 @@ class GitHubCheckRunTests(unittest.TestCase):
         with self.assertRaises(GitHubError):
             FakeGitHub(()).workflow_run_jobs(30, 0)
 
+    def test_effective_branch_rules_paginate_with_explicit_page_identity(self):
+        first = [{"type": "pull_request", "ruleset_id": value} for value in range(100)]
+        second = [{"type": "non_fast_forward", "ruleset_id": 101}]
+        github = FakeGitHub((first, second))
+        result = github.effective_branch_rules("release/1.0")
+        self.assertEqual(len(result), 101)
+        self.assertEqual(result[-1]["ruleset_id"], 101)
+        self.assertEqual(github.calls, [
+            ("GET", "repos/octo/repo/rules/branches/release%2F1.0?page=1&per_page=100", None),
+            ("GET", "repos/octo/repo/rules/branches/release%2F1.0?page=2&per_page=100", None),
+        ])
+
+    def test_ruleset_details_use_verified_repository_or_organization_source(self):
+        repository = {"id": 17, "target": "branch", "enforcement": "active", "rules": []}
+        organization = {**repository, "source_type": "Organization"}
+        repo_api = FakeGitHub((repository,))
+        org_api = FakeGitHub((organization,))
+        self.assertEqual(repo_api.ruleset_details(17, source_type="Repository"), repository)
+        self.assertEqual(org_api.ruleset_details(17, source_type="Organization"), organization)
+        self.assertEqual(repo_api.calls[0][1], "repos/octo/repo/rulesets/17")
+        self.assertEqual(org_api.calls[0][1], "orgs/octo/rulesets/17")
+        with self.assertRaises(GitHubError):
+            FakeGitHub((repository,)).ruleset_details(17, source_type="Unknown")
+
+    def test_http_status_is_preserved_without_exposing_gh_error_body(self):
+        import subprocess
+
+        completed = subprocess.CompletedProcess(
+            ["gh", "api"], 1, "", "gh: HTTP 403: Resource not accessible SECRET_TOKEN"
+        )
+        github = GitHub("octo/repo")
+        with patch("p_ases.github.subprocess.run", return_value=completed):
+            with self.assertRaises(GitHubError) as raised:
+                github.request("GET", "repos/octo/repo/branches/main/protection")
+        self.assertEqual(raised.exception.status_code, 403)
+        self.assertNotIn("SECRET_TOKEN", str(raised.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
