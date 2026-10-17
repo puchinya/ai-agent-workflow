@@ -106,7 +106,9 @@ def capture_direct_chat_confirmation(
     if user_role != "user" or same_conversation is not True:
         raise OwnerAuthorizationError("CHAT_PROVENANCE_UNAVAILABLE: direct same-conversation user role is required")
     normalized = response.strip().casefold() if isinstance(response, str) else ""
-    if normalized not in {"approve", "approved", "承認する", "このshaを承認する", "この計画を承認する", "この草案を承認する"}:
+    if normalized not in {
+            "approve", "approved", "承認する", "このshaを承認する", "この計画を承認する",
+            "この草案を承認する", "全文を確認して承認する", "markdown全文を確認して承認する"}:
         raise OwnerAuthorizationError("CHAT_CONFIRMATION_REQUIRED: response is not an explicit approval")
     return ChatApprovalGrant(
         operation=checked["operation"], repository=checked["repository"],

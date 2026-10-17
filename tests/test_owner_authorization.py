@@ -145,7 +145,7 @@ class OwnerAuthorizationTests(unittest.TestCase):
                     details=details,
                 )
                 grant = capture_direct_chat_confirmation(
-                    plan, response="承認する", user_role="user", same_conversation=True,
+                    plan, response="Markdown全文を確認して承認する", user_role="user", same_conversation=True,
                 )
                 with patch("p_ases.adc.verify_adc", return_value=SimpleNamespace(pointer=SimpleNamespace(
                         state="approved", comment_id=41, sha256="9" * 64, byte_length=1234))):
