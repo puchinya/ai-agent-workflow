@@ -173,7 +173,8 @@ class PasesCLITests(unittest.TestCase):
         self.assertIn('"phase_rebaseline": {\n    "status": "APPLIED"', output.getvalue())
         read_decision.assert_called_once_with(
             github, issue_number=63, owner_id=3744776,
-            operation="ADC_SUPERSEDE", subject_sha256="a" * 64,
+                operation="ADC_SUPERSEDE", subject_sha256="a" * 64,
+                repository_id=1401910271,
         )
         publish.assert_called_once()
         self.assertIs(publish.call_args.kwargs["expected_current"], predecessor)

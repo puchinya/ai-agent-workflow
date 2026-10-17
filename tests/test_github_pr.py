@@ -50,6 +50,17 @@ class GitHubPRAdapterTests(unittest.TestCase):
         with self.assertRaises(GitHubError):
             FakeGitHub(([],)).pull_requests_for_refs(base_ref="", head_ref="branch")
 
+    def test_merge_uses_exact_head_precondition_and_validates_response(self):
+        response = {"merged": True, "sha": "a" * 40}
+        github = FakeGitHub((response,))
+        self.assertEqual(github.merge_pull_request(64, "b" * 40), response)
+        self.assertEqual(github.calls, [("PUT", "repos/owner/repo/pulls/64/merge",
+                                        {"sha": "b" * 40, "merge_method": "merge"})])
+        with self.assertRaisesRegex(GitHubError, "expected HEAD SHA"):
+            FakeGitHub(()).merge_pull_request(64, "invalid")
+        with self.assertRaisesRegex(GitHubError, "does not confirm a merge"):
+            FakeGitHub(({"merged": False},)).merge_pull_request(64, "b" * 40)
+
 
 if __name__ == "__main__":
     unittest.main()

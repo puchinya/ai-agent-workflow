@@ -158,6 +158,20 @@ class GitHub:
             raise GitHubError("GitHub PR readback is missing or has a mismatched number")
         return result
 
+    def merge_pull_request(self, number: int, expected_head_sha40: str) -> dict[str, Any]:
+        """Make one merge request with GitHub's exact-head precondition."""
+        number = _positive_int(number, "PR number")
+        if not isinstance(expected_head_sha40, str) or not re.fullmatch(r"[0-9a-f]{40}", expected_head_sha40):
+            raise GitHubError("PR merge requires a full lowercase expected HEAD SHA")
+        result = self.request("PUT", f"{self.prefix}/pulls/{number}/merge", {
+            "sha": expected_head_sha40, "merge_method": "merge",
+        })
+        if (not isinstance(result, dict) or result.get("merged") is not True
+                or not isinstance(result.get("sha"), str)
+                or not re.fullmatch(r"[0-9a-f]{40}", result["sha"])):
+            raise GitHubError("GitHub merge response is incomplete or does not confirm a merge")
+        return result
+
     def pull_request_files(self, number: int) -> list[dict[str, Any]]:
         return self._paginate(f"{self.prefix}/pulls/{_positive_int(number, 'PR number')}/files")
 

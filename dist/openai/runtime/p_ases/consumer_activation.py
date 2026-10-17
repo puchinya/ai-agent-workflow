@@ -635,6 +635,133 @@ def _check_setup_pr(github: GitHub, pr: dict[str, Any], expected: dict[str, Any]
     return pr
 
 
+def verify_setup_pr_ready_to_merge(github: GitHub, pr_number: int) -> dict[str, Any]:
+    """Require fresh Activation V2 policy, checks and independent review before merge."""
+    def snapshot() -> dict[str, Any]:
+        metadata = github.repository_metadata()
+        owner = metadata.get("owner") if isinstance(metadata, dict) else None
+        if (not isinstance(metadata, dict) or metadata.get("id") != 1401910271
+                or metadata.get("full_name") != "puchinya/ai-agent-workflow"
+                or not isinstance(owner, dict) or owner.get("id") != 3744776 or owner.get("type") != "User"):
+            raise ConsumerActivationError("Activation merge repository identity differs from its pinned owner/repository")
+        default_branch = metadata.get("default_branch")
+        if not isinstance(default_branch, str) or not default_branch:
+            raise ConsumerActivationError("Activation merge default branch is unavailable")
+        pr = github.pull_request(pr_number)
+        if (pr.get("state") != "open" or pr.get("merged") is True or pr.get("draft") is not False
+                or pr.get("mergeable") is not True):
+            raise ConsumerActivationError("Activation Setup PR is not open, mergeable and non-draft")
+        expected = _decode(pr.get("body"), SETUP_MARKER_V2, "Activation Setup PR", allow_trailer=True)
+        if expected.get("activation_issue_number") != 57 or expected.get("schema") != "PASES_CONSUMER_ACTIVATION_SETUP_V2":
+            raise ConsumerActivationError("PR is not the configured Activation V2 Setup PR for Issue #57")
+        _check_setup_pr(github, pr, expected, default_branch, 1401910271)
+        base, head = pr.get("base"), pr.get("head")
+        base_sha = base.get("sha") if isinstance(base, dict) else None
+        head_sha = head.get("sha") if isinstance(head, dict) else None
+        author = pr.get("user")
+        author_id = author.get("id") if isinstance(author, dict) else None
+        if (not isinstance(base_sha, str) or not SHA40.fullmatch(base_sha)
+                or not isinstance(head_sha, str) or not SHA40.fullmatch(head_sha)
+                or type(author_id) is not int or author_id < 1):
+            raise ConsumerActivationError("Activation Setup PR base, HEAD or author identity is incomplete")
+        branch_sha = github.branch(default_branch).get("commit", {}).get("sha")
+        if branch_sha != base_sha:
+            raise ConsumerActivationError("Activation Setup PR base is stale; regenerate it from current default branch")
+
+        issue = github.issue(57)
+        if (issue.get("number") != 57 or issue.get("state") != "open" or issue.get("pull_request") is not None
+                or not _has_issue_marker(issue.get("body"))
+                or issue.get("repository_url") != "https://api.github.com/repos/puchinya/ai-agent-workflow"):
+            raise ConsumerActivationError("Activation Issue #57 identity or marker is invalid")
+        history = read_consumer_activation_history(github, github.repo, 57, allow_pending_approval=True)
+        predecessor = history[-1][1] if history else None
+        if expected.get("predecessor_record_id") != predecessor:
+            raise ConsumerActivationError("Activation Setup PR predecessor is stale")
+        proposed = verify_adc_generation(
+            github, 57, expected.get("adc_comment_id"), expected.get("adc_sha256"),
+            state=expected.get("adc_state"),
+        )
+        current_adc = verify_adc(github, 57)
+        if (current_adc.pointer.sha256 != proposed.pointer.sha256
+                or current_adc.contract.content != proposed.contract.content):
+            raise ConsumerActivationError("Activation ADC changed after this Setup PR was created")
+
+        profile_bytes = github.regular_content_at_ref(".agent/project.json", head_sha)
+        profile, required_checks = _validate_profile_bytes(profile_bytes, 57)
+        expected_checks = tuple(sorted((row.get("context"), row.get("integration_id"))
+                                       for row in expected.get("required_checks", [])
+                                       if isinstance(row, dict)))
+        if (hashlib.sha256(profile_bytes).hexdigest() != expected.get("activation_profile_sha256")
+                or profile.get("final_delivery") != {"review_mode": "solo_owner"}
+                or tuple(sorted(required_checks)) != expected_checks):
+            raise ConsumerActivationError("Activation Setup PR profile bytes or Required Checks changed")
+        try:
+            policy = read_verified_managed_policy(
+                github, default_branch, required_checks, "solo_owner", 57,
+            )
+        except RulesetManagementError as exc:
+            raise ConsumerActivationError(f"Activation effective policy is not VERIFIED: {exc}") from exc
+        if (policy.get("ruleset_id") != expected.get("ruleset_id")
+                or policy.get("applied_record_id") != expected.get("ruleset_applied_record_id")
+                or policy.get("effective_policy_sha256") != expected.get("branch_policy_sha256")):
+            raise ConsumerActivationError("Activation Setup PR policy binding is stale")
+
+        runs = github.check_runs_for_ref(head_sha)
+        check_evidence: list[tuple[Any, ...]] = []
+        for name, app_id in required_checks:
+            matching = [row for row in runs if row.get("name") == name and row.get("head_sha") == head_sha
+                        and isinstance(row.get("app"), dict) and row["app"].get("id") == app_id]
+            if not matching:
+                raise ConsumerActivationError(f"Required Check {name} has no trusted Check Run on the Setup PR HEAD")
+            dated: list[tuple[datetime, int, dict[str, Any]]] = []
+            for row in matching:
+                resolved = _check_run_with_creation_time(github, row)
+                created = _timestamp(resolved.get("created_at"), f"Required Check {name} creation time")
+                dated.append((created, _positive(row.get("id"), f"Required Check {name} Run ID"), resolved))
+            _created, run_id, selected = max(dated, key=lambda item: (item[0], item[1]))
+            completed = _timestamp(selected.get("completed_at"), f"Required Check {name} completion time")
+            if (selected.get("status") != "completed" or selected.get("conclusion") != "success"
+                    or selected.get("head_sha") != head_sha or completed < max(item[0] for item in dated)):
+                raise ConsumerActivationError(f"Required Check {name} is not currently successful on the Setup PR HEAD")
+            check_evidence.append((name, app_id, run_id, selected.get("status"),
+                                   selected.get("conclusion"), selected.get("completed_at")))
+
+        aggregate = github.pull_review_decision(pr_number)
+        if (aggregate.get("state") != "OPEN" or aggregate.get("headRefOid") != head_sha
+                or aggregate.get("reviewDecision") != "APPROVED"):
+            raise ConsumerActivationError("Activation Setup PR lacks an approved review decision on its exact HEAD")
+        reviews = github.pull_reviews(pr_number)
+        independent = [row for row in reviews if row.get("state") == "APPROVED"
+                       and row.get("commit_id") == head_sha
+                       and isinstance(row.get("user"), dict)
+                       and type(row["user"].get("id")) is int and row["user"]["id"] != author_id
+                       and row["user"].get("type") == "User"]
+        if not independent:
+            raise ConsumerActivationError("Activation Setup PR lacks an independent human approval on its exact HEAD")
+        threads = github.pull_review_threads(pr_number)
+        unresolved = [thread for thread in threads if thread.get("isResolved") is not True]
+        if unresolved:
+            raise ConsumerActivationError("Activation Setup PR has unresolved review threads")
+
+        return {
+            "pr_number": pr_number, "head_sha40": head_sha, "base_sha40": base_sha,
+            "setup_payload_sha256": hashlib.sha256(_canonical(expected)).hexdigest(),
+            "activation_adc_sha256": proposed.pointer.sha256,
+            "activation_predecessor_record_id": predecessor,
+            "policy_sha256": policy["effective_policy_sha256"], "ruleset_id": policy["ruleset_id"],
+            "applied_record_id": policy["applied_record_id"],
+            "check_evidence": check_evidence,
+            "reviewer_ids": sorted({row["user"]["id"] for row in independent}),
+            "resolved_thread_count": len(threads),
+        }
+
+    first = snapshot()
+    second = snapshot()
+    if first != second:
+        raise ConsumerActivationError("Activation Setup PR gates changed during merge preflight")
+    return {"status": "READY", **second}
+
+
 def _validate_profile_bytes(raw: bytes, issue_number: int) -> tuple[dict[str, Any], tuple[tuple[str, int], ...]]:
     profile = _json_object(raw, "merged project.json")
     try:

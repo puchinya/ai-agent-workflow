@@ -20,7 +20,16 @@ Owner: runtime/p_ases/delivery.py and gate_policy.py. Inputs are current PR iden
 
 ### Issue #63 delivery order
 
-For Issue #63, complete the implementation on PR #64 first. Then finalize and read back the successor ADC's exact bytes and SHA, obtain its separate exact-SHA `ADC_SUPERSEDE` approval, and publish/read back that generation. The authenticated P-ASES executor then automatically advances `phase:ready` to `phase:requirements` with append-only Intent/Applied logs and one label write; no phase approval is required. Establish that generation's Phase receipts before Activation. If an approved ADC publish was interrupted after pointer publication, resume the phase step with `python -m p_ases issue phase-rebaseline 63 --repo puchinya/ai-agent-workflow`; the route verifies the same pointer chain and recovers from its Intent/Applied records without repeating the label PUT. Complete Consumer Activation V2 through `ACTIVE` next. Its Setup PR must be reviewed and merged with its own exact-HEAD decision; this is separate from PR #64's merge. Only after the V2 record comment, `created_at`, Ruleset ID and effective policy all read back may PR #64's current HEAD gates and separate `PR_MERGE` decision be evaluated. Merge #64, preserve its standalone `Closes #63`, then read back Issue #63 closure. Never report completion while ADC approval, required relay boundary, Activation, review, or merge evidence is blocked.
+For Issue #63, complete the implementation on PR #64 first. Then finalize and read back the successor ADC's exact bytes and SHA, obtain its separate exact-SHA `ADC_SUPERSEDE` approval, and publish/read back that generation. Finalize the successor ADC draft in the reviewed implementation commit. From the owner's fixed, clean checkout, create and confirm the exact local plan:
+
+~~~sh
+python -m p_ases delivery owner-authorize-plan ADC_SUPERSEDE --subject-file docs/contracts/issue-63-successor-adc-draft.md --output /tmp/pases-issue63-adc-plan.json --repo puchinya/ai-agent-workflow --root .
+python -m p_ases delivery owner-authorize-commit --plan /tmp/pases-issue63-adc-plan.json --subject-file docs/contracts/issue-63-successor-adc-draft.md --repo puchinya/ai-agent-workflow --root .
+~~~
+
+The second command writes the V2 decision, publishes and reads back the exact approved ADC through the existing writer, then runs #63 phase rebaseline automatically. If it stops after publication, re-entry reuses the exact pointer and phase Intent/Applied evidence.
+
+The authenticated P-ASES executor then automatically advances `phase:ready` to `phase:requirements` with append-only Intent/Applied logs and one label write; no phase approval is required. Establish that generation's Phase receipts before Activation. If an approved ADC publish was interrupted after pointer publication, resume the phase step with `python -m p_ases issue phase-rebaseline 63 --repo puchinya/ai-agent-workflow`; the route verifies the same pointer chain and recovers from its Intent/Applied records without repeating the label PUT. Complete Consumer Activation V2 through `ACTIVE` next. Its Setup PR must be reviewed and merged with its own exact-HEAD decision; this is separate from PR #64's merge. Only after the V2 record comment, `created_at`, Ruleset ID and effective policy all read back may PR #64's current HEAD gates and separate `PR_MERGE` decision be evaluated. Merge #64, preserve its standalone `Closes #63`, then read back Issue #63 closure. Never report completion while ADC approval, owner-local transport or verified broker, Activation, review, or merge evidence is blocked.
 
 Activation may advance the frozen base from A to B through its one profile-only Setup PR. Preserve the original ExecutionBinding and V1 PRBinding bytes. Accept that change only with the exact create-only current-base evidence that binds the Activation V2 record, Setup PR merge, profile bytes, target PR identity, and unchanged PR code patch. Readiness and Final Delivery must repeat the same live checks. Any other base drift blocks.
 
@@ -32,15 +41,33 @@ python -m p_ases delivery consumer-activation-setup
 
 The command resolves the repository and Activation identity, validates the committed profile and Required Checks, and returns a typed persisted stage, required-setting inventory, checkpoint, and next permitted step. Do not ask the user to supply an Issue number. The command may create or reuse the marked Activation Issue and proposed ADC under the existing append-only rules. For V2 it prepares only the setup branch and profile commit first; it does not create the V2 setup PR until the required policy is verified. `PENDING_APPROVAL`, `ADMIN_AUTH_REQUIRED`, `BLOCKED`, and `SETUP_PENDING` are resumable states, never Activation success. Do not ask the owner to edit an Issue, PR, Ruleset, label, or Settings page manually.
 
-For the #63 `solo_owner` profile, Activation builds a canonical Ruleset plan bound to the committed setup-branch HEAD and persists it in the checkpoint. If a write is needed, present the exact plan SHA and request the distinct `RULESET_PLAN_APPLY` decision through the isolated owner relay. A generic “continue” or an Admin credential is not approval. The Codex executor must not create the Issue #57 approval evidence. Once the isolated relay records the decision and exact plan approval, the owner resumes that checkpoint from a trusted local TTY:
+For the #63 `solo_owner` profile, Activation builds a canonical Ruleset plan bound to the committed setup-branch HEAD and persists it in the checkpoint. If a write is needed, create the exact owner authorization plan and use the owner's independent trusted local TTY for `RULESET_PLAN_APPLY`:
 
 ```sh
-python -m p_ases delivery consumer-activation-admin-apply --plan CHECKPOINT_PLAN_PATH --approval-comment-id RELAY_COMMENT_ID
+python -m p_ases delivery owner-authorize-plan RULESET_PLAN_APPLY --ruleset-plan PLAN_PATH --output OWNER_PLAN_PATH
+python -m p_ases delivery owner-authorize-commit --plan OWNER_PLAN_PATH --ruleset-plan PLAN_PATH
 ```
 
-Never request, print, or store the Admin credential in chat. The TTY command verifies the pinned owner, repository, permission, exact plan and relay evidence, then uses the existing one-write/durable-intent/readback path. If Admin policy reads are unavailable to the normal client, the same owner-local TTY continuation may generate the bound plan; no setup PR is created until policy readback is `VERIFIED`. An exact already-owned policy is `NOOP`, performs zero writes, and needs no write approval. If the local TTY or credentials are unavailable, keep Activation resumably blocked at provisioning and continue independent code/review work.
+The command verifies the local authenticated owner, pinned repository identity, exact plan and Issue subjects, then requires the owner to type the displayed plan SHA. It appends the V2 decision and existing exact two-line Issue #57 plan approval, then reads both back. Codex Cloud, Cloud PTY, shared token variables, a generic “continue”, or an Admin credential are not approval. Pass the returned Issue #57 comment ID to the existing Admin apply continuation.
 
-After verified policy readback, Activation creates or reuses the exact V2 setup PR bound to the Ruleset ID, applied-record ID, and effective-policy digest. If required check names or trusted App IDs are missing, report `INPUT_REQUIRED` with their exact profile fields; never guess. Obtain the separate independent review, current Required Checks, User Review, Final Delivery, and exact-HEAD `PR_MERGE` decision before the isolated relay performs a merge. A successful Ruleset apply is not merge permission. After merge, run:
+```sh
+python -m p_ases delivery consumer-activation-admin-apply --plan CHECKPOINT_PLAN_PATH --approval-comment-id OWNER_APPROVAL_COMMENT_ID
+```
+
+Never request, print, or store the Admin credential in chat. The Admin TTY command verifies the pinned owner, repository, permission, exact plan and owner-local V2 decision, then uses the existing one-write/durable-intent/readback path. If Admin policy reads are unavailable to the normal client, the same owner-local TTY continuation may generate the bound plan; no setup PR is created until policy readback is `VERIFIED`. An exact already-owned policy is `NOOP`, performs zero writes, and needs no write approval. If the local TTY or credentials are unavailable, report `AUTH_TRANSPORT_UNAVAILABLE` and keep Activation resumably blocked at provisioning.
+
+After verified policy readback, Activation creates or reuses the exact V2 setup PR bound to the Ruleset ID, applied-record ID, and effective-policy digest. If required check names or trusted App IDs are missing, report `INPUT_REQUIRED` with their exact profile fields; never guess. Obtain separate independent review, current Required Checks, User Review, Final Delivery, and exact-HEAD `PR_MERGE` authorization. Use a fresh exact plan and owner-local TTY commit, or a positively verified broker, for the merge action; the decision for the Setup PR does not authorize PR #64. A successful Ruleset apply is not merge permission. For either PR merge, run the plan and commit commands from the owner's fixed, clean checkout at the reviewed implementation HEAD, on a trusted local TTY with local GitHub authentication and without shared token environment variables. The Setup PR plan binds Issue #57 in its canonical Activation V2 payload; it does not close Issue #57. Its commit rechecks the policy, ADC generation, exact HEAD, trusted Required Checks, independent approval, and resolved review threads. PR #64's commit requires fresh PASS Final Delivery inputs for the same repository, Issue, PR, and HEAD:
+
+~~~sh
+python -m p_ases delivery owner-authorize-plan PR_MERGE --pr SETUP_PR_NUMBER --head SETUP_HEAD_SHA --target-issue 57 --output /tmp/pases-setup-merge-plan.json --repo puchinya/ai-agent-workflow --root .
+python -m p_ases delivery owner-authorize-commit --plan /tmp/pases-setup-merge-plan.json --repo puchinya/ai-agent-workflow --root .
+python -m p_ases delivery owner-authorize-plan PR_MERGE --pr 64 --head CURRENT_PR64_HEAD_SHA --target-issue 63 --output /tmp/pases-pr64-merge-plan.json --repo puchinya/ai-agent-workflow --root .
+python -m p_ases delivery owner-authorize-commit --plan /tmp/pases-pr64-merge-plan.json --readiness READINESS_JSON --delivery-plan VERIFICATION_PLAN_JSON --verification VERIFICATION_JSON --acceptance ACCEPTANCE_JSON --self-audit SELF_AUDIT_JSON --independent-review INDEPENDENT_REVIEW_JSON --user-review-record USER_REVIEW_JSON --repo puchinya/ai-agent-workflow --root .
+~~~
+
+Each commit confirms the displayed plan SHA locally, writes one V2 decision, re-runs its target gates, records a durable merge attempt, and calls GitHub once with the exact HEAD. Repeated commit or resume commands read back the PR and never repeat a merge request. A successful call is not Activation completion; #57 still requires its post-merge V2 verification and ACTIVE record before PR #64 is eligible.
+
+After merge, run:
 
 ```sh
 python -m p_ases delivery consumer-activation-verify PR

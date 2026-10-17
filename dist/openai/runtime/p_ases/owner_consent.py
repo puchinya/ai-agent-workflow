@@ -1,8 +1,7 @@
-"""Read-only verifier for owner-authorized, operation-specific GitHub decisions.
+"""Verify owner decisions recorded through the supported authorization transports.
 
-A GitHub comment proves an authenticated GitHub actor, not the source of chat
-consent. The separate relay must check direct human consent and permissions
-before writing; this module never creates an approval or modifies GitHub.
+V1 remains delegated relay evidence. V2 is created only by the owner-local
+interactive TTY transport; it is not a V1 relay record or a chat signature.
 """
 from __future__ import annotations
 
@@ -16,17 +15,23 @@ from typing import Any, Iterable
 from .github import GitHubError
 
 SCHEMA = "PASES_OWNER_DECISION_V1"
+SCHEMA_V2 = "PASES_OWNER_DECISION_V2"
+SCHEMAS = frozenset({SCHEMA, SCHEMA_V2})
 OPERATIONS = frozenset({"ADC_SUPERSEDE", "RULESET_PLAN_APPLY", "PR_MERGE"})
 FIELDS = frozenset({
     "schema", "repository", "issue_number", "operation", "subject_sha256",
     "pr_number", "pr_head_sha40", "owner_id", "evidence_channel",
     "predecessor_comment_id",
 })
+FIELDS_V2 = FIELDS | {"plan_sha256", "operation_plan_sha256"}
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 SHA40 = re.compile(r"[0-9a-f]{40}\Z")
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 START = "<!-- PASES_OWNER_DECISION_V1\n"
+START_V2 = "<!-- PASES_OWNER_DECISION_V2\n"
 END = "\n-->"
+OWNER_ID = 3744776
+REPOSITORY_ID = 1401910271
 
 
 class OwnerDecisionError(ValueError):
@@ -67,37 +72,60 @@ class OwnerDecision:
     pr_head_sha40: str | None
     predecessor_comment_id: int | None
     evidence_channel: str = "delegated_github_relay"
+    schema: str = SCHEMA
+    plan_sha256: str | None = None
+    operation_plan_sha256: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
-            "schema": SCHEMA, "repository": self.repository, "issue_number": self.issue_number,
+            "schema": self.schema, "repository": self.repository, "issue_number": self.issue_number,
             "operation": self.operation, "subject_sha256": self.subject_sha256,
             "owner_id": self.owner_id, "pr_number": self.pr_number,
             "pr_head_sha40": self.pr_head_sha40,
             "predecessor_comment_id": self.predecessor_comment_id,
             "evidence_channel": self.evidence_channel,
+            **({"plan_sha256": self.plan_sha256,
+                "operation_plan_sha256": self.operation_plan_sha256}
+               if self.schema == SCHEMA_V2 else {}),
         }
 
 
 def parse_owner_decision(body: str) -> OwnerDecision:
-    if not isinstance(body, str) or not body.startswith(START) or not body.endswith(END):
+    if not isinstance(body, str) or not body.endswith(END):
         raise OwnerDecisionError("owner decision marker is missing")
-    raw = body[len(START):-len(END)]
+    if body.startswith(START):
+        schema, start, expected_fields, channel = SCHEMA, START, FIELDS, "delegated_github_relay"
+    elif body.startswith(START_V2):
+        schema, start, expected_fields, channel = SCHEMA_V2, START_V2, FIELDS_V2, "owner_local_tty_v1"
+    else:
+        raise OwnerDecisionError("owner decision marker is missing")
+    raw = body[len(start):-len(END)]
     try:
         data = json.loads(raw, object_pairs_hook=_pairs)
     except (ValueError, TypeError) as exc:
         raise OwnerDecisionError("invalid owner decision JSON") from exc
-    if not isinstance(data, dict) or set(data) != FIELDS:
+    if not isinstance(data, dict) or set(data) != expected_fields:
         raise OwnerDecisionError("unexpected owner decision fields")
     if (json.dumps(data, sort_keys=True, ensure_ascii=True, separators=(",", ":")) != raw
-            or data["schema"] != SCHEMA or data["operation"] not in OPERATIONS
-            or data["evidence_channel"] != "delegated_github_relay"):
+            or data["schema"] != schema or data["operation"] not in OPERATIONS
+            or data["evidence_channel"] != channel):
         raise OwnerDecisionError("noncanonical or unsupported owner decision")
     if (not isinstance(data["repository"], str) or REPOSITORY.fullmatch(data["repository"]) is None
             or not _positive(data["issue_number"]) or not _positive(data["owner_id"])
             or not isinstance(data["subject_sha256"], str)
             or SHA256.fullmatch(data["subject_sha256"]) is None):
         raise OwnerDecisionError("owner decision subject is invalid")
+    if schema == SCHEMA_V2 and (not isinstance(data["plan_sha256"], str)
+                                or SHA256.fullmatch(data["plan_sha256"]) is None):
+        raise OwnerDecisionError("owner-local decision plan digest is invalid")
+    operation_plan_sha256 = data.get("operation_plan_sha256")
+    if schema == SCHEMA_V2 and operation_plan_sha256 is not None and (
+            not isinstance(operation_plan_sha256, str)
+            or SHA256.fullmatch(operation_plan_sha256) is None):
+        raise OwnerDecisionError("operation plan digest is invalid")
+    if (schema == SCHEMA_V2 and data["operation"] == "RULESET_PLAN_APPLY"
+            and operation_plan_sha256 != data["subject_sha256"]):
+        raise OwnerDecisionError("Ruleset operation plan digest differs from its decision subject")
     predecessor = data["predecessor_comment_id"]
     if predecessor is not None and not _positive(predecessor):
         raise OwnerDecisionError("owner decision predecessor is invalid")
@@ -115,6 +143,7 @@ def parse_owner_decision(body: str) -> OwnerDecision:
     return OwnerDecision(
         data["repository"], data["issue_number"], data["operation"],
         data["subject_sha256"], data["owner_id"], pr, head, predecessor,
+        channel, schema, data.get("plan_sha256"), operation_plan_sha256,
     )
 
 
@@ -158,7 +187,8 @@ def _comment_fingerprint(row: Any, repository: str, issue_number: int) -> tuple[
 def read_verified_owner_decision(
     github: Any, *, issue_number: int, owner_id: int, operation: str,
     subject_sha256: str, expected_pr_number: int | None = None,
-    expected_pr_head_sha40: str | None = None,
+    expected_pr_head_sha40: str | None = None, expected_plan_sha256: str | None = None,
+    repository_id: int | None = None,
 ) -> VerifiedOwnerDecision:
     """Read one exact owner decision after full issue and direct/list/direct checks.
 
@@ -177,6 +207,11 @@ def read_verified_owner_decision(
         raise OwnerDecisionError("expected PR identity must contain both number and HEAD")
     if (operation == "PR_MERGE") != (expected_pr_number is not None):
         raise OwnerDecisionError("PR_MERGE alone requires an exact PR number and HEAD")
+    if repository_id is not None and not _positive(repository_id):
+        raise OwnerDecisionError("configured repository ID is invalid")
+    if expected_plan_sha256 is not None and (
+            not isinstance(expected_plan_sha256, str) or SHA256.fullmatch(expected_plan_sha256) is None):
+        raise OwnerDecisionError("expected owner decision plan digest is invalid")
     try:
         metadata = github.repository_metadata()
         owner = metadata.get("owner") if isinstance(metadata, dict) else None
@@ -185,6 +220,7 @@ def read_verified_owner_decision(
         full_name = metadata.get("full_name") if isinstance(metadata, dict) else None
         if (not isinstance(metadata, dict) or not isinstance(full_name, str)
                 or full_name.casefold() != repository.casefold()
+                or (repository_id is not None and metadata.get("id") != repository_id)
                 or not isinstance(owner, dict) or owner.get("type") != "User" or owner.get("id") != owner_id):
             raise OwnerDecisionError("repository identity differs from the configured decision owner")
         if (not isinstance(issue, dict) or issue.get("number") != issue_number or issue.get("state") != "open"
@@ -223,6 +259,8 @@ def read_verified_owner_decision(
         if (decision.pr_number != expected_pr_number
                 or decision.pr_head_sha40 != expected_pr_head_sha40):
             raise OwnerDecisionError("owner decision PR identity differs from the requested operation")
+        if expected_plan_sha256 is not None and decision.plan_sha256 != expected_plan_sha256:
+            raise OwnerDecisionError("owner decision plan digest differs from the requested operation")
         selected = [(comment_id, row) for comment_id, row in zip(listed_ids, listed_candidates)
                     if parse_owner_decision(row["body"]) == decision]
         if len(selected) != 1:
@@ -249,6 +287,23 @@ def verify_owner_decision_history(
             or not _positive(owner_id) or operation not in OPERATIONS
             or not isinstance(subject_sha256, str) or SHA256.fullmatch(subject_sha256) is None):
         raise OwnerDecisionError("invalid requested owner decision scope")
+    scoped = verify_owner_decision_history_tail(comments, repository, issue_number, owner_id)
+    matches = [record for _id, record in scoped
+               if record.operation == operation and record.subject_sha256 == subject_sha256]
+    if not matches:
+        raise OwnerDecisionError("missing exact owner operation/subject")
+    if len(matches) != 1:
+        raise OwnerDecisionError("ambiguous exact owner operation/subject")
+    return matches[0]
+
+
+def verify_owner_decision_history_tail(
+    comments: Iterable[dict[str, Any]], repository: str, issue_number: int, owner_id: int,
+) -> tuple[tuple[int, OwnerDecision], ...]:
+    """Verify the complete cross-version append-only decision chain."""
+    if (not isinstance(repository, str) or REPOSITORY.fullmatch(repository) is None
+            or not _positive(issue_number) or not _positive(owner_id)):
+        raise OwnerDecisionError("invalid requested owner history scope")
     scoped: list[tuple[int, OwnerDecision]] = []
     for row in comments:
         if not isinstance(row, dict):
@@ -256,9 +311,10 @@ def verify_owner_decision_history(
         body = row.get("body")
         if not isinstance(body, str):
             continue
-        if "PASES_OWNER_DECISION_" in body and not body.startswith("<!-- PASES_OWNER_DECISION_V1\n"):
+        if ("PASES_OWNER_DECISION_" in body
+                and not any(body.startswith(f"<!-- {schema}\n") for schema in SCHEMAS)):
             raise OwnerDecisionError("unknown or malformed owner decision marker")
-        if not body.startswith("<!-- PASES_OWNER_DECISION_V1"):
+        if not any(body.startswith(f"<!-- {schema}") for schema in SCHEMAS):
             continue
         record = parse_owner_decision(body)
         if record.repository != repository or record.issue_number != issue_number:
@@ -279,13 +335,7 @@ def verify_owner_decision_history(
             raise OwnerDecisionError("broken owner decision predecessor chain")
         key = (record.operation, record.subject_sha256, record.pr_number, record.pr_head_sha40)
         if key in seen:
-            raise OwnerDecisionError("replayed owner decision")
+            raise OwnerDecisionError("replayed owner decision across evidence versions")
         seen.add(key)
         prior = comment_id
-    matches = [record for _id, record in scoped
-               if record.operation == operation and record.subject_sha256 == subject_sha256]
-    if not matches:
-        raise OwnerDecisionError("missing exact owner operation/subject")
-    if len(matches) != 1:
-        raise OwnerDecisionError("ambiguous exact owner operation/subject")
-    return matches[0]
+    return tuple(scoped)

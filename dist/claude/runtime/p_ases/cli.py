@@ -18,9 +18,13 @@ from typing import Any
 
 from .adc import ADCError, parse_adc, publish_adc, restore_adc, verify_adc, verify_adc_generation
 from .admin_auth import AdminAuthError, temporary_admin_client
+from .owner_authorization import (
+    OwnerAuthorizationError, authorize_plan, create_authorization_plan,
+    read_authorization_plan, resume_authorization, write_authorization_plan,
+)
 from .consumer_activation import (
     ConsumerActivationError, activation_checkpoint_path, activation_setting_inventory, read_activation_checkpoint,
-    write_activation_checkpoint,
+    verify_setup_pr_ready_to_merge, write_activation_checkpoint,
     setup_consumer_activation, verify_and_record_activation,
 )
 from .ruleset_management import (
@@ -1899,8 +1903,474 @@ def _ruleset_operation_plan(github: GitHub, plan_path: Path) -> tuple[dict[str, 
     verified = read_verified_owner_decision(
         github, issue_number=63, owner_id=_ISSUE63_OWNER_ID,
         operation="RULESET_PLAN_APPLY", subject_sha256=plan["plan_sha256"],
+        repository_id=_ISSUE63_REPOSITORY_ID,
     )
+    if (verified.decision.schema == "PASES_OWNER_DECISION_V2"
+            and verified.decision.operation_plan_sha256 != plan["plan_sha256"]):
+        raise OwnerDecisionError("owner-local RULESET_PLAN_APPLY decision is bound to another plan")
     return plan, verified.comment_id
+
+
+def _user_review_owner_context(args: argparse.Namespace, repository: str,
+                               github: GitHub) -> dict[str, Any]:
+    if args.session is None or args.readiness is None or args.feedback_snapshot is None:
+        raise OwnerAuthorizationError(
+            "USER_REVIEW requires --session, --readiness, and --feedback-snapshot"
+        )
+    session = read_review_session(args.session)
+    readiness = read_readiness(args.readiness)
+    snapshot = read_feedback_snapshot(args.feedback_snapshot)
+    subject = session.subject
+    verification_subject = subject.verification_subject
+    if (verification_subject.repository != repository
+            or verification_subject.issue_number != 63 or snapshot.subject != subject
+            or readiness.status != "PASS" or readiness.subject != verification_subject
+            or readiness.sha256 != subject.readiness_sha256
+            or snapshot.unresolved_thread_ids):
+        raise OwnerAuthorizationError("User Review session, Readiness, feedback snapshot, or Issue identity is stale")
+    _solo_owner_identity(github, repository, 63, verification_subject.pr_number,
+                         verification_subject.pr_head_sha40)
+    observed_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    current = _review_payload_from_github(github, subject, observed_at=observed_at)
+    if (current.events != snapshot.events
+            or current.unresolved_thread_ids != snapshot.unresolved_thread_ids):
+        raise OwnerAuthorizationError("current complete GitHub feedback differs from the User Review snapshot")
+    details = {
+        "review_session_sha256": session.sha256,
+        "readiness_sha256": readiness.sha256,
+        "adc_sha256": verification_subject.adc_sha256,
+        "pr_head_sha40": verification_subject.pr_head_sha40,
+        "feedback_sha256": feedback_digest(current.events),
+    }
+    subject_sha256 = hashlib.sha256(_canonical({
+        "repository": repository, "issue_number": 63,
+        "pr_number": verification_subject.pr_number, **details,
+    })).hexdigest()
+    return {"session": session, "readiness": readiness, "snapshot": snapshot,
+            "details": details, "subject_sha256": subject_sha256,
+            "pr_number": verification_subject.pr_number,
+            "pr_head_sha40": verification_subject.pr_head_sha40}
+
+
+def _owner_authorization_plan_command(args: argparse.Namespace, repository: str,
+                                     root: Path, github: GitHub) -> int:
+    operation = args.operation
+    details: dict[str, Any] = {}
+    target_issue: int | None = None
+    pr_number: int | None = None
+    pr_head: str | None = None
+    if operation == "ADC_SUPERSEDE":
+        if args.subject_file is None or args.ruleset_plan is not None:
+            raise OwnerAuthorizationError("ADC_SUPERSEDE plan requires --subject-file")
+        path = args.subject_file
+        if path.is_symlink() or not path.is_file():
+            raise OwnerAuthorizationError("ADC successor source must be a regular file")
+        raw = path.read_bytes()
+        adc = parse_adc(raw, repository, 63)
+        subject_sha256 = hashlib.sha256(raw).hexdigest()
+        if adc.issue_number != 63:
+            raise OwnerAuthorizationError("ADC successor source is not for Issue #63")
+    elif operation == "RULESET_PLAN_APPLY":
+        if args.ruleset_plan is None or args.subject_file is not None:
+            raise OwnerAuthorizationError("RULESET_PLAN_APPLY plan requires --ruleset-plan")
+        ruleset = read_ruleset_plan(args.ruleset_plan)
+        if (ruleset.get("blockers") or ruleset.get("diff", {}).get("operation") == "noop"
+                or ruleset.get("activation_issue_number") != 57):
+            raise OwnerAuthorizationError("Ruleset approval is only for a blocker-free write plan bound to Activation #57")
+        subject_sha256 = ruleset.get("plan_sha256")
+        if not isinstance(subject_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", subject_sha256):
+            raise OwnerAuthorizationError("Ruleset plan digest is invalid")
+        target_issue = 57
+        details = {"activation_issue_number": 57}
+    elif operation == "USER_REVIEW":
+        if args.subject_file is not None or args.ruleset_plan is not None:
+            raise OwnerAuthorizationError("USER_REVIEW plan does not accept ADC or Ruleset source files")
+        context = _user_review_owner_context(args, repository, github)
+        subject_sha256 = context["subject_sha256"]
+        pr_number, pr_head = context["pr_number"], context["pr_head_sha40"]
+        details = context["details"]
+    elif operation == "PR_MERGE":
+        if (args.subject_file is not None or args.ruleset_plan is not None
+                or args.pr is None or args.head is None or args.target_issue is None):
+            raise OwnerAuthorizationError("PR_MERGE plan requires --pr, --head, and --target-issue")
+        pr_number, pr_head, target_issue = args.pr, args.head, args.target_issue
+        subject_sha256 = hashlib.sha256(_canonical({
+            "repository": repository, "target_issue_number": target_issue,
+            "pr_number": pr_number, "pr_head_sha40": pr_head,
+        })).hexdigest()
+        details = {"target_issue_number": target_issue}
+    else:
+        raise OwnerAuthorizationError("unsupported owner authorization operation")
+    plan = create_authorization_plan(
+        github, root, operation=operation, subject_sha256=subject_sha256,
+        issue_number=63, target_issue_number=target_issue,
+        pr_number=pr_number, pr_head_sha40=pr_head, details=details,
+    )
+    write_authorization_plan(args.output, plan)
+    _json({"status": "PLANNED", "operation": operation, "output": str(args.output),
+           "subject_sha256": subject_sha256, "plan_sha256": plan["plan_sha256"],
+           "repository": repository, "issue": 63, "target_issue": target_issue,
+           "pr": pr_number, "head": pr_head, "chat_signature": False})
+    return 0
+
+
+def _validate_owner_authorization_source(args: argparse.Namespace, plan: dict[str, Any],
+                                         repository: str, github: GitHub) -> dict[str, Any] | None:
+    if plan["operation"] == "ADC_SUPERSEDE":
+        path = args.subject_file
+        if path is None or path.is_symlink() or not path.is_file():
+            raise OwnerAuthorizationError("ADC_SUPERSEDE commit requires the same regular --subject-file")
+        raw = path.read_bytes()
+        parsed = parse_adc(raw, repository, 63)
+        if parsed.issue_number != 63 or hashlib.sha256(raw).hexdigest() != plan["subject_sha256"]:
+            raise OwnerAuthorizationError("ADC source bytes differ from the exact authorization plan")
+    elif plan["operation"] == "RULESET_PLAN_APPLY":
+        if args.ruleset_plan is None or args.ruleset_plan.is_symlink() or not args.ruleset_plan.is_file():
+            raise OwnerAuthorizationError("RULESET_PLAN_APPLY commit requires the same regular --ruleset-plan")
+        ruleset = read_ruleset_plan(args.ruleset_plan)
+        if (ruleset.get("plan_sha256") != plan["subject_sha256"]
+                or ruleset.get("activation_issue_number") != plan["target_issue_number"]
+                or ruleset.get("blockers") or ruleset.get("diff", {}).get("operation") == "noop"):
+            raise OwnerAuthorizationError("Ruleset plan changed or no longer requires an approved write")
+    elif plan["operation"] == "PR_MERGE":
+        target = plan["target_issue_number"]
+        expected = hashlib.sha256(_canonical({
+            "repository": repository, "target_issue_number": target,
+            "pr_number": plan["pr_number"], "pr_head_sha40": plan["pr_head_sha40"],
+        })).hexdigest()
+        if expected != plan["subject_sha256"]:
+            raise OwnerAuthorizationError("PR merge subject digest differs from the exact target PR")
+    elif plan["operation"] == "USER_REVIEW":
+        context = _user_review_owner_context(args, repository, github)
+        if (context["subject_sha256"] != plan["subject_sha256"]
+                or context["details"] != plan["details"]
+                or context["pr_number"] != plan["pr_number"]
+                or context["pr_head_sha40"] != plan["pr_head_sha40"]):
+            raise OwnerAuthorizationError("live User Review session, Readiness, feedback, or PR differs from its plan")
+        return {"session": context["session"], "subject_sha256": context["subject_sha256"]}
+    return None
+
+
+def _owner_authorization_commit_command(args: argparse.Namespace, repository: str,
+                                        root: Path, github: GitHub) -> int:
+    plan = read_authorization_plan(args.plan)
+    user_review_context = _validate_owner_authorization_source(args, plan, repository, github)
+    result = authorize_plan(
+        github, root, args.plan, user_review_context=user_review_context,
+        source_validator=lambda: _validate_owner_authorization_source(args, plan, repository, github),
+    )
+    if plan["operation"] == "ADC_SUPERSEDE":
+        result = _publish_owner_approved_adc(args, repository, github, plan, result)
+    elif plan["operation"] == "PR_MERGE":
+        result = _perform_authorized_merge(args, root, github, plan, result)
+    _json(result)
+    return 0 if result.get("status") in {"AUTHORIZED", "PUBLISHED", "MERGED", "MERGED_READBACK"} else 2
+
+
+def _publish_owner_approved_adc(args: argparse.Namespace, repository: str, github: GitHub,
+                                plan: dict[str, Any], decision: dict[str, Any]) -> dict[str, Any]:
+    """Dispatch exact local ADC approval through the existing ADC and phase writers."""
+    if args.subject_file is None or args.subject_file.is_symlink() or not args.subject_file.is_file():
+        raise OwnerAuthorizationError("ADC_SUPERSEDE commit requires the same regular --subject-file")
+    if repository.casefold() != "puchinya/ai-agent-workflow":
+        raise OwnerAuthorizationError("ADC_SUPERSEDE dispatch is fixed to the approved Issue #63 repository")
+    data = args.subject_file.read_bytes()
+    contract = parse_adc(data, repository, 63)
+    if contract.sha256 != plan["subject_sha256"]:
+        raise OwnerAuthorizationError("successor ADC bytes changed after owner authorization")
+    try:
+        verified_decision = read_verified_owner_decision(
+            github, issue_number=63, owner_id=_ISSUE63_OWNER_ID,
+            operation="ADC_SUPERSEDE", subject_sha256=contract.sha256,
+            expected_plan_sha256=plan["plan_sha256"], repository_id=_ISSUE63_REPOSITORY_ID,
+        )
+    except OwnerDecisionError as exc:
+        raise OwnerAuthorizationError("exact ADC_SUPERSEDE V2 decision did not pass readback") from exc
+    if (verified_decision.comment_id != decision.get("owner_decision_comment_id")
+            or verified_decision.decision.schema != "PASES_OWNER_DECISION_V2"
+            or verified_decision.decision.evidence_channel != "owner_local_tty_v1"):
+        raise OwnerAuthorizationError("ADC publication requires this exact owner-local V2 decision")
+    try:
+        current = verify_adc(github, 63)
+        if current.pointer.state != "approved":
+            raise ADCError("ADC supersession requires the exact current approved predecessor")
+        pointer = publish_adc(
+            github, 63, data, state="approved", explicitly_approved=True,
+            supersede=True, expected_current=current.pointer,
+        )
+        published = verify_adc(github, 63)
+        if (published.pointer != pointer or published.pointer.sha256 != contract.sha256
+                or published.pointer.state != "approved" or published.contract.content != data):
+            raise ADCError("approved successor ADC did not pass exact pointer and byte readback")
+    except ADCError as exc:
+        raise OwnerAuthorizationError(f"approved successor ADC publication failed: {exc}") from exc
+    try:
+        phase_result = rebaseline_issue_phase(github, 63)
+    except PhaseRebaselineError as exc:
+        status = ("BLOCKED_PERMISSION" if str(exc).startswith("BLOCKED_PERMISSION:")
+                  else "ADC_PUBLISHED_PHASE_BLOCKED")
+        return {"status": status, "operation": "ADC_SUPERSEDE",
+                "owner_decision_comment_id": verified_decision.comment_id,
+                "adc_comment_id": published.pointer.comment_id,
+                "adc_sha256": published.pointer.sha256,
+                "reasons": [str(exc)]}
+    return {"status": "PUBLISHED", "operation": "ADC_SUPERSEDE",
+            "owner_decision_comment_id": verified_decision.comment_id,
+            "adc_comment_id": published.pointer.comment_id,
+            "adc_sha256": published.pointer.sha256,
+            "state": published.pointer.state, "phase_rebaseline": phase_result}
+
+
+def _merge_attempt_path(root: Path, plan_sha256: str) -> Path:
+    if not re.fullmatch(r"[0-9a-f]{64}", plan_sha256):
+        raise OwnerAuthorizationError("merge plan digest is invalid")
+    return root / ".p_ases" / "owner-authorization" / "merge-attempts" / f"{plan_sha256}.json"
+
+
+def _create_merge_attempt(path: Path, payload: dict[str, Any], *, root: Path) -> None:
+    """Exclusively persist the attempt marker so concurrent callers cannot both merge."""
+    destination = Path(path)
+    data = _canonical(payload) + b"\n"
+    if not _path_components_without_symlinks(destination, root):
+        raise OwnerAuthorizationError("merge attempt path traverses a symbolic link")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if not _path_components_without_symlinks(destination, root):
+        raise OwnerAuthorizationError("merge attempt path traverses a symbolic link")
+    try:
+        descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError as exc:
+        raise OwnerAuthorizationError(
+            "another invocation already claimed this merge attempt; only read-only recovery is allowed"
+        ) from exc
+    except OSError as exc:
+        raise OwnerAuthorizationError("could not create the exclusive merge attempt record") from exc
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except OSError as exc:
+        raise OwnerAuthorizationError("merge attempt record write was interrupted; no retry is permitted") from exc
+    try:
+        if destination.is_symlink() or destination.read_bytes() != data:
+            raise OwnerAuthorizationError("merge attempt record failed exact readback; no retry is permitted")
+    except OSError as exc:
+        raise OwnerAuthorizationError("merge attempt record readback failed; no retry is permitted") from exc
+
+
+def _merge_readback(github: GitHub, plan: dict[str, Any]) -> dict[str, Any]:
+    pr = github.pull_request(plan["pr_number"])
+    head = pr.get("head") if isinstance(pr, dict) else None
+    base = pr.get("base") if isinstance(pr, dict) else None
+    head_repo = head.get("repo") if isinstance(head, dict) else None
+    base_repo = base.get("repo") if isinstance(base, dict) else None
+    merger = pr.get("merged_by") if isinstance(pr, dict) else None
+    if (pr.get("number") != plan["pr_number"] or pr.get("merged") is not True
+            or pr.get("state") != "closed" or not isinstance(head, dict)
+            or head.get("sha") != plan["pr_head_sha40"]
+            or not isinstance(head_repo, dict) or head_repo.get("full_name") != "puchinya/ai-agent-workflow"
+            or not isinstance(base_repo, dict) or base_repo.get("full_name") != "puchinya/ai-agent-workflow"
+            or not isinstance(pr.get("merge_commit_sha"), str)
+            or not re.fullmatch(r"[0-9a-f]{40}", pr["merge_commit_sha"])
+            or not isinstance(merger, dict) or merger.get("id") != _ISSUE63_OWNER_ID
+            or merger.get("type") != "User"):
+        raise OwnerAuthorizationError("PR merge readback does not prove the exact owner-merged HEAD")
+    body = pr.get("body")
+    if plan["target_issue_number"] == 63:
+        closes = (re.findall(r"(?im)^\s*closes\s+#([1-9][0-9]*)\s*$", body)
+                  if isinstance(body, str) else [])
+        if closes != ["63"]:
+            raise OwnerAuthorizationError("merged implementation PR no longer closes exact Issue #63")
+    else:
+        from .consumer_activation import SETUP_MARKER_V2, _decode
+        try:
+            payload = _decode(body, SETUP_MARKER_V2, "Activation Setup PR", allow_trailer=True)
+        except ConsumerActivationError as exc:
+            raise OwnerAuthorizationError("merged PR is not the exact Activation Setup PR") from exc
+        if payload.get("activation_issue_number") != 57:
+            raise OwnerAuthorizationError("merged Activation Setup PR does not bind Issue #57")
+    return {"pr_number": plan["pr_number"], "head_sha40": plan["pr_head_sha40"],
+            "merge_commit_sha40": pr["merge_commit_sha"], "merged_by_id": merger["id"]}
+
+
+def _owner_merge_gate(args: argparse.Namespace, root: Path, github: GitHub,
+                      plan: dict[str, Any]) -> dict[str, Any]:
+    if plan["target_issue_number"] == 57:
+        return verify_setup_pr_ready_to_merge(github, plan["pr_number"])
+    required = ("readiness", "delivery_plan", "verification", "acceptance", "self_audit",
+                "independent_review", "user_review_record")
+    missing = [f"--{name.replace('_', '-')}" for name in required if getattr(args, name, None) is None]
+    if missing:
+        raise OwnerAuthorizationError("PR #64 merge requires fresh Final Delivery evidence: " + ", ".join(missing))
+    final_args = argparse.Namespace(
+        issue=63, pr=plan["pr_number"], head=plan["pr_head_sha40"],
+        plan=args.delivery_plan, readiness=args.readiness, verification=args.verification,
+        acceptance=args.acceptance, self_audit=args.self_audit,
+        independent_review=args.independent_review, user_review_record=args.user_review_record,
+    )
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        exit_code = _delivery_final(final_args, "puchinya/ai-agent-workflow", root, github)
+    try:
+        final = json.loads(output.getvalue())
+    except json.JSONDecodeError as exc:
+        raise OwnerAuthorizationError("Final Delivery did not return a readable gate result") from exc
+    if (exit_code != 0 or not isinstance(final, dict)
+            or final.get("status") != "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION"
+            or final.get("merge_authorized") is not False
+            or not isinstance(final.get("subject"), dict)
+            or final["subject"].get("repository") != "puchinya/ai-agent-workflow"
+            or final["subject"].get("issue_number") != 63
+            or final["subject"].get("pr_number") != plan["pr_number"]
+            or final["subject"].get("pr_head_sha40") != plan["pr_head_sha40"]
+            or final.get("blockers")):
+        raise OwnerAuthorizationError("PR #64 Final Delivery gates are not PASS for this exact merge plan")
+    return {"status": final["status"], "final_delivery_sha256": final.get("final_delivery_sha256"),
+            "subject": final["subject"]}
+
+
+def _perform_authorized_merge(args: argparse.Namespace, root: Path, github: GitHub,
+                              plan: dict[str, Any], decision: dict[str, Any]) -> dict[str, Any]:
+    """Revalidate target gates and make at most one exact-HEAD merge request."""
+    if (decision.get("status") != "AUTHORIZED" or decision.get("operation") != "PR_MERGE"
+            or decision.get("evidence_type") != "PASES_OWNER_DECISION_V2"
+            or decision.get("evidence_channel") != "owner_local_tty_v1"
+            or decision.get("chat_signature") is not False
+            or type(decision.get("owner_decision_comment_id")) is not int
+            or decision["owner_decision_comment_id"] < 1):
+        raise OwnerAuthorizationError("PR merge requires the exact owner-local V2 decision readback")
+    path = _merge_attempt_path(root, plan["plan_sha256"])
+    if path.exists() or path.is_symlink():
+        if path.is_symlink() or not path.is_file():
+            raise OwnerAuthorizationError("merge attempt record is not a regular file")
+        try:
+            intent = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise OwnerAuthorizationError("merge attempt record is unreadable; no retry is permitted") from exc
+        if (not isinstance(intent, dict) or intent.get("plan_sha256") != plan["plan_sha256"]
+                or intent.get("pr_number") != plan["pr_number"]
+                or intent.get("head_sha40") != plan["pr_head_sha40"]):
+            raise OwnerAuthorizationError("merge attempt record conflicts with the exact authorization plan")
+        try:
+            merged = _merge_readback(github, plan)
+        except OwnerAuthorizationError:
+            current = github.pull_request(plan["pr_number"])
+            if current.get("merged") is not True:
+                raise OwnerAuthorizationError(
+                    "merge attempt already has durable intent and remains unresolved; read-only recovery only"
+                )
+            raise
+        return {**decision, "status": "MERGED_READBACK", **merged,
+                "merge_request_repeated": False, "recovered_from_intent": True}
+
+    gates = _owner_merge_gate(args, root, github, plan)
+    current = github.pull_request(plan["pr_number"])
+    head = current.get("head") if isinstance(current, dict) else None
+    if (current.get("state") != "open" or current.get("merged") is True
+            or not isinstance(head, dict) or head.get("sha") != plan["pr_head_sha40"]):
+        raise OwnerAuthorizationError("PR changed or merged before the one permitted merge request")
+    intent = {
+        "schema": "PASES_PR_MERGE_ATTEMPT_V1", "plan_sha256": plan["plan_sha256"],
+        "owner_decision_comment_id": decision.get("owner_decision_comment_id"),
+        "target_issue_number": plan["target_issue_number"], "pr_number": plan["pr_number"],
+        "head_sha40": plan["pr_head_sha40"], "merge_method": "merge",
+        "source_head_sha40": plan["source_head_sha40"],
+    }
+    _create_merge_attempt(path, intent, root=root)
+    response_error: GitHubError | None = None
+    try:
+        github.merge_pull_request(plan["pr_number"], plan["pr_head_sha40"])
+    except GitHubError as exc:
+        response_error = exc
+    try:
+        merged = _merge_readback(github, plan)
+    except (GitHubError, OwnerAuthorizationError) as exc:
+        if response_error is not None:
+            raise OwnerAuthorizationError(
+                "merge response was ambiguous and readback did not prove completion; no retry was attempted"
+            ) from response_error
+        raise OwnerAuthorizationError(
+            "merge endpoint response was not confirmed by exact PR readback; no retry was attempted"
+        ) from exc
+    return {**decision, "status": "MERGED", **merged,
+            "merge_request_repeated": False, "merge_gate": gates,
+            "response_recovered": response_error is not None}
+
+
+def _owner_authorization_resume_command(args: argparse.Namespace, repository: str,
+                                       root: Path, github: GitHub) -> int:
+    plan = read_authorization_plan(args.plan)
+    if plan["operation"] != "USER_REVIEW":
+        result = resume_authorization(github, args.plan)
+        if plan["operation"] == "PR_MERGE" and result.get("status") == "AUTHORIZED":
+            path = _merge_attempt_path(root, plan["plan_sha256"])
+            if path.exists() or path.is_symlink():
+                if path.is_symlink() or not path.is_file():
+                    raise OwnerAuthorizationError("merge attempt record is not a regular file")
+                try:
+                    intent = json.loads(path.read_text(encoding="utf-8"))
+                    if (not isinstance(intent, dict) or intent.get("plan_sha256") != plan["plan_sha256"]
+                            or intent.get("pr_number") != plan["pr_number"]
+                            or intent.get("head_sha40") != plan["pr_head_sha40"]):
+                        raise OwnerAuthorizationError("merge attempt record conflicts with the exact plan")
+                    result = {**result, "merge_attempt_intent": True,
+                              "merge_readback": _merge_readback(github, plan)}
+                    result["merge_status"] = "MERGED_READBACK"
+                except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                    raise OwnerAuthorizationError("merge attempt record is unreadable; no retry is permitted") from exc
+                except OwnerAuthorizationError:
+                    current = github.pull_request(plan["pr_number"])
+                    result["merge_attempt_intent"] = True
+                    result["merge_status"] = ("MERGE_OUTCOME_UNKNOWN_NO_RETRY"
+                                               if current.get("merged") is not True else "MERGE_READBACK_INVALID")
+                    result["merge_readback_error"] = "attempt intent exists; merge endpoint will not be retried"
+        _json(result)
+        return 0 if (result.get("status") == "AUTHORIZED"
+                     and result.get("merge_status") not in {"MERGE_OUTCOME_UNKNOWN_NO_RETRY",
+                                                             "MERGE_READBACK_INVALID"}) else 2
+    if args.session is None or args.readiness is None:
+        raise OwnerAuthorizationError("USER_REVIEW resume requires --session and --readiness")
+    session = read_review_session(args.session)
+    readiness = read_readiness(args.readiness)
+    details = plan["details"]
+    verification_subject = session.subject.verification_subject
+    if (session.sha256 != details["review_session_sha256"]
+            or session.subject.readiness_sha256 != details["readiness_sha256"]
+            or readiness.status != "PASS" or readiness.sha256 != details["readiness_sha256"]
+            or verification_subject.repository != repository
+            or verification_subject.issue_number != 63
+            or verification_subject.pr_number != plan["pr_number"]
+            or verification_subject.pr_head_sha40 != details["pr_head_sha40"]
+            or verification_subject.adc_sha256 != details["adc_sha256"]):
+        raise OwnerAuthorizationError("User Review recovery session or Readiness differs from the plan")
+    owner_id, pr_author_id, verifier_id = _solo_owner_identity(
+        github, repository, 63, plan["pr_number"], details["pr_head_sha40"],
+    )
+    approval = _read_user_review_relay_approval(
+        github, session=session, readiness=readiness, owner_id=owner_id, verifier_id=verifier_id,
+    )
+    if (approval is None or approval.evidence_type != "PASES_USER_REVIEW_DECISION_V2"
+            or approval.plan_sha256 != plan["plan_sha256"]):
+        _json({"status": "NOT_FOUND_OR_BLOCKED", "plan_sha256": plan["plan_sha256"],
+               "reasons": ["exact owner-local User Review V2 carrier is missing or stale"]})
+        return 2
+    observed_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    fresh = _review_payload_from_github(github, session.subject, observed_at=observed_at)
+    prior_events = [event for event in fresh.events
+                    if not (event.channel == "issue-comment" and event.event_id == str(approval.comment_id))]
+    if (fresh.unresolved_thread_ids
+            or feedback_digest(prior_events) != details["feedback_sha256"]
+            or approval.feedback_sha256 != details["feedback_sha256"]
+            or pr_author_id != owner_id):
+        _json({"status": "NOT_FOUND_OR_BLOCKED", "plan_sha256": plan["plan_sha256"],
+               "reasons": ["current feedback, threads, PR author, or carrier subject differs from the plan"]})
+        return 2
+    _json({"status": "AUTHORIZED", "operation": "USER_REVIEW",
+           "plan_sha256": plan["plan_sha256"], "subject_sha256": plan["subject_sha256"],
+           "owner_decision_comment_id": approval.comment_id,
+           "evidence_type": approval.evidence_type,
+           "evidence_channel": approval.evidence_channel, "chat_signature": False})
+    return 0
 
 
 def _verify_activation_plan_checkpoint(root: Path, repository: str, plan: dict[str, Any]) -> None:
@@ -2267,7 +2737,7 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
         if (review_mode == "solo_owner" and saved_review.status == "APPROVED"
                 and (not isinstance(saved_review.selected_approval_evidence, dict)
                      or saved_review.selected_approval_evidence.get("evidence_type")
-                     != "PASES_USER_REVIEW_DECISION_V1")):
+                     not in {"PASES_USER_REVIEW_DECISION_V1", "PASES_USER_REVIEW_DECISION_V2"})):
             blockers.append("solo_owner approved record is not backed by its dedicated V2 carrier")
         fresh_subject = UserReviewSubject(subject, readiness.sha256).validate()
         observed_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
@@ -3207,6 +3677,49 @@ def _parser() -> argparse.ArgumentParser:
     ruleset_apply.add_argument("--approval-comment-id", type=_positive_number)
     ruleset_apply.add_argument("--repo", help="repository owner/name; defaults to origin")
     ruleset_apply.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
+    owner_plan = delivery_commands.add_parser(
+        "owner-authorize-plan", help="read live GitHub subjects and write an immutable owner authorization plan")
+    owner_plan.add_argument("operation", choices=("ADC_SUPERSEDE", "RULESET_PLAN_APPLY", "USER_REVIEW", "PR_MERGE"))
+    owner_plan.add_argument("--subject-file", type=Path, help="exact successor ADC bytes for ADC_SUPERSEDE")
+    owner_plan.add_argument("--ruleset-plan", type=Path, help="canonical Ruleset plan for RULESET_PLAN_APPLY")
+    owner_plan.add_argument("--session", type=Path, help="exact User Review session for USER_REVIEW")
+    owner_plan.add_argument("--readiness", type=Path, help="exact PASS Readiness result for USER_REVIEW")
+    owner_plan.add_argument("--feedback-snapshot", type=Path,
+                            help="pre-decision feedback snapshot for USER_REVIEW")
+    owner_plan.add_argument("--pr", type=_positive_number, help="exact PR number for PR_MERGE")
+    owner_plan.add_argument("--head", help="exact current PR HEAD SHA-40 for PR_MERGE")
+    owner_plan.add_argument("--target-issue", type=_positive_number,
+                            help="Issue closed by the exact PR (57 for Activation or 63 for implementation)")
+    owner_plan.add_argument("--output", required=True, type=Path, help="create-only canonical plan path")
+    owner_plan.add_argument("--repo", help="repository owner/name; defaults to origin")
+    owner_plan.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
+    owner_commit = delivery_commands.add_parser(
+        "owner-authorize-commit", help="confirm and append one owner-local V2 decision")
+    owner_commit.add_argument("--plan", required=True, type=Path, help="exact canonical owner authorization plan")
+    owner_commit.add_argument("--subject-file", type=Path, help="same ADC source used by ADC_SUPERSEDE plan")
+    owner_commit.add_argument("--ruleset-plan", type=Path, help="same canonical Ruleset plan used for approval")
+    owner_commit.add_argument("--session", type=Path, help="same immutable User Review session")
+    owner_commit.add_argument("--readiness", type=Path,
+                              help="same User Review or fresh PR #64 Final Delivery Readiness")
+    owner_commit.add_argument("--feedback-snapshot", type=Path,
+                              help="same pre-decision complete feedback snapshot")
+    owner_commit.add_argument("--delivery-plan", type=Path, help="frozen Verification Plan for PR #64 merge")
+    owner_commit.add_argument("--verification", type=Path, help="PASS Verification result for PR #64 merge")
+    owner_commit.add_argument("--acceptance", type=Path, help="completed Acceptance record for PR #64 merge")
+    owner_commit.add_argument("--self-audit", type=Path, help="completed self-audit for PR #64 merge")
+    owner_commit.add_argument("--independent-review", type=Path,
+                              help="independent review evidence for PR #64 merge")
+    owner_commit.add_argument("--user-review-record", type=Path,
+                              help="approved User Review record for PR #64 merge")
+    owner_commit.add_argument("--repo", help="repository owner/name; defaults to origin")
+    owner_commit.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
+    owner_resume = delivery_commands.add_parser(
+        "owner-authorize-resume", help="read-only direct/list/direct reconciliation of an owner decision")
+    owner_resume.add_argument("--plan", required=True, type=Path)
+    owner_resume.add_argument("--session", type=Path, help="exact User Review session for USER_REVIEW recovery")
+    owner_resume.add_argument("--readiness", type=Path, help="current PASS Readiness for USER_REVIEW recovery")
+    owner_resume.add_argument("--repo", help="repository owner/name; defaults to origin")
+    owner_resume.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
     admin_plan = delivery_commands.add_parser(
         "consumer-activation-admin-plan", help="owner-only local TTY Ruleset plan")
     admin_plan.add_argument("--output", required=True, type=Path)
@@ -3330,6 +3843,12 @@ def main(argv: list[str] | None = None) -> int:
                 if args.verb == "self":
                     return _audit_self(args, repository, root, github)
                 return _audit_independent(args, repository, root, github)
+            if args.namespace == "delivery" and args.verb == "owner-authorize-plan":
+                return _owner_authorization_plan_command(args, repository, root, github)
+            if args.namespace == "delivery" and args.verb == "owner-authorize-commit":
+                return _owner_authorization_commit_command(args, repository, root, github)
+            if args.namespace == "delivery" and args.verb == "owner-authorize-resume":
+                return _owner_authorization_resume_command(args, repository, root, github)
             if args.namespace == "user-review":
                 if args.verb == "record":
                     return _user_review_record(args)
@@ -3624,6 +4143,7 @@ def main(argv: list[str] | None = None) -> int:
                         decision = read_verified_owner_decision(
                             github, issue_number=args.issue, owner_id=3744776,
                             operation="ADC_SUPERSEDE", subject_sha256=contract.sha256,
+                            repository_id=_ISSUE63_REPOSITORY_ID,
                         )
                     except OwnerDecisionError as exc:
                         if "missing exact owner operation/subject" in str(exc):

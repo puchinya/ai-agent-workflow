@@ -322,13 +322,24 @@ class UserReviewResult:
         if self.status == "APPROVED" and self.unresolved_thread_ids:
             raise UserReviewError("User Review cannot approve with unresolved discussion threads")
         if self.selected_approval_evidence is not None:
-            expected = {"evidence_type", "evidence_channel", "comment_id", "body_sha256",
-                        "owner_id", "created_at", "review_session_sha256", "predecessor_comment_id"}
             evidence = self.selected_approval_evidence
+            evidence_type = evidence.get("evidence_type") if isinstance(evidence, dict) else None
+            base_expected = {"evidence_type", "evidence_channel", "comment_id", "body_sha256",
+                             "owner_id", "created_at", "review_session_sha256", "predecessor_comment_id"}
+            if evidence_type == "PASES_USER_REVIEW_DECISION_V1":
+                expected = base_expected
+                expected_channel = "delegated_github_relay"
+            elif evidence_type == "PASES_USER_REVIEW_DECISION_V2":
+                expected = base_expected | {"feedback_sha256", "plan_sha256"}
+                expected_channel = "owner_local_tty_v1"
+            else:
+                expected = base_expected
+                expected_channel = None
             if (not isinstance(self.selected_approval_evidence, dict)
                     or set(evidence) != expected
-                    or evidence["evidence_type"] != "PASES_USER_REVIEW_DECISION_V1"
-                    or evidence["evidence_channel"] != "delegated_github_relay"
+                    or evidence_type not in {
+                        "PASES_USER_REVIEW_DECISION_V1", "PASES_USER_REVIEW_DECISION_V2"}
+                    or evidence["evidence_channel"] != expected_channel
                     or type(evidence["comment_id"]) is not int
                     or evidence["comment_id"] < 1
                     or type(evidence["owner_id"]) is not int
@@ -345,6 +356,10 @@ class UserReviewResult:
                        + str(evidence["comment_id"])
                     or self.status != "APPROVED"):
                 raise UserReviewError("invalid dedicated relay approval evidence")
+            if (evidence_type == "PASES_USER_REVIEW_DECISION_V2"
+                    and any(not isinstance(evidence.get(key), str) or not SHA256.fullmatch(evidence[key])
+                            for key in ("feedback_sha256", "plan_sha256"))):
+                raise UserReviewError("invalid owner-local V2 User Review digests")
             _time(evidence["created_at"])
         return self
 
@@ -445,6 +460,12 @@ def _evaluate_typed_relay_review(
                     and row.updated_at == approval.created_at and not row.edited and not row.deleted]
         if len(matching) != 1:
             reasons.append("dedicated carrier is absent or changed in complete feedback snapshot")
+        if approval.evidence_type == "PASES_USER_REVIEW_DECISION_V2":
+            prior_events = [row for row in rows
+                            if not (row.channel == "issue-comment" and row.event_id == str(approval.comment_id))]
+            if (not isinstance(approval.feedback_sha256, str)
+                    or feedback_digest(prior_events) != approval.feedback_sha256):
+                reasons.append("owner-local User Review approval is bound to a different prior feedback snapshot")
         for row in rows:
             if row.deleted or row.edited:
                 reasons.append("GitHub feedback was deleted or edited")

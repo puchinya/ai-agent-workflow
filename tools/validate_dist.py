@@ -37,7 +37,8 @@ CLI_ROUTES = {
                  "parent-evidence", "parent-migrate-labels", "consumer-activation-setup",
                  "consumer-activation-verify", "consumer-activation-preflight",
                  "consumer-activation-ruleset-plan", "consumer-activation-ruleset-apply",
-                 "consumer-activation-admin-plan", "consumer-activation-admin-apply"},
+                 "consumer-activation-admin-plan", "consumer-activation-admin-apply",
+                 "owner-authorize-plan", "owner-authorize-commit", "owner-authorize-resume"},
 }
 OLD_COMMAND = re.compile(
     r"(?i)\b(?:init-project|agent-context|validate-docs|run-hook|ensure-milestone|"

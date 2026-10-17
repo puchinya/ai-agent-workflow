@@ -40,6 +40,19 @@ def decision_body(**overrides: object) -> str:
     return f"<!-- PASES_OWNER_DECISION_V1\n{canonical}\n-->"
 
 
+def owner_local_decision_body(**overrides: object) -> str:
+    payload = json.loads(decision_body().removeprefix("<!-- PASES_OWNER_DECISION_V1\n").removesuffix("\n-->"))
+    payload.update({
+        "schema": "PASES_OWNER_DECISION_V2",
+        "evidence_channel": "owner_local_tty_v1",
+        "plan_sha256": "f" * 64,
+        "operation_plan_sha256": None,
+    })
+    payload.update(overrides)
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return f"<!-- PASES_OWNER_DECISION_V2\n{canonical}\n-->"
+
+
 class OwnerDecisionRecordTests(unittest.TestCase):
     def test_canonical_record_binds_exact_operation_and_subject(self):
         body = decision_body()
@@ -50,6 +63,21 @@ class OwnerDecisionRecordTests(unittest.TestCase):
         self.assertEqual(record.subject_sha256, SUBJECT_SHA)
         self.assertEqual(record.evidence_channel, "delegated_github_relay")
         self.assertNotIn("host_attestation", body)
+
+    def test_v2_is_owner_local_and_cross_version_replay_is_rejected(self):
+        local_body = owner_local_decision_body()
+        local = parse_owner_decision(local_body)
+        self.assertEqual(local.schema, "PASES_OWNER_DECISION_V2")
+        self.assertEqual(local.evidence_channel, "owner_local_tty_v1")
+        self.assertEqual(local.plan_sha256, "f" * 64)
+        self.assertNotEqual(local.schema, "PASES_OWNER_DECISION_V1")
+        v1 = {"id": 100, "body": decision_body(), "user": {"id": OWNER_ID, "type": "User"}}
+        v2 = {"id": 101, "body": owner_local_decision_body(predecessor_comment_id=100),
+              "user": {"id": OWNER_ID, "type": "User"}}
+        with self.assertRaises(OwnerDecisionError):
+            verify_owner_decision_history(
+                [v1, v2], REPOSITORY, 63, OWNER_ID, "ADC_SUPERSEDE", SUBJECT_SHA,
+            )
 
     def test_rejects_noncanonical_json_unknown_fields_and_wrong_channel(self):
         with self.assertRaises(OwnerDecisionError):

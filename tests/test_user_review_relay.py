@@ -29,12 +29,15 @@ from p_ases.user_review import (
     UserReviewSession,
     UserReviewSubject,
     evaluate_user_review,
+    feedback_digest,
 )
 from p_ases.user_review_relay import (
     USER_REVIEW_DECISION_SCHEMA,
+    USER_REVIEW_DECISION_SCHEMA_V2,
     UserReviewDecisionHistory,
     UserReviewRelayError,
     parse_user_review_decision,
+    publish_owner_local_user_review_decision,
     verify_user_review_decision_history,
 )
 
@@ -73,6 +76,19 @@ def decision_body(**overrides: object) -> str:
         "evidence_channel": "delegated_github_relay",
         "predecessor_comment_id": None,
     }
+    payload.update(overrides)
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def owner_local_decision_body(*, feedback_sha256: str, plan_sha256: str,
+                              **overrides: object) -> str:
+    payload = json.loads(decision_body())
+    payload.update({
+        "schema": USER_REVIEW_DECISION_SCHEMA_V2,
+        "evidence_channel": "owner_local_tty_v1",
+        "feedback_sha256": feedback_sha256,
+        "plan_sha256": plan_sha256,
+    })
     payload.update(overrides)
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
@@ -182,6 +198,100 @@ class UserReviewRelayTests(unittest.TestCase):
         self.assertEqual(approval.owner_id, OWNER_ID)
         self.assertEqual(approval.predecessor_comment_id, None)
         self.assertEqual(approval.evidence_channel, "delegated_github_relay")
+
+    def test_owner_local_v2_binds_prior_feedback_and_keeps_verifier_identity_separate(self) -> None:
+        prior = FeedbackEvent(
+            channel="issue-comment", event_id="42", actor_id=OWNER_ID,
+            actor_login="puchinya", actor_type="User",
+            created_at="2026-10-17T08:30:00Z", updated_at="2026-10-17T08:30:00Z",
+            kind="questions", head_sha40=None, body_sha256="1" * 64,
+            source_url=f"https://github.com/{REPOSITORY}/issues/{ISSUE_NUMBER}#issuecomment-42",
+        ).validate()
+        baseline = feedback_digest((prior,))
+        plan_sha = "f" * 64
+        comment = github_comment(owner_local_decision_body(
+            feedback_sha256=baseline, plan_sha256=plan_sha,
+        ))
+        approval = verify(
+            decision_history(comment),
+        )
+        self.assertEqual(approval.evidence_type, USER_REVIEW_DECISION_SCHEMA_V2)
+        self.assertEqual(approval.evidence_channel, "owner_local_tty_v1")
+        self.assertEqual(approval.feedback_sha256, baseline)
+        self.assertEqual(approval.plan_sha256, plan_sha)
+        self.assertNotEqual(READ_ONLY_VERIFIER_ID, OWNER_ID)
+
+        snapshot = feedback_snapshot(prior, carrier_feedback_event(comment))
+        result = evaluate_user_review(
+            SESSION, READINESS, PR_HEAD_SHA40, snapshot,
+            review_mode="solo_owner", pr_author_user_id=OWNER_ID,
+            repository_owner_user_id=OWNER_ID,
+            authenticated_verifier_user_id=READ_ONLY_VERIFIER_ID,
+            allowed_human_user_ids=(OWNER_ID,), relay_approval=approval,
+        )
+        self.assertEqual(result.status, "APPROVED")
+        self.assertEqual(result.selected_approval_evidence["evidence_type"], USER_REVIEW_DECISION_SCHEMA_V2)
+
+        wrong = replace(approval, feedback_sha256="e" * 64)
+        blocked = evaluate_user_review(
+            SESSION, READINESS, PR_HEAD_SHA40, snapshot,
+            review_mode="solo_owner", pr_author_user_id=OWNER_ID,
+            repository_owner_user_id=OWNER_ID,
+            authenticated_verifier_user_id=READ_ONLY_VERIFIER_ID,
+            allowed_human_user_ids=(OWNER_ID,), relay_approval=wrong,
+        )
+        self.assertNotEqual(blocked.status, "APPROVED")
+
+    def test_owner_local_publisher_posts_v2_once_and_reads_it_back(self) -> None:
+        class FakeGitHub:
+            repo = REPOSITORY
+
+            def __init__(self):
+                self.comments: list[dict[str, object]] = []
+                self.writes = 0
+
+            def issue_comments(self, number):
+                if number != ISSUE_NUMBER:
+                    raise AssertionError("unexpected Issue")
+                return list(self.comments)
+
+            def issue_comment(self, number, comment_id):
+                return next((row for row in self.comments if row["id"] == comment_id), None)
+
+            def create_issue_comment(self, number, body):
+                self.writes += 1
+                row = {
+                    "id": 101, "body": body,
+                    "created_at": COMMENT_CREATED_AT, "updated_at": COMMENT_CREATED_AT,
+                    "user": {"id": OWNER_ID, "type": "User", "login": "puchinya"},
+                    "url": f"https://api.github.com/repos/{REPOSITORY}/issues/comments/101",
+                    "issue_url": f"https://api.github.com/repos/{REPOSITORY}/issues/{ISSUE_NUMBER}",
+                    "html_url": f"https://github.com/{REPOSITORY}/issues/{ISSUE_NUMBER}#issuecomment-101",
+                }
+                self.comments.append(row)
+                return row
+
+        github = FakeGitHub()
+        approval = publish_owner_local_user_review_decision(
+            github, repository=REPOSITORY, issue_number=ISSUE_NUMBER, pr_number=PR_NUMBER,
+            repository_owner_user_id=OWNER_ID, session=SESSION,
+            readiness_sha256=READINESS.sha256, adc_sha256=ADC_SHA256,
+            pr_head_sha40=PR_HEAD_SHA40, feedback_sha256="e" * 64,
+            plan_sha256="f" * 64,
+        )
+        self.assertEqual(approval.evidence_type, USER_REVIEW_DECISION_SCHEMA_V2)
+        self.assertEqual(approval.evidence_channel, "owner_local_tty_v1")
+        self.assertEqual(github.writes, 1)
+        self.assertEqual(len(github.comments), 1)
+        with self.assertRaises(UserReviewRelayError):
+            publish_owner_local_user_review_decision(
+                github, repository=REPOSITORY, issue_number=ISSUE_NUMBER, pr_number=PR_NUMBER,
+                repository_owner_user_id=OWNER_ID, session=SESSION,
+                readiness_sha256=READINESS.sha256, adc_sha256=ADC_SHA256,
+                pr_head_sha40=PR_HEAD_SHA40, feedback_sha256="e" * 64,
+                plan_sha256="f" * 64,
+            )
+        self.assertEqual(github.writes, 1)
 
     def test_chain_requires_null_genesis_and_immediate_predecessors(self) -> None:
         previous = github_comment(
