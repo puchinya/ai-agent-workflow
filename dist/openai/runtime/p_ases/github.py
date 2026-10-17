@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import re
 import subprocess
 import time
@@ -30,6 +31,7 @@ class GitHub:
     repo: str
     _api_request_count: int = field(default=0, init=False, repr=False)
     _api_elapsed_ms: float = field(default=0.0, init=False, repr=False)
+    _admin_token_override: str | None = field(default=None, init=False, repr=False)
 
     @property
     def api_metrics(self) -> dict[str, int | float]:
@@ -61,12 +63,18 @@ class GitHub:
                 raise GitHubError("GitHub API payload must be an object")
             argv.extend(["--input", "-"])
             input_text = json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
+        child_env = os.environ.copy()
+        if self._admin_token_override is not None:
+            child_env.pop("GH_TOKEN", None)
+            child_env.pop("GITHUB_TOKEN", None)
+            child_env["GH_TOKEN"] = self._admin_token_override
         started = time.perf_counter()
         self._api_request_count += 1
         try:
             result = subprocess.run(
                 argv, input=input_text, text=True, encoding="utf-8", errors="replace",
                 check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                env=child_env,
             )
         except OSError as exc:
             raise GitHubError(f"could not start GitHub API client: {exc}") from exc

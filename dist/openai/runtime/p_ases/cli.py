@@ -17,6 +17,7 @@ from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from .adc import ADCError, parse_adc, publish_adc, restore_adc, verify_adc
+from .admin_auth import AdminAuthError, temporary_admin_client
 from .consumer_activation import (
     ConsumerActivationError, setup_consumer_activation, verify_and_record_activation,
 )
@@ -1808,9 +1809,13 @@ def _review_record_path(root: Path, issue_number: int, subject: UserReviewSubjec
 def _read_review_record(path: Path) -> tuple[UserReviewSubject, UserReviewResult, str]:
     value = _read_json(path, "User Review result")
     expected = {"result", "result_sha256", "schema", "snapshot_sha256", "subject"}
-    if not isinstance(value, dict) or set(value) != expected or value.get("schema") != "PASES_USER_REVIEW_RESULT_V1":
+    if (not isinstance(value, dict) or set(value) != expected
+            or value.get("schema") not in {"PASES_USER_REVIEW_RESULT_V1", "PASES_USER_REVIEW_RESULT_V2"}):
         raise UserReviewError("User Review result record has unknown or missing fields")
     result = UserReviewResult.from_dict(value["result"])
+    if ((value["schema"] == "PASES_USER_REVIEW_RESULT_V2") !=
+            (result.selected_approval_evidence is not None)):
+        raise UserReviewError("dedicated carrier requires V2 User Review result schema")
     if value["subject"] != result.subject.as_dict() or value["result_sha256"] != result.sha256:
         raise UserReviewError("User Review result record subject/digest does not match")
     if not isinstance(value["snapshot_sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", value["snapshot_sha256"]):
@@ -2853,6 +2858,17 @@ def _parser() -> argparse.ArgumentParser:
     ruleset_apply.add_argument("--approval-comment-id", required=True, type=_positive_number)
     ruleset_apply.add_argument("--repo", help="repository owner/name; defaults to origin")
     ruleset_apply.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
+    admin_plan = delivery_commands.add_parser(
+        "consumer-activation-admin-plan", help="owner-only local TTY Ruleset plan")
+    admin_plan.add_argument("--output", required=True, type=Path)
+    admin_plan.add_argument("--repo", help="repository owner/name; defaults to origin")
+    admin_plan.add_argument("--root", type=Path, help="repository root; defaults to current checkout")
+    admin_apply = delivery_commands.add_parser(
+        "consumer-activation-admin-apply", help="owner-only local TTY exact-approved Ruleset apply")
+    admin_apply.add_argument("--plan", required=True, type=Path)
+    admin_apply.add_argument("--approval-comment-id", required=True, type=_positive_number)
+    admin_apply.add_argument("--repo", help="repository owner/name; defaults to origin")
+    admin_apply.add_argument("--root", type=Path, help="repository root; defaults to current checkout")
     bootstrap = delivery_commands.add_parser("bootstrap-check", help="evaluate the separate migration Bootstrap gate")
     bootstrap.add_argument("issue", type=_positive_number)
     bootstrap.add_argument("pr", type=_positive_number)
@@ -2989,6 +3005,45 @@ def main(argv: list[str] | None = None) -> int:
                            "activation_sha256": record.sha256})
                     return 0
                 except ConsumerActivationError as exc:
+                    return _blocked_result((str(exc),))
+            if args.verb in {"consumer-activation-admin-plan", "consumer-activation-admin-apply"}:
+                try:
+                    with temporary_admin_client(repository) as admin:
+                        profile = load_profile(root)
+                        if profile.activation_issue_number != 57:
+                            raise CLIError("temporary Admin target must match configured Activation #57")
+                        identity = admin.authenticated_user()
+                        metadata = admin.repository_metadata()
+                        owner = metadata.get("owner") if isinstance(metadata, dict) else None
+                        owner_id = owner.get("id") if isinstance(owner, dict) else None
+                        login = owner.get("login") if isinstance(owner, dict) else None
+                        if (metadata.get("id") != 1401910271
+                                or metadata.get("full_name") != repository
+                                or not isinstance(owner, dict) or owner.get("type") != "User"
+                                or owner_id != 3744776 or identity.get("id") != owner_id
+                                or identity.get("type") != "User"
+                                or identity.get("login", "").casefold() != login.casefold()
+                                or metadata.get("permissions", {}).get("admin") is not True
+                                or admin.collaborator_permission(login).get("permission") != "admin"):
+                            raise CLIError("temporary administrator identity/permission mismatch")
+                        branch = metadata.get("default_branch")
+                        if not isinstance(branch, str):
+                            raise CLIError("default branch is unavailable")
+                        admin.branch_protection(branch)
+                        admin.repository_rulesets()
+                        admin.effective_branch_rules(branch)
+                        if args.verb == "consumer-activation-admin-plan":
+                            plan = build_ruleset_plan(root, admin)
+                            if plan["blockers"]:
+                                return _blocked_result(tuple(plan["blockers"]))
+                            write_ruleset_plan(args.output, plan)
+                            _json({"status": "PLANNED", "plan_sha256": plan["plan_sha256"],
+                                   "output": str(args.output), "operation": plan["diff"]["operation"]})
+                            return 0
+                        result = apply_ruleset_plan(root, admin, args.plan, args.approval_comment_id)
+                        _json(result)
+                        return 0
+                except (AdminAuthError, RulesetManagementError, ProfileError, GitHubError, CLIError) as exc:
                     return _blocked_result((str(exc),))
             if args.verb == "consumer-activation-preflight":
                 try:
