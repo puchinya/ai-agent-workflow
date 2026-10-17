@@ -994,7 +994,11 @@ def _context_show(issue_number: int, repository: str, root: Path, github: GitHub
                "adc_comment_id": verified.pointer.comment_id,
                "adc_sha256": verified.pointer.sha256, "binding_status": "STALE_ADC",
                "binding_adc_comment_id": binding.adc_comment_id,
-               "binding_adc_sha256": binding.adc_sha256})
+               "binding_adc_sha256": binding.adc_sha256,
+               "frozen_context": {"base_ref": binding.base_ref, "base_sha": binding.base_sha,
+                                  "branch_ref": binding.branch_ref,
+                                  "work_directory": binding.work_directory,
+                                  "initial_head_sha": binding.initial_head_sha}})
         return 2
     if Path(binding.work_directory) != root:
         _json({"status": "NOT_BOUND_HERE", "issue": issue_number, "repository": repository,
@@ -1007,6 +1011,7 @@ def _context_show(issue_number: int, repository: str, root: Path, github: GitHub
            "adc_comment_id": verified.pointer.comment_id,
            "adc_sha256": verified.pointer.sha256, "binding_status": "BOUND",
            "frozen_context": {"base_ref": binding.base_ref, "base_sha": binding.base_sha,
+                              "branch_ref": binding.branch_ref, "work_directory": binding.work_directory,
                               "initial_head_sha": binding.initial_head_sha}})
     return 0
 
@@ -3997,9 +4002,12 @@ def main(argv: list[str] | None = None) -> int:
                         branch = metadata.get("default_branch")
                         if not isinstance(branch, str):
                             raise CLIError("default branch is unavailable")
-                        admin.branch_protection(branch)
-                        admin.repository_rulesets()
-                        admin.effective_branch_rules(branch)
+                        # Policy reads are centralized in build_ruleset_plan and
+                        # apply_ruleset_plan via _read_policy -> assess_branch_policy.
+                        # That path may accept a legacy-protection 404 only when
+                        # branch, Ruleset inventory, effective rules and details
+                        # independently prove NOT_CONFIGURED; 403/incomplete reads
+                        # stay fail-closed. Do not make this probe successful-only.
                         if (args.verb == "consumer-activation-admin-apply"
                                 and plan["diff"]["operation"] == "noop"):
                             current = build_ruleset_plan(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -18,6 +19,7 @@ from p_ases.ruleset_management import (  # noqa: E402
     ACTIVATION_BINDING_SCHEMA, APPLIED_MARKER, RULESET_NAME, RulesetManagementError,
     _canonical, _desired_payload, _managed_body,
     _body_digest, _publish_applied_record, _verify_exact_approval, apply_ruleset_plan,
+    build_ruleset_plan,
     effective_policy_sha256, validate_plan, verify_applied_policy_record, write_plan,
 )
 
@@ -100,6 +102,189 @@ def make_plan(**updates):
 
 
 class RulesetManagementTests(unittest.TestCase):
+    def make_planning_repository(self, root: Path) -> str:
+        profile = root / ".agent/project.json"
+        profile.parent.mkdir(parents=True)
+        profile.write_bytes((ROOT / ".agent/project.json").read_bytes())
+        for command in (
+            ["git", "init", "-b", "main"],
+            ["git", "add", ".agent/project.json"],
+            ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+             "commit", "-m", "ruleset planner fixture"],
+            ["git", "remote", "add", "origin", f"https://github.com/{REPOSITORY}.git"],
+        ):
+            subprocess.run(command, cwd=root, check=True, capture_output=True)
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+    def planning_github(self, head: str, *, legacy_status: int = 404,
+                        branch_status: int | None = None, effective_status: int | None = None,
+                        inventory_status: int | None = None, detail_status: int | None = None,
+                        effective_rows: list[dict] | None = None,
+                        details_value: dict | None = None):
+        class PlanningGitHub:
+            repo = REPOSITORY
+
+            def __init__(self):
+                self.legacy_status = legacy_status
+                self.branch_status = branch_status
+                self.effective_status = effective_status
+                self.inventory_status = inventory_status
+                self.detail_status = detail_status
+                self.effective_rows = copy.deepcopy(effective_rows or [])
+                self.details_value = copy.deepcopy(details_value)
+                self.inventory_calls = 0
+                self.legacy_calls = 0
+                self.effective_calls = 0
+                self.detail_calls = 0
+                self.create_calls = 0
+                self.update_calls = 0
+
+            def regular_content_at_ref(self, path, ref):
+                if path != ".agent/project.json" or ref != head:
+                    raise AssertionError("unexpected profile read")
+                return (ROOT / path).read_bytes()
+
+            def repository_metadata(self):
+                return {
+                    "id": 1401910271, "full_name": REPOSITORY,
+                    "owner": {"id": OWNER_ID, "type": "User", "login": "puchinya"},
+                    "default_branch": "main",
+                }
+
+            def repository_rulesets(self):
+                self.inventory_calls += 1
+                if self.inventory_status is not None:
+                    raise GitHubError("Ruleset inventory unavailable", status_code=self.inventory_status)
+                return []
+
+            def issue_comments(self, _issue_number):
+                return []
+
+            def branch(self, name):
+                if self.branch_status is not None:
+                    raise GitHubError("branch unavailable", status_code=self.branch_status)
+                return {"name": name, "protected": False, "commit": {"sha": head}}
+
+            def branch_protection(self, _branch):
+                self.legacy_calls += 1
+                raise GitHubError("legacy protection unavailable", status_code=self.legacy_status)
+
+            def effective_branch_rules(self, _branch):
+                self.effective_calls += 1
+                if self.effective_status is not None:
+                    raise GitHubError("effective rules unavailable", status_code=self.effective_status)
+                return copy.deepcopy(self.effective_rows)
+
+            def ruleset_details(self, _ruleset_id, *, source_type):
+                self.detail_calls += 1
+                if self.detail_status is not None:
+                    raise GitHubError("Ruleset detail unavailable", status_code=self.detail_status)
+                if self.details_value is not None:
+                    return copy.deepcopy(self.details_value)
+                return {"id": 44, "source_type": source_type}
+
+            def pull_requests_all(self):
+                return []
+
+            def create_repository_ruleset(self, _payload):
+                self.create_calls += 1
+                return {"id": 44}
+
+            def update_repository_ruleset(self, _ruleset_id, _payload):
+                self.update_calls += 1
+
+        return PlanningGitHub()
+
+    def test_admin_plan_accepts_only_complete_404_as_not_configured_and_creates_plan(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            head = self.make_planning_repository(root)
+            github = self.planning_github(head)
+            plan = build_ruleset_plan(root, github)
+        self.assertEqual(plan["blockers"], [])
+        self.assertEqual(plan["diff"]["operation"], "create")
+        self.assertEqual(plan["policy_proof"]["status"], "NOT_CONFIGURED")
+        self.assertEqual(plan["policy_evidence"]["source_errors"], {"legacy_protection": 404})
+        self.assertEqual((github.inventory_calls, github.legacy_calls, github.effective_calls), (1, 1, 1))
+
+    def test_admin_plan_403_and_incomplete_policy_reads_are_blocked(self):
+        cases = (
+            ("legacy-403", {"legacy_status": 403}),
+            ("branch-404", {"branch_status": 404}),
+            ("effective-404", {"effective_status": 404}),
+            ("inventory-403", {"inventory_status": 403}),
+        )
+        for name, options in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                head = self.make_planning_repository(root)
+                github = self.planning_github(head, **options)
+                plan = build_ruleset_plan(root, github)
+                self.assertTrue(plan["blockers"])
+                self.assertEqual(plan["diff"]["operation"], "blocked")
+                if name == "legacy-403":
+                    self.assertEqual(plan["policy_proof"]["status"], "UNAVAILABLE")
+                else:
+                    if name in {"branch-404", "effective-404"}:
+                        self.assertEqual(plan["policy_proof"]["status"], "UNVERIFIED")
+
+        wrong = [{"ruleset_id": 44, "ruleset_source_type": "Repository",
+                  "ruleset_source": REPOSITORY, "type": "required_status_checks",
+                  "parameters": {"required_status_checks": [{"context": "ci", "integration_id": 15368}]}}]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            head = self.make_planning_repository(root)
+            github = self.planning_github(head, detail_status=404, effective_rows=wrong)
+            plan = build_ruleset_plan(root, github)
+        self.assertTrue(plan["blockers"])
+        self.assertEqual(plan["diff"]["operation"], "blocked")
+        self.assertNotEqual(plan["policy_proof"]["status"], "NOT_CONFIGURED")
+
+    def test_admin_plan_does_not_treat_effective_policy_as_absent(self):
+        wrong_rules = [{"type": "required_status_checks", "parameters": {
+            "required_status_checks": [{"context": "wrong", "integration_id": 15368}],
+        }}]
+        wrong = [{"ruleset_id": 44, "ruleset_source_type": "Repository",
+                  "ruleset_source": REPOSITORY, "type": "required_status_checks",
+                  "parameters": copy.deepcopy(wrong_rules[0]["parameters"])}]
+        detail = {
+            "id": 44, "source": REPOSITORY, "source_type": "Repository",
+            "enforcement": "active", "target": "branch",
+            "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
+            "bypass_actors": [], "rules": wrong_rules,
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            head = self.make_planning_repository(root)
+            github = self.planning_github(head, effective_rows=wrong, details_value=detail)
+            plan = build_ruleset_plan(root, github)
+        self.assertTrue(plan["blockers"])
+        self.assertEqual(plan["diff"]["operation"], "blocked")
+        self.assertNotEqual(plan["policy_proof"]["status"], "NOT_CONFIGURED")
+        self.assertEqual(github.detail_calls, 1)
+
+    def test_admin_apply_rechecks_policy_and_writes_nothing_after_403(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            temp_root = Path(temporary)
+            root = temp_root / "repo"
+            root.mkdir()
+            head = self.make_planning_repository(root)
+            github = self.planning_github(head)
+            plan = build_ruleset_plan(root, github)
+            path = temp_root / "ruleset-plan.json"
+            write_plan(path, plan)
+            github.legacy_status = 403
+            with patch("p_ases.ruleset_management._verify_exact_approval",
+                       return_value={"id": 900}), \
+                    patch("p_ases.ruleset_management._require_current_admin",
+                          return_value={"id": OWNER_ID, "login": "puchinya"}), \
+                    self.assertRaisesRegex(RulesetManagementError, "preconditions changed"):
+                apply_ruleset_plan(root, github, path, 900)
+        self.assertEqual(github.create_calls, 0)
+        self.assertEqual(github.update_calls, 0)
+
     def test_activation_plan_binds_setup_branch_commit_and_adc_generation(self):
         binding = {
             "activation_issue_number": 57, "adc_comment_id": 1200, "adc_sha256": "b" * 64,

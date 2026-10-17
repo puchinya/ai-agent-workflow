@@ -98,8 +98,8 @@ class PasesCLITests(unittest.TestCase):
                 "permissions": {"admin": True}, "default_branch": "main",
             },
             collaborator_permission=lambda _login: {"permission": "admin"},
-            branch_protection=lambda _branch: {},
-            repository_rulesets=lambda: [], effective_branch_rules=lambda _branch: [],
+            branch_protection=Mock(side_effect=GitHubError("legacy protection is not configured", status_code=404)),
+            repository_rulesets=Mock(return_value=[]), effective_branch_rules=Mock(return_value=[]),
         )
         modes = []
 
@@ -126,6 +126,50 @@ class PasesCLITests(unittest.TestCase):
                 ])
         self.assertEqual(result, 0)
         self.assertEqual(modes, ["isolated-gh-device"])
+        admin.branch_protection.assert_not_called()
+        admin.repository_rulesets.assert_not_called()
+        admin.effective_branch_rules.assert_not_called()
+
+    def test_admin_apply_leaves_policy_preflight_to_ruleset_apply_verifier(self):
+        admin = SimpleNamespace(
+            authenticated_user=lambda: {"id": 3744776, "type": "User", "login": "owner"},
+            repository_metadata=lambda: {
+                "id": 1401910271, "full_name": "puchinya/ai-agent-workflow",
+                "owner": {"id": 3744776, "type": "User", "login": "owner"},
+                "permissions": {"admin": True}, "default_branch": "main",
+            },
+            collaborator_permission=lambda _login: {"permission": "admin"},
+            branch_protection=Mock(side_effect=GitHubError("legacy protection is not configured", status_code=404)),
+            repository_rulesets=Mock(return_value=[]), effective_branch_rules=Mock(return_value=[]),
+        )
+        plan = {"plan_sha256": "a" * 64, "diff": {"operation": "create"},
+                "profile_ref": None, "activation_binding": None}
+
+        def admin_context(_repository, *, auth_mode):
+            self.assertEqual(auth_mode, "isolated-gh-device")
+            return contextlib.nullcontext(admin)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            with patch("p_ases.cli._runtime_root", return_value=root), \
+                    patch("p_ases.cli.discover_repository", return_value="puchinya/ai-agent-workflow"), \
+                    patch("p_ases.cli.GitHub", return_value=SimpleNamespace(repo="puchinya/ai-agent-workflow")), \
+                    patch("p_ases.cli.load_profile", return_value=SimpleNamespace(activation_issue_number=57)), \
+                    patch("p_ases.cli.temporary_admin_client", side_effect=admin_context), \
+                    patch("p_ases.cli._ruleset_operation_plan", return_value=(plan, 800)), \
+                    patch("p_ases.cli._verify_activation_plan_checkpoint"), \
+                    patch("p_ases.cli.apply_ruleset_plan", return_value={"status": "VERIFIED"}) as apply_plan, \
+                    patch("p_ases.cli._json"):
+                result = main([
+                    "delivery", "consumer-activation-admin-apply", "--plan", str(root / "plan.json"),
+                    "--approval-comment-id", "900", "--auth-mode", "isolated-gh-device",
+                    "--repo", "puchinya/ai-agent-workflow", "--root", str(root),
+                ])
+        self.assertEqual(result, 0)
+        apply_plan.assert_called_once()
+        admin.branch_protection.assert_not_called()
+        admin.repository_rulesets.assert_not_called()
+        admin.effective_branch_rules.assert_not_called()
 
     def test_ruleset_write_route_never_self_authorizes_from_a_plan_or_admin_credential(self):
         plan = {
