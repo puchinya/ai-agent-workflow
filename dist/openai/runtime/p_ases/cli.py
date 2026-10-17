@@ -2213,7 +2213,10 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
             blockers.append("GitHub formal review decision or PR HEAD changed during Final Delivery")
         if _formal_reviews_sha256(github.pull_reviews(args.pr)) != formal_reviews_sha:
             blockers.append("GitHub formal reviews changed during Final Delivery")
-        final_policy = _assess_current_branch_policy(github, repository, pr["base_ref"], profile)
+        final_profile = load_profile(root)
+        if final_profile != profile:
+            blockers.append("project profile changed during Final Delivery")
+        final_policy = _assess_current_branch_policy(github, repository, pr["base_ref"], final_profile)
         if final_policy != policy:
             blockers.append("effective branch policy changed during Final Delivery")
         final_readiness = read_readiness(args.readiness)
@@ -2246,6 +2249,9 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
             repository, root, github)
         if final_verification != verification:
             blockers.append("#29 Verification/Required Check Runs changed during Final Delivery")
+        published_profile = load_profile(root)
+        if published_profile != profile or published_profile != final_profile:
+            blockers.append("project profile changed during Final Delivery")
         if blockers:
             code_by_reason = {
                 "approved ADC pointer changed during Final Delivery": "FINAL_ADC_CHANGED",
@@ -2253,6 +2259,7 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
                 "GitHub formal review decision or PR HEAD changed during Final Delivery": "FINAL_REVIEW_DECISION_CHANGED",
                 "GitHub formal reviews changed during Final Delivery": "FINAL_FORMAL_REVIEWS_CHANGED",
                 "effective branch policy changed during Final Delivery": "FINAL_BRANCH_POLICY_CHANGED",
+                "project profile changed during Final Delivery": "FINAL_PROFILE_CHANGED",
                 "PR draft or mergeability changed during Final Delivery": "FINAL_PR_STATE_CHANGED",
                 "repository owner or PR author identity changed during Final Delivery": "FINAL_SOLO_OWNER_IDENTITY_CHANGED",
                 "Readiness, authenticated user, or GitHub feedback changed during Final Delivery": "FINAL_USER_REVIEW_CHANGED",
