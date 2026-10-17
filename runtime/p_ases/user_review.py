@@ -299,6 +299,7 @@ class UserReviewResult:
     next_phase: str
     selected_approval_event: str | None = None
     unresolved_thread_ids: tuple[str, ...] = ()
+    selected_approval_evidence: dict[str, Any] | None = None
 
     def validate(self) -> "UserReviewResult":
         self.subject.validate()
@@ -320,6 +321,21 @@ class UserReviewResult:
             raise UserReviewError("unresolved review thread IDs are invalid")
         if self.status == "APPROVED" and self.unresolved_thread_ids:
             raise UserReviewError("User Review cannot approve with unresolved discussion threads")
+        if self.selected_approval_evidence is not None:
+            expected = {"evidence_type", "evidence_channel", "comment_id", "body_sha256",
+                        "owner_id", "created_at", "review_session_sha256", "predecessor_comment_id"}
+            if (not isinstance(self.selected_approval_evidence, dict)
+                    or set(self.selected_approval_evidence) != expected
+                    or self.selected_approval_evidence["evidence_type"] != "PASES_USER_REVIEW_DECISION_V1"
+                    or self.selected_approval_evidence["evidence_channel"] != "delegated_github_relay"
+                    or type(self.selected_approval_evidence["comment_id"]) is not int
+                    or self.selected_approval_evidence["comment_id"] < 1
+                    or type(self.selected_approval_evidence["owner_id"]) is not int
+                    or self.selected_approval_evidence["owner_id"] < 1
+                    or self.selected_approval_event != "user-review-relay:"
+                       + str(self.selected_approval_evidence["comment_id"])
+                    or self.status != "APPROVED"):
+                raise UserReviewError("invalid dedicated relay approval evidence")
         return self
 
     @property
@@ -328,16 +344,19 @@ class UserReviewResult:
 
     def as_dict(self) -> dict[str, Any]:
         self.validate()
-        return {"status": self.status, "subject": self.subject.as_dict(),
-                "feedback_sha256": self.feedback_sha256, "reasons": list(self.reasons),
-                "next_phase": self.next_phase, "selected_approval_event": self.selected_approval_event,
-                "unresolved_thread_ids": list(self.unresolved_thread_ids)}
+        value = {"status": self.status, "subject": self.subject.as_dict(),
+                 "feedback_sha256": self.feedback_sha256, "reasons": list(self.reasons),
+                 "next_phase": self.next_phase, "selected_approval_event": self.selected_approval_event,
+                 "unresolved_thread_ids": list(self.unresolved_thread_ids)}
+        if self.selected_approval_evidence is not None:
+            value["selected_approval_evidence"] = self.selected_approval_evidence
+        return value
 
     @classmethod
     def from_dict(cls, value: Any) -> "UserReviewResult":
         expected = {"feedback_sha256", "next_phase", "reasons", "selected_approval_event",
                     "status", "subject", "unresolved_thread_ids"}
-        if not isinstance(value, dict) or set(value) != expected:
+        if not isinstance(value, dict) or set(value) not in (expected, expected | {"selected_approval_evidence"}):
             raise UserReviewError("User Review result has unknown or missing fields")
         raw_subject = value["subject"]
         if not isinstance(raw_subject, dict) or set(raw_subject) != {"verification_subject", "readiness_sha256"}:
@@ -350,16 +369,95 @@ class UserReviewResult:
             raise UserReviewError("User Review reasons or thread IDs are invalid")
         return cls(value["status"], subject, value["feedback_sha256"], tuple(value["reasons"]),
                    value["next_phase"], value["selected_approval_event"],
-                   tuple(value["unresolved_thread_ids"])).validate()
+                   tuple(value["unresolved_thread_ids"]),
+                   value.get("selected_approval_evidence")).validate()
+
+
+def _evaluate_typed_relay_review(
+    session: UserReviewSession,
+    readiness: ReadinessResult,
+    current_pr_head_sha40: str,
+    snapshot: "FeedbackSnapshot",
+    *, review_mode: str | None, pr_author_user_id: int | None,
+    repository_owner_user_id: int | None,
+    authenticated_verifier_user_id: int | None,
+    allowed_human_user_ids: Iterable[int],
+    all_feedback_surfaces_read: bool,
+    approval: Any,
+) -> UserReviewResult:
+    """Keep delegated owner evidence separate from formal and attested chat."""
+    from .user_review_relay import UserReviewRelayApproval
+
+    subject = session.subject
+    rows = snapshot.events
+    digest = feedback_digest(rows)
+    reasons: list[str] = []
+    allowed = tuple(allowed_human_user_ids)
+    if not isinstance(approval, UserReviewRelayApproval):
+        reasons.append("verified typed owner relay approval is missing")
+    if review_mode != "solo_owner":
+        reasons.append("relay approval requires solo_owner review mode")
+    if (type(repository_owner_user_id) is not int or repository_owner_user_id <= 0
+            or type(pr_author_user_id) is not int
+            or pr_author_user_id != repository_owner_user_id
+            or type(authenticated_verifier_user_id) is not int
+            or authenticated_verifier_user_id <= 0
+            or repository_owner_user_id not in allowed):
+        reasons.append("repository owner, PR author, policy or read-only verifier identity mismatch")
+    if (readiness.status != "PASS" or readiness.subject != subject.verification_subject
+            or readiness.sha256 != subject.readiness_sha256
+            or current_pr_head_sha40 != subject.verification_subject.pr_head_sha40):
+        reasons.append("Review Readiness or current PR HEAD is stale")
+    if not all_feedback_surfaces_read:
+        reasons.append("GitHub feedback enumeration is incomplete")
+    if snapshot.unresolved_thread_ids:
+        reasons.append("unresolved GitHub review threads remain")
+    if isinstance(approval, UserReviewRelayApproval):
+        if (approval.review_session_sha256 != session.sha256
+                or approval.owner_id != repository_owner_user_id):
+            reasons.append("relay owner or session does not match")
+        try:
+            if _time(approval.created_at) <= _time(session.started_at):
+                reasons.append("relay approval predates or equals session start")
+        except UserReviewError:
+            reasons.append("invalid relay approval timestamp")
+        matching = [row for row in rows
+                    if row.channel == "issue-comment" and row.event_id == str(approval.comment_id)
+                    and row.actor_id == approval.owner_id and row.actor_type == "User"
+                    and row.body_sha256 == approval.body_sha256
+                    and row.created_at == approval.created_at
+                    and row.updated_at == approval.created_at and not row.edited and not row.deleted]
+        if len(matching) != 1:
+            reasons.append("dedicated carrier is absent or changed in complete feedback snapshot")
+        for row in rows:
+            if row.deleted or row.edited:
+                reasons.append("GitHub feedback was deleted or edited")
+            if (row.actor_id in allowed and row.kind in {"questions", "changes_requested", "blocked"}
+                    and not (row.channel == "issue-comment" and row.event_id == str(approval.comment_id))
+                    and _time(row.updated_at) >= _time(approval.created_at)):
+                reasons.append("later unresolved human feedback supersedes relay approval")
+    if reasons:
+        return UserReviewResult("BLOCKED", subject, digest, tuple(dict.fromkeys(reasons)),
+                                "user-review", None, snapshot.unresolved_thread_ids).validate()
+    return UserReviewResult(
+        "APPROVED", subject, digest, (), "user-review",
+        "user-review-relay:" + str(approval.comment_id), snapshot.unresolved_thread_ids,
+        approval.as_selected_evidence(),
+    ).validate()
 
 
 def evaluate_user_review(
-    subject: UserReviewSubject,
+    subject: UserReviewSubject | UserReviewSession,
     readiness: ReadinessResult,
     current_pr_head_sha40: str,
-    events: Iterable[FeedbackEvent],
+    events: Iterable[FeedbackEvent] | "FeedbackSnapshot",
     *,
     allowed_human_user_ids: Iterable[int],
+    review_mode: str | None = None,
+    pr_author_user_id: int | None = None,
+    repository_owner_user_id: int | None = None,
+    authenticated_verifier_user_id: int | None = None,
+    relay_approval: Any = None,
     previous_feedback_sha256: str | None = None,
     required_after: str | None = None,
     all_feedback_surfaces_read: bool = True,
@@ -367,6 +465,29 @@ def evaluate_user_review(
     unresolved_thread_ids: Iterable[str] = (),
 ) -> UserReviewResult:
     """Read-only gate. This function never calls GitHub or changes an Issue."""
+    if review_mode is not None and review_mode not in {"solo_owner", "external_reviewer"}:
+        raise UserReviewError("unsupported review mode")
+    if isinstance(subject, UserReviewSession):
+        session = subject.validate()
+        if not isinstance(events, FeedbackSnapshot):
+            raise UserReviewError("session evaluation requires a full FeedbackSnapshot")
+        snapshot = events.validate()
+        subject = session.subject
+        if snapshot.subject != subject:
+            raise UserReviewError("feedback snapshot belongs to a different User Review subject")
+        if relay_approval is not None:
+            return _evaluate_typed_relay_review(
+                session, readiness, current_pr_head_sha40, snapshot,
+                review_mode=review_mode, pr_author_user_id=pr_author_user_id,
+                repository_owner_user_id=repository_owner_user_id,
+                authenticated_verifier_user_id=authenticated_verifier_user_id,
+                allowed_human_user_ids=allowed_human_user_ids,
+                all_feedback_surfaces_read=all_feedback_surfaces_read,
+                approval=relay_approval,
+            )
+        events = snapshot.events
+        required_after = session.started_at
+        unresolved_thread_ids = snapshot.unresolved_thread_ids
     subject.validate()
     rows = tuple(events)
     digest = feedback_digest(rows)
@@ -398,6 +519,8 @@ def evaluate_user_review(
     if unresolved:
         reasons.append("unresolved GitHub review threads remain")
     eligible = [event for event in rows if event.actor_id in ids and event.actor_type == "User"
+                and not (review_mode == "solo_owner" and event.channel == "pr-review"
+                         and event.actor_id == pr_author_user_id)
                 and not event.deleted and (event.channel != "chat" or
                     (event.host_attestation_sha256 is not None and event.subject_sha256 == subject.sha256))]
     eligible.sort(key=lambda x: (_time(x.updated_at), _time(x.created_at), x.channel, x.event_id))
