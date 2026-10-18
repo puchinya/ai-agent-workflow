@@ -17,6 +17,12 @@ Owner: runtime/p_ases/audits.py. Inputs are the verified ADC, current PR HEAD, r
 5. Keep the Bootstrap #32 review-procedure waiver scoped to its fixed implementation process; it does not change product runtime requirements.
 6. After self-review passes, hand off to a dedicated fresh host-native subagent for Independent Review. The host spawns and joins it and provides the actual spawn/session ID, reviewer ID, and implementation binding ID. The child records those exact values in the existing context artifact's `provenance` string as compact canonical JSON; `context_id` remains the child context ID. The parent compares the raw values with host metadata/current binding, then passes the unchanged artifact to `audit independent`. The child must read the full approved Contract, checklist, exact PR/HEAD, full diff, and test evidence, then author its own raw findings/result. The implementation context cannot author, edit, or replace that result.
 
+## Lifecycle handoff
+
+For ordinary single/child Issues, the host follows one sequence: approved ADC and optional Phase rebaseline; exact frozen Binding; specification/design/Test Oracle artifacts and receipts; `ready`; `execution`; implementation; current Verification, Acceptance, Self-Audit, and a fresh native Independent Review; `verification`; Review Readiness; then `user-review start`. Blocking review findings are fixed while phase is `execution`, and every changed HEAD gets a fresh child review. Only after the complete current PASS set may the host advance to `verification`; a required code change after that phase blocks as `BLOCKED_PHASE_REWORK_DECISION_REQUIRED`. CLI commands remain one-shot mutations/readbacks; Skills and adapters own orchestration.
+
+Readiness cannot newly PASS outside `verification`; in `user-review`, it may only reproduce the exact subject and Readiness SHA already held by the immutable session. User Review checks phase before writing a session or feedback snapshot. In `verification`, `start` may create one session; in `user-review`, only a matching existing session may resume. If interruption leaves the exact session in `verification`, `sync` preserves its `started_at`, completes snapshot readback, and performs the normal Phase update/readback. Missing or mismatched sessions block without overwrite. `PENDING` (exit code 2) is ordinary waiting; report `WAITING_USER_REVIEW_DECISION` only after reading back the session, complete feedback snapshot, and `phase:user-review`. This does not record approval.
+
 ## CLI
 
 ~~~sh

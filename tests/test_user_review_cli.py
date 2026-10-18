@@ -15,8 +15,14 @@ sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases.delivery import ReadinessResult
 from p_ases.evidence_store import VerificationSubject
-from p_ases.user_review import FeedbackSnapshot, UserReviewError, UserReviewSubject, feedback_snapshot_path
-from p_ases.cli import _latest_review_snapshot, _user_review_run
+from p_ases.phases import IssueKind, Phase
+from p_ases.user_review import (
+    FeedbackSnapshot, UserReviewError, UserReviewResult, UserReviewSession, UserReviewSubject,
+    feedback_snapshot_path, review_session_path, write_review_session,
+)
+from p_ases.cli import (
+    _latest_review_snapshot, _readiness_phase_blocker, _review_phase_transition, _user_review_run,
+)
 
 
 HEAD = "a" * 40
@@ -27,46 +33,140 @@ USER_SUBJECT = UserReviewSubject(VERIFICATION_SUBJECT, READINESS.sha256).validat
 
 
 class UserReviewCliRegressionTests(unittest.TestCase):
-    def test_start_sync_status_reaches_pending_with_session_in_snapshot_directory(self):
-        class FakeGitHub:
-            def issue(self, _number):
-                return {"number": 31, "state": "open", "pull_request": None}
+    class FakeGitHub:
+        def __init__(self, phase="verification"):
+            self.phase = phase
 
-            def pull_request(self, _number):
-                return {"number": 37, "head": {"sha": HEAD}}
+        def issue(self, _number):
+            return {"number": 31, "state": "open", "pull_request": None,
+                    "labels": [{"name": "kind:child"}, {"name": f"phase:{self.phase}"}]}
 
-            def authenticated_user(self):
-                return {"id": 42, "login": "octocat", "type": "User"}
+        def pull_request(self, _number):
+            return {"number": 37, "head": {"sha": HEAD}}
 
+        def authenticated_user(self):
+            return {"id": 42, "login": "octocat", "type": "User"}
+
+    @staticmethod
+    def _run_review(root, github, verb):
         verified_adc = SimpleNamespace(pointer=SimpleNamespace(state="approved", comment_id=5, sha256="f" * 64))
 
         def feedback(_github, subject, *, observed_at):
             return FeedbackSnapshot(subject, (), (), observed_at).validate()
 
+        args = SimpleNamespace(verb=verb, issue=31, pr=37, head=HEAD,
+                               plan=root / "plan.json", readiness=root / "readiness.json",
+                               kind="child", new_scope=False)
+        output = io.StringIO()
+        with patch("p_ases.cli._approved_issue_adc", side_effect=lambda gh, _n, _r: (gh.issue(31), verified_adc)), \
+                patch("p_ases.cli.verify_adc", return_value=verified_adc), \
+                patch("p_ases.cli._load_plan", return_value=(object(), (), (), ())), \
+                patch("p_ases.cli._subject", return_value=VERIFICATION_SUBJECT), \
+                patch("p_ases.cli._readback_current_pr", return_value={"head_sha": HEAD}), \
+                patch("p_ases.cli.load_profile", return_value=SimpleNamespace(
+                    final_delivery_review_mode="external_reviewer")), \
+                patch("p_ases.cli.read_readiness", return_value=READINESS), \
+                patch("p_ases.cli._review_payload_from_github", side_effect=feedback), \
+                patch("p_ases.cli._review_phase_transition") as transition, \
+                contextlib.redirect_stdout(output):
+            status = _user_review_run(args, "octo/repo", root, github)
+        return status, json.loads(output.getvalue()), transition
+
+    def test_start_sync_status_reaches_pending_and_preserves_session_across_interruption(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            github = self.FakeGitHub(phase="verification")
+            saved_bytes = None
             for verb in ("start", "sync", "status"):
-                args = SimpleNamespace(verb=verb, issue=31, pr=37, head=HEAD,
-                                       plan=root / "plan.json", readiness=root / "readiness.json",
-                                       kind="child", new_scope=False)
-                output = io.StringIO()
-                with patch("p_ases.cli._approved_issue_adc", return_value=({}, verified_adc)), \
-                        patch("p_ases.cli.verify_adc", return_value=verified_adc), \
-                        patch("p_ases.cli._load_plan", return_value=(object(), (), (), ())), \
-                        patch("p_ases.cli._subject", return_value=VERIFICATION_SUBJECT), \
-                        patch("p_ases.cli._readback_current_pr", return_value={"head_sha": HEAD}), \
-                        patch("p_ases.cli.load_profile", return_value=SimpleNamespace(
-                            final_delivery_review_mode="external_reviewer")), \
-                        patch("p_ases.cli.read_readiness", return_value=READINESS), \
-                        patch("p_ases.cli._review_payload_from_github", side_effect=feedback), \
-                        patch("p_ases.cli._review_phase_transition"), \
-                        contextlib.redirect_stdout(output):
-                    status = _user_review_run(args, "octo/repo", root, FakeGitHub())
-                result = json.loads(output.getvalue())
+                status, result, transition = self._run_review(root, github, verb)
                 self.assertEqual(result["status"], "PENDING")
                 self.assertEqual(status, 2)
-                self.assertTrue((root / ".p_ases" / "user-review" / "31" / USER_SUBJECT.sha256
-                                 / "session.json").is_file())
+                session_path = review_session_path(root, USER_SUBJECT)
+                self.assertTrue(session_path.is_file())
+                if saved_bytes is None:
+                    saved_bytes = session_path.read_bytes()
+                self.assertEqual(session_path.read_bytes(), saved_bytes)
+                self.assertEqual(transition.call_count, 0 if verb == "status" else 1)
+
+    def test_phase_user_review_resumes_only_existing_exact_session(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session_path = review_session_path(root, USER_SUBJECT)
+            write_review_session(session_path, UserReviewSession(USER_SUBJECT, "2026-10-12T00:00:00Z"))
+            original = session_path.read_bytes()
+            status, result, transition = self._run_review(root, self.FakeGitHub(phase="user-review"), "start")
+            self.assertEqual(result["status"], "PENDING")
+            self.assertEqual(status, 2)
+            self.assertEqual(session_path.read_bytes(), original)
+            transition.assert_called_once()
+
+    def test_phase_user_review_without_session_blocks_before_snapshot_or_session_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            status, result, transition = self._run_review(root, self.FakeGitHub(phase="user-review"), "start")
+            self.assertEqual(status, 2)
+            self.assertEqual(result["status"], "BLOCKED")
+            self.assertFalse(review_session_path(root, USER_SUBJECT).exists())
+            self.assertFalse(feedback_snapshot_path(root, FeedbackSnapshot(
+                USER_SUBJECT, (), (), "2026-10-12T00:00:00Z").validate()).parent.exists())
+            transition.assert_not_called()
+
+    def test_user_review_rejects_phases_before_session_or_snapshot_writes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            status, result, transition = self._run_review(root, self.FakeGitHub(phase="ready"), "start")
+            self.assertEqual(status, 2)
+            self.assertEqual(result["status"], "BLOCKED")
+            self.assertFalse(review_session_path(root, USER_SUBJECT).exists())
+            transition.assert_not_called()
+
+    def test_sync_without_session_does_not_create_session_or_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            status, result, transition = self._run_review(root, self.FakeGitHub(phase="verification"), "sync")
+            self.assertEqual(status, 2)
+            self.assertEqual(result["status"], "BLOCKED")
+            self.assertFalse(review_session_path(root, USER_SUBJECT).exists())
+            self.assertFalse(feedback_snapshot_path(root, FeedbackSnapshot(
+                USER_SUBJECT, (), (), "2026-10-12T00:00:00Z").validate()).parent.exists())
+            transition.assert_not_called()
+
+    def test_sync_recovers_phase_transition_from_verification_with_same_session(self):
+        class MutableIssue:
+            phase = "verification"
+            writes = 0
+
+            def issue(self, _number):
+                return {"number": 31, "state": "open", "pull_request": None,
+                        "labels": [{"name": "kind:child"}, {"name": f"phase:{self.phase}"}]}
+
+            def replace_issue_labels(self, _number, labels):
+                self.writes += 1
+                self.phase = next(label.removeprefix("phase:") for label in labels
+                                  if label.startswith("phase:"))
+
+        github = MutableIssue()
+        pending = UserReviewResult("PENDING", USER_SUBJECT, "f" * 64, ("awaiting review",),
+                                   "user-review").validate()
+        _review_phase_transition(github, 31, IssueKind.CHILD, pending, "sync")
+        self.assertEqual(github.phase, "user-review")
+        self.assertEqual(github.writes, 1)
+
+    def test_readiness_phase_guard_requires_verification_or_exact_user_review_session(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertIsNone(_readiness_phase_blocker(
+                IssueKind.CHILD, Phase.VERIFICATION, VERIFICATION_SUBJECT, READINESS, root))
+            self.assertIn("phase is ready", _readiness_phase_blocker(
+                IssueKind.CHILD, Phase.READY, VERIFICATION_SUBJECT, READINESS, root))
+            reason = _readiness_phase_blocker(
+                IssueKind.CHILD, Phase.USER_REVIEW, VERIFICATION_SUBJECT, READINESS, root)
+            self.assertIn("immutable session", reason)
+            review_subject = UserReviewSubject(VERIFICATION_SUBJECT, READINESS.sha256).validate()
+            write_review_session(review_session_path(root, review_subject),
+                                 UserReviewSession(review_subject, "2026-10-12T00:00:00Z"))
+            self.assertIsNone(_readiness_phase_blocker(
+                IssueKind.CHILD, Phase.USER_REVIEW, VERIFICATION_SUBJECT, READINESS, root))
 
     def test_snapshot_hash_name_is_required_and_tampered_snapshot_fails_closed(self):
         with tempfile.TemporaryDirectory() as directory:

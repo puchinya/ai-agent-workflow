@@ -14,7 +14,13 @@ Owner: runtime/p_ases/checkpoint.py and work.py. Inputs are the current Issue, e
 2. Inspect the existing binding and checkpoint history without rewriting them.
 3. Recover only the same Issue, repository, ADC, base ref/SHA, branch, and workspace identity.
 4. Use ordinary work routes to append checkpoints after successful state transitions.
-5. Never resolve a newer base for a bound execution. A changed or missing checkpoint is not silently reconstructed from current Git state.
+5. Never resolve a newer base for a bound execution. A changed or missing checkpoint is not silently reconstructed from current Git state. If the original ExecutionBinding cannot be authenticated, stop as `BLOCKED_BINDING_PROVENANCE_MISSING`; do not infer the frozen tuple from the current branch or `main`.
+
+## Lifecycle handoff
+
+For ordinary single/child Issues, the host follows one sequence: approved ADC and optional Phase rebaseline; exact frozen Binding; specification/design/Test Oracle artifacts and receipts; `ready`; `execution`; implementation; current Verification, Acceptance, Self-Audit, and a fresh native Independent Review; `verification`; Review Readiness; then `user-review start`. Blocking review findings are fixed while phase is `execution`, and every changed HEAD gets a fresh child review. Only after the complete current PASS set may the host advance to `verification`; a required code change after that phase blocks as `BLOCKED_PHASE_REWORK_DECISION_REQUIRED`. CLI commands remain one-shot mutations/readbacks; Skills and adapters own orchestration.
+
+Readiness cannot newly PASS outside `verification`; in `user-review`, it may only reproduce the exact subject and Readiness SHA already held by the immutable session. User Review checks phase before writing a session or feedback snapshot. In `verification`, `start` may create one session; in `user-review`, only a matching existing session may resume. If interruption leaves the exact session in `verification`, `sync` preserves its `started_at`, completes snapshot readback, and performs the normal Phase update/readback. Missing or mismatched sessions block without overwrite. `PENDING` (exit code 2) is ordinary waiting; report `WAITING_USER_REVIEW_DECISION` only after reading back the session, complete feedback snapshot, and `phase:user-review`. This does not record approval.
 
 ## CLI
 

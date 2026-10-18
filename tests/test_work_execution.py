@@ -56,6 +56,17 @@ class WorkExecutionTests(unittest.TestCase):
             self.assertEqual(read_binding(work / ".p_ases/state/30/execution-binding.json"), result.binding)
             self.assertEqual(read_checkpoint(resumed.checkpoint_path).sha256, resumed.checkpoint_sha256)
 
+    def test_recover_does_not_synthesize_a_missing_binding(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            work, _bare, _base = self._repo(Path(temporary))
+            binding_path = work / ".p_ases/state/30/execution-binding.json"
+            with self.assertRaisesRegex(WorkError, "frozen ExecutionBinding cannot be recovered"):
+                recover_work(
+                    work, repository="owner/repo", issue_number=30, adc_comment_id=123,
+                    adc_sha256="a" * 64, expected_branch_ref="pases/work",
+                )
+            self.assertFalse(binding_path.exists())
+
     def test_reapproved_adc_appends_binding_generation_without_changing_issue_branch_or_base(self):
         with tempfile.TemporaryDirectory() as temporary:
             work, _bare, base = self._repo(Path(temporary))

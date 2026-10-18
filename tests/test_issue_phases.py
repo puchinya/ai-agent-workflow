@@ -414,6 +414,11 @@ class PhaseTests(unittest.TestCase):
         state = advance(state, Phase.REQUIREMENTS, new_requirements=True)
         self.assertIs(state.phase, Phase.REQUIREMENTS)
 
+    def test_verification_cannot_backtrack_to_execution_without_rework_decision(self):
+        state = PhaseState(1, IssueKind.CHILD, Phase.VERIFICATION)
+        with self.assertRaisesRegex(PhaseError, "BLOCKED_PHASE_REWORK_DECISION_REQUIRED"):
+            advance(state, Phase.EXECUTION)
+
     def test_issue_closure_requires_user_approval_and_merge_or_parent_integration(self):
         child = PhaseState(9, IssueKind.CHILD, Phase.USER_REVIEW)
         with self.assertRaisesRegex(PhaseError, "explicit user approval"):

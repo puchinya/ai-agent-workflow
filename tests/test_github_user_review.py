@@ -119,7 +119,7 @@ class UserReviewGitHubAdapterTests(unittest.TestCase):
 
         class LabelGitHub:
             def __init__(self):
-                self.labels = ["phase:user-review"]
+                self.labels = ["kind:child", "phase:user-review"]
 
             def issue(self, _issue):
                 return {"number": 31, "state": "open", "labels": [{"name": row} for row in self.labels]}

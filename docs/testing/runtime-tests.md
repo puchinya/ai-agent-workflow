@@ -2,7 +2,7 @@
 <!-- agent-doc-schema: 2 -->
 # Runtime and CLI Test Specification
 
-- Status: Existing cases approved; TST-RT-018 and TST-RT-019 are drafts pending Issue #63 successor ADC approval and phase evidence.
+- Status: TST-RT-018 and TST-RT-019 remain draft cases. The final Issue #63 successor ADC is approved and published, and its Phase V2 rebaseline is complete; generation-scoped ordinary Phase receipts and downstream User Review/Delivery evidence remain outstanding.
 - Owning specification: ../specs/
 
 The stable RT test IDs preserve the earlier traceability graph. Current CLI cases use the namespaced P-ASES routes. Procedures for APIs that the Runtime Specification marks legacy are regression conditions for retained internal behavior, not public-command compatibility requirements.
@@ -166,13 +166,13 @@ Resolution fails closed and leaves the current branch, worktree, hooks, and bind
 <a id="tst-rt-006-workspace-binding"></a>
 ### 2.6 TST-RT-006 Workspace binding
 
-**Setup and action:** Use `work bind` and `work recover` with valid, mismatched, and stale binding subjects.
+**Setup and action:** Use `work bind` and `work recover` with valid, mismatched, and stale binding subjects. Delete or omit the immutable ExecutionBinding file and invoke `work recover`; also provide only a current branch/base tuple with no independent evidence for the original initial HEAD.
 
 <a id="ora-rt-006"></a>
 <a id="ora-rt-006-expected-result"></a>
 #### 2.6.1 ORA-RT-006 Expected result
 
-A binding is created only for the validated clean workspace and exact base; existing valid bindings are reused.
+A binding is created only for the validated clean workspace and exact base; existing valid bindings are reused. `work recover` validates and checkpoints an existing immutable binding file; it never synthesizes a missing frozen tuple. Without independent evidence for the original base, branch, worktree, and initial HEAD, the workflow blocks as `BLOCKED_BINDING_PROVENANCE_MISSING` rather than inferring identity from the current branch or `main`.
 
 <a id="tst-rt-007"></a>
 <a id="tst-rt-007-review-pr-retryreadback"></a>

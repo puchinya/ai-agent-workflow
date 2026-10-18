@@ -1571,12 +1571,67 @@ def _delivery_bootstrap_check(args: argparse.Namespace, repository: str, root: P
     return 0 if result.status == "BOOTSTRAP_TECHNICAL_READY" else 2
 
 
+def _issue_kind_phase(issue: Any, issue_number: int) -> tuple[IssueKind, Phase]:
+    """Read the unique kind/phase labels needed to enforce lifecycle gates."""
+    if (not isinstance(issue, dict) or issue.get("number") != issue_number
+            or issue.get("state") != "open" or issue.get("pull_request") is not None):
+        raise CLIError("workflow phase check requires the same open non-PR Issue")
+    rows = issue.get("labels")
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise CLIError("Issue workflow labels are invalid")
+    labels = [row.get("name") for row in rows]
+    if any(not isinstance(label, str) for label in labels):
+        raise CLIError("Issue workflow labels contain a malformed name")
+    kind_values = [label.removeprefix("kind:") for label in labels if label.startswith("kind:")]
+    if len(kind_values) != 1:
+        raise CLIError("an open Issue must have exactly one kind:* label")
+    try:
+        kind = IssueKind(kind_values[0])
+        phase = parse_phase_labels(labels)
+        parse_attention_labels(labels)
+    except PhaseError as exc:
+        raise CLIError(str(exc)) from exc
+    return kind, phase
+
+
+def _readiness_phase_blocker(kind: IssueKind, phase: Phase, subject: Any,
+                             result: Any, root: Path) -> str | None:
+    """Allow new readiness only during verification or an exact active review session."""
+    if kind not in {IssueKind.SINGLE, IssueKind.CHILD}:
+        return None
+    if phase is Phase.VERIFICATION:
+        return None
+    if phase is not Phase.USER_REVIEW:
+        return (f"Review Readiness cannot pass while Issue phase is {phase.value}; "
+                "single/child readiness is permitted only in verification or an exact active User Review")
+    if getattr(result, "status", None) != "PASS":
+        return "phase:user-review readiness may only be recomputed for the immutable active User Review session"
+    try:
+        review_subject = UserReviewSubject(subject, result.sha256).validate()
+        session = read_review_session(review_session_path(root, review_subject))
+    except (UserReviewError, OSError, AttributeError, ValueError) as exc:
+        return ("phase:user-review cannot create a new Readiness PASS; an immutable session for the exact "
+                f"subject and Readiness SHA is required ({exc})")
+    if session.subject != review_subject:
+        return "phase:user-review User Review session differs from the exact subject and Readiness SHA"
+    return None
+
+
 def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
     blockers: list[str] = []
     published_refs: list[str] = []
     verified_adc = None
+    issue_kind: IssueKind | None = None
+    issue_phase: Phase | None = None
     try:
-        _issue, verified_adc = _approved_issue_adc(github, args.issue, repository)
+        issue_row, verified_adc = _approved_issue_adc(github, args.issue, repository)
+        issue_kind, issue_phase = _issue_kind_phase(issue_row, args.issue)
+        if (issue_kind in {IssueKind.SINGLE, IssueKind.CHILD}
+                and issue_phase not in {Phase.VERIFICATION, Phase.USER_REVIEW}):
+            blockers.append(
+                f"Review Readiness cannot pass while Issue phase is {issue_phase.value}; "
+                "single/child readiness is permitted only in verification or an exact active User Review"
+            )
     except (ADCError, CLIError, GitHubError) as exc:
         blockers.append(f"current open Issue/approved ADC readback failed: {exc}")
 
@@ -1727,7 +1782,11 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
             final_issue = github.issue(args.issue)
             if final_issue.get("number") != args.issue or final_issue.get("state") != "open":
                 blockers.append("Issue changed from open before Review Readiness persistence")
-        except GitHubError as exc:
+            elif issue_kind is not None and issue_phase is not None:
+                final_kind, final_phase = _issue_kind_phase(final_issue, args.issue)
+                if (final_kind, final_phase) != (issue_kind, issue_phase):
+                    blockers.append("Issue kind/phase changed before Review Readiness persistence")
+        except (GitHubError, CLIError) as exc:
             blockers.append(f"Issue final readback failed before Readiness persistence: {exc}")
         try:
             last_adc = verify_adc(github, args.issue)
@@ -1819,6 +1878,17 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
         required_checks_sha256=check_sha, blocker_reasons=blockers,
         current_base_advance=current_base_evidence,
     )
+    if issue_kind is not None and issue_phase is not None:
+        phase_blocker = _readiness_phase_blocker(issue_kind, issue_phase, subject, result, root)
+        if phase_blocker is not None and phase_blocker not in blockers:
+            blockers.append(phase_blocker)
+            result = evaluate_readiness(
+                subject=subject, pr=pr_readback, pr_binding=pr_binding, work_context=work_context,
+                verification=verification, acceptance=acceptance, self_audit=self_audit,
+                required_item_ids=required_item_ids, independent_review=independent_review,
+                required_checks_sha256=check_sha, blocker_reasons=blockers,
+                current_base_advance=current_base_evidence,
+            )
     path = readiness_path(root, result)
     write_readiness(path, result)
     _json({"status": result.status, "subject": result.subject.as_dict(),
@@ -2627,28 +2697,26 @@ def _same_snapshot_payload(left: FeedbackSnapshot, right: FeedbackSnapshot) -> b
 def _review_phase_transition(github: GitHub, issue_number: int, kind: IssueKind,
                              result: UserReviewResult, operation: str) -> None:
     issue = github.issue(issue_number)
-    if issue.get("number") != issue_number or issue.get("state") != "open" or issue.get("pull_request") is not None:
-        raise CLIError("User Review phase update requires the same open Issue")
+    actual_kind, phase = _issue_kind_phase(issue, issue_number)
+    if actual_kind is not kind:
+        raise CLIError("User Review phase update Issue kind differs from the requested kind")
     label_rows = issue.get("labels")
-    if not isinstance(label_rows, list) or any(not isinstance(row, dict) for row in label_rows):
-        raise CLIError("Issue phase label readback is invalid")
-    labels = [row.get("name") for row in label_rows]
-    if any(not isinstance(label, str) for label in labels):
-        raise CLIError("Issue phase label readback contains a malformed label")
-    phase, attention = parse_phase_labels(labels), parse_attention_labels(labels)
-    if operation == "start":
-        if phase is Phase.USER_REVIEW:
-            return
-        target = Phase.USER_REVIEW
-        next_state = advance(PhaseState(issue_number, kind, phase, attention), target,
-                             readiness_passed=True)
-    elif result.next_phase == "execution" and phase is Phase.USER_REVIEW:
+    labels = [row["name"] for row in label_rows]
+    attention = parse_attention_labels(labels)
+    if result.next_phase == "execution" and phase is Phase.USER_REVIEW:
         next_state = advance(PhaseState(issue_number, kind, phase, attention), Phase.EXECUTION,
                              changes_requested=True)
     elif result.next_phase == "requirements" and phase is Phase.USER_REVIEW:
         next_state = advance(PhaseState(issue_number, kind, phase, attention), Phase.REQUIREMENTS,
                              new_requirements=True)
+    elif operation in {"start", "sync"} and phase is Phase.VERIFICATION:
+        next_state = advance(PhaseState(issue_number, kind, phase, attention), Phase.USER_REVIEW,
+                             readiness_passed=True)
+    elif operation in {"start", "sync"} and phase is Phase.USER_REVIEW:
+        return
     else:
+        if operation in {"start", "sync"}:
+            raise CLIError(f"User Review cannot enter from Issue phase {phase.value}")
         return
     current = github.issue(issue_number)
     current_labels = current.get("labels") if isinstance(current, dict) else None
@@ -2672,10 +2740,14 @@ def _user_review_run(args: argparse.Namespace, repository: str, root: Path, gith
     result: UserReviewResult | None = None
     snapshot: FeedbackSnapshot | None = None
     try:
-        issue_row = github.issue(args.issue)
-        if issue_row.get("number") != args.issue or issue_row.get("state") != "open" or issue_row.get("pull_request") is not None:
-            raise CLIError("User Review requires the same open Issue")
-        _issue, verified_adc = _approved_issue_adc(github, args.issue, repository)
+        issue_row, verified_adc = _approved_issue_adc(github, args.issue, repository)
+        issue_kind, issue_phase = _issue_kind_phase(issue_row, args.issue)
+        if issue_kind is not IssueKind(getattr(args, "kind", IssueKind.CHILD.value)):
+            raise CLIError("User Review --kind differs from the Issue's unique kind:* label")
+        if issue_kind not in {IssueKind.SINGLE, IssueKind.CHILD}:
+            raise CLIError("ordinary User Review requires a single or child Issue")
+        if issue_phase not in {Phase.VERIFICATION, Phase.USER_REVIEW}:
+            raise CLIError(f"User Review cannot start while Issue phase is {issue_phase.value}")
         plan, _reqs, _oracles, _tests = _load_plan(root, repository, args.issue, args.plan, verified_adc)
         pr = github.pull_request(args.pr)
         head = pr.get("head") if isinstance(pr, dict) else None
@@ -2699,11 +2771,26 @@ def _user_review_run(args: argparse.Namespace, repository: str, root: Path, gith
             identity = github.authenticated_user()
             owner_id = pr_author_id = verifier_id = None
             allowed_user_ids = (identity["id"],)
+        pre_session_issue = github.issue(args.issue)
+        pre_session_kind, pre_session_phase = _issue_kind_phase(pre_session_issue, args.issue)
+        if (pre_session_kind, pre_session_phase) != (issue_kind, issue_phase):
+            raise CLIError("Issue kind/phase changed before User Review session access")
         session_path = review_session_path(root, user_review_subject)
-        if args.verb == "start":
+        if session_path.exists():
+            session = read_review_session(session_path)
+            if session.subject != user_review_subject:
+                raise UserReviewError("User Review session belongs to a stale or different exact subject")
+        else:
+            if issue_phase is Phase.USER_REVIEW:
+                raise UserReviewError(
+                    "phase:user-review has no immutable session for this exact subject; refusing to create one"
+                )
+            if args.verb != "start":
+                raise UserReviewError("User Review sync/status requires an existing immutable exact-subject session")
             session_started_at = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
-            write_review_session(session_path, UserReviewSession(user_review_subject, session_started_at))
-        session = read_review_session(session_path)
+            session = write_review_session(
+                session_path, UserReviewSession(user_review_subject, session_started_at),
+            )
         if session.subject != user_review_subject:
             raise UserReviewError("User Review session belongs to a stale or different exact subject")
         observed_at = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
@@ -2732,6 +2819,9 @@ def _user_review_run(args: argparse.Namespace, repository: str, root: Path, gith
                 unresolved_thread_ids=snapshot.unresolved_thread_ids,
             )
         current_issue = github.issue(args.issue)
+        current_kind, current_phase = _issue_kind_phase(current_issue, args.issue)
+        if (current_kind, current_phase) != (issue_kind, issue_phase):
+            raise CLIError("Issue kind/phase changed during User Review; refusing stale session processing")
         current_adc = verify_adc(github, args.issue)
         current_pr_identity = _readback_current_pr(github, subject)
         current_readiness = read_readiness(args.readiness)

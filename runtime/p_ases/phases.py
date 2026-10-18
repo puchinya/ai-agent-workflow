@@ -144,6 +144,12 @@ def advance(
     if skips:
         raise PhaseError("skip reasons must match exactly the optional phases skipped by this transition")
 
+    if (state.kind in {IssueKind.SINGLE, IssueKind.CHILD}
+            and state.phase is Phase.VERIFICATION and target is Phase.EXECUTION):
+        raise PhaseError(
+            "BLOCKED_PHASE_REWORK_DECISION_REQUIRED: code changes after verification require an authorized new lifecycle"
+        )
+
     allowed = {(Phase.READY, Phase.EXECUTION)}
     if state.kind in {IssueKind.SINGLE, IssueKind.CHILD}:
         allowed.update({

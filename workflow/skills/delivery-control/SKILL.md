@@ -11,8 +11,8 @@ Owner: runtime/p_ases/delivery.py and gate_policy.py. Inputs are current PR iden
 ## Workflow
 
 1. Read the gate policy for the Issue. Fixed Bootstrap Issues #27–#32 use the separate technical evaluator before activation.
-2. After a PASS from the dedicated fresh host-native Independent Review child, re-read current Phase, Binding, Verification, Acceptance, Self-Audit, and Required CI. If every required item is current and PASS, evaluate ordinary Review Readiness from those exact-subject inputs. Do not substitute Bootstrap technical readiness for normal product gates.
-3. When `delivery readiness` returns PASS, automatically run `user-review start` for the same repository, Issue, PR, approved ADC, HEAD, and Readiness digest without asking for extra confirmation to start. This records an active session only. Obtain and record the user's explicit final decision separately; never fabricate it. ChatGPT may be the Owner-selected User Review method for code review, so do not demand a duplicate code review, but the chat review alone is not the formal User Review approval record.
+2. After a PASS from the dedicated fresh host-native Independent Review child, re-read current Phase, Binding, Verification, Acceptance, Self-Audit, and Required CI. Keep the Issue in `execution` while checking those inputs. Only when they are current and PASS, run `issue advance ISSUE verification` and read back the phase before evaluating ordinary Review Readiness from those exact-subject inputs. Do not substitute Bootstrap technical readiness for normal product gates.
+3. Require the Issue to be in `phase:verification` before `delivery readiness` can PASS. When it returns PASS, automatically run `user-review start` for the same repository, Issue, PR, approved ADC, HEAD, and Readiness digest without asking for extra confirmation to start. This records an active session only. Obtain and record the user's explicit final decision separately; never fabricate it. ChatGPT may be the Owner-selected User Review method for code review, so do not demand a duplicate code review, but the chat review alone is not the formal User Review approval record.
 4. For final delivery, re-read User Review, GitHub formal review, Required Checks, branch protection, and mergeability.
 5. Verify ordinary auto-close or complete an authorized deferred Issue close with the finalize command.
 6. Present PR number, exact HEAD, technical checks, risks, and intended order before any merge request. A successful check is not user merge permission.
@@ -93,6 +93,12 @@ python -m p_ases delivery gate-policy ISSUE
 Pre-Activation Issues remain untouched. Subsequent policy approval uses a successor setup PR; existing Gate Selections remain pinned to their original Activation record.
 
 An already-owned matching Ruleset is read back as `NOOP`; #64's effective policy is verified before merge, while the full #63 Activation runs after merge. `external_reviewer` keeps its existing V1 behavior and does not receive unauthorized solo-owner policy writes; show the mode-specific setting inventory and block any unsupported or unmet mandatory requirement. Existing V1 records and Gate Selections remain read-only history.
+
+## Lifecycle handoff
+
+For ordinary single/child Issues, the host follows one sequence: approved ADC and optional Phase rebaseline; exact frozen Binding; specification/design/Test Oracle artifacts and receipts; `ready`; `execution`; implementation; current Verification, Acceptance, Self-Audit, and a fresh native Independent Review; `verification`; Review Readiness; then `user-review start`. Blocking review findings are fixed while phase is `execution`, and every changed HEAD gets a fresh child review. Only after the complete current PASS set may the host advance to `verification`; a required code change after that phase blocks as `BLOCKED_PHASE_REWORK_DECISION_REQUIRED`. CLI commands remain one-shot mutations/readbacks; Skills and adapters own orchestration.
+
+Readiness cannot newly PASS outside `verification`; in `user-review`, it may only reproduce the exact subject and Readiness SHA already held by the immutable session. User Review checks phase before writing a session or feedback snapshot. In `verification`, `start` may create one session; in `user-review`, only a matching existing session may resume. If interruption leaves the exact session in `verification`, `sync` preserves its `started_at`, completes snapshot readback, and performs the normal Phase update/readback. Missing or mismatched sessions block without overwrite. `PENDING` (exit code 2) is ordinary waiting; report `WAITING_USER_REVIEW_DECISION` only after reading back the session, complete feedback snapshot, and `phase:user-review`. This does not record approval.
 
 ## CLI
 
