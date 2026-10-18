@@ -277,6 +277,22 @@ class ADCValidationTests(unittest.TestCase):
             current_pointer=current, check_current_pointer=True,
         ).content, candidate)
 
+    def test_final_issue63_candidate_is_approval_ready_for_exact_journal_predecessor(self):
+        candidate = (ROOT / "docs/contracts/issue-63-successor-adc-final.md").read_bytes()
+        current = ADCPointer(
+            6244160653,
+            "f1cab9b9edca34d4e80c486642059881b62abd5d95b993999a52494494bafac8",
+            2048,
+            "approved",
+        )
+        self.assertEqual(validate_approval_ready_adc(
+            candidate,
+            "puchinya/ai-agent-workflow",
+            63,
+            current_pointer=current,
+            check_current_pointer=True,
+        ).content, candidate)
+
 
 class ADCPublicationTests(unittest.TestCase):
     def setUp(self):

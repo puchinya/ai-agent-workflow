@@ -4,7 +4,7 @@ Repository: puchinya/ai-agent-workflow
 Trusted repository identity for this contract: GitHub repository ID `1401910271`; repository owner User ID `3744776`.
 Issue: 63
 Parent contract: none
-Predecessor ADC: Issue #63 comment #6244160653, SHA-256 `f1cab9b9edca34d4e80c486642059881b62abd5d95b993999a52494494bafac8` (current approved pointer journal predecessor; historical bytes remain immutable).
+Predecessor ADC: Issue #63 comment #6244160653, SHA-256 `f1cab9b9edca34d4e80c486642059881b62abd5d95b993999a52494494bafac8`
 Assigned requirements: REQ-F01-008, REQ-F01-009, REQ-F01-010, REQ-F01-011, REQ-F01-012, REQ-F01-013, REQ-F01-014, REQ-F01-015
 Dependencies: Consumer Activation #57; predecessor F01 Issue #42; open #60/PR #62 is a downstream integration target, not a prerequisite.
 Target release: unspecified
