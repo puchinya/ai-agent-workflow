@@ -320,9 +320,10 @@ def _validate_v1_pair(intent: PhaseRecord | None, applied: PhaseRecord | None,
     required = {
         "schema", "repository", "issue_number", "predecessor_adc_comment_id", "predecessor_adc_sha256",
         "successor_adc_comment_id", "successor_adc_sha256", "from_phase", "to_phase",
-        "labels_before", "labels_after", "issue_body_sha256", "executor_user_id",
+        "labels_before", "labels_after", "issue_body_sha256",
     }
-    if (set(payload) != required or payload.get("schema") != INTENT_SCHEMA
+    if (frozenset(payload) not in {frozenset(required), frozenset(required | {"executor_user_id"})}
+            or payload.get("schema") != INTENT_SCHEMA
             or payload.get("repository") != REPOSITORY or payload.get("issue_number") != ISSUE_NUMBER
             or payload.get("predecessor_adc_comment_id") != predecessor.pointer.comment_id
             or payload.get("predecessor_adc_sha256") != predecessor.pointer.sha256
@@ -332,7 +333,9 @@ def _validate_v1_pair(intent: PhaseRecord | None, applied: PhaseRecord | None,
             or any(not isinstance(payload.get(key), str) or SHA256.fullmatch(payload[key]) is None
                    for key in ("predecessor_adc_sha256", "successor_adc_sha256", "issue_body_sha256"))
             or any(type(payload.get(key)) is not int or payload[key] < 1
-                   for key in ("predecessor_adc_comment_id", "successor_adc_comment_id", "executor_user_id"))
+                   for key in ("predecessor_adc_comment_id", "successor_adc_comment_id"))
+            or ("executor_user_id" in payload
+                and (type(payload["executor_user_id"]) is not int or payload["executor_user_id"] < 1))
             or payload["successor_adc_comment_id"] <= payload["predecessor_adc_comment_id"]
             or intent.comment_id <= payload["successor_adc_comment_id"]):
         raise PhaseRebaselineError("V1 Intent evidence fields do not match its historical ADC generation")
@@ -341,7 +344,7 @@ def _validate_v1_pair(intent: PhaseRecord | None, applied: PhaseRecord | None,
     expected_after = sorted([label for label in before if label != "phase:ready"] + ["phase:requirements"])
     if after != expected_after:
         raise PhaseRebaselineError("V1 Intent does not describe the exact historical label replacement")
-    if intent.actor_id != payload["executor_user_id"]:
+    if "executor_user_id" in payload and intent.actor_id != payload["executor_user_id"]:
         raise PhaseRebaselineError("V1 Intent author does not match its authenticated executor identity")
     if applied is None:
         return
@@ -353,8 +356,10 @@ def _validate_v1_pair(intent: PhaseRecord | None, applied: PhaseRecord | None,
         "successor_adc_comment_id": successor.pointer.comment_id,
         "successor_adc_sha256": successor.pointer.sha256,
         "from_phase": "ready", "to_phase": "requirements",
-        "labels_after": payload["labels_after"], "executor_user_id": payload["executor_user_id"],
+        "labels_after": payload["labels_after"],
     }
+    if "executor_user_id" in payload:
+        expected["executor_user_id"] = payload["executor_user_id"]
     if (applied.payload != expected or applied.comment_id <= intent.comment_id
             or applied.actor_id != intent.actor_id):
         raise PhaseRebaselineError("V1 Applied evidence does not exactly match its Intent")

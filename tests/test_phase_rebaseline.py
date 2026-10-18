@@ -152,6 +152,8 @@ class PhaseRebaselineTests(unittest.TestCase):
         intent_payload = phase_module._intent_v1_payload(
             chain[0], chain[1], github.issue_body, before, after, ACTOR_ID,
         )
+        # The actual historical #63 V1 carriers predate executor_user_id in the payload.
+        intent_payload.pop("executor_user_id")
         intent = github.add_record(6236687874, INTENT_SCHEMA, intent_payload)
         applied_payload = {
             "schema": phase_module.APPLIED_SCHEMA, "repository": REPOSITORY, "issue_number": 63,
@@ -164,7 +166,6 @@ class PhaseRebaselineTests(unittest.TestCase):
             "successor_adc_comment_id": chain[1].pointer.comment_id,
             "successor_adc_sha256": chain[1].pointer.sha256,
             "from_phase": "ready", "to_phase": "requirements", "labels_after": after,
-            "executor_user_id": ACTOR_ID,
         }
         applied = github.add_record(6236700004, phase_module.APPLIED_SCHEMA, applied_payload)
         github.next_comment_id = CURRENT_ADC_COMMENT_ID + 10
