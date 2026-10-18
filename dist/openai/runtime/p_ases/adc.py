@@ -64,6 +64,10 @@ REQUIRED_SECTIONS = {
     "artifact_impact", "exact_changes", "invariants", "non_goals",
     "verification_obligations", "reviewer_checklist", "completion_gates",
 }
+PREDECESSOR_ADC_FIELDS = re.compile(
+    r"^Predecessor ADC:\s*Issue\s+#?([1-9][0-9]*)\s+comment\s+#?([1-9][0-9]*),\s*"
+    r"SHA-256\s+`?([0-9a-f]{64})`?(?:\s+\(.*\))?$"
+)
 
 
 @dataclass(frozen=True)
@@ -309,6 +313,71 @@ def parse_adc(data: bytes, repository: str, issue_number: int) -> ADC:
         requirement_ids=requirement_ids,
         child_key=child_key,
     )
+
+
+def validate_approval_ready_adc(
+    data: bytes,
+    repository: str,
+    issue_number: int,
+    *,
+    current_pointer: ADCPointer | None = None,
+    check_current_pointer: bool = False,
+) -> ADC:
+    """Validate a new approved publication without changing historical reads.
+
+    ``parse_adc`` remains structural and is intentionally used by verification of
+    old immutable generations. This stricter check applies only when preparing a
+    new approved publication or its exact owner-authorization plan.
+    """
+    contract = parse_adc(data, repository, issue_number)
+    if check_current_pointer and current_pointer is not None and not isinstance(current_pointer, ADCPointer):
+        raise ADCError("current ADC predecessor pointer is malformed")
+
+    text = data.decode("utf-8", errors="strict")
+    lines = text.splitlines()
+    first_nonempty = next((line.strip() for line in lines if line.strip()), "")
+    if not first_nonempty.startswith("# Agent Development Contract"):
+        raise ADCError("approved ADC must have a final Agent Development Contract title")
+    if re.search(r"(?i)\b(?:draft|proposal|unapproved)\b", first_nonempty):
+        raise ADCError("approved ADC title still marks the contract as a draft or proposal")
+
+    preamble: list[str] = []
+    for line in lines:
+        if re.match(r"^ {0,3}##(?:[ \t]+|$)", line):
+            break
+        preamble.append(line)
+    for line in preamble:
+        value = line.strip()
+        if re.match(r"(?i)^draft\b", value):
+            raise ADCError("approved ADC header still contains a draft-only status")
+        status = re.match(r"(?i)^(?:status|state)\s*:\s*(.+)$", value)
+        if status and re.match(r"(?i)^(?:draft|unapproved|pending|not approved)\b", status.group(1).strip()):
+            raise ADCError("approved ADC header status is not final")
+
+    predecessor_lines = [line.strip() for line in preamble
+                         if line.strip().startswith("Predecessor ADC:")]
+    if len(predecessor_lines) > 1:
+        raise ADCError("approved ADC header has multiple predecessor declarations")
+    declared: tuple[int, int, str] | None = None
+    if predecessor_lines:
+        match = PREDECESSOR_ADC_FIELDS.fullmatch(predecessor_lines[0])
+        if match is None:
+            raise ADCError("approved ADC predecessor declaration is malformed")
+        declared = (int(match.group(1)), int(match.group(2)), match.group(3))
+
+    if check_current_pointer:
+        is_issue63 = contract.repository == "puchinya/ai-agent-workflow" and issue_number == 63
+        if is_issue63 and current_pointer is not None and current_pointer.state != "approved":
+            raise ADCError("approved ADC successor requires a current approved predecessor")
+        if is_issue63 and current_pointer is not None and declared is None:
+            raise ADCError("Issue #63 approved successor must name its current predecessor ADC")
+        if is_issue63 and declared is not None:
+            if current_pointer is None:
+                raise ADCError("approved ADC declares a predecessor but the current pointer is absent")
+            if (declared[0] != issue_number or declared[1] != current_pointer.comment_id
+                    or declared[2] != current_pointer.sha256):
+                raise ADCError("approved ADC predecessor does not match the current approved pointer")
+    return contract
 
 
 def parse_pointer(body: str) -> ADCPointer | None:
@@ -623,7 +692,8 @@ def publish_adc(
         raise ADCError("expected current ADC pointer is malformed")
     if state == "approved" and explicitly_approved is not True:
         raise ADCError("publishing an approved ADC requires explicit user approval")
-    contract = parse_adc(data, github.repo, issue_number)
+    contract = (validate_approval_ready_adc(data, github.repo, issue_number)
+                if state == "approved" else parse_adc(data, github.repo, issue_number))
     try:
         before = _check_issue(github.issue(issue_number), github.repo, issue_number)
     except GitHubError as exc:
@@ -650,6 +720,13 @@ def publish_adc(
             return current_verified.pointer
         if not supersede:
             raise ADCError("Issue already has an ADC; use explicit supersession to publish another immutable comment")
+    if state == "approved":
+        # Validate a new publication against the currently verified generation
+        # before creating its durable transaction marker or any other comment.
+        validate_approval_ready_adc(
+            data, github.repo, issue_number,
+            current_pointer=existing_pointer, check_current_pointer=True,
+        )
     if expected_current is not None and existing_pointer != expected_current:
         raise ADCError("current ADC pointer differs from the exact expected predecessor")
     try:

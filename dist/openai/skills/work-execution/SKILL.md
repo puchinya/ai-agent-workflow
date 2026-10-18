@@ -10,7 +10,7 @@ Owner: runtime/p_ases/execution.py, work.py, git.py, and github.py. Inputs are a
 
 ## Workflow
 
-1. Run request-intake and verify the exact approved ADC.
+1. Run request-intake and verify the exact approved ADC. New approved generations must have passed the approval-ready publication preflight; historical generations remain byte-identical and are not retroactively normalized.
 2. Read current context before any branch or workspace action.
 3. For a new binding, resolve the base once, confirm it is the required same-repository ref, and bind the dedicated Issue branch and exact SHA before committing phase artifacts.
 4. Complete the required specification/design/test-Oracle decisions and their predecessor-checked phase receipts before entering `ready` or editing implementation code.
@@ -32,6 +32,6 @@ python -m p_ases pr ensure 32 --branch-ref pases/distribution-migration --base-r
 
 ## Failure handling and output
 
-Closed Issue, changed ADC pointer, dirty worktree, wrong base SHA, foreign remote, unverified workspace, conflicting binding, or mismatched PR identity blocks execution. An unavailable fresh host-native subagent, unknown spawn/join result, or missing host-reported identity blocks Independent Review as `INDEPENDENT_SUBAGENT_UNAVAILABLE`; no same-agent, human, or User Review fallback is allowed. If the active host cannot provide the actual provenance, report it unverified. Report the exact status and preserve state after errors. Do not claim a PR is ready without current-head verification and required checks.
+Closed Issue, changed ADC pointer, dirty worktree, wrong base SHA, foreign remote, unverified workspace, conflicting binding, or mismatched PR identity blocks execution. An unavailable fresh host-native subagent, unknown spawn/join result, or missing host-reported spawn/session, reviewer, or implementation-binding identity blocks Independent Review as `INDEPENDENT_SUBAGENT_UNAVAILABLE`; the parent compares child `context_id` and canonical `provenance` with host metadata and ingests the child-authored artifact unchanged. No same-agent, human, or User Review fallback is allowed. If the active host cannot provide the actual provenance, report it unverified. Report the exact status and preserve state after errors. Do not claim a PR is ready without current-head verification and required checks.
 
 Next owner: work-checkpoint records and resumes the same frozen context; verification-evidence binds results to the final HEAD. See the [workflow specification](../../docs/specs/workflow-spec.md).

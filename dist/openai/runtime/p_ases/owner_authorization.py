@@ -570,10 +570,37 @@ def _verify_ruleset_plan_approval(github: Any, plan: dict[str, Any], *, write_mi
     return comment_id
 
 
+def _validate_adc_authorization_subject(
+    github: Any, plan: dict[str, Any], subject_bytes: bytes | None,
+) -> None:
+    """Revalidate final ADC bytes and their live predecessor before any decision write."""
+    if subject_bytes is None or not isinstance(subject_bytes, bytes):
+        raise OwnerAuthorizationError("ADC_SUPERSEDE requires the exact approval-ready ADC bytes")
+    if hashlib.sha256(subject_bytes).hexdigest() != plan.get("subject_sha256"):
+        raise OwnerAuthorizationError("ADC source bytes differ from the exact authorization plan")
+    from .adc import ADCError, validate_approval_ready_adc, verify_adc
+    try:
+        predecessor = verify_adc(github, ISSUE_NUMBER).pointer
+        details = plan["details"]
+        if (predecessor.state != "approved"
+                or predecessor.comment_id != details.get("predecessor_comment_id")
+                or predecessor.sha256 != details.get("predecessor_sha256")
+                or predecessor.byte_length != details.get("predecessor_byte_length")
+                or predecessor.state != details.get("predecessor_state")):
+            raise OwnerAuthorizationError("current approved ADC predecessor changed after plan creation")
+        validate_approval_ready_adc(
+            subject_bytes, REPOSITORY, ISSUE_NUMBER,
+            current_pointer=predecessor, check_current_pointer=True,
+        )
+    except ADCError as exc:
+        raise OwnerAuthorizationError(f"ADC approval-ready preflight failed: {exc}") from exc
+
+
 def authorize_plan(
     github: Any, root: Path, plan_path: Path, *, stdin: Any = None,
     input_fn: Callable[[str], str] = input, user_review_context: dict[str, Any] | None = None,
     source_validator: Callable[[], Any] | None = None,
+    subject_bytes: bytes | None = None,
 ) -> dict[str, Any]:
     """Confirm and append one V2 owner decision; no blind retry is attempted."""
     _check_owner_local_tty(stdin)
@@ -611,6 +638,10 @@ def authorize_plan(
     )
     if refreshed_after_confirmation != plan:
         raise OwnerAuthorizationError("live subject changed after confirmation; no GitHub write was attempted")
+    if plan["operation"] == "ADC_SUPERSEDE":
+        if source_validator is None:
+            raise OwnerAuthorizationError("ADC_SUPERSEDE requires a live source validator before authorization")
+        _validate_adc_authorization_subject(github, plan, subject_bytes)
     if source_validator is not None:
         revalidated_context = source_validator()
         if plan["operation"] == "USER_REVIEW":
@@ -700,6 +731,7 @@ def authorize_chat_confirmed_plan(
     github: Any, root: Path, plan: dict[str, Any], grant: ChatApprovalGrant, *,
     user_review_context: dict[str, Any] | None = None,
     source_validator: Callable[[], Any] | None = None,
+    subject_bytes: bytes | None = None,
 ) -> dict[str, Any]:
     """Append one V3 decision from an ephemeral same-chat confirmation grant.
 
@@ -731,18 +763,9 @@ def authorize_chat_confirmed_plan(
     if refreshed != checked:
         raise OwnerAuthorizationError("live repository, Issue, PR, source, or plan changed after chat approval")
     if checked["operation"] == "ADC_SUPERSEDE":
-        from .adc import ADCError, verify_adc
-        try:
-            predecessor = verify_adc(github, ISSUE_NUMBER).pointer
-        except ADCError as exc:
-            raise OwnerAuthorizationError("current approved ADC predecessor is unavailable") from exc
-        details = checked["details"]
-        if (predecessor.state != "approved"
-                or predecessor.comment_id != details.get("predecessor_comment_id")
-                or predecessor.sha256 != details.get("predecessor_sha256")
-                or predecessor.byte_length != details.get("predecessor_byte_length")
-                or predecessor.state != details.get("predecessor_state")):
-            raise OwnerAuthorizationError("current approved ADC predecessor changed after plan creation")
+        if source_validator is None:
+            raise OwnerAuthorizationError("ADC_SUPERSEDE requires a live source validator before authorization")
+        _validate_adc_authorization_subject(github, checked, subject_bytes)
     if source_validator is not None:
         revalidated_context = source_validator()
         if checked["operation"] == "USER_REVIEW":

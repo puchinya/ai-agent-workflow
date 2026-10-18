@@ -13,8 +13,8 @@ Owner: runtime/p_ases/adc.py. Inputs are an explicitly authorized request, repos
 1. Confirm the request's source and execution intent with request-intake.
 2. Read the current approved pointer before proposing a successor. Preserve immutable predecessor comments and their exact bytes.
 3. Draft requirement IDs and measurable outcomes without deriving the Oracle from the implementation.
-4. Validate the local candidate. Validation is syntax and structure checking; it does not approve content.
-5. Present the complete draft for the user's decision. Publish as approved only after an explicit approval for those exact bytes.
+4. Validate the local candidate. Structural validation does not approve content. For a new approved publication, also run the shared approval-ready preflight against the current verified pointer; it rejects draft/proposal titles, draft-only headers or status, malformed predecessor declarations, and stale predecessor IDs/SHAs.
+5. Present the complete final candidate for the user's decision. Publish only after explicit approval for those exact bytes; never normalize or edit the candidate after approval.
 
 ## CLI
 
@@ -24,7 +24,7 @@ python -m p_ases adc publish 32 path/to/contract.md --state draft --repo OWNER/R
 python -m p_ases adc publish 32 path/to/contract.md --state approved --repo OWNER/REPO
 ~~~
 
-The approved publication example is permitted only after the user has approved the exact contract. Use the supersede option only for a genuinely approved successor.
+Approved publication requires an exact user approval and a passing approval-ready preflight tied to the live approved predecessor. The preflight is separate from structural `adc validate`; a draft publication remains unchanged. Use supersede only for a final candidate whose declared predecessor matches the exact current approved pointer.
 
 ## Failure handling and output
 

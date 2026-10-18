@@ -16,7 +16,10 @@ from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
-from .adc import ADCError, parse_adc, publish_adc, restore_adc, verify_adc, verify_adc_generation
+from .adc import (
+    ADCError, parse_adc, publish_adc, restore_adc, validate_approval_ready_adc,
+    verify_adc, verify_adc_generation,
+)
 from .admin_auth import AdminAuthError, temporary_admin_client
 from .owner_authorization import (
     OwnerAuthorizationError, authorize_chat_confirmed_plan, authorize_plan, create_authorization_plan,
@@ -1986,6 +1989,12 @@ def _owner_authorization_plan_command(args: argparse.Namespace, repository: str,
             raise OwnerAuthorizationError("ADC_SUPERSEDE requires the current approved predecessor") from exc
         if predecessor.state != "approved":
             raise OwnerAuthorizationError("ADC_SUPERSEDE requires the current approved predecessor")
+        try:
+            validate_approval_ready_adc(
+                raw, repository, 63, current_pointer=predecessor, check_current_pointer=True,
+            )
+        except ADCError as exc:
+            raise OwnerAuthorizationError(f"ADC_SUPERSEDE candidate is not approval-ready: {exc}") from exc
         details = {
             "predecessor_comment_id": predecessor.comment_id,
             "predecessor_sha256": predecessor.sha256,
@@ -2058,6 +2067,12 @@ def _validate_owner_authorization_source(args: argparse.Namespace, plan: dict[st
                 or predecessor.byte_length != expected_predecessor.get("predecessor_byte_length")
                 or predecessor.state != expected_predecessor.get("predecessor_state")):
             raise OwnerAuthorizationError("current approved ADC predecessor changed after plan creation")
+        try:
+            validate_approval_ready_adc(
+                raw, repository, 63, current_pointer=predecessor, check_current_pointer=True,
+            )
+        except ADCError as exc:
+            raise OwnerAuthorizationError(f"ADC_SUPERSEDE candidate is not approval-ready: {exc}") from exc
     elif plan["operation"] == "RULESET_PLAN_APPLY":
         if args.ruleset_plan is None or args.ruleset_plan.is_symlink() or not args.ruleset_plan.is_file():
             raise OwnerAuthorizationError("RULESET_PLAN_APPLY commit requires the same regular --ruleset-plan")
@@ -2113,6 +2128,8 @@ def execute_chat_confirmed_authorization(
     user_review_context = _validate_owner_authorization_source(args, plan, repository, github)
     result = authorize_chat_confirmed_plan(
         github, root, plan, grant, user_review_context=user_review_context,
+        subject_bytes=(args.subject_file.read_bytes()
+                       if plan["operation"] == "ADC_SUPERSEDE" and args.subject_file is not None else None),
         source_validator=lambda: _validate_owner_authorization_source(args, plan, repository, github),
     )
     if plan["operation"] == "ADC_SUPERSEDE":
@@ -2157,6 +2174,9 @@ def _publish_owner_approved_adc(args: argparse.Namespace, repository: str, githu
                 or current.pointer.byte_length != predecessor.get("predecessor_byte_length")
                 or current.pointer.state != predecessor.get("predecessor_state")):
             raise ADCError("current approved predecessor differs from the scope approved in chat")
+        validate_approval_ready_adc(
+            data, repository, 63, current_pointer=current.pointer, check_current_pointer=True,
+        )
         pointer = publish_adc(
             github, 63, data, state="approved", explicitly_approved=True,
             supersede=True, expected_current=current.pointer,
