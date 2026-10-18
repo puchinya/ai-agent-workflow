@@ -6,7 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -86,11 +86,12 @@ def _epoch():
 class FakeGitHub:
     repo = REPOSITORY
 
-    def __init__(self, rows=None, *, pull=None, issue_data=None):
+    def __init__(self, rows=None, *, pull=None, issue_data=None, created_at_lag_seconds=0):
         self.rows = list(rows or [])
         self.writes = 0
         self.lose_response = False
         self.pull = pull
+        self.created_at_lag_seconds = created_at_lag_seconds
         self.issue_data = issue_data or {
             "number": 63, "state": "open",
             "repository_url": f"https://api.github.com/repos/{REPOSITORY}",
@@ -114,6 +115,10 @@ class FakeGitHub:
         except (IndexError, json.JSONDecodeError):
             payload = {}
         now = payload.get("created_at", "2026-10-18T12:00:00Z")
+        if self.created_at_lag_seconds:
+            persisted = (datetime.strptime(now, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                         + timedelta(seconds=self.created_at_lag_seconds))
+            now = persisted.strftime("%Y-%m-%dT%H:%M:%SZ")
         row = {
             "id": comment_id, "body": body, "created_at": now, "updated_at": now,
             "user": {"id": 5150, "login": "executor", "type": "User"},
@@ -334,6 +339,33 @@ class ExecutionAdoptionTests(unittest.TestCase):
                                      decision_comment_id=7001, executor_user_id=5150,
                                      intent_record=(7002, INTENT_SCHEMA, intent, fingerprint))
 
+    def test_journal_accepts_immutable_github_timestamp_after_pre_post_payload_time(self):
+        plan = _adoption_plan()
+        owner_plan = {"plan_sha256": "c" * 64, "approval_scope_sha256": "d" * 64}
+        intent = _journal_payload(plan, owner_plan, 7001, 5150, phase="intent")
+        intent_api_time = (datetime.strptime(intent["created_at"], "%Y-%m-%dT%H:%M:%SZ")
+                           .replace(tzinfo=timezone.utc) + timedelta(seconds=1))
+        intent_carrier_time = intent_api_time.strftime("%Y-%m-%dT%H:%M:%SZ")
+        intent_fingerprint = (7002, _body(INTENT_SCHEMA, intent), intent_carrier_time,
+                              intent_carrier_time, 5150, "executor", "User", "url", "issue_url", "html_url")
+        intent_record = (7002, INTENT_SCHEMA, intent, intent_fingerprint)
+        _validate_journal_record(intent_record, schema=INTENT_SCHEMA, plan=plan, owner_plan=owner_plan,
+                                 decision_comment_id=7001, executor_user_id=5150)
+
+        applied = _journal_payload(
+            plan, owner_plan, 7001, 5150, phase="applied", intent_comment_id=7002,
+            intent_body_sha256=hashlib.sha256(_body(INTENT_SCHEMA, intent).encode()).hexdigest(),
+        )
+        applied_api_time = (datetime.strptime(applied["created_at"], "%Y-%m-%dT%H:%M:%SZ")
+                            .replace(tzinfo=timezone.utc) + timedelta(seconds=1))
+        applied_carrier_time = applied_api_time.strftime("%Y-%m-%dT%H:%M:%SZ")
+        applied_fingerprint = (7003, _body(APPLIED_SCHEMA, applied), applied_carrier_time,
+                               applied_carrier_time, 5150, "executor", "User", "url", "issue_url", "html_url")
+        _validate_journal_record((7003, APPLIED_SCHEMA, applied, applied_fingerprint),
+                                 schema=APPLIED_SCHEMA, plan=plan, owner_plan=owner_plan,
+                                 decision_comment_id=7001, executor_user_id=5150,
+                                 intent_record=intent_record)
+
     def test_comment_fingerprint_requires_issue_urls_and_immutable_utc_time(self):
         github = FakeGitHub()
         github.create_issue_comment(63, "body")
@@ -372,7 +404,9 @@ class ExecutionAdoptionTests(unittest.TestCase):
             root = workspace / "repo"
             root.mkdir()
             _remote, plan, pull = _live_plan_for_temporary_repo(root)
-            github = FakeGitHub(pull=pull)
+            # GitHub assigns its carrier timestamp after the runtime has
+            # generated the immutable body payload, often in the next second.
+            github = FakeGitHub(pull=pull, created_at_lag_seconds=1)
             owner_plan = {
                 "operation": "EXECUTION_ADOPTION", "subject_sha256": plan["plan_sha256"],
                 "target_issue_number": 63, "pr_number": 64,

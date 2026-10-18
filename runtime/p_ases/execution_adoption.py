@@ -753,8 +753,10 @@ def _validate_journal_record(record: tuple[int, str, dict[str, Any], tuple[Any, 
     )
     actual_static = {key: value for key, value in payload.items() if key != "created_at"}
     expected_static = {key: value for key, value in expected.items() if key != "created_at"}
+    # The canonical payload time is captured before POST, while GitHub assigns
+    # the carrier time when it persists the comment. Keep both timestamps
+    # canonical and immutable, but do not require the separate clocks to match.
     if (actual_schema != schema or actual_static != expected_static
-            or payload.get("created_at") != fingerprint[2]
             or fingerprint[3] != fingerprint[2]
             or fingerprint[4] != executor_user_id or comment_id <= 0):
         raise ExecutionAdoptionError("adoption journal record differs from the exact approved snapshot")
@@ -763,6 +765,8 @@ def _validate_journal_record(record: tuple[int, str, dict[str, Any], tuple[Any, 
     if schema == APPLIED_SCHEMA and (
             intent_record is None or intent_record[0] <= decision_comment_id or comment_id <= intent_record[0]):
         raise ExecutionAdoptionError("adoption Applied must follow its exact Intent and Owner decision")
+    if schema == APPLIED_SCHEMA and payload["created_at"] < intent_record[2]["created_at"]:
+        raise ExecutionAdoptionError("adoption Applied payload timestamp precedes its exact Intent")
     _validate_journal_shape(payload, schema)
     if intent_record is not None and payload["intent_comment_id"] != intent_record[0]:
         raise ExecutionAdoptionError("adoption Applied record does not reference the exact Intent")
