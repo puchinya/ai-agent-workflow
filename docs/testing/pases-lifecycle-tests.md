@@ -2,7 +2,7 @@
 <!-- agent-doc-schema: 2 -->
 # P-ASES Human Review and Integration Test Specification
 
-- Status: Existing cases approved for Issues #31 and #42; TST-F01-014 and TST-F01-015 are drafts pending Issue #63 successor ADC approval and phase evidence.
+- Status: Existing cases approved for Issues #31 and #42; TST-F01-014 and TST-F01-015 are drafts pending Issue #63 successor ADC approval and phase evidence. TST-UR-007 and TST-UR-008 specify host-owned Independent Review handoff and automatic User Review start; host integration execution is required where the active host exposes native subagents.
 - Owning specification: ../specs/workflow-spec.md
 
 <!-- contents:start -->
@@ -51,6 +51,10 @@
     - [2.20.1 ORA-F01-014 Expected result](#2201-ora-f01-014-expected-result)
   - [2.21 TST-F01-015 Chat-confirmed authorization and lifecycle gates](#221-tst-f01-015-chat-confirmed-authorization-and-lifecycle-gates)
     - [2.21.1 ORA-F01-015 Expected result](#2211-ora-f01-015-expected-result)
+  - [2.22 TST-UR-007 Native Independent Review handoff and User Review start](#222-tst-ur-007-native-independent-review-handoff-and-user-review-start)
+    - [2.22.1 ORA-UR-007 Expected result](#2221-ora-ur-007-expected-result)
+  - [2.23 TST-UR-008 Independent Review blockers and host provenance](#223-tst-ur-008-independent-review-blockers-and-host-provenance)
+    - [2.23.1 ORA-UR-008 Expected result](#2231-ora-ur-008-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -97,6 +101,10 @@
 - [ORA-F01-014](#ora-f01-014) — 2.20.1 ORA-F01-014 Expected result
 - [TST-F01-015](#tst-f01-015) — 2.21 TST-F01-015 Chat-confirmed authorization and lifecycle gates
 - [ORA-F01-015](#ora-f01-015) — 2.21.1 ORA-F01-015 Expected result
+- [TST-UR-007](#tst-ur-007) — 2.22 TST-UR-007 Native Independent Review handoff and User Review start
+- [ORA-UR-007](#ora-ur-007) — 2.22.1 ORA-UR-007 Expected result
+- [TST-UR-008](#tst-ur-008) — 2.23 TST-UR-008 Independent Review blockers and host provenance
+- [ORA-UR-008](#ora-ur-008) — 2.23.1 ORA-UR-008 Expected result
 <!-- heading-map:end -->
 
 
@@ -358,3 +366,27 @@ For self-authored `solo_owner` review, preserve delegated V1 and owner-local V2 
 #### 2.21.1 ORA-F01-015 Expected result
 
 A direct same-conversation exact-scope user-role response can produce operator-reported V3 evidence only when the host provides that role event. This evidence is not a signed chat attestation. V1/V2 meaning and bytes remain unchanged. Separate pinned owner, PR author, actual comment actor, and read-only verifier identities are verified independently. ADC, Ruleset, User Review, Setup PR merge and PR #64 merge remain distinct exact scopes. Phase bootstrap requires no owner decision: the immutable V1 pair records the original physical label transition, while each later ADC generation gets a V2 technical pair. V2 adopts the existing `requirements` phase with unchanged complete labels and zero label writes, links to the immediately preceding Applied payload digest, and rejects gaps or stale Issue/pointer state; interrupted latest V2 work can append only its matching Applied record after readback. Ruleset needs the exact V3 plan decision plus the owner-authenticated #57 two-line approval. Setup and #64 each require exact HEAD gates, with at most one merge request and read-only recovery. Preserve PRBinding V1.
+
+<a id="tst-ur-007"></a>
+<a id="tst-ur-007-native-independent-review-handoff-and-user-review-start"></a>
+### 2.22 TST-UR-007 Native Independent Review handoff and User Review start
+
+**Setup and action:** Use a current exact PR HEAD, approved ADC/Implementation Contract, complete checklist, full source diff, and test evidence. Exercise the host-native subagent workflow and verify all of the following: (1) one dedicated child is spawned and joined without another user confirmation, in a context distinct from implementation; (2) the child itself reads the exact repository/Issue/PR/HEAD, full Contract, all checklist items, full diff, and tests; (3) the host supplies the actual spawn/session ID, reviewer ID, and implementation binding ID, while the child authors the raw review and the parent does not edit findings, verdict, or context IDs; (4) after child PASS, current Phase, Binding, Verification, Acceptance, Self-Audit, and Required CI are read; (5) if all are current and PASS, `delivery readiness` runs and a PASS automatically invokes `user-review start` exactly once without extra confirmation; (6) the resulting User Review session is pending and no approval is created automatically; (7) ChatGPT is accepted as the Owner-selected code-review method without requiring a duplicate review; (8) existing review history, PR #64 `Refs #63`, User Review V3, and Required CI checks remain part of their existing gates.
+
+<a id="ora-ur-007"></a>
+<a id="ora-ur-007-expected-result"></a>
+#### 2.22.1 ORA-UR-007 Expected result
+
+Only a host-created and host-joined dedicated child can supply Independent Review. It authors the raw exact-subject result after reading the whole Contract, checklist, diff, and tests; the parent ingests that result unchanged through the existing audit path. The host owns and reports actual spawn/session, reviewer, and implementation binding identities; context ID inequality alone is not authenticity proof. A fully current PASS evidence set leads to `delivery readiness` and one automatic User Review start, without recording or implying the user's final approval. ChatGPT's selected User Review code-review method is not duplicated and does not replace the explicit User Review decision. Existing history, V3 evidence, `Refs #63`, and Required CI behavior remains unchanged.
+
+<a id="tst-ur-008"></a>
+<a id="tst-ur-008-independent-review-blockers-and-host-provenance"></a>
+### 2.23 TST-UR-008 Independent Review blockers and host provenance
+
+**Setup and action:** Against the host workflow, inject: (1) an unresolved A or B finding, a blocking C finding, or a failed checklist item; (2) a child reviewed on an older HEAD followed by a new commit; (3) spawn unavailable, spawn/join failure, timeout, or unknown completion; (4) missing or unverified host-reported spawn/session, reviewer, or implementation binding identity; (5) an attempted same-agent second prompt, human fallback, or User Review substitution; (6) repeated retry on the same HEAD without progress; (7) an active adapter with unverified native subagent capability; and (8) a current PR with absent/stale Phase, Binding, Verification, Acceptance, Self-Audit, or Required CI evidence. Observe readiness and User Review start commands and all claims made in the host result/PR report.
+
+<a id="ora-ur-008"></a>
+<a id="ora-ur-008-expected-result"></a>
+#### 2.23.1 ORA-UR-008 Expected result
+
+Every blocker prevents Readiness and User Review start. An unavailable or unverifiable native subagent fails closed as `INDEPENDENT_SUBAGENT_UNAVAILABLE`; no fallback can produce PASS. A HEAD change requires a new child; same-HEAD retries require progress. Host evidence unavailable at the active surface is explicitly reported as unverified and is not claimed as a completed subagent review. Existing PASES independent-review context IDs and digest validation remain intact; they are not upgraded to host-authenticated provenance. No final User Review approval is fabricated.
