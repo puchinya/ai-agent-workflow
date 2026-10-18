@@ -554,8 +554,12 @@ def _append_applied(github: Any, intent: PhaseRecord) -> PhaseRecord:
             "successor_adc_comment_id": payload["successor_adc_comment_id"],
             "successor_adc_sha256": payload["successor_adc_sha256"],
             "from_phase": "ready", "to_phase": "requirements",
-            "labels_after": payload["labels_after"], "executor_user_id": payload["executor_user_id"],
+            "labels_after": payload["labels_after"],
         }
+        # Historical V1 carriers exist with and without executor_user_id.
+        # Preserve the accepted Intent's exact schema during interrupted recovery.
+        if "executor_user_id" in payload:
+            applied_payload["executor_user_id"] = payload["executor_user_id"]
     elif intent.schema == INTENT_V2_SCHEMA:
         schema = APPLIED_V2_SCHEMA
         applied_payload = {

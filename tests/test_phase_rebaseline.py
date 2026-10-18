@@ -64,9 +64,10 @@ class FakeGitHub:
         self.deny_label_permission = False
         self.fail_applied_comment_once = False
         self.bad_direct: dict[int, dict] = {}
+        self.actor_id = ACTOR_ID
 
     def authenticated_user(self) -> dict:
-        return {"id": ACTOR_ID, "login": "workflow-executor", "type": "User"}
+        return {"id": self.actor_id, "login": "workflow-executor", "type": "User"}
 
     def repository_metadata(self) -> dict:
         return {"id": 1401910271, "full_name": REPOSITORY,
@@ -102,7 +103,7 @@ class FakeGitHub:
             "id": comment_id, "body": body,
             "created_at": f"2026-10-17T09:{comment_id % 60:02d}:00Z",
             "updated_at": f"2026-10-17T09:{comment_id % 60:02d}:00Z",
-            "user": {"id": ACTOR_ID, "login": "workflow-executor", "type": "User"},
+            "user": {"id": self.actor_id, "login": "workflow-executor", "type": "User"},
             "url": f"https://api.github.com/repos/{REPOSITORY}/issues/comments/{comment_id}",
             "issue_url": f"https://api.github.com/repos/{REPOSITORY}/issues/63",
             "html_url": f"https://github.com/{REPOSITORY}/issues/63#issuecomment-{comment_id}",
@@ -110,11 +111,13 @@ class FakeGitHub:
         self.comments.append(row)
         return row
 
-    def add_record(self, comment_id: int, schema: str, payload: dict) -> dict:
+    def add_record(self, comment_id: int, schema: str, payload: dict, *, actor_id: int | None = None,
+                   login: str = "workflow-executor", created_at: str = "2026-10-17T09:00:00Z") -> dict:
+        actor_id = self.actor_id if actor_id is None else actor_id
         row = {
             "id": comment_id, "body": canonical_body(schema, payload),
-            "created_at": "2026-10-17T09:00:00Z", "updated_at": "2026-10-17T09:00:00Z",
-            "user": {"id": ACTOR_ID, "login": "workflow-executor", "type": "User"},
+            "created_at": created_at, "updated_at": created_at,
+            "user": {"id": actor_id, "login": login, "type": "User"},
             "url": f"https://api.github.com/repos/{REPOSITORY}/issues/comments/{comment_id}",
             "issue_url": f"https://api.github.com/repos/{REPOSITORY}/issues/63",
             "html_url": f"https://github.com/{REPOSITORY}/issues/63#issuecomment-{comment_id}",
@@ -145,31 +148,94 @@ class PhaseRebaselineTests(unittest.TestCase):
             return rebaseline_issue_phase(github, 63)
 
     def add_historical_v1_pair(self, github: FakeGitHub) -> tuple[dict, dict]:
-        chain = (verified(BASELINE_ADC_COMMENT_ID, BASELINE_ADC_SHA256),
-                 verified(PREVIOUS_ADC_COMMENT_ID, PREVIOUS_ADC_SHA256))
-        before = sorted(["enhancement", "phase:ready", "kind:single"])
-        after = sorted(["enhancement", "phase:requirements", "kind:single"])
-        intent_payload = phase_module._intent_v1_payload(
-            chain[0], chain[1], github.issue_body, before, after, ACTOR_ID,
-        )
-        # The actual historical #63 V1 carriers predate executor_user_id in the payload.
-        intent_payload.pop("executor_user_id")
-        intent = github.add_record(6236687874, INTENT_SCHEMA, intent_payload)
-        applied_payload = {
-            "schema": phase_module.APPLIED_SCHEMA, "repository": REPOSITORY, "issue_number": 63,
-            "intent_comment_id": intent["id"],
-            "intent_sha256": hashlib.sha256(json.dumps(
-                intent_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
-            ).encode()).hexdigest(),
-            "predecessor_adc_comment_id": chain[0].pointer.comment_id,
-            "predecessor_adc_sha256": chain[0].pointer.sha256,
-            "successor_adc_comment_id": chain[1].pointer.comment_id,
-            "successor_adc_sha256": chain[1].pointer.sha256,
-            "from_phase": "ready", "to_phase": "requirements", "labels_after": after,
+        intent_payload = {
+            "executor_user_id": OWNER_ID,
+            "from_phase": "ready",
+            "issue_body_sha256": "ea34279fe951d40cd8c8a3979b6d636080ddbe23d10d34e2a947cb700d5f64c4",
+            "issue_number": 63,
+            "labels_after": ["enhancement", "kind:single", "phase:requirements"],
+            "labels_before": ["enhancement", "kind:single", "phase:ready"],
+            "predecessor_adc_comment_id": BASELINE_ADC_COMMENT_ID,
+            "predecessor_adc_sha256": BASELINE_ADC_SHA256,
+            "repository": REPOSITORY,
+            "schema": INTENT_SCHEMA,
+            "successor_adc_comment_id": PREVIOUS_ADC_COMMENT_ID,
+            "successor_adc_sha256": PREVIOUS_ADC_SHA256,
+            "to_phase": "requirements",
         }
-        applied = github.add_record(6236700004, phase_module.APPLIED_SCHEMA, applied_payload)
+        intent_body = (
+            '<!-- PASES_PHASE_REBASE_INTENT_V1\n'
+            '{"executor_user_id":3744776,"from_phase":"ready","issue_body_sha256":"ea34279fe951d40cd8c8a3979b6d636080ddbe23d10d34e2a947cb700d5f64c4",'
+            '"issue_number":63,"labels_after":["enhancement","kind:single","phase:requirements"],'
+            '"labels_before":["enhancement","kind:single","phase:ready"],"predecessor_adc_comment_id":6228771805,'
+            '"predecessor_adc_sha256":"ad13d005126693bb4e1cbe1e7eaa815e43f0a1ef3b88ef9f1670450a42bc9622",'
+            '"repository":"puchinya/ai-agent-workflow","schema":"PASES_PHASE_REBASE_INTENT_V1",'
+            '"successor_adc_comment_id":6236636013,"successor_adc_sha256":"59714ca55da1a524f0874a9bcfc57c62493cb03af5a2fcc8382901e7abce3135",'
+            '"to_phase":"requirements"}\n-->'
+        )
+        self.assertEqual(canonical_body(INTENT_SCHEMA, intent_payload), intent_body)
+        intent = github.add_record(6236687874, INTENT_SCHEMA, intent_payload, actor_id=OWNER_ID,
+                                   login="puchinya", created_at="2026-10-17T16:31:25Z")
+        intent_sha256 = hashlib.sha256(json.dumps(
+            intent_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+        ).encode()).hexdigest()
+        self.assertEqual(intent_sha256, "1eccb23b9e16a9b94ea9f2446d201f42411e5a26bddb38dbb940f5854fea47d2")
+        applied_payload = {
+            "executor_user_id": OWNER_ID,
+            "from_phase": "ready",
+            "intent_comment_id": intent["id"],
+            "intent_sha256": intent_sha256,
+            "issue_number": 63,
+            "labels_after": ["enhancement", "kind:single", "phase:requirements"],
+            "predecessor_adc_comment_id": BASELINE_ADC_COMMENT_ID,
+            "predecessor_adc_sha256": BASELINE_ADC_SHA256,
+            "repository": REPOSITORY,
+            "schema": APPLIED_SCHEMA,
+            "successor_adc_comment_id": PREVIOUS_ADC_COMMENT_ID,
+            "successor_adc_sha256": PREVIOUS_ADC_SHA256,
+            "to_phase": "requirements",
+        }
+        applied_body = (
+            '<!-- PASES_PHASE_REBASE_APPLIED_V1\n'
+            '{"executor_user_id":3744776,"from_phase":"ready","intent_comment_id":6236687874,'
+            '"intent_sha256":"1eccb23b9e16a9b94ea9f2446d201f42411e5a26bddb38dbb940f5854fea47d2",'
+            '"issue_number":63,"labels_after":["enhancement","kind:single","phase:requirements"],'
+            '"predecessor_adc_comment_id":6228771805,"predecessor_adc_sha256":"ad13d005126693bb4e1cbe1e7eaa815e43f0a1ef3b88ef9f1670450a42bc9622",'
+            '"repository":"puchinya/ai-agent-workflow","schema":"PASES_PHASE_REBASE_APPLIED_V1",'
+            '"successor_adc_comment_id":6236636013,"successor_adc_sha256":"59714ca55da1a524f0874a9bcfc57c62493cb03af5a2fcc8382901e7abce3135",'
+            '"to_phase":"requirements"}\n-->'
+        )
+        self.assertEqual(canonical_body(APPLIED_SCHEMA, applied_payload), applied_body)
+        applied = github.add_record(6236700004, APPLIED_SCHEMA, applied_payload, actor_id=OWNER_ID,
+                                    login="puchinya", created_at="2026-10-17T16:32:09Z")
         github.next_comment_id = CURRENT_ADC_COMMENT_ID + 10
         return intent, applied
+
+    def add_historical_v1_intent_only(self, github: FakeGitHub, *, include_executor_user_id: bool) -> dict:
+        # Start from the published V1 shape, then make a separate interrupted-write
+        # fixture whose Issue-body digest matches this test's unchanged Issue body.
+        intent, _applied = self.add_historical_v1_pair(github)
+        github.comments.remove(next(row for row in github.comments if row["id"] == 6236700004))
+        payload = json.loads(intent["body"].split("\n", 1)[1][:-3])
+        payload["issue_body_sha256"] = hashlib.sha256(github.issue_body.encode("utf-8")).hexdigest()
+        if not include_executor_user_id:
+            payload.pop("executor_user_id")
+        intent_id = 6236687874 if include_executor_user_id else 6236687875
+        github.comments.remove(intent)
+        intent = github.add_record(intent_id, INTENT_SCHEMA, payload, actor_id=OWNER_ID)
+        github.labels = ["enhancement", "phase:requirements", "kind:single"]
+        github.next_comment_id = intent["id"] + 1
+        github.actor_id = OWNER_ID
+        return intent
+
+    def call_historical_v1(self, github: FakeGitHub):
+        chain = (verified(BASELINE_ADC_COMMENT_ID, BASELINE_ADC_SHA256),
+                 verified(PREVIOUS_ADC_COMMENT_ID, PREVIOUS_ADC_SHA256))
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(phase_module, "verify_adc", return_value=chain[-1]))
+            stack.enter_context(patch.object(phase_module, "verify_adc_generation", return_value=chain[0]))
+            stack.enter_context(patch.object(phase_module, "verify_adc_forward_generations", return_value=chain))
+            return rebaseline_issue_phase(github, 63)
 
     def call_successor(self, github: FakeGitHub, *generations: SimpleNamespace):
         chain = generations or (
@@ -287,6 +353,48 @@ class PhaseRebaselineTests(unittest.TestCase):
         self.assertEqual(noop["status"], "NOOP")
         self.assertEqual(len(github.comments), first_comment_count)
         self.assertFalse(any(call[0] == "replace_issue_labels" for call in github.calls))
+
+    def test_published_v1_fixture_matches_real_comment_bodies_and_semantic_digests(self):
+        github = FakeGitHub(["enhancement", "phase:requirements", "kind:single"])
+
+        intent, applied = self.add_historical_v1_pair(github)
+
+        self.assertEqual(intent["id"], 6236687874)
+        self.assertEqual(applied["id"], 6236700004)
+        intent_record = phase_module._record_from_row(intent, INTENT_SCHEMA)
+        applied_record = phase_module._record_from_row(applied, APPLIED_SCHEMA)
+        self.assertEqual(intent_record.payload_sha256,
+                         "1eccb23b9e16a9b94ea9f2446d201f42411e5a26bddb38dbb940f5854fea47d2")
+        self.assertEqual(applied_record.payload_sha256,
+                         "19b399475a04e207007dd786a965045c93f8a1c21063cad1f01a9edf2eddafd0")
+        self.assertEqual(applied_record.payload["intent_sha256"], intent_record.payload_sha256)
+        self.assertEqual(intent_record.actor_id, OWNER_ID)
+        self.assertEqual(applied_record.actor_id, OWNER_ID)
+
+    def test_v1_intent_only_recovery_preserves_executor_field_shape_and_is_noop_afterward(self):
+        for include_executor_user_id in (True, False):
+            with self.subTest(include_executor_user_id=include_executor_user_id):
+                github = FakeGitHub(["enhancement", "phase:requirements", "kind:single"])
+                intent = self.add_historical_v1_intent_only(
+                    github, include_executor_user_id=include_executor_user_id,
+                )
+
+                recovered = self.call_historical_v1(github)
+
+                self.assertEqual(recovered["status"], "RECOVERED")
+                self.assertEqual(sum(call[0] == "replace_issue_labels" for call in github.calls), 0)
+                self.assertEqual(len(github.comments), 2)
+                applied = phase_module._record_from_row(github.comments[-1], APPLIED_SCHEMA)
+                self.assertEqual(applied.actor_id, intent["user"]["id"])
+                self.assertEqual("executor_user_id" in applied.payload, include_executor_user_id)
+                self.assertEqual(applied.payload["intent_comment_id"], intent["id"])
+
+                first_complete_history = len(github.comments)
+                noop = self.call_historical_v1(github)
+
+                self.assertEqual(noop["status"], "NOOP")
+                self.assertEqual(len(github.comments), first_complete_history)
+                self.assertEqual(sum(call[0] == "replace_issue_labels" for call in github.calls), 0)
 
     def test_successive_v2_adc_generations_link_previous_applied_and_preserve_v1_bytes(self):
         github = FakeGitHub(["enhancement", "phase:requirements", "kind:single"])
