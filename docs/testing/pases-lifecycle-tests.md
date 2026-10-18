@@ -2,7 +2,7 @@
 <!-- agent-doc-schema: 2 -->
 # P-ASES Human Review and Integration Test Specification
 
-- Status: Existing cases approved for Issues #31 and #42. Issue #63's final successor ADC is approved and published, and its Phase V2 rebaseline is complete; generation-scoped requirements/specification/design/ready receipts and normal Verification, Acceptance, Self-Audit, Independent Review, Readiness, and User Review remain outstanding. TST-UR-007 and TST-UR-008 specify host-owned Independent Review handoff and automatic User Review start; host integration execution is required where the active host exposes native subagents.
+- Status: Existing cases approved for Issues #31 and #42. Issue #63's final successor ADC is approved and published, and its Phase V2 rebaseline is complete; generation-scoped requirements/specification/design/ready receipts and normal Verification, Acceptance, Self-Audit, Independent Review, Readiness, and User Review remain outstanding. TST-UR-007 and TST-UR-008 specify host-owned Independent Review handoff and automatic User Review start; TST-UR-009 covers attention-safe Readiness/User Review transitions and interruption recovery.
 - Owning specification: ../specs/workflow-spec.md
 
 <!-- contents:start -->
@@ -55,6 +55,8 @@
     - [2.22.1 ORA-UR-007 Expected result](#2221-ora-ur-007-expected-result)
   - [2.23 TST-UR-008 Independent Review blockers and host provenance](#223-tst-ur-008-independent-review-blockers-and-host-provenance)
     - [2.23.1 ORA-UR-008 Expected result](#2231-ora-ur-008-expected-result)
+  - [2.24 TST-UR-009 Attention-safe User Review transition and E2E recovery](#224-tst-ur-009-attention-safe-user-review-transition-and-e2e-recovery)
+    - [2.24.1 ORA-UR-009 Expected result](#2241-ora-ur-009-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -105,6 +107,8 @@
 - [ORA-UR-007](#ora-ur-007) — 2.22.1 ORA-UR-007 Expected result
 - [TST-UR-008](#tst-ur-008) — 2.23 TST-UR-008 Independent Review blockers and host provenance
 - [ORA-UR-008](#ora-ur-008) — 2.23.1 ORA-UR-008 Expected result
+- [TST-UR-009](#tst-ur-009) — 2.24 TST-UR-009 Attention-safe User Review transition and E2E recovery
+- [ORA-UR-009](#ora-ur-009) — 2.24.1 ORA-UR-009 Expected result
 <!-- heading-map:end -->
 
 
@@ -392,3 +396,15 @@ Only a host-created and host-joined dedicated child can supply Independent Revie
 #### 2.23.1 ORA-UR-008 Expected result
 
 Every blocker prevents Readiness PASS and User Review start. A single/child Readiness result can PASS only in `verification`, or in `user-review` when the immutable session binds the same exact subject and Readiness SHA. A new session or feedback snapshot is never written in a wrong phase; a missing or stale session in `user-review` blocks. Interruption recovery reuses the same session timestamp and performs normal phase readback. `PENDING` remains exit code 2 and is reported as waiting only after the session, full feedback snapshot, and `phase:user-review` are verified. Verification has no implicit backward edge; rework requires `BLOCKED_PHASE_REWORK_DECISION_REQUIRED` and a separate decision. An unavailable or unverifiable native subagent fails closed as `INDEPENDENT_SUBAGENT_UNAVAILABLE`; no fallback can produce PASS. A HEAD change during execution requires a new child; same-HEAD retries require progress. Host evidence unavailable at the active surface is explicitly reported as unverified and is not claimed as a completed subagent review. Existing PASES independent-review context IDs and digest validation remain intact; they are not upgraded to host-authenticated provenance. No final User Review approval is fabricated.
+
+<a id="tst-ur-009"></a>
+<a id="tst-ur-009-attention-safe-user-review-transition-and-e2e-recovery"></a>
+### 2.24 TST-UR-009 Attention-safe User Review transition and E2E recovery
+
+**Setup and action:** Use the actual `_review_phase_transition` with a mutable FakeGitHub that stores Issue labels and counts replacements. Exercise (1) Readiness phase gating and `user-review start` for `attention:blocked`, `attention:waiting-user`, and `attention:waiting-dependency`; (2) one normal Readiness-PASS start from `phase:verification`; (3) retry/sync with the same exact session; (4) a label PUT that applies but raises a simulated lost-response error; and (5) an existing session followed by stale PR HEAD, Readiness subject, or ADC pointer. Observe Readiness status, session/snapshot/result files, exact Issue kind/phase/attention labels, PUT count, `started_at`, and exit code.
+
+<a id="ora-ur-009"></a>
+<a id="ora-ur-009-expected-result"></a>
+#### 2.24.1 ORA-UR-009 Expected result
+
+Attention present at a gate or malformed attention state blocks new Readiness PASS and User Review evidence writes; attention is never cleared by this path. If attention appears after session creation, the immutable session remains available for recovery, but the snapshot/result and Phase label update are blocked. A valid verification-phase start creates one session and feedback evidence, changes the actual Issue label to `phase:user-review`, returns `PENDING` with exit code 2, and records no Owner approval. Retrying with the exact existing session preserves `started_at` and issues no additional label PUT. If the first PUT response is lost after it applied, exact Issue readback confirms the intended kind/phase/attention and full label set; a retry resumes as PENDING without another write. Stale HEAD, ADC, or Readiness is blocked and cannot reuse an old session/snapshot/result as current. No User Review decision is inferred.
