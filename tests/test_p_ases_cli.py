@@ -33,6 +33,27 @@ def ordinary_context(github, adc=None):
 
 
 class PasesCLITests(unittest.TestCase):
+    def test_adoption_refresh_cli_is_exact_issue_scoped(self):
+        args = _parser().parse_args([
+            "work", "adoption-refresh", "63", "--repo", "puchinya/ai-agent-workflow",
+            "--root", str(ROOT),
+        ])
+        self.assertEqual((args.namespace, args.verb, args.issue, args.repo),
+                         ("work", "adoption-refresh", 63, "puchinya/ai-agent-workflow"))
+
+    def test_adoption_refresh_rejects_other_issue_before_refresh(self):
+        args = _parser().parse_args([
+            "work", "adoption-refresh", "62", "--repo", "puchinya/ai-agent-workflow",
+            "--root", str(ROOT),
+        ])
+        fake_github = SimpleNamespace()
+        verified = verified_adc(200, "a" * 64)
+        with patch("p_ases.cli._approved_issue_adc", return_value=({}, verified)), \
+                patch("p_ases.cli.refresh_adopted_pr_binding") as refresh:
+            with self.assertRaisesRegex(CLIError, "restricted to .* Issue #63"):
+                _work_command(args, "puchinya/ai-agent-workflow", ROOT, fake_github)
+        refresh.assert_not_called()
+
     def test_cli_exposes_exactly_twelve_namespaces_and_adds_project_context(self):
         namespaces = _parser()._subparsers._group_actions[0].choices
         self.assertEqual(set(namespaces), {

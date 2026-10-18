@@ -17,6 +17,8 @@ Owner: runtime/p_ases/adc.py and runtime/p_ases/github.py. Inputs are the exact 
 5. Re-read the Issue after any operation where a concurrent body update could change pointer history.
 6. For a new `approved` publication, require the shared approval-ready preflight and exact current predecessor match; historical verification must continue to read immutable generations without retroactively applying that publication-only check.
 
+For the existing Issue #63 adopted epoch, preserve its origin ADC and verify an approved successor as a complete forward pointer chain. Do not infer a successor from an unapproved draft or overwrite the predecessor. The current generation is not executable for the adopted workspace until its V2 Phase Intent/Applied pair is complete; the subsequent PRBinding refresh is a separate local append-only operation.
+
 ## CLI
 
 ~~~sh

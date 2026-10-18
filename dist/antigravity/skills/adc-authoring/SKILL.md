@@ -16,6 +16,8 @@ Owner: runtime/p_ases/adc.py. Inputs are an explicitly authorized request, repos
 4. Validate the local candidate. Structural validation does not approve content. For a new approved publication, also run the shared approval-ready preflight against the current verified pointer; it rejects draft/proposal titles, draft-only headers or status, malformed predecessor declarations, and stale predecessor IDs/SHAs.
 5. Present the complete final candidate for the user's decision. Publish only after explicit approval for those exact bytes; never normalize or edit the candidate after approval.
 
+For the Issue #63 adopted-epoch successor only, carry forward the complete current approved ADC without scope changes, name the exact current approved predecessor comment/SHA, and declare artifact impact with explicit Specification, Design, and Testing paths. The recovery successor uses `docs/specs/workflow-spec.md`, `docs/specs/runtime-spec.md`, `docs/design/workflow-design.md`, `docs/design/runtime-design.md`, `docs/testing/pases-lifecycle-tests.md`, `docs/testing/runtime-tests.md`, and `docs/testing/traceability.md`; do not use a generic `Canonical:` entry. Keep the approved origin ADC immutable.
+
 ## CLI
 
 ~~~sh

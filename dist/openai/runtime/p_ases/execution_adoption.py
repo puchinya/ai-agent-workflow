@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .adc import ADCError, verify_adc
+from .adc import ADCError, verify_adc, verify_adc_forward_generations
 from .checkpoint import (
     CheckpointError, PRBinding, WorkCheckpoint, checkpoint_path, read_checkpoint,
     read_pr_binding, write_checkpoint, write_pr_binding,
@@ -1085,7 +1085,11 @@ def append_adopted_pr_binding(github: Any, root: Path, *,
                               expected_adc_comment_id: int, expected_adc_sha256: str) -> dict[str, Any]:
     """Append a fresh PRBinding after a legitimate forward-only post-adoption commit."""
     root = Path(root).resolve()
-    epoch = read_adopted_epoch(root)
+    verified = verify_adopted_execution(
+        github, root, expected_adc_comment_id=expected_adc_comment_id,
+        expected_adc_sha256=expected_adc_sha256, allow_pr_head_advance=True,
+    )
+    epoch = verified["epoch"]
     try:
         stored_plan = read_adoption_plan(adoption_plan_path(root))
     except ExecutionAdoptionError as exc:
@@ -1107,46 +1111,7 @@ def append_adopted_pr_binding(github: Any, root: Path, *,
             or Path(attachment.work_directory).resolve() != root
             or _attachment_id(root, epoch.branch_ref) != epoch.attachment_id):
         raise ExecutionAdoptionError("current worktree is not the original adopted workspace attachment")
-    if (epoch.adc_comment_id != expected_adc_comment_id or epoch.adc_sha256 != expected_adc_sha256):
-        raise ExecutionAdoptionError("adopted epoch is stale for the current approved ADC")
-    try:
-        current_adc = verify_adc(github, ISSUE_NUMBER)
-        if current_adc.pointer.comment_id != epoch.adc_comment_id or current_adc.pointer.sha256 != epoch.adc_sha256:
-            raise ExecutionAdoptionError("approved ADC changed after adoption")
-        decision = read_verified_owner_decision(
-            github, issue_number=ISSUE_NUMBER, owner_id=OWNER_ID, operation="EXECUTION_ADOPTION",
-            subject_sha256=epoch.plan_sha256, expected_pr_number=PR_NUMBER,
-            expected_pr_head_sha40=epoch.observed_start_head_sha40,
-            expected_plan_sha256=epoch.owner_authorization_plan_sha256,
-            repository_id=REPOSITORY_ID, expected_approval_scope_sha256=epoch.approval_scope_sha256,
-            expected_schema=SCHEMA_V3,
-        )
-        history = _read_adoption_history(github)
-    except (ADCError, OwnerDecisionError) as exc:
-        raise ExecutionAdoptionError(f"adopted epoch authority could not be revalidated: {exc}") from exc
-    if decision.comment_id != epoch.owner_decision_comment_id or len(history) != 2:
-        raise ExecutionAdoptionError("adopted epoch owner decision or append-only journal differs")
-    executor_id = history[0][2].get("executor_user_id")
-    journal_plan = {
-        "adc_comment_id": epoch.adc_comment_id, "adc_sha256": epoch.adc_sha256,
-        "plan_sha256": epoch.plan_sha256, "adoption_id": epoch.adoption_id,
-        "selected_base_ref": epoch.selected_base_ref, "selected_base_sha40": epoch.selected_base_sha40,
-        "branch_ref": epoch.branch_ref, "observed_start_head_sha40": epoch.observed_start_head_sha40,
-        "attachment_id": epoch.attachment_id,
-    }
-    journal_owner = {"plan_sha256": epoch.owner_authorization_plan_sha256,
-                     "approval_scope_sha256": epoch.approval_scope_sha256}
-    if (history[0][0] != epoch.intent_comment_id or history[1][0] != epoch.applied_comment_id
-            or hashlib.sha256(_body(INTENT_SCHEMA, history[0][2]).encode("utf-8")).hexdigest()
-               != epoch.intent_body_sha256
-            or hashlib.sha256(_body(APPLIED_SCHEMA, history[1][2]).encode("utf-8")).hexdigest()
-               != epoch.applied_body_sha256):
-        raise ExecutionAdoptionError("adoption history differs from its immutable local epoch")
-    _validate_journal_record(history[0], schema=INTENT_SCHEMA, plan=journal_plan, owner_plan=journal_owner,
-                             decision_comment_id=decision.comment_id, executor_user_id=executor_id)
-    _validate_journal_record(history[1], schema=APPLIED_SCHEMA, plan=journal_plan, owner_plan=journal_owner,
-                             decision_comment_id=decision.comment_id, executor_user_id=executor_id,
-                             intent_record=history[0])
+    current_adc = verified["current_adc"]
     try:
         issue = github.issue(ISSUE_NUMBER)
         if (issue.get("number") != ISSUE_NUMBER or issue.get("state") != "open"
@@ -1171,7 +1136,8 @@ def append_adopted_pr_binding(github: Any, root: Path, *,
         previous = bindings[-1][1]
         if (previous.adoption_id != epoch.adoption_id or previous.repository != REPOSITORY
                 or previous.issue_number != ISSUE_NUMBER or previous.pr_number != PR_NUMBER
-                or previous.adc_comment_id != epoch.adc_comment_id or previous.adc_sha256 != epoch.adc_sha256
+                or previous.adc_comment_id != current_adc.pointer.comment_id
+                or previous.adc_sha256 != current_adc.pointer.sha256
                 or previous.base_sha40 != epoch.selected_base_sha40 or previous.branch_ref != epoch.branch_ref
                 or not is_ancestor(root, previous.pr_head_sha40, current_head)):
             raise ExecutionAdoptionError("latest immutable PRBinding does not precede the current adopted PR HEAD")
@@ -1195,7 +1161,7 @@ def append_adopted_pr_binding(github: Any, root: Path, *,
         raise ExecutionAdoptionError(f"adopted PR continuation readback failed: {exc}") from exc
     new_binding = PRBinding(
         repository=REPOSITORY, issue_number=ISSUE_NUMBER,
-        adc_comment_id=epoch.adc_comment_id, adc_sha256=epoch.adc_sha256,
+        adc_comment_id=current_adc.pointer.comment_id, adc_sha256=current_adc.pointer.sha256,
         base_sha40=epoch.selected_base_sha40, branch_ref=epoch.branch_ref,
         pr_number=PR_NUMBER, pr_head_sha40=current_head,
         current_base_sha40=None if evidence is None else evidence.current_base_sha40,
@@ -1221,15 +1187,57 @@ def append_adopted_pr_binding(github: Any, root: Path, *,
         ).validate()
         write_checkpoint(checkpoint_path(root, ISSUE_NUMBER, step), checkpoint)
     return verify_adopted_execution(
-        github, root, expected_adc_comment_id=epoch.adc_comment_id,
-        expected_adc_sha256=epoch.adc_sha256,
+        github, root, expected_adc_comment_id=current_adc.pointer.comment_id,
+        expected_adc_sha256=current_adc.pointer.sha256,
     ) | {"status": "PR_BINDING_CURRENT" if previous == new_binding else "PR_BINDING_ADVANCED"}
+
+
+def _verify_adopted_effective_adc(github: Any, epoch: AdoptedExecutionEpoch, *,
+                                  expected_adc_comment_id: int,
+                                  expected_adc_sha256: str) -> tuple[Any, bool]:
+    """Verify the current pointer as an approved forward continuation of the immutable origin."""
+    try:
+        current = verify_adc(github, ISSUE_NUMBER)
+        if (current.pointer.comment_id != expected_adc_comment_id
+                or current.pointer.sha256 != expected_adc_sha256
+                or current.pointer.state != "approved"):
+            raise ExecutionAdoptionError("adopted execution does not match the current approved ADC pointer")
+        if (current.pointer.comment_id, current.pointer.sha256) == (epoch.adc_comment_id, epoch.adc_sha256):
+            return current, False
+        forward = verify_adc_forward_generations(
+            github, ISSUE_NUMBER, prior_comment_id=epoch.adc_comment_id,
+            prior_sha256=epoch.adc_sha256, current_comment_id=current.pointer.comment_id,
+            current_sha256=current.pointer.sha256,
+        )
+        if (len(forward) < 2 or forward[0].pointer.comment_id != epoch.adc_comment_id
+                or forward[0].pointer.sha256 != epoch.adc_sha256
+                or forward[-1].pointer != current.pointer):
+            raise ExecutionAdoptionError("current ADC is not a complete forward successor of the adopted epoch ADC")
+        generations = _approved_generations(github)
+        if (not generations or generations[-1].pointer != current.pointer
+                or not any(item.pointer.comment_id == epoch.adc_comment_id
+                           and item.pointer.sha256 == epoch.adc_sha256 for item in generations)):
+            raise ExecutionAdoptionError("current ADC is outside the verified #63 approved generation chain")
+        records = _read_history(github)
+        _v1_intent, _v1_applied, pairs = _validate_generation_history(records, generations)
+        generation_index = len(generations) - 1
+        current_pair = pairs.get(generation_index)
+        if current_pair is None or current_pair[1] is None:
+            raise ExecutionAdoptionError(
+                "ADC_REFRESH_PENDING_PHASE_REBASELINE: current ADC generation has no completed V2 Intent/Applied pair"
+            )
+        return current, True
+    except ADCError as exc:
+        raise ExecutionAdoptionError(f"adopted current ADC forward-chain verification failed: {exc}") from exc
+    except PhaseRebaselineError as exc:
+        raise ExecutionAdoptionError(f"current ADC Phase generation is invalid: {exc}") from exc
 
 
 def verify_adopted_execution(
     github: Any, root: Path, *, expected_adc_comment_id: int, expected_adc_sha256: str,
+    allow_adc_refresh_pending: bool = False, allow_pr_head_advance: bool = False,
 ) -> dict[str, Any]:
-    """Revalidate local epoch/attachment, exact remote journal and owner decision."""
+    """Revalidate immutable epoch plus its current, forward-only PRBinding generation."""
     root = Path(root).resolve()
     epoch = read_adopted_epoch(root)
     try:
@@ -1254,8 +1262,10 @@ def verify_adopted_execution(
             or attachment.branch_ref != epoch.branch_ref or Path(attachment.work_directory).resolve() != root
             or _attachment_id(root, epoch.branch_ref) != epoch.attachment_id):
         raise ExecutionAdoptionError("current workspace is not the authenticated adopted-epoch attachment")
-    if (epoch.adc_comment_id != expected_adc_comment_id or epoch.adc_sha256 != expected_adc_sha256):
-        raise ExecutionAdoptionError("adopted epoch is stale for the current approved ADC")
+    current_adc, has_adc_successor = _verify_adopted_effective_adc(
+        github, epoch, expected_adc_comment_id=expected_adc_comment_id,
+        expected_adc_sha256=expected_adc_sha256,
+    )
     binding_path = root / ".p_ases" / "state" / str(ISSUE_NUMBER) / "execution-binding.json"
     if (adoption_path(root).is_symlink() or attachment_path(root).is_symlink()
             or adoption_plan_path(root).is_symlink()
@@ -1335,15 +1345,53 @@ def verify_adopted_execution(
         raise ExecutionAdoptionError(f"adopted PRBinding history is invalid: {exc}") from exc
     if not pr_history:
         raise ExecutionAdoptionError("adopted PRBinding is missing")
+    first_pr_binding = pr_history[0][1]
+    if (first_pr_binding.adoption_id != epoch.adoption_id
+            or first_pr_binding.repository != REPOSITORY
+            or first_pr_binding.issue_number != ISSUE_NUMBER
+            or first_pr_binding.pr_number != PR_NUMBER
+            or first_pr_binding.adc_comment_id != epoch.adc_comment_id
+            or first_pr_binding.adc_sha256 != epoch.adc_sha256
+            or first_pr_binding.base_sha40 != epoch.selected_base_sha40
+            or first_pr_binding.branch_ref != epoch.branch_ref
+            or first_pr_binding.pr_head_sha40 != epoch.observed_start_head_sha40):
+        raise ExecutionAdoptionError("first PRBinding does not preserve the immutable adopted epoch origin")
     latest_pr_binding = pr_history[-1][1]
     if (latest_pr_binding.adoption_id != epoch.adoption_id
             or latest_pr_binding.repository != REPOSITORY or latest_pr_binding.issue_number != ISSUE_NUMBER
-            or latest_pr_binding.pr_number != PR_NUMBER or latest_pr_binding.adc_comment_id != epoch.adc_comment_id
-            or latest_pr_binding.adc_sha256 != epoch.adc_sha256
+            or latest_pr_binding.pr_number != PR_NUMBER
             or latest_pr_binding.base_sha40 != epoch.selected_base_sha40
-            or latest_pr_binding.branch_ref != epoch.branch_ref
-            or latest_pr_binding.pr_head_sha40 != current_head):
-        raise ExecutionAdoptionError("latest PRBinding does not authenticate this adopted epoch and exact PR HEAD")
+            or latest_pr_binding.branch_ref != epoch.branch_ref):
+        raise ExecutionAdoptionError("latest PRBinding does not authenticate the immutable adopted PR identity")
+    binding_adc_matches = (
+        latest_pr_binding.adc_comment_id == current_adc.pointer.comment_id
+        and latest_pr_binding.adc_sha256 == current_adc.pointer.sha256
+    )
+    if not binding_adc_matches:
+        if not has_adc_successor:
+            raise ExecutionAdoptionError("latest PRBinding ADC differs from the adopted epoch ADC")
+        try:
+            binding_to_current = verify_adc_forward_generations(
+                github, ISSUE_NUMBER,
+                prior_comment_id=latest_pr_binding.adc_comment_id,
+                prior_sha256=latest_pr_binding.adc_sha256,
+                current_comment_id=current_adc.pointer.comment_id,
+                current_sha256=current_adc.pointer.sha256,
+            )
+        except ADCError as exc:
+            raise ExecutionAdoptionError(f"latest PRBinding is not an ancestor of the effective ADC: {exc}") from exc
+        if (not binding_to_current or binding_to_current[0].pointer.comment_id != latest_pr_binding.adc_comment_id
+                or binding_to_current[-1].pointer != current_adc.pointer):
+            raise ExecutionAdoptionError("latest PRBinding ADC is not in the effective forward generation chain")
+        if not allow_adc_refresh_pending:
+            raise ExecutionAdoptionError("ADC_REFRESH_REQUIRED: current approved ADC has not been bridged by PRBinding")
+    head_binding_matches = latest_pr_binding.pr_head_sha40 == current_head
+    if not head_binding_matches:
+        can_advance = (is_ancestor(root, latest_pr_binding.pr_head_sha40, current_head)
+                       and ((allow_pr_head_advance and binding_adc_matches)
+                            or (allow_adc_refresh_pending and has_adc_successor and not binding_adc_matches)))
+        if not can_advance:
+            raise ExecutionAdoptionError("latest PRBinding does not authenticate the exact current PR HEAD")
     if current_base_sha != epoch.selected_base_sha40:
         try:
             if not is_ancestor(root, epoch.selected_base_sha40, current_base_sha):
@@ -1373,4 +1421,191 @@ def verify_adopted_execution(
         raise ExecutionAdoptionError("PRBinding carries a current-base proof although the PR base returned to its frozen SHA")
     return {"epoch": epoch, "attachment": attachment, "pr_binding": latest_pr_binding,
             "current_head_sha40": current_head, "current_base_sha40": current_base_sha,
-            "pr": pull, "owner_decision": decision}
+            "pr": pull, "owner_decision": decision, "current_adc": current_adc,
+            "adc_refresh_required": not binding_adc_matches,
+            "pr_binding_head_current": head_binding_matches}
+
+
+def refresh_adopted_pr_binding(github: Any, root: Path, *,
+                               expected_adc_comment_id: int, expected_adc_sha256: str) -> dict[str, Any]:
+    """Append the one-time forward ADC generation bridge for the existing #63 adopted epoch."""
+    root = Path(root).resolve()
+    if getattr(github, "repo", None) != REPOSITORY:
+        raise ExecutionAdoptionError("adoption refresh is restricted to puchinya/ai-agent-workflow Issue #63")
+    verified = verify_adopted_execution(
+        github, root, expected_adc_comment_id=expected_adc_comment_id,
+        expected_adc_sha256=expected_adc_sha256, allow_adc_refresh_pending=True,
+    )
+    epoch = verified["epoch"]
+    current_adc = verified["current_adc"]
+    previous = verified["pr_binding"]
+    binding_history = read_pr_binding_history(root, ISSUE_NUMBER, github=github)
+    if not binding_history or binding_history[-1][1] != previous:
+        raise ExecutionAdoptionError("adoption refresh PRBinding history changed after verification")
+    _validate_adopted_checkpoint_history(
+        root, epoch, binding_history, verified["current_head_sha40"],
+    )
+    if not verified["adc_refresh_required"]:
+        if not verified["pr_binding_head_current"]:
+            raise ExecutionAdoptionError(
+                "same-generation PR HEAD advance must use the ordinary forward PRBinding path"
+            )
+        if ((current_adc.pointer.comment_id, current_adc.pointer.sha256)
+                == (epoch.adc_comment_id, epoch.adc_sha256)):
+            # A refresh command must not repair the original epoch's checkpoint history.
+            # Only a successor generation can authorize checkpoint recovery here.
+            checkpoints, latest = _validate_adopted_checkpoint_history(
+                root, epoch, binding_history, verified["current_head_sha40"],
+            )
+            if (not checkpoints or latest[1].current_head_sha40 != previous.pr_head_sha40
+                    or ("pr-binding", previous.sha256) not in latest[1].artifact_digests):
+                raise ExecutionAdoptionError(
+                    "adoption refresh has no successor ADC and cannot repair the original checkpoint history"
+                )
+            return verified | {"status": "NOOP", "writes_performed": 0}
+        checkpoint_status = _ensure_adoption_refresh_checkpoint(
+            root, epoch, previous, verified["current_head_sha40"], binding_history,
+        )
+        final = verify_adopted_execution(
+            github, root, expected_adc_comment_id=current_adc.pointer.comment_id,
+            expected_adc_sha256=current_adc.pointer.sha256,
+        )
+        return final | {"status": "RECOVERED" if checkpoint_status == "APPENDED" else "NOOP",
+                        "writes_performed": int(checkpoint_status == "APPENDED")}
+
+    if ((previous.adc_comment_id, previous.adc_sha256)
+            == (current_adc.pointer.comment_id, current_adc.pointer.sha256)):
+        raise ExecutionAdoptionError("refresh preflight has no ADC generation to bridge")
+    current_head = verified["current_head_sha40"]
+    current_base = verified["current_base_sha40"]
+    pull = verified["pr"]
+    evidence = None
+    if current_base != epoch.selected_base_sha40:
+        profile = load_profile(root)
+        if profile.activation_issue_number is None:
+            raise ExecutionAdoptionError("forward PR base requires the configured Activation proof")
+        try:
+            from .current_base import verify_current_base_advance
+            evidence = verify_current_base_advance(
+                root, github, repository=REPOSITORY, issue_number=ISSUE_NUMBER,
+                execution_binding=epoch, prior_pr_binding=previous, current_pr=pull,
+                activation_issue_number=profile.activation_issue_number,
+            )
+        except (CurrentBaseError, ProfileError, GitHubError, GitError) as exc:
+            raise ExecutionAdoptionError(f"PR base drift is not the exact Activation transition: {exc}") from exc
+    new_binding = PRBinding(
+        repository=REPOSITORY, issue_number=ISSUE_NUMBER,
+        adc_comment_id=current_adc.pointer.comment_id, adc_sha256=current_adc.pointer.sha256,
+        base_sha40=epoch.selected_base_sha40, branch_ref=epoch.branch_ref,
+        pr_number=PR_NUMBER, pr_head_sha40=current_head,
+        current_base_sha40=None if evidence is None else evidence.current_base_sha40,
+        current_base_advance_sha256=None if evidence is None else evidence.sha256,
+        adoption_id=epoch.adoption_id,
+    ).validate()
+    try:
+        from .work import _verify_pr_binding_successor
+        _verify_pr_binding_successor(github, ISSUE_NUMBER, previous, new_binding,
+                                     current_base_evidence=evidence)
+    except WorkError as exc:
+        raise ExecutionAdoptionError(f"adopted PRBinding successor is invalid: {exc}") from exc
+
+    # Re-read every mutable authority immediately before the create-only local append.
+    preflight = verify_adopted_execution(
+        github, root, expected_adc_comment_id=current_adc.pointer.comment_id,
+        expected_adc_sha256=current_adc.pointer.sha256, allow_adc_refresh_pending=True,
+    )
+    bindings = read_pr_binding_history(root, ISSUE_NUMBER, github=github)
+    if (preflight["current_adc"].pointer != current_adc.pointer
+            or preflight["current_head_sha40"] != current_head
+            or preflight["pr_binding"] != previous
+            or not bindings or bindings[-1][1] != previous
+            or latest_checkpoint(root, ISSUE_NUMBER) is None):
+        raise ExecutionAdoptionError("adoption refresh preflight drifted; no PRBinding was written")
+    _validate_adopted_checkpoint_history(root, epoch, bindings, current_head)
+    try:
+        latest_adc = verify_adc(github, ISSUE_NUMBER)
+        latest_issue = github.issue(ISSUE_NUMBER)
+        _pull, latest_base_ref, _latest_base_sha, latest_branch_ref, latest_pr_head, latest_author_id = _pull_identity(github)
+        if (latest_adc.pointer != current_adc.pointer
+                or latest_issue.get("number") != ISSUE_NUMBER or latest_issue.get("state") != "open"
+                or latest_issue.get("repository_url") != f"https://api.github.com/repos/{REPOSITORY}"
+                or not worktree_clean(root) or head_sha40(root) != current_head
+                or remote_branch_sha(root, epoch.branch_ref) != current_head
+                or latest_base_ref != epoch.selected_base_ref or latest_branch_ref != epoch.branch_ref
+                or latest_pr_head != current_head or latest_author_id != epoch.pr_author_user_id):
+            raise ExecutionAdoptionError("ADC, Issue, PR, or worktree drifted before the PRBinding append")
+    except (ADCError, GitHubError, GitError) as exc:
+        raise ExecutionAdoptionError(f"adoption refresh final preflight failed; no append was made: {exc}") from exc
+    if previous != new_binding:
+        version = len(bindings) + 1
+        binding_file = _pr_binding_version_path(root, ISSUE_NUMBER, version)
+        try:
+            write_pr_binding(binding_file, new_binding)
+        except CheckpointError as exc:
+            raise ExecutionAdoptionError(f"create-only PRBinding append failed: {exc}") from exc
+        bindings = [*bindings, (binding_file, new_binding)]
+    checkpoint_status = _ensure_adoption_refresh_checkpoint(
+        root, epoch, new_binding, current_head, bindings,
+    )
+    final = verify_adopted_execution(
+        github, root, expected_adc_comment_id=current_adc.pointer.comment_id,
+        expected_adc_sha256=current_adc.pointer.sha256,
+    )
+    if final["pr_binding"] != new_binding:
+        raise ExecutionAdoptionError("adoption refresh PRBinding direct readback does not match the appended row")
+    return final | {"status": "REFRESHED" if previous != new_binding else "RECOVERED",
+                    "writes_performed": int(previous != new_binding) + int(checkpoint_status == "APPENDED")}
+
+
+def _validate_adopted_checkpoint_history(root: Path, epoch: AdoptedExecutionEpoch,
+                                         bindings: list[tuple[Path, PRBinding]], current_head: str
+                                         ) -> tuple[list[WorkCheckpoint], tuple[Path, WorkCheckpoint]]:
+    try:
+        checkpoints = [read_checkpoint(path) for path in _checkpoint_files(root, ISSUE_NUMBER)]
+        latest = latest_checkpoint(root, ISSUE_NUMBER)
+    except (CheckpointError, WorkError) as exc:
+        raise ExecutionAdoptionError(f"adopted checkpoint history is invalid: {exc}") from exc
+    if latest is None or not checkpoints:
+        raise ExecutionAdoptionError("adopted epoch checkpoint history is missing")
+    if any(row.execution_adoption_sha256 != epoch.sha256 or row.execution_binding_sha256 is not None
+           for row in checkpoints):
+        raise ExecutionAdoptionError("checkpoint history no longer names the immutable adopted epoch")
+    by_digest = {item.sha256: item for _path, item in bindings}
+    for row in checkpoints:
+        references = [digest for name, digest in row.artifact_digests if name == "pr-binding"]
+        if len(references) != 1 or references[0] not in by_digest:
+            raise ExecutionAdoptionError("checkpoint history has a missing or unknown PRBinding reference")
+        binding = by_digest[references[0]]
+        if (("adopted-epoch", epoch.sha256) not in row.artifact_digests
+                or row.current_head_sha40 != binding.pr_head_sha40
+                or not is_ancestor(root, row.current_head_sha40, current_head)):
+            raise ExecutionAdoptionError("checkpoint history conflicts with its immutable PRBinding or current HEAD")
+    return checkpoints, latest
+
+
+def _ensure_adoption_refresh_checkpoint(root: Path, epoch: AdoptedExecutionEpoch,
+                                        binding: PRBinding, current_head: str,
+                                        bindings: list[tuple[Path, PRBinding]]) -> str:
+    """Append only a missing checkpoint after verifying the immutable epoch prefix."""
+    checkpoints, latest = _validate_adopted_checkpoint_history(root, epoch, bindings, current_head)
+    references = [row for row in checkpoints if ("pr-binding", binding.sha256) in row.artifact_digests]
+    if references:
+        if latest[1].current_head_sha40 != binding.pr_head_sha40 or (
+                ("pr-binding", binding.sha256) not in latest[1].artifact_digests):
+            raise ExecutionAdoptionError("checkpoint history has a conflicting or skipped PRBinding reference")
+        return "PRESENT"
+    if latest[1].current_head_sha40 != binding.pr_head_sha40 and not is_ancestor(
+            root, latest[1].current_head_sha40, binding.pr_head_sha40):
+        raise ExecutionAdoptionError("new PRBinding HEAD does not continue the latest adopted checkpoint")
+    checkpoint = WorkCheckpoint(
+        execution_binding_sha256=None, execution_adoption_sha256=epoch.sha256,
+        current_head_sha40=binding.pr_head_sha40, worktree_clean=True, completed_stage="pr",
+        artifact_digests=tuple(sorted((
+            ("adopted-epoch", epoch.sha256), ("pr-binding", binding.sha256),
+        ))), step=latest[1].step + 1,
+    ).validate()
+    try:
+        write_checkpoint(checkpoint_path(root, ISSUE_NUMBER, checkpoint.step), checkpoint)
+    except CheckpointError as exc:
+        raise ExecutionAdoptionError(f"create-only adopted checkpoint append failed: {exc}") from exc
+    return "APPENDED"

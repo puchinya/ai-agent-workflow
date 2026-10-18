@@ -8,6 +8,8 @@ description: Review an exact PR subject in a separate context and record evidenc
 
 No ordinary Independent Review may be recorded before the exact post-CI #63/#64 adoption is applied. Afterwards the host supplies the exact current implementation identity to the child: `execution-binding:<digest>` for a normal V1 binding or `execution-adoption:<epoch-sha256>` for the adopted epoch. The child records that value in `implementation_binding_id`; never fabricate a legacy V1 ID for an adopted epoch. Every review still binds the current exact PR HEAD, ADC, full contract, checklist, diff, and test evidence. Adoption approval is not User Review or merge approval.
 
+For a later approved ADC on the same #63 adopted epoch, the child continues to bind the unchanged `execution-adoption:<epoch-sha256>` identity. The current ADC generation is separately established by its approved forward chain, completed V2 Phase pair, and latest PRBinding V3; do not substitute the new ADC or PRBinding digest for the immutable implementation identity.
+
 ## Owner and inputs
 
 Owner: the active host owns subagent lifecycle and provenance; `runtime/p_ases/audits.py` validates and records the existing review artifact. Inputs are the exact approved ADC/Contract, Issue/PR identity, HEAD, complete diff, every checklist item, test evidence, implementation binding ID, and host-reported spawn/session and reviewer IDs.

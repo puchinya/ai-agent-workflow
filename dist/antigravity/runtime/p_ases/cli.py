@@ -45,7 +45,7 @@ from .execution import (
 )
 from .execution_adoption import (
     ExecutionAdoptionError, adoption_path, append_adopted_pr_binding, apply_adoption, build_adoption_plan,
-    read_execution_identity, verify_adopted_execution,
+    read_execution_identity, refresh_adopted_pr_binding, verify_adopted_execution,
     read_adoption_plan, write_adoption_plan,
 )
 from .checkpoint import CheckpointError, PRBinding, read_pr_binding
@@ -584,6 +584,7 @@ def _verification_plan(args: argparse.Namespace, repository: str, root: Path, gi
 
 def _verification_collect(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
     verified_adc = verify_adc(github, args.issue)
+    _require_current_adopted_generation(github, root, repository, args.issue, verified_adc)
     plan, _required, _oracles, _tests = _load_plan(root, repository, args.issue, args.plan, verified_adc)
     subject = _subject(repository, args.issue, args.pr, args.head, verified_adc, plan)
     pr_readback = _readback_current_pr(github, subject)
@@ -619,6 +620,7 @@ def _verification_collect(args: argparse.Namespace, repository: str, root: Path,
 def _calculate_verification(args: argparse.Namespace, repository: str, root: Path, github: GitHub
                              ) -> tuple[VerificationResult, list[str]]:
     verified_adc = verify_adc(github, args.issue)
+    _require_current_adopted_generation(github, root, repository, args.issue, verified_adc)
     plan, _required, _oracles, _tests = _load_plan(root, repository, args.issue, args.plan, verified_adc)
     subject = _subject(repository, args.issue, args.pr, args.head, verified_adc, plan)
     pr_readback = _readback_current_pr(github, subject)
@@ -691,6 +693,7 @@ def _verification_published(args: argparse.Namespace, repository: str, root: Pat
 
 def _acceptance_template(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
     verified_adc = verify_adc(github, args.issue)
+    _require_current_adopted_generation(github, root, repository, args.issue, verified_adc)
     plan, _required, _oracles, _tests = _load_plan(root, repository, args.issue, args.plan, verified_adc)
     subject = _subject(repository, args.issue, args.pr, args.head, verified_adc, plan)
     pr_readback = _readback_current_pr(github, subject)
@@ -1085,6 +1088,27 @@ def _read_execution_identity(github: GitHub, root: Path, repository: str,
         raise CLIError(f"immutable ExecutionBinding readback failed: {exc}") from exc
 
 
+def _require_current_adopted_generation(github: GitHub, root: Path, repository: str,
+                                        issue_number: int, verified_adc: Any) -> None:
+    """Prevent #63 exact-subject evidence until the adopted epoch has its current ADC bridge."""
+    if (issue_number != 63 or repository.casefold() != "puchinya/ai-agent-workflow"
+            or not (adoption_path(root).exists() or adoption_path(root).is_symlink())):
+        return
+    identity = _read_execution_identity(github, root, repository, issue_number, verified_adc)
+    if not isinstance(identity, AdoptedExecutionEpoch):
+        raise CLIError("Issue #63 adopted execution did not resolve to its immutable epoch")
+    try:
+        current_binding = read_pr_binding(pr_binding_path(root, issue_number, github=github))
+    except (CheckpointError, WorkError, OSError) as exc:
+        raise CLIError(f"current adopted PRBinding readback failed: {exc}") from exc
+    if (current_binding.adoption_id != identity.adoption_id
+            or current_binding.adc_comment_id != verified_adc.pointer.comment_id
+            or current_binding.adc_sha256 != verified_adc.pointer.sha256
+            or current_binding.pr_number != identity.pr_number
+            or current_binding.pr_head_sha40 != head_sha40(root)):
+        raise CLIError("current adopted PRBinding does not bridge the approved ADC and exact PR HEAD")
+
+
 def _work_json(result: Any, issue_number: int, repository: str, *, extra: dict[str, Any] | None = None) -> int:
     binding = result.binding
     context = result.context
@@ -1112,7 +1136,24 @@ def _work_json(result: Any, issue_number: int, repository: str, *, extra: dict[s
 
 
 def _work_command(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
+    if args.verb == "adoption-refresh" and (
+            args.issue != 63 or repository.casefold() != "puchinya/ai-agent-workflow"):
+        raise CLIError("adoption refresh is restricted to puchinya/ai-agent-workflow Issue #63")
     _issue, verified = _approved_issue_adc(github, args.issue, repository)
+    if args.verb == "adoption-refresh":
+        result = refresh_adopted_pr_binding(
+            github, root, expected_adc_comment_id=verified.pointer.comment_id,
+            expected_adc_sha256=verified.pointer.sha256,
+        )
+        binding = result["pr_binding"]
+        _json({"status": result["status"], "repository": repository, "issue": 63,
+               "adoption_id": result["epoch"].adoption_id, "epoch_sha256": result["epoch"].sha256,
+               "adc_comment_id": binding.adc_comment_id, "adc_sha256": binding.adc_sha256,
+               "pr": binding.pr_number, "pr_head_sha40": binding.pr_head_sha40,
+               "pr_binding_sha256": binding.sha256,
+               "writes_performed": result["writes_performed"],
+               "evidence_refs": [str(adoption_path(root)), str(pr_binding_path(root, 63, github=github))]})
+        return 0 if result["status"] in {"REFRESHED", "RECOVERED", "NOOP"} else 2
     if args.verb == "adoption-plan":
         if args.issue != 63 or repository.casefold() != "puchinya/ai-agent-workflow":
             raise CLIError("execution adoption is restricted to puchinya/ai-agent-workflow Issue #63 / PR #64")
@@ -1226,10 +1267,11 @@ def _pr_ensure(args: argparse.Namespace, repository: str, root: Path, github: Gi
     if (args.issue == 63 and repository.casefold() == "puchinya/ai-agent-workflow"
             and not binding_path.exists()
             and (adoption_path(root).exists() or adoption_path(root).is_symlink())):
-        identity = read_execution_identity(
-            github, root, adc_comment_id=verified.pointer.comment_id,
-            adc_sha256=verified.pointer.sha256,
+        adopted_readback = verify_adopted_execution(
+            github, root, expected_adc_comment_id=verified.pointer.comment_id,
+            expected_adc_sha256=verified.pointer.sha256, allow_pr_head_advance=True,
         )
+        identity = adopted_readback["epoch"]
         if not isinstance(identity, AdoptedExecutionEpoch):
             raise CLIError("Issue #63 adoption artifacts did not resolve to an adopted execution epoch")
         if args.branch_ref != identity.branch_ref or args.base_ref != identity.selected_base_ref:
@@ -1287,6 +1329,7 @@ def _pr_ensure(args: argparse.Namespace, repository: str, root: Path, github: Gi
 def _audit_subject(args: argparse.Namespace, repository: str, root: Path,
                    github: GitHub) -> tuple[Any, VerificationSubject, tuple[str, ...], dict[str, str]]:
     _issue, verified = _approved_issue_adc(github, args.issue, repository)
+    _require_current_adopted_generation(github, root, repository, args.issue, verified)
     plan, _required, _oracles, _tests = _load_plan(root, repository, args.issue, args.plan, verified)
     subject = _subject(repository, args.issue, args.pr, args.head, verified, plan)
     try:
@@ -1825,8 +1868,13 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
         pr_binding = read_pr_binding(pr_binding_path(root, args.issue, github=github))
         if binding.repository != repository or binding.issue_number != args.issue:
             raise CLIError("execution identity repository/Issue does not match")
-        if (binding.adc_comment_id != (None if verified_adc is None else verified_adc.pointer.comment_id)
-                or binding.adc_sha256 != (None if verified_adc is None else verified_adc.pointer.sha256)):
+        if isinstance(binding, AdoptedExecutionEpoch):
+            if (pr_binding.adoption_id != binding.adoption_id
+                    or pr_binding.adc_comment_id != (None if verified_adc is None else verified_adc.pointer.comment_id)
+                    or pr_binding.adc_sha256 != (None if verified_adc is None else verified_adc.pointer.sha256)):
+                blockers.append("adopted epoch lacks a current-generation PRBinding bridge")
+        elif (binding.adc_comment_id != (None if verified_adc is None else verified_adc.pointer.comment_id)
+              or binding.adc_sha256 != (None if verified_adc is None else verified_adc.pointer.sha256)):
             blockers.append("ExecutionBinding belongs to a stale ADC pointer")
     except (ExecutionError, CheckpointError, CLIError, OSError) as exc:
         blockers.append(f"current immutable work/PR binding readback failed: {exc}")
@@ -4336,7 +4384,10 @@ def _parser() -> argparse.ArgumentParser:
     adoption_apply.add_argument("issue", type=_positive_number)
     adoption_apply.add_argument("--plan", required=True, type=Path)
     adoption_apply.add_argument("--authorization-plan", required=True, type=Path)
-    for command in (base, branch, bind, recover, adoption_plan, adoption_apply):
+    adoption_refresh = work_commands.add_parser(
+        "adoption-refresh", help="append the exact approved ADC successor bridge for the existing #63 epoch")
+    adoption_refresh.add_argument("issue", type=_positive_number)
+    for command in (base, branch, bind, recover, adoption_plan, adoption_apply, adoption_refresh):
         command.add_argument("--repo", help="repository owner/name; defaults to origin")
         command.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
 

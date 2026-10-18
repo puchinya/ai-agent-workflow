@@ -30,6 +30,24 @@ SHA40 = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
+def _identity_adc_matches_subject(identity: Any, pr_binding: Any, subject: VerificationSubject) -> bool:
+    """Use the PRBinding generation bridge for adopted epochs; V1 stays directly bound."""
+    if isinstance(identity, AdoptedExecutionEpoch):
+        return (
+            isinstance(pr_binding, PRBinding)
+            and pr_binding.adoption_id == identity.adoption_id
+            and pr_binding.repository == subject.repository
+            and pr_binding.issue_number == subject.issue_number
+            and pr_binding.pr_number == subject.pr_number
+            and pr_binding.adc_comment_id == subject.adc_comment_id
+            and pr_binding.adc_sha256 == subject.adc_sha256
+        )
+    return (
+        getattr(identity, "adc_comment_id", None) == subject.adc_comment_id
+        and getattr(identity, "adc_sha256", None) == subject.adc_sha256
+    )
+
+
 def _canonical(value: Any) -> bytes:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
@@ -472,8 +490,9 @@ def evaluate_readiness(
             work_context.validate()
             identity = work_context.execution_identity
             base_ref, base_sha = execution_identity_base(identity)
+            identity_adc_matches = _identity_adc_matches_subject(identity, pr_binding, subject)
             if (identity.repository != subject.repository or identity.issue_number != subject.issue_number
-                    or identity.adc_comment_id != subject.adc_comment_id or identity.adc_sha256 != subject.adc_sha256
+                    or not identity_adc_matches
                     or work_context.current_head_sha40 != subject.pr_head_sha40
                     or not work_context.worktree_clean
                     or (isinstance(pr_binding, PRBinding)

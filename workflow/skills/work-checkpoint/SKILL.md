@@ -8,6 +8,8 @@ description: Save and resume the existing immutable work binding and checkpoint 
 
 For the exact #63/#64 exception, a missing original Binding is not repaired by `work recover`, and no synthetic `initial_head == base_sha` row may be created. Bootstrap source/test changes are allowed before adoption, but no ordinary Phase/QA/Review/Readiness PASS is allowed. After bootstrap push and exact-final-HEAD CI PASS, produce and preserve the complete read-only `work adoption-plan 63`; require a distinct authenticated same-chat V3 `EXECUTION_ADOPTION` decision for its full plan SHA and PR HEAD before `work adoption-apply 63`. The append-only epoch and workspace attachment mark historical provenance `UNVERIFIED`. Verify `context show` reports `ADOPTED_EPOCH`, or use `work recover` only as a read-only verification of that same attached adopted workspace. A different workspace cannot claim the old attachment. The adopted epoch remains separate from V1; ordinary Issues keep their existing binding behavior.
 
+For a later approved ADC on that same adopted epoch, preserve the original epoch digest in every checkpoint. After the current generation's V2 Applied receipt, `work adoption-refresh 63` appends a current ADC/HEAD PRBinding V3 and a V2 checkpoint. Refresh preflight validates the whole ADC chain, owner/adoption records, attachment, clean forward branch, PR identity and contiguous histories. A retry after only the PRBinding exists writes only the absent checkpoint; an exact complete retry writes nothing. `work recover` is always read-only and cannot perform this refresh.
+
 ## Owner and inputs
 
 Owner: runtime/p_ases/checkpoint.py and work.py. Inputs are the current Issue, exact approved ADC, existing ExecutionBinding, PRBinding history, and checkpoint digests.

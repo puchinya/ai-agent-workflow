@@ -2,7 +2,7 @@
 <!-- agent-doc-schema: 2 -->
 # P-ASES Human Review and Integration Test Specification
 
-- Status: Existing cases approved for Issues #31 and #42. Issue #63's final successor ADC is approved and published, and its Phase V2 rebaseline is complete; generation-scoped requirements/specification/design/ready receipts and normal Verification, Acceptance, Self-Audit, Independent Review, Readiness, and User Review remain outstanding. TST-UR-007 and TST-UR-008 specify host-owned Independent Review handoff and automatic User Review start; TST-UR-009 covers attention-safe Readiness/User Review transitions and interruption recovery.
+- Status: Existing cases approved for Issues #31 and #42. ADC #6248703643 remains the current approved successor and its Phase V2 rebaseline is complete. The artifact-impact successor candidate is not yet approved and requires a separate exact-byte `ADC_SUPERSEDE` decision, publication, its own V2 pair, and adopted-epoch refresh. Generation-scoped requirements/specification/design/ready receipts and normal Verification, Acceptance, Self-Audit, Independent Review, Readiness, and User Review remain outstanding. TST-UR-007 and TST-UR-008 specify host-owned Independent Review handoff and automatic User Review start; TST-UR-009 covers attention-safe Readiness/User Review transitions and interruption recovery.
 - Owning specification: ../specs/workflow-spec.md
 
 <!-- contents:start -->
@@ -61,6 +61,8 @@
     - [2.25.1 ORA-UR-010 Expected result](#2251-ora-ur-010-expected-result)
   - [2.26 TST-F01-016 One-time adopted execution and ordered handoff](#226-tst-f01-016-one-time-adopted-execution-and-ordered-handoff)
     - [2.26.1 ORA-F01-016 Expected result](#2261-ora-f01-016-expected-result)
+  - [2.27 TST-F01-017 Adopted epoch forward ADC generation](#227-tst-f01-017-adopted-epoch-forward-adc-generation)
+    - [2.27.1 ORA-F01-017 Expected result](#2271-ora-f01-017-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -117,6 +119,8 @@
 - [ORA-UR-010](#ora-ur-010) — 2.25.1 ORA-UR-010 Expected result
 - [TST-F01-016](#tst-f01-016) — 2.26 TST-F01-016 One-time adopted execution and ordered handoff
 - [ORA-F01-016](#ora-f01-016) — 2.26.1 ORA-F01-016 Expected result
+- [TST-F01-017](#tst-f01-017) — 2.27 TST-F01-017 Adopted epoch forward ADC generation
+- [ORA-F01-017](#ora-f01-017) — 2.27.1 ORA-F01-017 Expected result
 <!-- heading-map:end -->
 
 
@@ -438,3 +442,13 @@ When `--kind` is omitted, the unique verified GitHub Issue `kind:*` label contro
 #### 2.26.1 ORA-F01-016 Expected result
 
 Only the pinned Issue #63 / PR #64 candidate can be adopted, and only after final exact-HEAD CI and a separate exact-scope authenticated owner decision. The route appends one immutable prospective epoch with `historical_binding_provenance=UNVERIFIED`; it does not invent an original V1 binding. Before adoption, ordinary Phase/QA/review/readiness PASS is impossible. Afterwards, every normal Phase, Verification, Acceptance, Self-Audit, fresh Independent Review, Readiness, User Review, Ruleset, Activation, and merge gate remains in force. A lost or interrupted write is reconciled by readback without replay, and old ADC/Phase/Binding/PRBinding evidence remains unchanged.
+
+<a id="tst-f01-017"></a>
+### 2.27 TST-F01-017 Adopted epoch forward ADC generation
+
+**Setup and action:** Start from the already adopted #63/#64 epoch and its exact original local/remote adoption records. Add a valid approved successor ADC with the exact seven committed Artifact Impact paths. Verify the original epoch ADC, adoption approval, Intent/Applied, and first PRBinding bytes before and after. Exercise candidate-without-V2, complete V2-but-unrefreshed, refresh, retry, partial PRBinding/checkpoint persistence, and tampering of the owner record, attachment, current pointer, V2 pair, PR author, Issue, PR head, branch/base, ADC generation chain, PRBinding version, and checkpoint. Count label writes, PRBinding creates, checkpoint creates, and adoption journal writes. Then evaluate Phase evidence and Readiness on the current generation; verify current subject ADC is taken from the newest PRBinding while the returned adopted identity still carries the original ADC. Include an ordinary V1 binding and an unrelated Issue as compatibility controls.
+
+<a id="ora-f01-017"></a>
+#### 2.27.1 ORA-F01-017 Expected result
+
+The existing adoption remains immutable and is never repeated. The successor ADC is usable only when its complete approved forward chain and exact new-generation V2 Intent/Applied pair are valid. Prior to refresh, ordinary gates fail closed; the dedicated #63 refresh appends exactly one same-adoption-ID PRBinding V3 and a V2 checkpoint at the clean exact PR HEAD. Exact repeat is a zero-write NOOP, while interruption after the binding append resumes only the missing checkpoint. Any failed preflight causes zero PRBinding/checkpoint writes; tampered history or competing identities blocks without repair. Phase evidence, Verification and Readiness use the new ADC generation through the current PRBinding, and prior V1/adoption/Phase history remains byte-identical. No other Issue, generic adoption, Owner approval, Ruleset, Activation, User Review decision, or merge behavior is expanded.

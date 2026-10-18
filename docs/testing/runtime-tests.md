@@ -2,7 +2,7 @@
 <!-- agent-doc-schema: 2 -->
 # Runtime and CLI Test Specification
 
-- Status: TST-RT-018 and TST-RT-019 remain draft cases. The final Issue #63 successor ADC is approved and published, and its Phase V2 rebaseline is complete; generation-scoped ordinary Phase receipts and downstream User Review/Delivery evidence remain outstanding.
+- Status: TST-RT-018 and TST-RT-019 remain draft cases. ADC #6248703643 remains the current approved successor and its Phase V2 rebaseline is complete. The artifact-impact successor candidate is not yet approved and requires a separate exact-byte `ADC_SUPERSEDE` decision, publication, its own V2 pair, and adopted-epoch refresh; generation-scoped ordinary Phase receipts and downstream User Review/Delivery evidence remain outstanding.
 - Owning specification: ../specs/
 
 The stable RT test IDs preserve the earlier traceability graph. Current CLI cases use the namespaced P-ASES routes. Procedures for APIs that the Runtime Specification marks legacy are regression conditions for retained internal behavior, not public-command compatibility requirements.
@@ -51,6 +51,8 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
     - [2.19.1 ORA-RT-019 Expected result](#2191-ora-rt-019-expected-result)
   - [2.20 TST-RT-020 One-time Issue #63 / PR #64 execution adoption](#220-tst-rt-020-one-time-issue-63-pr-64-execution-adoption)
     - [2.20.1 ORA-RT-020 Expected result](#2201-ora-rt-020-expected-result)
+  - [2.21 TST-RT-021 Adopted epoch ADC successor refresh](#221-tst-rt-021-adopted-epoch-adc-successor-refresh)
+    - [2.21.1 ORA-RT-021 Expected result](#2211-ora-rt-021-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -95,6 +97,8 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
 - [ORA-RT-019](#ora-rt-019) — 2.19.1 ORA-RT-019 Expected result
 - [TST-RT-020](#tst-rt-020) — 2.20 TST-RT-020 One-time Issue #63 / PR #64 execution adoption
 - [ORA-RT-020](#ora-rt-020) — 2.20.1 ORA-RT-020 Expected result
+- [TST-RT-021](#tst-rt-021) — 2.21 TST-RT-021 Adopted epoch ADC successor refresh
+- [ORA-RT-021](#ora-rt-021) — 2.21.1 ORA-RT-021 Expected result
 <!-- heading-map:end -->
 
 
@@ -347,3 +351,13 @@ V3 User Review enters the complete-session/snapshot evaluator and carries exact 
 #### 2.20.1 ORA-RT-020 Expected result
 
 No `PASES_EXECUTION_ADOPTION_V1`, complete canonical plan snapshot, local adopted attachment, PRBinding, checkpoint, or normal phase/QA/review/readiness PASS exists before final-HEAD CI and distinct exact-plan V3 Owner authorization. The prospective selected base and observed PR start remain separate; `historical_binding_provenance` is exactly `UNVERIFIED`. The journal contains one Intent followed by one Applied, tied to the exact approved plan, decision comment, authenticated executor, Issue/repository URLs, stable actor, immutable timestamps and operation ID. The payload's canonical UTC timestamp and GitHub's immutable carrier timestamps are separate clocks; carrier creation and update times must match, but neither is required to equal the timestamp embedded before POST. Lost responses and interrupted local writes recover by readback without duplicate POST or replacement; a completed exact retry is read-only. Generic `work bind`/`work recover` semantics and V1 histories remain unchanged. Every post-adoption ordinary gate evaluates the typed epoch through the normal validators; the adoption decision grants no User Review, Ruleset, Activation, or PR merge approval.
+
+<a id="tst-rt-021"></a>
+### 2.21 TST-RT-021 Adopted epoch ADC successor refresh
+
+**Setup and action:** Preserve an existing Issue #63 / PR #64 adopted epoch, its original ADC fields, owner decision, two-row adoption journal, attachment, first PRBinding, and V2 checkpoint. Provide a fake GitHub history with a current approved forward ADC successor and exact current PR HEAD. Exercise the following states: successor publication without V2 Applied; completed V2 with old-generation latest PRBinding; successful refresh; identical retry; PRBinding persisted with checkpoint write interrupted; and conflicting epoch/ADC chain/Phase/PRBinding/checkpoint/PR identity/branch/base/HEAD. Observe ADC/Phase reads, PRBinding versions and canonical bytes, checkpoint step/digest, Issue writes, adoption journal count, and statuses. Also verify ordinary read/recover never refreshes, normal `pr ensure` cannot bridge a generation, same-generation HEAD advance retains the current ADC, V1 binding behavior is unchanged, and readiness accepts an adopted epoch only when its current PRBinding binds the subject ADC and same adoption ID.
+
+<a id="ora-rt-021"></a>
+#### 2.21.1 ORA-RT-021 Expected result
+
+Before V2 Applied, refresh returns `ADC_REFRESH_PENDING_PHASE_REBASELINE` and appends nothing. After V2 Applied and before refresh, ordinary verification returns `ADC_REFRESH_REQUIRED`; only the exact #63 refresh route can append. Success adds one PRBinding V3 with the same adoption ID and frozen Issue/PR/base/branch, current approved ADC and exact HEAD, plus one V2 checkpoint referencing the unchanged adopted-epoch digest. A completed retry is `NOOP` with no writes. If the binding append exists but the checkpoint is missing, recovery verifies that exact row and writes only the checkpoint. Invalid, backward, missing, edited, noncontiguous, non-ancestor, wrong-actor, wrong-PR, or drifted state blocks without editing the adopted epoch or earlier history. Current gates use the newest valid PRBinding as current-ADC authority while retaining the epoch's original ADC fields; ordinary V1 and non-#63 workflows remain unchanged.

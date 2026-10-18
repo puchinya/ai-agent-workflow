@@ -265,18 +265,23 @@ def _verify_frozen_binding(github: GitHub, root: Path, issue_number: int, verifi
             raise PhaseEvidenceError("a valid frozen Issue ExecutionBinding is required when no adopted epoch exists")
         try:
             from .execution_adoption import ExecutionAdoptionError, verify_adopted_execution
-            adopted = verify_adopted_execution(
+            adopted_readback = verify_adopted_execution(
                 github, root, expected_adc_comment_id=verified.pointer.comment_id,
                 expected_adc_sha256=verified.contract.sha256,
-            )["epoch"]
+            )
+            adopted = adopted_readback["epoch"]
+            current_binding = adopted_readback["pr_binding"]
             if (issue_number != 63 or adopted.repository.casefold() != github.repo.casefold()
                     or adopted.issue_number != issue_number
-                    or adopted.adc_comment_id != verified.pointer.comment_id
-                    or adopted.adc_sha256 != verified.contract.sha256
+                    or current_binding.adoption_id != adopted.adoption_id
+                    or current_binding.adc_comment_id != verified.pointer.comment_id
+                    or current_binding.adc_sha256 != verified.contract.sha256
                     or adopted.branch_ref != branch_ref
+                    or current_binding.branch_ref != branch_ref
+                    or current_binding.pr_head_sha40 != commit_sha
                     or not is_ancestor(root, adopted.selected_base_sha40, commit_sha)
                     or not is_ancestor(root, adopted.observed_start_head_sha40, commit_sha)):
-                raise PhaseEvidenceError("verified adopted epoch does not match this Issue/ADC/branch/HEAD")
+                raise PhaseEvidenceError("verified adopted epoch/PRBinding does not match this Issue/ADC/branch/HEAD")
             return
         except (ExecutionAdoptionError, GitError) as exc:
             raise PhaseEvidenceError(f"a valid authenticated adopted execution epoch is required: {exc}") from exc

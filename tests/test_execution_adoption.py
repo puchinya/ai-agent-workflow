@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,17 +16,21 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases.execution import AdoptedExecutionEpoch, ExecutionError, WorkspaceAttachment
-from p_ases.checkpoint import CheckpointError, PRBinding
+from p_ases.checkpoint import (
+    CheckpointError, PRBinding, WorkCheckpoint, checkpoint_path, write_checkpoint, write_pr_binding,
+)
 from p_ases.github import GitHubError
+from p_ases.phase_evidence import _verify_frozen_binding
 from p_ases.execution_adoption import (
     APPLIED_SCHEMA, INTENT_SCHEMA, PLAN_SCHEMA, ExecutionAdoptionError,
     _append_marker_once, _attachment_id, _body, _comment_fingerprint, _owner_details,
     adoption_path, adoption_plan_path, attachment_path,
-    _validate_journal_record, apply_adoption,
+    _validate_journal_record, apply_adoption, refresh_adopted_pr_binding,
     _validate_journal_shape, _journal_payload,
     _validate_local_adoption_artifacts, adoption_plan_bytes, append_adopted_pr_binding,
-    validate_adoption_plan,
+    validate_adoption_plan, _verify_adopted_effective_adc,
 )
+from p_ases.work import _checkpoint_files, _pr_binding_version_path, latest_checkpoint, read_pr_binding_history
 
 
 REPOSITORY = "puchinya/ai-agent-workflow"
@@ -205,6 +210,193 @@ def _live_plan_for_temporary_repo(root):
 
 
 class ExecutionAdoptionTests(unittest.TestCase):
+    def _refresh_fixture(self, workspace):
+        root = workspace / "repo"
+        root.mkdir()
+        _remote, plan, pull = _live_plan_for_temporary_repo(root)
+        epoch = replace(
+            _epoch(), adc_sha256=plan["adc_sha256"], selected_base_ref=plan["selected_base_ref"],
+            selected_base_sha40=plan["selected_base_sha40"], branch_ref=plan["branch_ref"],
+            observed_start_head_sha40=plan["observed_start_head_sha40"],
+            adoption_id=plan["adoption_id"], attachment_id=plan["attachment_id"],
+        ).validate()
+        current_head = _git(root, "rev-parse", "HEAD")
+        old_binding = PRBinding(
+            REPOSITORY, 63, 6248703643,
+            "b83620dc5d977c3f96c7ad792fded202b70a78f0c97d637bfcc64d8ef8e89306",
+            plan["selected_base_sha40"], plan["branch_ref"], 64, current_head,
+            adoption_id=epoch.adoption_id,
+        ).validate()
+        write_pr_binding(_pr_binding_version_path(root, 63, 1), old_binding)
+        initial_checkpoint = WorkCheckpoint(
+            execution_binding_sha256=None, execution_adoption_sha256=epoch.sha256,
+            current_head_sha40=current_head, worktree_clean=True, completed_stage="adoption",
+            artifact_digests=tuple(sorted((
+                ("adopted-epoch", epoch.sha256), ("pr-binding", old_binding.sha256),
+            ))), step=1,
+        ).validate()
+        write_checkpoint(checkpoint_path(root, 63, 1), initial_checkpoint)
+        current_pointer = SimpleNamespace(
+            comment_id=70000,
+            sha256="9" * 64,
+        )
+        current_adc = SimpleNamespace(pointer=current_pointer)
+        github = FakeGitHub(pull=pull)
+
+        def verified(*_args, **_kwargs):
+            history = read_pr_binding_history(root, 63, github=github)
+            latest = history[-1][1]
+            return {
+                "epoch": epoch, "current_adc": current_adc, "pr_binding": latest,
+                "adc_refresh_required": (latest.adc_comment_id, latest.adc_sha256)
+                    != (current_pointer.comment_id, current_pointer.sha256),
+                "pr_binding_head_current": latest.pr_head_sha40 == current_head,
+                "current_head_sha40": current_head,
+                "current_base_sha40": plan["selected_base_sha40"], "pr": pull,
+            }
+        return root, github, epoch, old_binding, current_adc, current_head, verified
+
+    def test_current_approved_successor_waits_for_its_own_v2_applied(self):
+        epoch = _epoch()
+        origin = SimpleNamespace(pointer=SimpleNamespace(comment_id=6248703643, sha256=epoch.adc_sha256))
+        successor_pointer = SimpleNamespace(comment_id=70000, sha256="9" * 64)
+        current = SimpleNamespace(pointer=SimpleNamespace(
+            comment_id=successor_pointer.comment_id, sha256=successor_pointer.sha256, state="approved",
+        ))
+        successor = SimpleNamespace(pointer=current.pointer)
+        with patch("p_ases.execution_adoption.verify_adc", return_value=current), \
+                patch("p_ases.execution_adoption.verify_adc_forward_generations",
+                      return_value=(origin, successor)), \
+                patch("p_ases.execution_adoption._approved_generations", return_value=(origin, successor)), \
+                patch("p_ases.execution_adoption._read_history", return_value=()), \
+                patch("p_ases.execution_adoption._validate_generation_history",
+                      return_value=(None, None, {})):
+            with self.assertRaisesRegex(ExecutionAdoptionError, "ADC_REFRESH_PENDING_PHASE_REBASELINE"):
+                _verify_adopted_effective_adc(
+                    FakeGitHub(), epoch, expected_adc_comment_id=70000, expected_adc_sha256="9" * 64,
+                )
+        applied_pair = (SimpleNamespace(comment_id=70001), SimpleNamespace(comment_id=70002))
+        with patch("p_ases.execution_adoption.verify_adc", return_value=current), \
+                patch("p_ases.execution_adoption.verify_adc_forward_generations",
+                      return_value=(origin, successor)), \
+                patch("p_ases.execution_adoption._approved_generations", return_value=(origin, successor)), \
+                patch("p_ases.execution_adoption._read_history", return_value=()), \
+                patch("p_ases.execution_adoption._validate_generation_history",
+                      return_value=(None, None, {1: applied_pair})):
+            effective, refreshed = _verify_adopted_effective_adc(
+                FakeGitHub(), epoch, expected_adc_comment_id=70000, expected_adc_sha256="9" * 64,
+            )
+        self.assertIs(effective, current)
+        self.assertTrue(refreshed)
+
+    def test_adoption_refresh_appends_one_v3_binding_and_checkpoint_then_noops(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, github, epoch, old_binding, adc, current_head, verified = self._refresh_fixture(Path(temporary))
+            with patch("p_ases.execution_adoption.verify_adopted_execution", side_effect=verified), \
+                    patch("p_ases.execution_adoption.verify_adc", return_value=adc), \
+                    patch("p_ases.work._verify_pr_binding_successor", return_value=None):
+                result = refresh_adopted_pr_binding(
+                    github, root, expected_adc_comment_id=adc.pointer.comment_id,
+                    expected_adc_sha256=adc.pointer.sha256,
+                )
+                history = read_pr_binding_history(root, 63, github=github)
+                self.assertEqual(result["status"], "REFRESHED")
+                self.assertEqual(result["writes_performed"], 2)
+                self.assertEqual(len(history), 2)
+                refreshed = history[-1][1]
+                self.assertEqual(refreshed.adoption_id, epoch.adoption_id)
+                self.assertEqual(refreshed.adc_comment_id, adc.pointer.comment_id)
+                self.assertEqual(refreshed.adc_sha256, adc.pointer.sha256)
+                self.assertEqual(refreshed.pr_head_sha40, current_head)
+                self.assertEqual(history[0][1], old_binding)
+                checkpoint = latest_checkpoint(root, 63)[1]
+                self.assertEqual(checkpoint.execution_adoption_sha256, epoch.sha256)
+                self.assertIn(("pr-binding", refreshed.sha256), checkpoint.artifact_digests)
+                repeated = refresh_adopted_pr_binding(
+                    github, root, expected_adc_comment_id=adc.pointer.comment_id,
+                    expected_adc_sha256=adc.pointer.sha256,
+                )
+                self.assertEqual(repeated["status"], "NOOP")
+                self.assertEqual(repeated["writes_performed"], 0)
+                self.assertEqual(len(read_pr_binding_history(root, 63, github=github)), 2)
+
+    def test_adoption_refresh_recovers_only_a_missing_checkpoint(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, github, epoch, _old_binding, adc, _current_head, verified = self._refresh_fixture(Path(temporary))
+            with patch("p_ases.execution_adoption.verify_adopted_execution", side_effect=verified), \
+                    patch("p_ases.execution_adoption.verify_adc", return_value=adc), \
+                    patch("p_ases.work._verify_pr_binding_successor", return_value=None), \
+                    patch("p_ases.execution_adoption.write_checkpoint",
+                          side_effect=CheckpointError("simulated checkpoint failure")):
+                with self.assertRaisesRegex(ExecutionAdoptionError, "checkpoint append failed"):
+                    refresh_adopted_pr_binding(
+                        github, root, expected_adc_comment_id=adc.pointer.comment_id,
+                        expected_adc_sha256=adc.pointer.sha256,
+                    )
+            with patch("p_ases.work._verify_pr_binding_successor", return_value=None):
+                self.assertEqual(len(read_pr_binding_history(root, 63, github=github)), 2)
+            with patch("p_ases.execution_adoption.verify_adopted_execution", side_effect=verified), \
+                    patch("p_ases.execution_adoption.verify_adc", return_value=adc), \
+                    patch("p_ases.work._verify_pr_binding_successor", return_value=None):
+                recovered = refresh_adopted_pr_binding(
+                    github, root, expected_adc_comment_id=adc.pointer.comment_id,
+                    expected_adc_sha256=adc.pointer.sha256,
+                )
+            self.assertEqual(recovered["status"], "RECOVERED")
+            self.assertEqual(recovered["writes_performed"], 1)
+            checkpoint = latest_checkpoint(root, 63)[1]
+            self.assertEqual(checkpoint.execution_adoption_sha256, epoch.sha256)
+            with patch("p_ases.work._verify_pr_binding_successor", return_value=None):
+                self.assertIn(("pr-binding", read_pr_binding_history(root, 63, github=github)[-1][1].sha256),
+                              checkpoint.artifact_digests)
+
+    def test_adoption_refresh_without_successor_is_read_only(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, github, epoch, old_binding, adc, _current_head, verified = self._refresh_fixture(Path(temporary))
+            adc.pointer.comment_id = epoch.adc_comment_id
+            adc.pointer.sha256 = epoch.adc_sha256
+            with patch("p_ases.execution_adoption.verify_adopted_execution", side_effect=verified):
+                result = refresh_adopted_pr_binding(
+                    github, root, expected_adc_comment_id=epoch.adc_comment_id,
+                    expected_adc_sha256=epoch.adc_sha256,
+                )
+            self.assertEqual(result["status"], "NOOP")
+            self.assertEqual(result["writes_performed"], 0)
+            self.assertEqual(len(read_pr_binding_history(root, 63, github=github)), 1)
+            checkpoint_file = _checkpoint_files(root, 63)[0]
+            checkpoint_file.unlink()
+            with patch("p_ases.execution_adoption.verify_adopted_execution", side_effect=verified):
+                with self.assertRaisesRegex(ExecutionAdoptionError, "checkpoint history is missing"):
+                    refresh_adopted_pr_binding(
+                        github, root, expected_adc_comment_id=epoch.adc_comment_id,
+                        expected_adc_sha256=epoch.adc_sha256,
+                    )
+            self.assertEqual(read_pr_binding_history(root, 63, github=github)[0][1], old_binding)
+            self.assertEqual(_checkpoint_files(root, 63), [])
+
+    def test_phase_evidence_uses_current_prbinding_adc_for_immutable_epoch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            epoch = _epoch()
+            current_head = "9" * 40
+            current_binding = PRBinding(
+                REPOSITORY, 63, 70000, "8" * 64, epoch.selected_base_sha40,
+                epoch.branch_ref, 64, current_head, adoption_id=epoch.adoption_id,
+            ).validate()
+            adoption_path(root).parent.mkdir(parents=True, exist_ok=True)
+            adoption_path(root).write_bytes(b"immutable epoch fixture\n")
+            verified = SimpleNamespace(
+                pointer=SimpleNamespace(comment_id=70000),
+                contract=SimpleNamespace(sha256="8" * 64),
+            )
+            readback = {"epoch": epoch, "pr_binding": current_binding}
+            github = SimpleNamespace(repo=REPOSITORY)
+            with patch("p_ases.execution_adoption.verify_adopted_execution", return_value=readback), \
+                    patch("p_ases.phase_evidence.is_ancestor", return_value=True):
+                _verify_frozen_binding(
+                    github, root, 63, verified, epoch.branch_ref, current_head,
+                )
+
     def test_adopted_epoch_round_trip_keeps_selected_base_separate_from_observed_pr_head(self):
         epoch = _epoch()
         self.assertNotEqual(epoch.selected_base_sha40, epoch.observed_start_head_sha40)
@@ -428,7 +620,10 @@ class ExecutionAdoptionTests(unittest.TestCase):
                 patch("p_ases.execution_adoption.read_verified_owner_decision", return_value=decision),
             )
             with patches[0], patches[1], patches[2], patches[3], patches[4]:
-                first = apply_adoption(github, root, plan, owner_plan)
+                current_adc = SimpleNamespace(pointer=SimpleNamespace(
+                    comment_id=plan["adc_comment_id"], sha256=plan["adc_sha256"], state="approved"))
+                with patch("p_ases.execution_adoption.verify_adc", return_value=current_adc):
+                    first = apply_adoption(github, root, plan, owner_plan)
                 self.assertEqual(first["status"], "ADOPTED")
                 self.assertEqual(github.writes, 2)
                 self.assertTrue(adoption_plan_path(root).is_file())
@@ -440,8 +635,6 @@ class ExecutionAdoptionTests(unittest.TestCase):
                 later_head = _git(root, "rev-parse", "HEAD")
                 _git(root, "push", "origin", "HEAD:refs/heads/" + plan["branch_ref"])
                 github.pull["head"]["sha"] = later_head
-                current_adc = SimpleNamespace(pointer=SimpleNamespace(
-                    comment_id=plan["adc_comment_id"], sha256=plan["adc_sha256"]))
                 with patch("p_ases.execution_adoption.verify_adc", return_value=current_adc):
                     advanced = append_adopted_pr_binding(
                         github, root, expected_adc_comment_id=plan["adc_comment_id"],
@@ -449,7 +642,8 @@ class ExecutionAdoptionTests(unittest.TestCase):
                 self.assertEqual(advanced["status"], "PR_BINDING_ADVANCED")
                 self.assertEqual(advanced["epoch"].observed_start_head_sha40,
                                  plan["observed_start_head_sha40"])
-                second = apply_adoption(github, root, plan, owner_plan)
+                with patch("p_ases.execution_adoption.verify_adc", return_value=current_adc):
+                    second = apply_adoption(github, root, plan, owner_plan)
                 self.assertEqual(second["status"], "ADOPTED")
                 self.assertEqual(second["writes_performed"], 0)
                 self.assertEqual(second["current_head_sha40"], later_head)
