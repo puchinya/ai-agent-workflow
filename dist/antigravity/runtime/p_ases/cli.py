@@ -25,6 +25,7 @@ from .owner_authorization import (
     OwnerAuthorizationError, authorize_chat_confirmed_plan, authorize_plan, create_authorization_plan,
     issue63_deferred_merge_details, read_authorization_plan, resume_authorization, write_authorization_plan,
 )
+from .owner_authorization import capture_direct_chat_confirmation
 from .consumer_activation import (
     ConsumerActivationError, activation_checkpoint_path, activation_setting_inventory, read_activation_checkpoint,
     read_consumer_activation_history, verify_setup_pr_ready_to_merge, write_activation_checkpoint,
@@ -38,7 +39,15 @@ from .git import GitError, current_branch, discover_repository, head_sha40, remo
 from .document_format import DocumentFormatError, format_tree
 from .documents import DocumentError, validate_documents
 from .github import GitHub, GitHubError
-from .execution import ExecutionError, binding_digest, read_binding
+from .execution import (
+    AdoptedExecutionEpoch, ExecutionError, ExecutionIdentity, binding_digest,
+    execution_identity_base, execution_identity_context_id, execution_identity_digest, read_binding,
+)
+from .execution_adoption import (
+    ExecutionAdoptionError, adoption_path, append_adopted_pr_binding, apply_adoption, build_adoption_plan,
+    read_execution_identity, verify_adopted_execution,
+    read_adoption_plan, write_adoption_plan,
+)
 from .checkpoint import CheckpointError, PRBinding, read_pr_binding
 from .current_base import (
     CurrentBaseAdvanceEvidence, CurrentBaseError, current_base_advance_path,
@@ -976,6 +985,34 @@ def _context_show(issue_number: int, repository: str, root: Path, github: GitHub
                "issue_state": "open", "adc_status": "APPROVED", "binding_status": "INVALID",
                "reason": "ExecutionBinding path traverses a symbolic link"})
         return 2
+    if not binding_path.is_file() and issue_number == 63 and repository.casefold() == "puchinya/ai-agent-workflow":
+        adoption_path = root / ".p_ases" / "state" / "63" / "execution-adoption.json"
+        attachment_path = root / ".p_ases" / "state" / "63" / "workspace-attachment.json"
+        if adoption_path.exists() or adoption_path.is_symlink() or attachment_path.exists() or attachment_path.is_symlink():
+            try:
+                identity = read_execution_identity(
+                    github, root, adc_comment_id=verified.pointer.comment_id,
+                    adc_sha256=verified.pointer.sha256,
+                )
+                if not isinstance(identity, AdoptedExecutionEpoch):
+                    raise ExecutionAdoptionError("adoption artifacts resolved to a non-adopted identity")
+            except (ExecutionAdoptionError, ExecutionError, OSError, ValueError) as exc:
+                _json({"status": "ADOPTION_INVALID", "issue": issue_number, "repository": repository,
+                       "issue_state": "open", "adc_status": "APPROVED", "binding_status": "INVALID",
+                       "reason": str(exc)})
+                return 2
+            attachment = root / ".p_ases" / "state" / "63" / "workspace-attachment.json"
+            _json({"status": "ADOPTED", "issue": issue_number, "repository": repository,
+                   "issue_state": "open", "adc_status": "APPROVED",
+                   "adc_comment_id": verified.pointer.comment_id, "adc_sha256": verified.pointer.sha256,
+                   "binding_status": "ADOPTED_EPOCH", "execution_identity_sha256": identity.sha256,
+                   "adoption_id": identity.adoption_id, "historical_binding_provenance": "UNVERIFIED",
+                   "frozen_context": {"base_ref": identity.selected_base_ref,
+                                      "base_sha": identity.selected_base_sha40,
+                                      "branch_ref": identity.branch_ref,
+                                      "observed_start_head_sha40": identity.observed_start_head_sha40,
+                                      "workspace_attachment": str(attachment)}})
+            return 0
     if not binding_path.is_file():
         _json({"status": "NOT_BOUND", "issue": issue_number, "repository": repository,
                "issue_state": "open", "adc_status": "APPROVED",
@@ -1031,6 +1068,23 @@ def _approved_issue_adc(github: GitHub, issue_number: int, repository: str) -> t
     return issue, verified
 
 
+def _read_execution_identity(github: GitHub, root: Path, repository: str,
+                             issue_number: int, verified_adc: Any) -> ExecutionIdentity:
+    """Read the ordinary V1 binding or the explicitly discriminated #63 epoch."""
+    if (issue_number == 63 and repository.casefold() == "puchinya/ai-agent-workflow"):
+        try:
+            return read_execution_identity(
+                github, root, adc_comment_id=verified_adc.pointer.comment_id,
+                adc_sha256=verified_adc.pointer.sha256,
+            )
+        except ExecutionAdoptionError as exc:
+            raise CLIError(str(exc)) from exc
+    try:
+        return read_binding(execution_binding_path(root, issue_number))
+    except ExecutionError as exc:
+        raise CLIError(f"immutable ExecutionBinding readback failed: {exc}") from exc
+
+
 def _work_json(result: Any, issue_number: int, repository: str, *, extra: dict[str, Any] | None = None) -> int:
     binding = result.binding
     context = result.context
@@ -1059,6 +1113,57 @@ def _work_json(result: Any, issue_number: int, repository: str, *, extra: dict[s
 
 def _work_command(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
     _issue, verified = _approved_issue_adc(github, args.issue, repository)
+    if args.verb == "adoption-plan":
+        if args.issue != 63 or repository.casefold() != "puchinya/ai-agent-workflow":
+            raise CLIError("execution adoption is restricted to puchinya/ai-agent-workflow Issue #63 / PR #64")
+        plan = build_adoption_plan(github, root)
+        write_adoption_plan(args.output, plan)
+        _json({"status": "PLAN_READY", "output": str(args.output), "plan_sha256": plan["plan_sha256"],
+               "adoption_id": plan["adoption_id"], "adoption_plan": plan,
+               "approval_required": "EXECUTION_ADOPTION", "writes_performed": 0})
+        return 0
+    if args.verb == "adoption-apply":
+        if args.issue != 63 or repository.casefold() != "puchinya/ai-agent-workflow":
+            raise CLIError("execution adoption is restricted to puchinya/ai-agent-workflow Issue #63 / PR #64")
+        plan = read_adoption_plan(args.plan)
+        owner_plan = read_authorization_plan(args.authorization_plan)
+        result = apply_adoption(github, root, plan, owner_plan)
+        _json(result)
+        return 0 if result.get("status") == "ADOPTED" else 2
+    if (args.issue == 63 and repository.casefold() == "puchinya/ai-agent-workflow"
+            and not execution_binding_path(root, args.issue).exists()
+            and (adoption_path(root).exists() or adoption_path(root).is_symlink()
+                 or (root / ".p_ases" / "state" / "63" / "workspace-attachment.json").exists()
+                 or (root / ".p_ases" / "state" / "63" / "workspace-attachment.json").is_symlink())):
+        if args.verb in {"branch", "bind"}:
+            raise CLIError("Issue #63 already uses an adopted epoch; do not create a normal branch or V1 binding")
+        if args.verb == "recover":
+            verified_epoch = verify_adopted_execution(
+                github, root, expected_adc_comment_id=verified.pointer.comment_id,
+                expected_adc_sha256=verified.pointer.sha256,
+            )
+            epoch = verified_epoch["epoch"]
+            _json({"status": "ADOPTED_EPOCH_VERIFIED", "repository": repository,
+                   "issue": 63, "adoption_id": epoch.adoption_id,
+                   "execution_identity_sha256": epoch.sha256,
+                   "historical_binding_provenance": "UNVERIFIED",
+                   "observed_start_head_sha40": epoch.observed_start_head_sha40,
+                   "current_head_sha40": verified_epoch["current_head_sha40"],
+                   "writes_performed": 0,
+                   "evidence_refs": [str(adoption_path(root)),
+                                     str(root / ".p_ases" / "state" / "63" / "workspace-attachment.json")]})
+            return 0
+    if (args.verb == "branch" and args.issue == 63
+            and repository.casefold() == "puchinya/ai-agent-workflow"
+            and not execution_binding_path(root, args.issue).exists()):
+        raise CLIError("Issue #63 is already an open-PR continuation; work branch cannot replace its exact PR branch")
+    if (args.verb == "bind" and args.issue == 63
+            and repository.casefold() == "puchinya/ai-agent-workflow"
+            and not execution_binding_path(root, args.issue).exists()):
+        raise CLIError(
+            "Issue #63 has no authenticated original ExecutionBinding; normal work bind cannot reconstruct it. "
+            "Use the post-CI exact EXECUTION_ADOPTION plan and separate Owner approval."
+        )
     if args.verb == "base":
         binding_path = execution_binding_path(root, args.issue)
         if binding_path.exists():
@@ -1075,6 +1180,21 @@ def _work_command(args: argparse.Namespace, repository: str, root: Path, github:
                        "remote base advanced; the immutable base remains frozen and must not be re-resolved"],
                    "evidence_refs": [str(binding_path)]})
             return 0 if status == "FROZEN" else 2
+        if args.issue == 63 and (root / ".p_ases" / "state" / "63" / "execution-adoption.json").exists():
+            identity = read_execution_identity(
+                github, root, adc_comment_id=verified.pointer.comment_id,
+                adc_sha256=verified.pointer.sha256,
+            )
+            if not isinstance(identity, AdoptedExecutionEpoch):
+                raise CLIError("adoption state did not resolve to its typed adopted epoch")
+            remote = remote_branch_sha(root, identity.selected_base_ref)
+            status = "ADOPTED" if remote == identity.selected_base_sha40 else "FORWARD_BASE_ADVANCE_PENDING_EVIDENCE"
+            _json({"status": status, "repository": repository, "issue": args.issue,
+                   "base_ref": identity.selected_base_ref, "base_sha40": identity.selected_base_sha40,
+                   "remote_base_sha40": remote, "execution_identity_sha256": identity.sha256,
+                   "adoption_id": identity.adoption_id, "reasons": [],
+                   "evidence_refs": [str(root / ".p_ases" / "state" / "63" / "execution-adoption.json")]})
+            return 0 if status == "ADOPTED" else 2
         if not worktree_clean(root):
             raise CLIError("base selection requires a clean worktree")
         base_ref = args.base_ref or github.repository_metadata().get("default_branch")
@@ -1103,6 +1223,37 @@ def _work_command(args: argparse.Namespace, repository: str, root: Path, github:
 def _pr_ensure(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
     _issue, verified = _approved_issue_adc(github, args.issue, repository)
     binding_path = execution_binding_path(root, args.issue)
+    if (args.issue == 63 and repository.casefold() == "puchinya/ai-agent-workflow"
+            and not binding_path.exists()
+            and (adoption_path(root).exists() or adoption_path(root).is_symlink())):
+        identity = read_execution_identity(
+            github, root, adc_comment_id=verified.pointer.comment_id,
+            adc_sha256=verified.pointer.sha256,
+        )
+        if not isinstance(identity, AdoptedExecutionEpoch):
+            raise CLIError("Issue #63 adoption artifacts did not resolve to an adopted execution epoch")
+        if args.branch_ref != identity.branch_ref or args.base_ref != identity.selected_base_ref:
+            raise CLIError("PR ensure refs differ from the immutable adopted PR identity")
+        body = _safe_file_bytes(args.body_file, "PR body file", root=root).decode("utf-8", errors="strict")
+        pull = github.pull_request(identity.pr_number)
+        if pull.get("title") != args.title or pull.get("body") != body:
+            raise CLIError("adopted PR ensure is readback-only and cannot alter PR title or body")
+        result = append_adopted_pr_binding(
+            github, root, expected_adc_comment_id=verified.pointer.comment_id,
+            expected_adc_sha256=verified.pointer.sha256,
+        )
+        current = result["pr"]
+        pr_binding = result["pr_binding"]
+        _json({"status": result["status"], "repository": repository, "issue": 63,
+               "pr": identity.pr_number, "url": current.get("html_url"), "state": current.get("state"),
+               "draft": current.get("draft"), "base_ref": identity.selected_base_ref,
+               "base_sha40": result["current_base_sha40"],
+               "frozen_base_sha40": identity.selected_base_sha40,
+               "head_ref": identity.branch_ref, "head_sha40": result["current_head_sha40"],
+               "adoption_id": identity.adoption_id, "pr_binding_sha256": pr_binding.sha256,
+               "reasons": [], "evidence_refs": [str(adoption_path(root)), str(binding_path.with_name(
+                   "pr-binding-000001.json")), str(pr_binding_path(root, 63, github=github))]})
+        return 0
     binding = read_binding(binding_path)
     body = _safe_file_bytes(args.body_file, "PR body file", root=root).decode("utf-8", errors="strict")
     result = ensure_pull_request(
@@ -1217,8 +1368,8 @@ def _audit_independent(args: argparse.Namespace, repository: str, root: Path, gi
     if any(not isinstance(value.get(field), str) or not value[field].strip()
            for field in ("context_id", "provenance", "session_description", "verdict")):
         raise CLIError("independent-review context description/provenance is incomplete")
-    binding = read_binding(execution_binding_path(root, args.issue))
-    implementation_context = f"execution-binding:{binding_digest(binding)}"
+    binding = _read_execution_identity(github, root, repository, args.issue, _verified)
+    implementation_context = execution_identity_context_id(binding)
     findings: list[ReviewFinding] = []
     for row in value["findings"]:
         if not isinstance(row, dict) or set(row) != {"description", "evidence_ref", "finding_id", "resolved", "severity"}:
@@ -1282,9 +1433,10 @@ def _current_base_evidence_for_pr(root: Path, github: GitHub, repository: str,
                                   issue_number: int, execution_binding: Any,
                                   pr_binding: PRBinding, raw_pr: dict[str, Any]
                                   ) -> CurrentBaseAdvanceEvidence | None:
+    _base_ref, frozen_base_sha = execution_identity_base(execution_binding)
     base = raw_pr.get("base") if isinstance(raw_pr, dict) else None
     current_base = base.get("sha") if isinstance(base, dict) else None
-    if (current_base == execution_binding.base_sha and pr_binding.current_base_sha40 is None
+    if (current_base == frozen_base_sha and pr_binding.current_base_sha40 is None
             and pr_binding.current_base_advance_sha256 is None):
         return None
     profile = load_profile(root)
@@ -1666,13 +1818,13 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
         blockers.append(f"current GitHub PR readback failed: {exc}")
 
     pr_binding = None
-    binding = None
+    binding: ExecutionIdentity | None = None
     binding_path = execution_binding_path(root, args.issue)
     try:
-        binding = read_binding(binding_path)
+        binding = _read_execution_identity(github, root, repository, args.issue, verified_adc)
         pr_binding = read_pr_binding(pr_binding_path(root, args.issue, github=github))
         if binding.repository != repository or binding.issue_number != args.issue:
-            raise CLIError("ExecutionBinding repository/Issue does not match")
+            raise CLIError("execution identity repository/Issue does not match")
         if (binding.adc_comment_id != (None if verified_adc is None else verified_adc.pointer.comment_id)
                 or binding.adc_sha256 != (None if verified_adc is None else verified_adc.pointer.sha256)):
             blockers.append("ExecutionBinding belongs to a stale ADC pointer")
@@ -1692,7 +1844,8 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
     if binding is not None:
         try:
             work_context = WorkContext(
-                binding, head_sha40(root), current_branch(root), worktree_clean(root), binding_digest(binding),
+                binding, head_sha40(root), current_branch(root), worktree_clean(root),
+                execution_identity_digest(binding),
             ).validate()
         except (GitError, ValueError) as exc:
             blockers.append(f"current local work context readback failed: {exc}")
@@ -1765,7 +1918,8 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
             independent_review.validate()
             if subject is None or independent_review.subject != subject:
                 blockers.append("independent review is stale or does not match the current exact subject")
-            if binding is not None and independent_review.implementation_context_id != f"execution-binding:{binding_digest(binding)}":
+            if (binding is not None and independent_review.implementation_context_id
+                    != execution_identity_context_id(binding)):
                 blockers.append("independent-review implementation context does not match the current work binding")
             _read_audit_references(root, independent_review)
         except (AuditError, CLIError, OSError) as exc:
@@ -1850,10 +2004,10 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
                 blockers.append(f"#29 final Acceptance readback failed: {exc}")
         if binding is not None:
             try:
-                final_binding = read_binding(binding_path)
+                final_binding = _read_execution_identity(github, root, repository, args.issue, verified_adc)
                 final_pr_binding = read_pr_binding(pr_binding_path(root, args.issue, github=github))
                 if final_binding != binding or final_pr_binding != pr_binding:
-                    blockers.append("immutable ExecutionBinding or PRBinding changed before Readiness persistence")
+                    blockers.append("immutable execution identity or PRBinding changed before Readiness persistence")
             except (ExecutionError, CheckpointError, OSError) as exc:
                 blockers.append(f"work binding final readback failed before Readiness persistence: {exc}")
         if self_audit is not None:
@@ -2131,6 +2285,19 @@ def _owner_authorization_plan_command(args: argparse.Namespace, repository: str,
         if target_issue == 63:
             subject_value["details"] = details
         subject_sha256 = hashlib.sha256(_canonical(subject_value)).hexdigest()
+    elif operation == "EXECUTION_ADOPTION":
+        if (args.adoption_plan is None or args.subject_file is not None or args.ruleset_plan is not None
+                or args.session is not None or args.feedback_snapshot is not None):
+            raise OwnerAuthorizationError("EXECUTION_ADOPTION plan requires only --adoption-plan")
+        if repository.casefold() != "puchinya/ai-agent-workflow":
+            raise OwnerAuthorizationError("EXECUTION_ADOPTION is restricted to puchinya/ai-agent-workflow")
+        adoption = read_adoption_plan(args.adoption_plan)
+        live = build_adoption_plan(github, root)
+        if adoption != live:
+            raise OwnerAuthorizationError("adoption plan is stale or differs from current exact-HEAD preflight")
+        subject_sha256 = adoption["plan_sha256"]
+        target_issue, pr_number, pr_head = 63, 64, adoption["observed_start_head_sha40"]
+        details = {"adoption_plan": adoption}
     else:
         raise OwnerAuthorizationError("unsupported owner authorization operation")
     plan = create_authorization_plan(
@@ -2200,6 +2367,19 @@ def _validate_owner_authorization_source(args: argparse.Namespace, plan: dict[st
                 or context["pr_head_sha40"] != plan["pr_head_sha40"]):
             raise OwnerAuthorizationError("live User Review session, Readiness, feedback, or PR differs from its plan")
         return {"session": context["session"], "subject_sha256": context["subject_sha256"]}
+    elif plan["operation"] == "EXECUTION_ADOPTION":
+        path = getattr(args, "adoption_plan", None)
+        if path is None:
+            raise OwnerAuthorizationError("EXECUTION_ADOPTION requires the same immutable --adoption-plan")
+        adoption = read_adoption_plan(path)
+        if (adoption != plan["details"].get("adoption_plan")
+                or adoption["plan_sha256"] != plan["subject_sha256"]
+                or adoption["observed_start_head_sha40"] != plan["pr_head_sha40"]):
+            raise OwnerAuthorizationError("adoption bytes differ from the exact Owner authorization plan")
+        live = build_adoption_plan(github, args.root or _runtime_root(args))
+        if live != adoption:
+            raise OwnerAuthorizationError("live adoption preflight differs from the exact approved plan")
+        return live
     return None
 
 
@@ -2235,7 +2415,26 @@ def execute_chat_confirmed_authorization(
         result = _publish_owner_approved_adc(args, repository, github, plan, result)
     elif plan["operation"] == "PR_MERGE":
         result = _perform_authorized_merge(args, root, github, plan, result)
+    elif plan["operation"] == "EXECUTION_ADOPTION":
+        adoption = read_adoption_plan(args.adoption_plan)
+        result = apply_adoption(github, root, adoption, plan)
     return result
+
+
+def execute_current_chat_confirmed_adoption(
+    args: argparse.Namespace, repository: str, root: Path, github: GitHub, *,
+    response: str, user_role: str, same_conversation: bool,
+) -> dict[str, Any]:
+    """Host adapter for the direct user-role approval of one exact adoption plan.
+
+    This callable is not a CLI route. The chat host must provide the actual
+    user-role event from this same conversation; it records no chat signature.
+    """
+    plan = read_authorization_plan(args.plan)
+    grant = capture_direct_chat_confirmation(
+        plan, response=response, user_role=user_role, same_conversation=same_conversation,
+    )
+    return execute_chat_confirmed_authorization(args, repository, root, github, grant)
 
 
 def _publish_owner_approved_adc(args: argparse.Namespace, repository: str, github: GitHub,
@@ -2993,8 +3192,9 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
         subject = _subject(repository, args.issue, args.pr, args.head, verified_adc, plan)
         pr = _readback_current_pr(github, subject)
         profile = load_profile(root)
-        delivery_binding = read_binding(execution_binding_path(root, args.issue))
+        delivery_binding = _read_execution_identity(github, root, repository, args.issue, verified_adc)
         delivery_pr_binding = read_pr_binding(pr_binding_path(root, args.issue, github=github))
+        _frozen_base_ref, frozen_base_sha = execution_identity_base(delivery_binding)
         raw_pr = github.pull_request(args.pr)
         current_base_evidence = _current_base_evidence_for_pr(
             root, github, repository, args.issue, delivery_binding, delivery_pr_binding, raw_pr,
@@ -3106,15 +3306,19 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
             expected_policy_branch=pr["base_ref"],
             current_base_advance=current_base_evidence,
             current_pr_base_sha40=pr["base_sha"],
-            frozen_base_sha40=delivery_binding.base_sha,
+            frozen_base_sha40=frozen_base_sha,
         )
         if verify_adc(github, args.issue).pointer != verified_adc.pointer:
             blockers.append("approved ADC pointer changed during Final Delivery")
         if _readback_current_pr(github, subject) != pr:
             blockers.append("PR identity/base/head changed during Final Delivery")
         final_pr_binding = read_pr_binding(pr_binding_path(root, args.issue, github=github))
+        final_execution_identity = _read_execution_identity(github, root, repository, args.issue, verified_adc)
+        if final_execution_identity != delivery_binding:
+            blockers.append("immutable execution identity changed during Final Delivery")
         final_base_evidence = _current_base_evidence_for_pr(
-            root, github, repository, args.issue, delivery_binding, final_pr_binding, github.pull_request(args.pr),
+            root, github, repository, args.issue, final_execution_identity, final_pr_binding,
+            github.pull_request(args.pr),
         )
         if final_base_evidence != current_base_evidence:
             blockers.append("Activation current-base evidence changed during Final Delivery")
@@ -4122,7 +4326,17 @@ def _parser() -> argparse.ArgumentParser:
     recover = work_commands.add_parser("recover", help="resume the same immutable work binding")
     recover.add_argument("issue", type=_positive_number)
     recover.add_argument("--branch-ref", required=True)
-    for command in (base, branch, bind, recover):
+    adoption_plan = work_commands.add_parser(
+        "adoption-plan", help="read-only exact-head plan for the one-time Issue #63 / PR #64 epoch adoption")
+    adoption_plan.add_argument("issue", type=_positive_number)
+    adoption_plan.add_argument("--output", required=True, type=Path,
+                               help="create-only canonical prospective adoption plan")
+    adoption_apply = work_commands.add_parser(
+        "adoption-apply", help="apply/recover only the separately owner-approved exact adoption plan")
+    adoption_apply.add_argument("issue", type=_positive_number)
+    adoption_apply.add_argument("--plan", required=True, type=Path)
+    adoption_apply.add_argument("--authorization-plan", required=True, type=Path)
+    for command in (base, branch, bind, recover, adoption_plan, adoption_apply):
         command.add_argument("--repo", help="repository owner/name; defaults to origin")
         command.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
 
@@ -4194,9 +4408,12 @@ def _parser() -> argparse.ArgumentParser:
     ruleset_apply.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
     owner_plan = delivery_commands.add_parser(
         "owner-authorize-plan", help="read live GitHub subjects and write an immutable owner authorization plan")
-    owner_plan.add_argument("operation", choices=("ADC_SUPERSEDE", "RULESET_PLAN_APPLY", "USER_REVIEW", "PR_MERGE"))
+    owner_plan.add_argument("operation", choices=(
+        "ADC_SUPERSEDE", "RULESET_PLAN_APPLY", "USER_REVIEW", "PR_MERGE", "EXECUTION_ADOPTION"))
     owner_plan.add_argument("--subject-file", type=Path, help="exact successor ADC bytes for ADC_SUPERSEDE")
     owner_plan.add_argument("--ruleset-plan", type=Path, help="canonical Ruleset plan for RULESET_PLAN_APPLY")
+    owner_plan.add_argument("--adoption-plan", type=Path,
+                            help="complete exact-HEAD Issue #63 / PR #64 adoption plan")
     owner_plan.add_argument("--session", type=Path, help="exact User Review session for USER_REVIEW")
     owner_plan.add_argument("--readiness", type=Path, help="exact PASS Readiness result for USER_REVIEW")
     owner_plan.add_argument("--feedback-snapshot", type=Path,
@@ -4213,6 +4430,8 @@ def _parser() -> argparse.ArgumentParser:
     owner_commit.add_argument("--plan", required=True, type=Path, help="exact canonical owner authorization plan")
     owner_commit.add_argument("--subject-file", type=Path, help="same ADC source used by ADC_SUPERSEDE plan")
     owner_commit.add_argument("--ruleset-plan", type=Path, help="same canonical Ruleset plan used for approval")
+    owner_commit.add_argument("--adoption-plan", type=Path,
+                              help="same immutable exact-HEAD adoption plan")
     owner_commit.add_argument("--session", type=Path, help="same immutable User Review session")
     owner_commit.add_argument("--readiness", type=Path,
                               help="same User Review or fresh PR #64 Final Delivery Readiness")

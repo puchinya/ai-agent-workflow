@@ -20,7 +20,7 @@ SCHEMA = "PASES_OWNER_DECISION_V1"
 SCHEMA_V2 = "PASES_OWNER_DECISION_V2"
 SCHEMA_V3 = "PASES_OWNER_DECISION_V3"
 SCHEMAS = frozenset({SCHEMA, SCHEMA_V2, SCHEMA_V3})
-OPERATIONS = frozenset({"ADC_SUPERSEDE", "RULESET_PLAN_APPLY", "PR_MERGE"})
+OPERATIONS = frozenset({"ADC_SUPERSEDE", "RULESET_PLAN_APPLY", "PR_MERGE", "EXECUTION_ADOPTION"})
 FIELDS = frozenset({
     "schema", "repository", "issue_number", "operation", "subject_sha256",
     "pr_number", "pr_head_sha40", "owner_id", "evidence_channel",
@@ -136,13 +136,15 @@ def parse_owner_decision(body: str) -> OwnerDecision:
             not isinstance(operation_plan_sha256, str)
             or SHA256.fullmatch(operation_plan_sha256) is None):
         raise OwnerDecisionError("operation plan digest is invalid")
-    if (schema in {SCHEMA_V2, SCHEMA_V3} and data["operation"] == "RULESET_PLAN_APPLY"
+    if (schema in {SCHEMA_V2, SCHEMA_V3} and data["operation"] in {"RULESET_PLAN_APPLY", "EXECUTION_ADOPTION"}
             and operation_plan_sha256 != data["subject_sha256"]):
-        raise OwnerDecisionError("Ruleset operation plan digest differs from its decision subject")
+        raise OwnerDecisionError("operation plan digest differs from its decision subject")
     approval_scope_sha256 = data.get("approval_scope_sha256")
     if schema == SCHEMA_V3 and (not isinstance(approval_scope_sha256, str)
                                 or SHA256.fullmatch(approval_scope_sha256) is None):
         raise OwnerDecisionError("chat-confirmed approval scope digest is invalid")
+    if data["operation"] == "EXECUTION_ADOPTION" and schema != SCHEMA_V3:
+        raise OwnerDecisionError("execution adoption requires the exact chat-confirmed V3 decision")
     predecessor = data["predecessor_comment_id"]
     if predecessor is not None and not _positive(predecessor):
         raise OwnerDecisionError("owner decision predecessor is invalid")
@@ -155,8 +157,10 @@ def parse_owner_decision(body: str) -> OwnerDecision:
         raise OwnerDecisionError("ADC operations must not bind a PR")
     if data["operation"] == "RULESET_PLAN_APPLY" and pr is not None:
         raise OwnerDecisionError("Ruleset plan decisions must not bind a PR")
-    if data["operation"] == "PR_MERGE" and pr is None:
-        raise OwnerDecisionError("merge decision must bind a PR")
+    if data["operation"] in {"PR_MERGE", "EXECUTION_ADOPTION"} and pr is None:
+        raise OwnerDecisionError("PR merge/adoption decision must bind an exact PR")
+    if data["operation"] == "EXECUTION_ADOPTION" and pr != 64:
+        raise OwnerDecisionError("execution adoption is bound only to PR #64")
     return OwnerDecision(
         data["repository"], data["issue_number"], data["operation"],
         data["subject_sha256"], data["owner_id"], pr, head, predecessor,
@@ -227,8 +231,10 @@ def read_verified_owner_decision(
                 or not isinstance(expected_pr_head_sha40, str)
                 or SHA40.fullmatch(expected_pr_head_sha40) is None))):
         raise OwnerDecisionError("expected PR identity must contain both number and HEAD")
-    if (operation == "PR_MERGE") != (expected_pr_number is not None):
-        raise OwnerDecisionError("PR_MERGE alone requires an exact PR number and HEAD")
+    if (operation in {"PR_MERGE", "EXECUTION_ADOPTION"}) != (expected_pr_number is not None):
+        raise OwnerDecisionError("PR merge/adoption operations require an exact PR number and HEAD")
+    if operation == "EXECUTION_ADOPTION" and (issue_number != 63 or expected_pr_number != 64):
+        raise OwnerDecisionError("execution adoption is restricted to Issue #63 / PR #64")
     if repository_id is not None and not _positive(repository_id):
         raise OwnerDecisionError("configured repository ID is invalid")
     if expected_plan_sha256 is not None and (

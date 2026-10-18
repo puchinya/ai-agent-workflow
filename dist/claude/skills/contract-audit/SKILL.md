@@ -4,6 +4,10 @@ description: Check the final change against every approved contract requirement 
 ---
 # Contract audit
 
+## One-time Issue #63 / PR #64 adoption
+
+Do not audit or publish ordinary PASS evidence against the missing historical Binding. The one-time bootstrap may be implemented before adoption, but its code/readability review is not an Independent Review artifact and no ordinary Phase/QA/Readiness PASS is allowed yet. Wait until bootstrap is pushed, exact-final-HEAD CI is green, and a separate exact-plan V3 `EXECUTION_ADOPTION` owner decision has been applied. After verified adoption, bind every audit to the adopted epoch and current HEAD, then use the normal contract-audit and fresh Independent Review process. Do not treat adoption as `USER_REVIEW`, `RULESET_PLAN_APPLY`, `Activation`, or merge approval.
+
 ## Owner and inputs
 
 Owner: runtime/p_ases/audits.py. Inputs are the verified ADC, current PR HEAD, requirement and checklist identifiers, source diff, and evidence references.

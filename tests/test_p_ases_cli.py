@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases.adc import publish_adc
-from p_ases.cli import CLI_ADVANCE_TARGETS, _parser, main
+from p_ases.cli import CLI_ADVANCE_TARGETS, CLIError, _parser, _work_command, main
 from p_ases.github import GitHubError
 from p_ases.owner_consent import OwnerDecisionError
 from p_ases.phase_evidence import PhaseEvidenceError
@@ -43,6 +43,18 @@ class PasesCLITests(unittest.TestCase):
         context = _parser().parse_args(["context", "show", "32", "--root", str(ROOT),
                                         "--repo", "owner/repo"])
         self.assertEqual((context.verb, context.issue, context.repo), ("show", 32, "owner/repo"))
+
+    def test_unbound_issue63_cannot_be_switched_to_a_new_work_branch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args = SimpleNamespace(verb="branch", issue=63, base_ref="main", base_sha="a" * 40,
+                                   branch_ref="codex/issue-63-new", output=None)
+            with patch("p_ases.cli._approved_issue_adc", return_value=(
+                    {"number": 63}, verified_adc())):
+                with patch("p_ases.cli.ensure_branch") as ensure_branch:
+                    with self.assertRaisesRegex(CLIError, "open-PR continuation"):
+                        _work_command(args, "puchinya/ai-agent-workflow", root, Mock())
+            ensure_branch.assert_not_called()
 
     def test_consumer_ruleset_routes_parse_exact_approval_arguments(self):
         preflight = _parser().parse_args([

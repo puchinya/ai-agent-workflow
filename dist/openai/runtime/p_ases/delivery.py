@@ -17,6 +17,7 @@ from .checkpoint import CheckpointError, PRBinding
 from .context import WorkContext, WorkContextError
 from .current_base import CurrentBaseAdvanceEvidence
 from .evidence_store import VerificationSubject
+from .execution import AdoptedExecutionEpoch, ExecutionBinding, execution_identity_base
 from .path_safety import path_has_symlink
 from .verification import VerificationResult, VERDICTS
 
@@ -469,21 +470,25 @@ def evaluate_readiness(
     else:
         try:
             work_context.validate()
-            binding = work_context.execution_binding
-            if (binding.repository != subject.repository or binding.issue_number != subject.issue_number
-                    or binding.adc_comment_id != subject.adc_comment_id or binding.adc_sha256 != subject.adc_sha256
+            identity = work_context.execution_identity
+            base_ref, base_sha = execution_identity_base(identity)
+            if (identity.repository != subject.repository or identity.issue_number != subject.issue_number
+                    or identity.adc_comment_id != subject.adc_comment_id or identity.adc_sha256 != subject.adc_sha256
                     or work_context.current_head_sha40 != subject.pr_head_sha40
                     or not work_context.worktree_clean
                     or (isinstance(pr_binding, PRBinding)
-                        and binding.base_sha != pr_binding.base_sha40)
-                    or (pr_readback_valid and ((binding.base_sha != pr.base_sha40
+                        and base_sha != pr_binding.base_sha40)
+                    or (isinstance(identity, AdoptedExecutionEpoch)
+                        and pr_binding.adoption_id != identity.adoption_id)
+                    or (isinstance(identity, ExecutionBinding) and pr_binding.adoption_id is not None)
+                    or (pr_readback_valid and ((base_sha != pr.base_sha40
                                                and not (base_advance_valid and current_base_advance is not None
-                                                        and current_base_advance.frozen_base_sha40 == binding.base_sha
+                                                        and current_base_advance.frozen_base_sha40 == base_sha
                                                         and current_base_advance.current_base_sha40 == pr.base_sha40))
-                                               or binding.base_ref != pr.base_ref
+                                               or base_ref != pr.base_ref
                                                or work_context.branch_ref != pr.head_ref))):
                 reasons.append("work context is stale, dirty, or bound to a different exact subject")
-            digest_refs.add(work_context.execution_binding_sha256)
+            digest_refs.add(work_context.execution_identity_sha256)
             if base_advance_valid and current_base_advance is not None:
                 digest_refs.add(current_base_advance.sha256)
         except WorkContextError as exc:

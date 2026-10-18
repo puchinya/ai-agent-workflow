@@ -14,7 +14,7 @@ from typing import Any
 
 from .checkpoint import CheckpointError, PRBinding, _canonical, read_pr_binding, validate_ref
 from .consumer_activation import ConsumerActivationError, read_consumer_activation_record
-from .execution import ExecutionBinding
+from .execution import AdoptedExecutionEpoch, ExecutionBinding, ExecutionIdentity, execution_identity_base
 from .git import (
     GitError, changed_paths_between, commit_parents_sha40, fetch_remote_branch_exact,
     is_ancestor, patch_sha256_excluding_activation_profile, remote_branch_sha,
@@ -228,7 +228,7 @@ def verify_current_base_advance(
     *,
     repository: str,
     issue_number: int,
-    execution_binding: ExecutionBinding,
+    execution_binding: ExecutionIdentity,
     prior_pr_binding: PRBinding,
     current_pr: dict[str, Any],
     activation_issue_number: int,
@@ -236,7 +236,7 @@ def verify_current_base_advance(
     """Create or revalidate the one Activation-owned A->B transition for this exact PR."""
     root = Path(repository_root).resolve()
     destination = current_base_advance_path(root, issue_number)
-    frozen_base = execution_binding.base_sha
+    base_ref, frozen_base = execution_identity_base(execution_binding)
     current_base = _nested(current_pr, "base", "sha")
     if not isinstance(current_base, str) or not SHA40.fullmatch(current_base):
         raise CurrentBaseError("current PR base SHA is malformed")
@@ -259,14 +259,14 @@ def verify_current_base_advance(
 
     record, record_id = _read_activation(github, repository, activation_issue_number)
     _setup_pr, setup_head, profile_bytes = _read_setup_proof(
-        root, github, repository, frozen_base, current_base, execution_binding.base_ref,
+        root, github, repository, frozen_base, current_base, base_ref,
         record,
     )
     _verify_target_pr(repository, issue_number, prior_pr_binding, current_pr,
-                      current_base, execution_binding.base_ref)
+                      current_base, base_ref)
     _verify_git_transition(root, frozen_base, current_base, prior_pr_binding.pr_head_sha40,
                            current_pr, setup_head, profile_bytes)
-    _verify_live_refs(root, github, execution_binding.base_ref, current_base)
+    _verify_live_refs(root, github, base_ref, current_base)
     current_head = _nested(current_pr, "head", "sha")
     if (hashlib.sha256(github.content_at_ref(PROFILE_PATH, current_base)).hexdigest()
             != hashlib.sha256(profile_bytes).hexdigest()
@@ -302,25 +302,34 @@ def verify_current_base_advance(
 
 
 def _verify_existing(root: Path, github: GitHub, repository: str, issue_number: int,
-                     execution_binding: ExecutionBinding, pr_binding: PRBinding,
+                     execution_binding: ExecutionIdentity, pr_binding: PRBinding,
                      current_pr: dict[str, Any], activation_issue_number: int,
                      evidence: CurrentBaseAdvanceEvidence) -> None:
-    binding_reference_matches = (
+    base_ref, frozen_base = execution_identity_base(execution_binding)
+    if isinstance(execution_binding, AdoptedExecutionEpoch):
+        binding_reference_matches = (pr_binding.adoption_id == execution_binding.adoption_id and (
+            (pr_binding.current_base_sha40 is None
+             and pr_binding.sha256 == evidence.original_pr_binding_sha256
+             and pr_binding.pr_head_sha40 == evidence.original_pr_head_sha40)
+            or (pr_binding.current_base_sha40 == evidence.current_base_sha40
+                and pr_binding.current_base_advance_sha256 == evidence.sha256)))
+    else:
+        binding_reference_matches = (
         (pr_binding.current_base_sha40 is None
          and pr_binding.sha256 == evidence.original_pr_binding_sha256
          and pr_binding.pr_head_sha40 == evidence.original_pr_head_sha40)
         or (pr_binding.current_base_sha40 == evidence.current_base_sha40
             and pr_binding.current_base_advance_sha256 == evidence.sha256)
-    )
+        )
     if (evidence.repository.casefold() != repository.casefold() or evidence.issue_number != issue_number
             or evidence.pr_number != current_pr.get("number") or evidence.pr_id != current_pr.get("id")
             or evidence.branch_ref != _nested(current_pr, "head", "ref")
-            or evidence.frozen_base_sha40 != execution_binding.base_sha
+            or evidence.frozen_base_sha40 != frozen_base
             or evidence.current_base_sha40 != _nested(current_pr, "base", "sha")
             or evidence.activation_issue_number != activation_issue_number
             or not binding_reference_matches):
         raise CurrentBaseError("current-base evidence does not match the exact PR or immutable PRBinding")
-    _verify_source_binding(root, issue_number, evidence)
+    _verify_source_binding(root, issue_number, evidence, execution_binding)
     record, record_id = _read_activation(github, repository, activation_issue_number)
     if (record_id != evidence.activation_record_id or record.sha256 != evidence.activation_record_sha256
             or record.setup_pr_number != evidence.setup_pr_number
@@ -329,13 +338,13 @@ def _verify_existing(root: Path, github: GitHub, repository: str, issue_number: 
         raise CurrentBaseError("Activation V2 record differs from current-base evidence")
     setup_pr, setup_head, profile_bytes = _read_setup_proof(
         root, github, repository, evidence.frozen_base_sha40, evidence.current_base_sha40,
-        execution_binding.base_ref, record,
+        base_ref, record,
     )
     if (setup_pr.get("id") != evidence.setup_pr_id or setup_head != evidence.setup_head_sha40
             or hashlib.sha256(profile_bytes).hexdigest() != evidence.activation_profile_sha256):
         raise CurrentBaseError("Activation setup PR differs from current-base evidence")
     _verify_target_pr(repository, issue_number, pr_binding, current_pr,
-                      evidence.current_base_sha40, execution_binding.base_ref)
+                      evidence.current_base_sha40, base_ref)
     transition_head = evidence.transition_pr_head_sha40
     current_head = _nested(current_pr, "head", "sha")
     try:
@@ -363,7 +372,7 @@ def _verify_existing(root: Path, github: GitHub, repository: str, issue_number: 
             raise CurrentBaseError("transition PR patch differs from recorded current-base evidence")
     except GitError as exc:
         raise CurrentBaseError(f"could not verify current-base Git ancestry: {exc}") from exc
-    _verify_live_refs(root, github, execution_binding.base_ref, evidence.current_base_sha40)
+    _verify_live_refs(root, github, base_ref, evidence.current_base_sha40)
     for ref in (evidence.current_base_sha40, current_head):
         if hashlib.sha256(github.content_at_ref(PROFILE_PATH, ref)).hexdigest() != evidence.activation_profile_sha256:
             raise CurrentBaseError("Activation profile bytes differ between main and the target PR HEAD")
@@ -504,7 +513,8 @@ def _verify_live_refs(root: Path, github: GitHub, base_ref: str, expected_sha: s
 
 
 def _verify_source_binding(root: Path, issue_number: int,
-                           evidence: CurrentBaseAdvanceEvidence) -> None:
+                           evidence: CurrentBaseAdvanceEvidence,
+                           execution_identity: ExecutionIdentity) -> None:
     directory = current_base_advance_path(root, issue_number).parent
     rows: list[PRBinding] = []
     for path in sorted(directory.glob("pr-binding-*.json")):
@@ -520,13 +530,16 @@ def _verify_source_binding(root: Path, issue_number: int,
             except (OSError, CheckpointError) as exc:
                 raise CurrentBaseError(f"immutable PRBinding history is invalid: {exc}") from exc
     source = next((row for row in rows if row.sha256 == evidence.original_pr_binding_sha256), None)
+    expected_adoption = (execution_identity.adoption_id
+                         if isinstance(execution_identity, AdoptedExecutionEpoch) else None)
     if (source is None or source.current_base_sha40 is not None
             or source.pr_head_sha40 != evidence.original_pr_head_sha40
             or source.repository.casefold() != evidence.repository.casefold()
             or source.issue_number != issue_number or source.pr_number != evidence.pr_number
             or source.base_sha40 != evidence.frozen_base_sha40
+            or source.adoption_id != expected_adoption
             or source.branch_ref != evidence.branch_ref):
-        raise CurrentBaseError("current-base evidence is not anchored to the immutable V1 PRBinding")
+        raise CurrentBaseError("current-base evidence is not anchored to the immutable PRBinding/epoch")
 
 
 def _nested(value: Any, *keys: str) -> Any:

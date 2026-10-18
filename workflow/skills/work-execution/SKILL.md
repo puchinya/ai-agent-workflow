@@ -4,6 +4,10 @@ description: Execute only a verified approved ADC in the correct frozen work con
 ---
 # Work execution
 
+## One-time Issue #63 / PR #64 adoption
+
+This exception applies only to `puchinya/ai-agent-workflow` Issue #63 / PR #64. It permits bootstrap implementation and CI while the original Binding is missing; before adoption, do not publish ordinary Phase receipts or claim Verification, Acceptance, Self-Audit, Independent Review, Readiness, or User Review PASS. After the bootstrap is pushed and all five exact-HEAD Required Checks pass, run `work adoption-plan 63` and preserve the complete canonical plan bytes. Show the full plan and digest to the user, then obtain a distinct same-conversation direct user-role `EXECUTION_ADOPTION` approval for that exact plan and PR HEAD. The chat host must provide the actual user event to the in-process V3 authorization hook; the CLI, a file, prior broad permission, old HEAD approval, or vague continuation cannot authorize it. If role provenance is unavailable, stop with `CHAT_PROVENANCE_UNAVAILABLE`. Only then run `work adoption-apply 63` and verify its Intent/Applied readback, epoch, workspace attachment, and adopted PRBinding. The record explicitly marks historical provenance `UNVERIFIED` and does not create a normal V1 Binding. Resume ordinary requirements→specification→design→ready→execution phases and all normal current-HEAD gates after adoption. This approval does not authorize User Review, Ruleset, Activation, or merge. Durable anchor/reattachment for ordinary Issues remains separate follow-up work.
+
 ## Owner and inputs
 
 Owner: runtime/p_ases/execution.py, work.py, git.py, and github.py. Inputs are an open same-repository Issue, current approved ADC, exact base ref and SHA, project profile, and host-selected workspace.

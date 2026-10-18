@@ -6,6 +6,8 @@ Issue: [#63](https://github.com/puchinya/ai-agent-workflow/issues/63)
 既存実装PR: [#64](https://github.com/puchinya/ai-agent-workflow/pull/64)
 確認時HEAD: `2910d49602ce512ef123fb58d722ec755bb76c2c`（実行時に再取得する）
 
+**Current one-time binding recovery addendum:** The newer user-provided PR #64 “One-time ExecutionBinding Adoption / Durable Recovery Implementation Contract (v2: ordered handoff)” is authoritative for the missing historical Binding. It permits only bootstrap code/docs/tests and CI before adoption; the older steps below that rebind or recover a missing #63 Binding must not be applied to this case. After the bootstrap is committed/pushed and all required checks pass on the exact final HEAD, show the complete immutable adoption plan and obtain a distinct exact-plan V3 `EXECUTION_ADOPTION` Owner decision before appending the typed prospective epoch. The epoch must preserve `historical_binding_provenance=UNVERIFIED`; it is not an original V1 Binding. No normal Phase/QA/Review/Readiness PASS occurs before adoption, and every standard gate remains after it. Ordinary anchor/reattachment remains a separate follow-up. This addendum does not authorize User Review, Ruleset, Activation, or merge.
+
 <!-- contents:start -->
 **Contents**
 - [1 Repository Baseline](#1-repository-baseline)

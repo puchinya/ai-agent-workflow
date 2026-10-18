@@ -4,6 +4,10 @@ description: Evaluate Review Readiness and Final Delivery without merging or pub
 ---
 # Delivery control
 
+## One-time Issue #63 / PR #64 adoption handoff
+
+The bootstrap implementation and exact-final-HEAD CI precede adoption. Before a distinct authenticated V3 `EXECUTION_ADOPTION` decision is applied to the full frozen plan, do not claim ordinary Phase, Verification, Acceptance, Self-Audit, Independent Review, Readiness, or User Review PASS. After adoption, resume the ordinary Phase/QA/review/readiness lifecycle and still request a separate User Review decision, any exact Ruleset plan approval, Activation approval, and exact-HEAD PR merge approval. Adoption marks the missing original tuple `UNVERIFIED`; it is not a delivery waiver. If final plan, Git refs, ADC/Phase, CI, owner decision, or workspace attachment drifts, stop with zero adoption writes and obtain a new plan/approval. Ordinary remote anchor and reattachment remain separate follow-up.
+
 ## Owner and inputs
 
 Owner: runtime/p_ases/delivery.py and gate_policy.py. Inputs are current PR identity, exact HEAD, final Verification and Acceptance, audit and review evidence, User Review, required Checks, branch protection, and explicit user permissions.

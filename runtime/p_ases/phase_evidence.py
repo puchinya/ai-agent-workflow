@@ -257,8 +257,31 @@ def _kind_from_issue(issue: dict[str, Any]) -> tuple[IssueKind, list[str]]:
 
 def _verify_frozen_binding(github: GitHub, root: Path, issue_number: int, verified: VerifiedADC,
                            branch_ref: str, commit_sha: str) -> None:
+    path = execution_binding_path(root.resolve(), issue_number)
+    if not path.exists():
+        if issue_number != 63 or not (
+                (root / ".p_ases" / "state" / str(issue_number) / "execution-adoption.json").exists()
+                or (root / ".p_ases" / "state" / str(issue_number) / "workspace-attachment.json").exists()):
+            raise PhaseEvidenceError("a valid frozen Issue ExecutionBinding is required when no adopted epoch exists")
+        try:
+            from .execution_adoption import ExecutionAdoptionError, verify_adopted_execution
+            adopted = verify_adopted_execution(
+                github, root, expected_adc_comment_id=verified.pointer.comment_id,
+                expected_adc_sha256=verified.contract.sha256,
+            )["epoch"]
+            if (issue_number != 63 or adopted.repository.casefold() != github.repo.casefold()
+                    or adopted.issue_number != issue_number
+                    or adopted.adc_comment_id != verified.pointer.comment_id
+                    or adopted.adc_sha256 != verified.contract.sha256
+                    or adopted.branch_ref != branch_ref
+                    or not is_ancestor(root, adopted.selected_base_sha40, commit_sha)
+                    or not is_ancestor(root, adopted.observed_start_head_sha40, commit_sha)):
+                raise PhaseEvidenceError("verified adopted epoch does not match this Issue/ADC/branch/HEAD")
+            return
+        except (ExecutionAdoptionError, GitError) as exc:
+            raise PhaseEvidenceError(f"a valid authenticated adopted execution epoch is required: {exc}") from exc
     try:
-        binding = read_binding(execution_binding_path(root.resolve(), issue_number))
+        binding = read_binding(path)
         if (binding.repository.casefold() != github.repo.casefold()
                 or binding.issue_number != issue_number
                 or binding.adc_comment_id != verified.pointer.comment_id

@@ -40,6 +40,32 @@ def discover_repository(repo: Path) -> str:
     return match.group(1)
 
 
+def verify_remote_repository(repo: Path, expected_repository: str, remote: str = "origin") -> None:
+    """Require every configured fetch and push URL for one remote to target a GitHub repo.
+
+    Remote URLs are parsed only in memory and are never included in errors. This
+    is useful for exact-scope operations where a distinct push URL could send
+    Git objects to another repository despite a correct fetch URL.
+    """
+    if not isinstance(expected_repository, str) or not re.fullmatch(
+            r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", expected_repository):
+        raise GitError("expected GitHub repository identity is invalid")
+    if not isinstance(remote, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", remote):
+        raise GitError("Git remote name is invalid")
+    try:
+        fetch_urls = run_git(repo, "remote", "get-url", "--all", remote).splitlines()
+        push_urls = run_git(repo, "remote", "get-url", "--push", "--all", remote).splitlines()
+    except GitError as exc:
+        raise GitError("could not read all configured Git remote URLs") from exc
+    urls = [url.strip() for url in (*fetch_urls, *push_urls) if url.strip()]
+    if not urls:
+        raise GitError("Git remote has no configured fetch or push URL")
+    for url in urls:
+        match = re.search(r"(?:github\.com[:/])([^/\s:]+/[^/\s]+?)(?:\.git)?$", url, re.I)
+        if not match or match.group(1).casefold() != expected_repository.casefold():
+            raise GitError("configured Git remote does not target the pinned GitHub repository")
+
+
 def current_branch(repo: Path) -> str:
     ref = run_git(repo, "symbolic-ref", "--quiet", "--short", "HEAD")
     if not ref:

@@ -308,6 +308,8 @@ def _verify_pr_binding_successor(github: GitHub, issue_number: int,
                                  current_base_evidence: CurrentBaseAdvanceEvidence | None = None) -> None:
     if not _same_pr_execution_identity(old, new):
         raise WorkError("PRBinding successor changes its frozen PR execution identity")
+    if (old.adoption_id is not None or new.adoption_id is not None) and old.adoption_id != new.adoption_id:
+        raise WorkError("PRBinding successor changes its immutable adopted-epoch identity")
     if old.current_base_sha40 is None and new.current_base_sha40 is not None:
         if (current_base_evidence is None
                 or current_base_evidence.current_base_sha40 != new.current_base_sha40

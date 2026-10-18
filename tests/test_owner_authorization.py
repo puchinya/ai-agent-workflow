@@ -32,6 +32,38 @@ SUBJECT_SHA = "a" * 64
 PLAN_HEAD = "b" * 40
 
 
+def adoption_plan_payload() -> dict[str, object]:
+    checks = [
+        {"app_id": 15368, "check_run_id": 700 + index, "conclusion": "success",
+         "head_sha40": PLAN_HEAD, "name": name}
+        for index, name in enumerate(("Linux Python 3.10", "Linux Python 3.14", "Windows Python 3.14",
+                                      "macOS Python 3.14", "pull-request-metadata"), start=1)
+    ]
+    checks.sort(key=lambda item: item["name"])
+    value: dict[str, object] = {
+        "schema": "PASES_EXECUTION_ADOPTION_PLAN_V1", "repository": REPOSITORY,
+        "repository_id": REPOSITORY_ID, "owner_id": OWNER_ID, "issue_number": 63,
+        "issue_kind": "single", "issue_phase": "requirements",
+        "issue_labels": ["kind:single", "phase:requirements"],
+        "adc_comment_id": 6248703643,
+        "adc_sha256": "b83620dc5d977c3f96c7ad792fded202b70a78f0c97d637bfcc64d8ef8e89306",
+        "phase_intent_comment_id": 501,
+        "phase_applied_comment_id": 502, "phase_applied_payload_sha256": "d" * 64,
+        "pr_number": 64, "pr_id": 864,
+        "pr_url": f"https://github.com/{REPOSITORY}/pull/64",
+        "pr_title_sha256": "5" * 64, "pr_body_sha256": "6" * 64,
+        "pr_author_user_id": OWNER_ID, "selected_base_ref": "main", "selected_base_sha40": "a" * 40,
+        "branch_ref": "codex/issue-63-adoption", "observed_start_head_sha40": PLAN_HEAD,
+        "attachment_id": "e" * 64, "adoption_id": "f" * 64,
+        "historical_binding_provenance": "UNVERIFIED", "ci_check_runs": checks,
+        "ci_evidence_sha256": hashlib.sha256(json.dumps(
+            checks, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()).hexdigest(),
+    }
+    value["plan_sha256"] = hashlib.sha256(json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()).hexdigest()
+    return value
+
+
 class TTY:
     def isatty(self):
         return True
@@ -210,6 +242,65 @@ class OwnerAuthorizationTests(unittest.TestCase):
             body = github.writes[0][1]
             self.assertIn("PASES_OWNER_DECISION_V3", body)
             self.assertIn(plan["approval_scope_sha256"], body)
+
+    def test_execution_adoption_requires_direct_chat_grant_and_publishes_exact_v3_scope(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            github = FakeGitHub()
+            adoption = adoption_plan_payload()
+            github.prs[64] = {
+                "number": 64, "state": "open", "draft": False,
+                "body": "Implementation delivery.\n\nRefs #63",
+                "head": {"sha": PLAN_HEAD, "repo": {"full_name": REPOSITORY}},
+                "base": {"repo": {"full_name": REPOSITORY}},
+            }
+            with patch("p_ases.owner_authorization.worktree_clean", return_value=True), \
+                    patch("p_ases.owner_authorization.head_sha40", return_value=PLAN_HEAD):
+                plan = create_authorization_plan(
+                    github, root, operation="EXECUTION_ADOPTION", subject_sha256=adoption["plan_sha256"],
+                    target_issue_number=63, pr_number=64, pr_head_sha40=PLAN_HEAD,
+                    details={"adoption_plan": adoption},
+                )
+                with self.assertRaisesRegex(OwnerAuthorizationError, "typed direct-chat grant"):
+                    authorize_chat_confirmed_plan(
+                        github, root, plan, None, source_validator=lambda: adoption,
+                    )
+                grant = capture_direct_chat_confirmation(
+                    plan, response="承認する", user_role="user", same_conversation=True,
+                )
+                result = authorize_chat_confirmed_plan(
+                    github, root, plan, grant, source_validator=lambda: adoption,
+                )
+            self.assertEqual(result["operation"], "EXECUTION_ADOPTION")
+            self.assertEqual(result["evidence_channel"], "chat_confirmed_gh_v1")
+            self.assertEqual(len(github.writes), 1)
+            self.assertIn("PASES_OWNER_DECISION_V3", github.writes[0][1])
+            self.assertEqual(github.comments[63][0]["user"]["id"], OWNER_ID)
+
+    def test_tty_v2_authorization_cannot_authorize_execution_adoption(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            github = FakeGitHub()
+            adoption = adoption_plan_payload()
+            github.prs[64] = {
+                "number": 64, "state": "open", "draft": False,
+                "body": "Implementation delivery.\n\nRefs #63",
+                "head": {"sha": PLAN_HEAD, "repo": {"full_name": REPOSITORY}},
+                "base": {"repo": {"full_name": REPOSITORY}},
+            }
+            with patch("p_ases.owner_authorization.worktree_clean", return_value=True), \
+                    patch("p_ases.owner_authorization.head_sha40", return_value=PLAN_HEAD):
+                plan = create_authorization_plan(
+                    github, root, operation="EXECUTION_ADOPTION", subject_sha256=adoption["plan_sha256"],
+                    target_issue_number=63, pr_number=64, pr_head_sha40=PLAN_HEAD,
+                    details={"adoption_plan": adoption},
+                )
+            plan_path = root / "owner-plan.json"
+            write_authorization_plan(plan_path, plan)
+            with patch("p_ases.owner_authorization._check_owner_local_tty"):
+                with self.assertRaisesRegex(OwnerAuthorizationError, "V2 cannot authorize"):
+                    authorize_plan(github, root, plan_path)
+            self.assertEqual(github.writes, [])
 
     def test_resume_reports_v3_scope_and_channel_after_readback(self):
         with tempfile.TemporaryDirectory() as temporary:

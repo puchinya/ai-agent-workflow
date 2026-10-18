@@ -59,6 +59,8 @@
     - [2.24.1 ORA-UR-009 Expected result](#2241-ora-ur-009-expected-result)
   - [2.25 TST-UR-010 Issue-authoritative User Review kind](#225-tst-ur-010-issue-authoritative-user-review-kind)
     - [2.25.1 ORA-UR-010 Expected result](#2251-ora-ur-010-expected-result)
+  - [2.26 TST-F01-016 One-time adopted execution and ordered handoff](#226-tst-f01-016-one-time-adopted-execution-and-ordered-handoff)
+    - [2.26.1 ORA-F01-016 Expected result](#2261-ora-f01-016-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -113,6 +115,8 @@
 - [ORA-UR-009](#ora-ur-009) — 2.24.1 ORA-UR-009 Expected result
 - [TST-UR-010](#tst-ur-010) — 2.25 TST-UR-010 Issue-authoritative User Review kind
 - [ORA-UR-010](#ora-ur-010) — 2.25.1 ORA-UR-010 Expected result
+- [TST-F01-016](#tst-f01-016) — 2.26 TST-F01-016 One-time adopted execution and ordered handoff
+- [ORA-F01-016](#ora-f01-016) — 2.26.1 ORA-F01-016 Expected result
 <!-- heading-map:end -->
 
 
@@ -424,3 +428,13 @@ Attention present at a gate or malformed attention state blocks new Readiness PA
 #### 2.25.1 ORA-UR-010 Expected result
 
 When `--kind` is omitted, the unique verified GitHub Issue `kind:*` label controls the User Review kind. Both `single` and `child` start as PENDING with exit code 2, create the exact session and feedback evidence, and update the actual phase label once; sync reuses the session and performs zero further label PUTs. An explicit mismatched `--kind`, an unknown kind value, or malformed/duplicate GitHub kind labels block before session, snapshot, result, or label writes. The verified Issue kind is passed to the phase-transition validator. Parent Issues remain outside ordinary User Review.
+
+<a id="tst-f01-016"></a>
+### 2.26 TST-F01-016 One-time adopted execution and ordered handoff
+
+**Setup and action:** Begin from the approved Issue #63 ADC/Phase V2 state with missing historical local binding and open PR #64. Exercise the PR #64 bootstrap implementation before adoption without emitting ordinary Phase or delivery PASS evidence; push the completed bootstrap and require every configured CI check plus metadata check on the exact final HEAD. Generate and display the full immutable adoption plan, then record a separate exact-plan/HEAD V3 Owner decision before applying. Inject stale HEAD/base/branch/ADC/Phase/CI, another PR or repository, foreign fetch/push remote, old approval, invalid chat source, non-owner GitHub actor, duplicate or edited Intent/Applied, lost response, and partial local writes. After adoption, run current generation Phase receipts and the normal verification→fresh Independent Review→Readiness→User Review handoff. Keep Ruleset, Activation, User Review decision, and PR #64 merge separate.
+
+<a id="ora-f01-016"></a>
+#### 2.26.1 ORA-F01-016 Expected result
+
+Only the pinned Issue #63 / PR #64 candidate can be adopted, and only after final exact-HEAD CI and a separate exact-scope authenticated owner decision. The route appends one immutable prospective epoch with `historical_binding_provenance=UNVERIFIED`; it does not invent an original V1 binding. Before adoption, ordinary Phase/QA/review/readiness PASS is impossible. Afterwards, every normal Phase, Verification, Acceptance, Self-Audit, fresh Independent Review, Readiness, User Review, Ruleset, Activation, and merge gate remains in force. A lost or interrupted write is reconciled by readback without replay, and old ADC/Phase/Binding/PRBinding evidence remains unchanged.

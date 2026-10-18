@@ -75,9 +75,232 @@ class ExecutionBinding:
         return self
 
 
+@dataclass(frozen=True)
+class AdoptedExecutionEpoch:
+    """Prospective Issue #63 epoch; deliberately not an ExecutionBinding V1.
+
+    The observed PR start and selected base are separate facts. This record
+    never claims that the current PR head was the original execution start.
+    """
+
+    repository: str
+    issue_number: int
+    adc_comment_id: int
+    adc_sha256: str
+    pr_number: int
+    pr_author_user_id: int
+    selected_base_ref: str
+    selected_base_sha40: str
+    branch_ref: str
+    observed_start_head_sha40: str
+    adoption_id: str
+    plan_sha256: str
+    owner_decision_comment_id: int
+    owner_authorization_plan_sha256: str
+    approval_scope_sha256: str
+    intent_comment_id: int
+    applied_comment_id: int
+    intent_body_sha256: str
+    applied_body_sha256: str
+    attachment_id: str
+    historical_binding_provenance: str = "UNVERIFIED"
+    schema: str = "PASES_EXECUTION_ADOPTION_V1"
+
+    def validate(self) -> "AdoptedExecutionEpoch":
+        if self.schema != "PASES_EXECUTION_ADOPTION_V1":
+            raise ExecutionError("adopted execution epoch schema is unsupported")
+        if (self.repository != "puchinya/ai-agent-workflow" or self.issue_number != 63
+                or self.pr_number != 64 or type(self.pr_author_user_id) is not int
+                or self.pr_author_user_id < 1):
+            raise ExecutionError("adopted execution epoch is restricted to repository #63 / PR #64")
+        if type(self.adc_comment_id) is not int or self.adc_comment_id < 1:
+            raise ExecutionError("adopted epoch ADC comment ID is invalid")
+        if type(self.owner_decision_comment_id) is not int or self.owner_decision_comment_id < 1:
+            raise ExecutionError("adopted epoch owner decision comment ID is invalid")
+        if any(type(value) is not int or value < 1 for value in (self.intent_comment_id, self.applied_comment_id)):
+            raise ExecutionError("adopted epoch journal comment ID is invalid")
+        if not isinstance(self.adc_sha256, str) or not SHA256.fullmatch(self.adc_sha256):
+            raise ExecutionError("adopted epoch ADC digest is invalid")
+        if not isinstance(self.plan_sha256, str) or not SHA256.fullmatch(self.plan_sha256):
+            raise ExecutionError("adopted epoch plan digest is invalid")
+        if (not isinstance(self.owner_authorization_plan_sha256, str)
+                or not SHA256.fullmatch(self.owner_authorization_plan_sha256)):
+            raise ExecutionError("adopted epoch owner authorization plan digest is invalid")
+        if not isinstance(self.approval_scope_sha256, str) or not SHA256.fullmatch(self.approval_scope_sha256):
+            raise ExecutionError("adopted epoch owner approval scope digest is invalid")
+        if (not isinstance(self.intent_body_sha256, str) or not SHA256.fullmatch(self.intent_body_sha256)
+                or not isinstance(self.applied_body_sha256, str) or not SHA256.fullmatch(self.applied_body_sha256)):
+            raise ExecutionError("adopted epoch journal digest is invalid")
+        if (not isinstance(self.adoption_id, str) or not SHA256.fullmatch(self.adoption_id)
+                or not isinstance(self.attachment_id, str) or not SHA256.fullmatch(self.attachment_id)):
+            raise ExecutionError("adopted epoch identity digest is invalid")
+        if (not isinstance(self.selected_base_sha40, str) or not SHA40.fullmatch(self.selected_base_sha40)
+                or not isinstance(self.observed_start_head_sha40, str)
+                or not SHA40.fullmatch(self.observed_start_head_sha40)):
+            raise ExecutionError("adopted epoch observed Git commit is invalid")
+        if self.historical_binding_provenance != "UNVERIFIED":
+            raise ExecutionError("adopted epoch must preserve unverified historical provenance")
+        invalid_ref_chars = ("\x00", "\r", "\n", " ", "~", "^", ":", "?", "*", "[", "\\")
+        for name, value in (("base", self.selected_base_ref), ("branch", self.branch_ref)):
+            if (not isinstance(value, str) or not value or len(value) > 255
+                    or value.startswith(("-", "/")) or value.endswith(("/", ".")) or "//" in value
+                    or ".." in value or "@{" in value or any(char in value for char in invalid_ref_chars)
+                    or any(part.startswith(".") or part.endswith(".lock") for part in value.split("/"))):
+                raise ExecutionError(f"adopted epoch {name} ref is invalid")
+        if self.branch_ref.casefold() in {"main", "master"} or self.branch_ref == self.selected_base_ref:
+            raise ExecutionError("adopted epoch branch must be distinct from its selected base")
+        return self
+
+    def payload(self) -> dict[str, Any]:
+        self.validate()
+        return {
+            "adc_comment_id": self.adc_comment_id,
+            "adc_sha256": self.adc_sha256,
+            "adoption_id": self.adoption_id,
+            "applied_body_sha256": self.applied_body_sha256,
+            "applied_comment_id": self.applied_comment_id,
+            "attachment_id": self.attachment_id,
+            "branch_ref": self.branch_ref,
+            "historical_binding_provenance": self.historical_binding_provenance,
+            "intent_body_sha256": self.intent_body_sha256,
+            "intent_comment_id": self.intent_comment_id,
+            "issue_number": self.issue_number,
+            "observed_start_head_sha40": self.observed_start_head_sha40,
+            "owner_decision_comment_id": self.owner_decision_comment_id,
+            "owner_authorization_plan_sha256": self.owner_authorization_plan_sha256,
+            "approval_scope_sha256": self.approval_scope_sha256,
+            "plan_sha256": self.plan_sha256,
+            "pr_number": self.pr_number,
+            "pr_author_user_id": self.pr_author_user_id,
+            "repository": self.repository,
+            "schema": self.schema,
+            "selected_base_ref": self.selected_base_ref,
+            "selected_base_sha40": self.selected_base_sha40,
+        }
+
+    @property
+    def sha256(self) -> str:
+        return hashlib.sha256(json.dumps(self.payload(), sort_keys=True, separators=(",", ":"),
+                                        ensure_ascii=False).encode("utf-8")).hexdigest()
+
+    def to_bytes(self) -> bytes:
+        value = self.payload()
+        value["epoch_sha256"] = self.sha256
+        return (json.dumps(value, sort_keys=True, separators=(",", ":"),
+                           ensure_ascii=False) + "\n").encode("utf-8")
+
+    @classmethod
+    def from_bytes(cls, raw: bytes) -> "AdoptedExecutionEpoch":
+        try:
+            value = json.loads(raw.decode("utf-8", errors="strict"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ExecutionError("adopted execution epoch is not valid UTF-8 JSON") from exc
+        if not isinstance(value, dict) or set(value) != {
+                "adc_comment_id", "adc_sha256", "adoption_id", "applied_body_sha256", "applied_comment_id",
+                "attachment_id", "branch_ref", "epoch_sha256", "historical_binding_provenance",
+                "intent_body_sha256", "intent_comment_id", "issue_number", "observed_start_head_sha40",
+                "owner_decision_comment_id", "owner_authorization_plan_sha256", "approval_scope_sha256", "plan_sha256",
+                "pr_number", "pr_author_user_id", "repository", "schema",
+                "selected_base_ref", "selected_base_sha40"}:
+            raise ExecutionError("adopted execution epoch has unknown or missing fields")
+        supplied = value.pop("epoch_sha256")
+        epoch = cls(**value).validate()
+        if supplied != epoch.sha256 or epoch.to_bytes() != raw:
+            raise ExecutionError("adopted execution epoch digest or canonical bytes do not match")
+        return epoch
+
+
+@dataclass(frozen=True)
+class WorkspaceAttachment:
+    """Local-only attachment of a logical adopted epoch to this physical checkout."""
+
+    repository: str
+    issue_number: int
+    adoption_id: str
+    attachment_id: str
+    branch_ref: str
+    work_directory: str
+    schema: str = "PASES_WORKSPACE_ATTACH_V1"
+
+    def validate(self) -> "WorkspaceAttachment":
+        if (self.schema != "PASES_WORKSPACE_ATTACH_V1" or self.repository != "puchinya/ai-agent-workflow"
+                or self.issue_number != 63 or not SHA256.fullmatch(self.adoption_id)
+                or not SHA256.fullmatch(self.attachment_id)):
+            raise ExecutionError("workspace attachment identity is invalid")
+        if not isinstance(self.work_directory, str) or not Path(self.work_directory).is_absolute():
+            raise ExecutionError("workspace attachment path must be absolute and local")
+        if not isinstance(self.branch_ref, str) or not self.branch_ref:
+            raise ExecutionError("workspace attachment branch is invalid")
+        return self
+
+    def payload(self) -> dict[str, Any]:
+        self.validate()
+        return {
+            "adoption_id": self.adoption_id, "attachment_id": self.attachment_id,
+            "branch_ref": self.branch_ref, "issue_number": self.issue_number,
+            "repository": self.repository, "schema": self.schema,
+            "work_directory": self.work_directory,
+        }
+
+    @property
+    def sha256(self) -> str:
+        return hashlib.sha256(json.dumps(self.payload(), sort_keys=True, separators=(",", ":"),
+                                        ensure_ascii=False).encode("utf-8")).hexdigest()
+
+    def to_bytes(self) -> bytes:
+        value = self.payload()
+        value["attachment_sha256"] = self.sha256
+        return (json.dumps(value, sort_keys=True, separators=(",", ":"),
+                           ensure_ascii=False) + "\n").encode("utf-8")
+
+    @classmethod
+    def from_bytes(cls, raw: bytes) -> "WorkspaceAttachment":
+        try:
+            value = json.loads(raw.decode("utf-8", errors="strict"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ExecutionError("workspace attachment is not valid UTF-8 JSON") from exc
+        if not isinstance(value, dict) or set(value) != {
+                "adoption_id", "attachment_id", "attachment_sha256", "branch_ref", "issue_number",
+                "repository", "schema", "work_directory"}:
+            raise ExecutionError("workspace attachment has unknown or missing fields")
+        supplied = value.pop("attachment_sha256")
+        attachment = cls(**value).validate()
+        if supplied != attachment.sha256 or attachment.to_bytes() != raw:
+            raise ExecutionError("workspace attachment digest or canonical bytes do not match")
+        return attachment
+
+
+ExecutionIdentity = ExecutionBinding | AdoptedExecutionEpoch
+
+
+def execution_identity_base(identity: ExecutionIdentity) -> tuple[str, str]:
+    if isinstance(identity, ExecutionBinding):
+        return identity.base_ref, identity.base_sha
+    if isinstance(identity, AdoptedExecutionEpoch):
+        identity.validate()
+        return identity.selected_base_ref, identity.selected_base_sha40
+    raise ExecutionError("execution identity type is unsupported")
+
+
+def execution_identity_context_id(identity: ExecutionIdentity) -> str:
+    if isinstance(identity, ExecutionBinding):
+        return f"execution-binding:{binding_digest(identity)}"
+    if isinstance(identity, AdoptedExecutionEpoch):
+        return f"execution-adoption:{identity.sha256}"
+    raise ExecutionError("execution identity type is unsupported")
+
+
 def binding_digest(binding: ExecutionBinding) -> str:
     binding.validate()
     return hashlib.sha256(json.dumps(binding.__dict__, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def execution_identity_digest(identity: ExecutionIdentity) -> str:
+    if isinstance(identity, ExecutionBinding):
+        return binding_digest(identity)
+    if isinstance(identity, AdoptedExecutionEpoch):
+        return identity.sha256
+    raise ExecutionError("execution identity type is unsupported")
 
 
 def _binding_rows(path: Path, *, legacy_branch_ref: str | None = None) -> list[ExecutionBinding]:

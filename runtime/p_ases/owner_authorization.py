@@ -269,12 +269,15 @@ def create_authorization_plan(
             or (pr_number is not None and not _positive(pr_number))
             or (pr_head_sha40 is not None and (not isinstance(pr_head_sha40, str)
                                                or SHA40.fullmatch(pr_head_sha40) is None))
-            or ((operation in {"PR_MERGE", "USER_REVIEW"}) != (pr_number is not None))):
+            or ((operation in {"PR_MERGE", "USER_REVIEW", "EXECUTION_ADOPTION"})
+                != (pr_number is not None))):
         raise OwnerAuthorizationError("operation plan has an invalid exact subject")
     if operation == "PR_MERGE" and target_issue_number not in {57, 63}:
         raise OwnerAuthorizationError("PR merge decisions are limited to Activation #57 or implementation #63")
     if operation == "PR_MERGE" and target_issue_number == 63 and pr_number != 64:
         raise OwnerAuthorizationError("Issue #63 merge authorization is bound only to existing PR #64")
+    if operation == "EXECUTION_ADOPTION" and (target_issue_number != 63 or pr_number != 64):
+        raise OwnerAuthorizationError("execution adoption is restricted to Issue #63 / PR #64")
     if operation == "USER_REVIEW" and target_issue_number is not None:
         raise OwnerAuthorizationError("User Review decisions are stored on configured Issue #63")
     root = Path(root)
@@ -348,7 +351,8 @@ def _validate_plan(value: Any) -> dict[str, Any]:
             or (plan.get("pr_head_sha40") is not None and (not isinstance(plan["pr_head_sha40"], str)
                                                             or SHA40.fullmatch(plan["pr_head_sha40"]) is None))
             or ((plan.get("pr_number") is None) != (plan.get("pr_head_sha40") is None))
-            or ((plan["operation"] in {"PR_MERGE", "USER_REVIEW"}) != (plan.get("pr_number") is not None))
+            or ((plan["operation"] in {"PR_MERGE", "USER_REVIEW", "EXECUTION_ADOPTION"})
+                != (plan.get("pr_number") is not None))
             or not isinstance(plan.get("source_head_sha40"), str)
             or SHA40.fullmatch(plan["source_head_sha40"]) is None
             or not isinstance(plan.get("details"), dict)
@@ -409,6 +413,59 @@ def _validate_plan(value: Any) -> dict[str, Any]:
                 or not isinstance(details.get("pr_head_sha40"), str)
                 or SHA40.fullmatch(details["pr_head_sha40"]) is None):
             raise OwnerAuthorizationError("User Review authorization plan details are invalid")
+    if plan["operation"] == "EXECUTION_ADOPTION":
+        adoption = details.get("adoption_plan") if set(details) == {"adoption_plan"} else None
+        required = {
+            "schema", "repository", "repository_id", "owner_id", "issue_number", "issue_kind",
+            "issue_phase", "issue_labels", "adc_comment_id", "adc_sha256", "phase_intent_comment_id",
+            "phase_applied_comment_id", "phase_applied_payload_sha256", "pr_number", "pr_url",
+            "pr_id", "pr_title_sha256", "pr_body_sha256", "pr_author_user_id",
+            "selected_base_ref", "selected_base_sha40", "branch_ref", "observed_start_head_sha40",
+            "attachment_id", "adoption_id", "historical_binding_provenance", "ci_check_runs",
+            "ci_evidence_sha256", "plan_sha256",
+        }
+        if (plan["target_issue_number"] != 63 or plan["pr_number"] != 64
+                or not isinstance(adoption, dict) or set(adoption) != required
+                or adoption.get("schema") != "PASES_EXECUTION_ADOPTION_PLAN_V1"
+                or adoption.get("repository") != REPOSITORY
+                or adoption.get("repository_id") != REPOSITORY_ID
+                or adoption.get("owner_id") != OWNER_ID
+                or adoption.get("issue_number") != ISSUE_NUMBER
+                or adoption.get("pr_number") != 64
+                or not _positive(adoption.get("pr_author_user_id"))
+                or adoption.get("issue_kind") != "single"
+                or adoption.get("issue_phase") != "requirements"
+                or not isinstance(adoption.get("issue_labels"), list)
+                or any(not isinstance(label, str) for label in adoption.get("issue_labels", []))
+                or adoption.get("issue_labels") != sorted(set(adoption.get("issue_labels", [])))
+                or not {"kind:single", "phase:requirements"}.issubset(set(adoption.get("issue_labels", [])))
+                or any(label.startswith("attention:") for label in adoption.get("issue_labels", []))
+                or adoption.get("historical_binding_provenance") != "UNVERIFIED"
+                or adoption.get("observed_start_head_sha40") != plan["pr_head_sha40"]
+                or adoption.get("adc_comment_id") != 6248703643
+                or adoption.get("adc_sha256") != "b83620dc5d977c3f96c7ad792fded202b70a78f0c97d637bfcc64d8ef8e89306"
+                or not _positive(adoption.get("phase_intent_comment_id"))
+                or not _positive(adoption.get("phase_applied_comment_id"))
+                or adoption.get("phase_applied_comment_id") <= adoption.get("phase_intent_comment_id")
+                or adoption.get("pr_url") != f"https://github.com/{REPOSITORY}/pull/64"
+                or not isinstance(adoption.get("plan_sha256"), str)
+                or SHA256.fullmatch(adoption["plan_sha256"]) is None
+                or not _positive(adoption.get("pr_id"))
+                or any(not isinstance(adoption.get(key), str) or SHA256.fullmatch(adoption[key]) is None
+                       for key in ("pr_title_sha256", "pr_body_sha256"))
+                or plan["subject_sha256"] != adoption["plan_sha256"]
+                or not isinstance(adoption.get("selected_base_sha40"), str)
+                or SHA40.fullmatch(adoption["selected_base_sha40"]) is None
+                or not isinstance(adoption.get("ci_evidence_sha256"), str)
+                or SHA256.fullmatch(adoption["ci_evidence_sha256"]) is None
+                or not isinstance(adoption.get("attachment_id"), str)
+                or SHA256.fullmatch(adoption["attachment_id"]) is None
+                or not isinstance(adoption.get("adoption_id"), str)
+                or SHA256.fullmatch(adoption["adoption_id"]) is None
+                or hashlib.sha256(_canonical({key: value for key, value in adoption.items()
+                                              if key != "plan_sha256"})).hexdigest()
+                   != adoption["plan_sha256"]):
+            raise OwnerAuthorizationError("execution adoption authorization does not bind a valid exact plan")
     return {**plan, "plan_sha256": supplied}
 
 
@@ -513,7 +570,7 @@ def _decision_body_v3(plan: dict[str, Any], predecessor: int | None,
         "operation": plan["operation"], "subject_sha256": plan["subject_sha256"],
         "plan_sha256": plan["plan_sha256"],
         "operation_plan_sha256": (plan["subject_sha256"]
-                                  if plan["operation"] == "RULESET_PLAN_APPLY" else None),
+                                  if plan["operation"] in {"RULESET_PLAN_APPLY", "EXECUTION_ADOPTION"} else None),
         "approval_scope_sha256": plan["approval_scope_sha256"],
         "pr_number": plan["pr_number"], "pr_head_sha40": plan["pr_head_sha40"],
         "owner_id": OWNER_ID, "evidence_channel": "chat_confirmed_gh_v1",
@@ -605,6 +662,10 @@ def authorize_plan(
     """Confirm and append one V2 owner decision; no blind retry is attempted."""
     _check_owner_local_tty(stdin)
     plan = read_authorization_plan(plan_path)
+    if plan["operation"] == "EXECUTION_ADOPTION":
+        raise OwnerAuthorizationError(
+            "EXECUTION_ADOPTION requires an exact same-chat V3 decision; owner-local TTY/V2 cannot authorize it"
+        )
     try:
         if not worktree_clean(Path(root)) or head_sha40(Path(root)) != plan["source_head_sha40"]:
             raise OwnerAuthorizationError("fixed reviewed source HEAD changed or worktree is dirty")
@@ -770,6 +831,12 @@ def authorize_chat_confirmed_plan(
         revalidated_context = source_validator()
         if checked["operation"] == "USER_REVIEW":
             user_review_context = revalidated_context
+        if checked["operation"] == "EXECUTION_ADOPTION":
+            if revalidated_context != checked["details"]["adoption_plan"]:
+                raise OwnerAuthorizationError("live adoption preflight differs from the exact approved plan")
+
+    if checked["operation"] == "EXECUTION_ADOPTION" and source_validator is None:
+        raise OwnerAuthorizationError("EXECUTION_ADOPTION requires a fresh exact-plan source validator")
 
     if checked["operation"] == "USER_REVIEW":
         if not isinstance(user_review_context, dict):

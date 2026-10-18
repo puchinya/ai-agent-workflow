@@ -49,6 +49,8 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
     - [2.18.1 ORA-RT-018 Expected result](#2181-ora-rt-018-expected-result)
   - [2.19 TST-RT-019 Exact chat approval, V3 history, and transport boundary](#219-tst-rt-019-exact-chat-approval-v3-history-and-transport-boundary)
     - [2.19.1 ORA-RT-019 Expected result](#2191-ora-rt-019-expected-result)
+  - [2.20 TST-RT-020 One-time Issue #63 / PR #64 execution adoption](#220-tst-rt-020-one-time-issue-63-pr-64-execution-adoption)
+    - [2.20.1 ORA-RT-020 Expected result](#2201-ora-rt-020-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -91,6 +93,8 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
 - [ORA-RT-018](#ora-rt-018) — 2.18.1 ORA-RT-018 Expected result
 - [TST-RT-019](#tst-rt-019) — 2.19 TST-RT-019 Exact chat approval, V3 history, and transport boundary
 - [ORA-RT-019](#ora-rt-019) — 2.19.1 ORA-RT-019 Expected result
+- [TST-RT-020](#tst-rt-020) — 2.20 TST-RT-020 One-time Issue #63 / PR #64 execution adoption
+- [ORA-RT-020](#ora-rt-020) — 2.20.1 ORA-RT-020 Expected result
 <!-- heading-map:end -->
 
 
@@ -333,3 +337,13 @@ For PR merge, keep separate exact-HEAD grants for the Issue #57 Setup PR and PR 
 Only a direct same-conversation explicit user-role event bound to the current exact scope can produce an operator-reported V3 grant. The runtime reports `chat_confirmed_gh_v1` without claiming a signed chat attestation. Owner and repository IDs, actual GitHub actor, comment URLs, operation and predecessor are independently checked; the read-only verifier principal may differ from the pinned owner. CLI/flags/files/vague continuation cannot authorize a write. If user-role provenance is unavailable, V3 is unavailable and no carrier is written. V1/V2 remain read-compatible and unmodified.
 
 V3 User Review enters the complete-session/snapshot evaluator and carries exact session, Readiness, ADC, HEAD, prior feedback, plan and scope. Final Delivery re-reads the complete chain and snapshot. Ruleset requires both the V3 exact-plan owner record and exact #57 two-line comment. Setup PR and PR #64 decisions remain separate exact-HEAD authorizations. Merge is unavailable until Required Checks, independent review, User Review, Final Delivery and Activation V2 gates pass. Phase bootstrap remains automatic after approved ADC publication with Intent/Applied only.
+
+<a id="tst-rt-020"></a>
+### 2.20 TST-RT-020 One-time Issue #63 / PR #64 execution adoption
+
+**Setup and action:** Start with Issue #63 open at `kind:single` / `phase:requirements`, the exact approved ADC and completed Phase V2 generation, PR #64 open with a standalone `Refs #63`, a clean checkout exactly at the PR branch/HEAD, no authenticated original ExecutionBinding/PRBinding/checkpoint, and no adoption records. Verify the implementation bootstrap may be committed/pushed without ordinary Phase PASS. Build a read-only plan only after five configured Required Checks plus the metadata check succeed on the exact candidate HEAD. Bind repository/owner/Issue/ADC/Phase record IDs/PR author/base/ref/head/branch/CI App IDs/run IDs/workspace attachment/provenance marker and canonical plan digest. Exercise an exact direct same-conversation user grant and the authenticated V3 `EXECUTION_ADOPTION` action; reject V1/V2/TTY-only decision, missing or wrong role, another conversation, non-owner GitHub actor, CLI flag/file, old pre-bootstrap HEAD, and stale plan with zero adoption writes. Exercise wrong Issue/repository/PR, PR author, `Refs #63`, base/head/branch, owner/ADC/Phase, App ID/check conclusion, dirty/detached workspace, foreign origin fetch/push URL, missing ancestry, symlink (including a symlinked absent state parent), prior binding, duplicate/edited journal, and existing conflicting adoption; each blocks before adoption write. Simulate response loss after Intent/Applied, interruption after Intent, stale drift during resume, duplicate IDs, wrong actor/Issue metadata URLs, and local failures between plan snapshot/epoch/attachment/PRBinding/checkpoint creation. Verify the full canonical plan snapshot is persisted and revalidated against its epoch; exact post-apply retry is read-only, retries use exact journal readback, and at most one append occurs per record. After adoption, advance normal Phase and confirm fresh Verification/Acceptance/Self-Audit/host-native Independent Review/Readiness/User Review still bind the adopted epoch and current HEAD; old evidence cannot be replayed. A later forward-only HEAD change retains the original adoption snapshot and appends a new adopted PRBinding only after exact PR/base/ancestry verification. Confirm normal V1 bindings remain byte-identical and unapproved missing bindings still block.
+
+<a id="ora-rt-020"></a>
+#### 2.20.1 ORA-RT-020 Expected result
+
+No `PASES_EXECUTION_ADOPTION_V1`, complete canonical plan snapshot, local adopted attachment, PRBinding, checkpoint, or normal phase/QA/review/readiness PASS exists before final-HEAD CI and distinct exact-plan V3 Owner authorization. The prospective selected base and observed PR start remain separate; `historical_binding_provenance` is exactly `UNVERIFIED`. The journal contains one Intent followed by one Applied, tied to the exact approved plan, decision comment, authenticated executor, Issue/repository URLs, stable actor, immutable timestamps and operation ID. Lost responses and interrupted local writes recover by readback without duplicate POST or replacement; a completed exact retry is read-only. Generic `work bind`/`work recover` semantics and V1 histories remain unchanged. Every post-adoption ordinary gate evaluates the typed epoch through the normal validators; the adoption decision grants no User Review, Ruleset, Activation, or PR merge approval.
