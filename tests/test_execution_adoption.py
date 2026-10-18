@@ -219,14 +219,15 @@ class ExecutionAdoptionTests(unittest.TestCase):
             _epoch().__class__(**{**_epoch().__dict__, "pr_author_user_id": 0}).validate()
 
     def test_workspace_attachment_is_local_and_strict(self):
-        attachment = WorkspaceAttachment(
-            repository=REPOSITORY, issue_number=63, adoption_id="a" * 64,
-            attachment_id="b" * 64, branch_ref="codex/issue-63",
-            work_directory="/tmp/worktree",
-        )
-        self.assertEqual(WorkspaceAttachment.from_bytes(attachment.to_bytes()), attachment)
-        with self.assertRaisesRegex(ExecutionError, "absolute"):
-            WorkspaceAttachment(**{**attachment.__dict__, "work_directory": "relative"}).validate()
+        with tempfile.TemporaryDirectory() as temporary:
+            attachment = WorkspaceAttachment(
+                repository=REPOSITORY, issue_number=63, adoption_id="a" * 64,
+                attachment_id="b" * 64, branch_ref="codex/issue-63",
+                work_directory=str(Path(temporary).resolve()),
+            )
+            self.assertEqual(WorkspaceAttachment.from_bytes(attachment.to_bytes()), attachment)
+            with self.assertRaisesRegex(ExecutionError, "absolute"):
+                WorkspaceAttachment(**{**attachment.__dict__, "work_directory": "relative"}).validate()
 
     def test_adopted_prbinding_v3_is_restricted_to_the_one_time_issue_and_pr(self):
         binding = PRBinding(
