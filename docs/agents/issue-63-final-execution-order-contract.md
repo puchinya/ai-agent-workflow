@@ -37,7 +37,7 @@ Issue: [#63](https://github.com/puchinya/ai-agent-workflow/issues/63)
 
 ## 2 Architecture Decisions
 
-1. **後続ADCをActivationより先に正式化する。** #63既存IssueとPR #64のみを維持する。後続ADCをappend-only `ADC_SUPERSEDE`で正式発行し、approved pointerとforward generationを確認した後、通常の認証済みP-ASES executorが#63を`phase:ready`から`phase:requirements`へ一度だけ自動更新する。Intent/Appliedコメントは実行証跡であり、`PHASE_REBASE`承認・owner decisionは作らない。正式化後は同一ADC世代のPhase証跡を仕様→設計→ready順に確立する。旧世代のADC/pointer/receipt/Gate Selectionを上書きしない。
+1. **後続ADCをActivationより先に正式化する。** #63既存IssueとPR #64のみを維持する。最初の後続ADCでは既存V1 Intent/Appliedを当時のbaseline→successor ADCに結び付いた物理的`phase:ready`→`phase:requirements`更新の履歴として保持する。さらに後続の承認済みADC世代には、V2 Intent/Appliedを一世代ずつappend-onlyで追記する。Issueがすでに`phase:requirements`なら`adopt_existing_requirements`として同一の完全なlabel集合を記録し、label PUTは0回。各V2は直前ADC pointerと直前Applied ID/payload digestに連結し、世代skip・旧世代未完了・driftはBLOCKする。Phase記録は実行証跡であり、`PHASE_REBASE`承認・owner decisionは作らない。新ADC世代の作業は、その世代に結び付くPhase証跡を仕様→設計→ready順に確立する。旧世代のADC/pointer/receipt/Gate Selectionを上書きしない。実装根拠となる詳細なV2 wire contractはPRコメント[#6244287641](https://github.com/puchinya/ai-agent-workflow/pull/64#issuecomment-6244287641)を参照する。
 2. **ActivationはStage 2で完全に終える。** **Rulesetを設定しただけ・Setup PRを開いただけ・`SETUP_PENDING`を返しただけは未完了。** `PASES_CONSUMER_ACTIVATION_V2`のappend-only record（Issue #57）を発行し、comment ID・内容・`created_at`・管理Ruleset ID／owned apply記録・有効policy digestをreadbackして`ACTIVE`を確定する。
 3. **Setup PRのマージはActivation内部。** Activation V2が要求する別のSetup PRは、PR #64が通常ゲートでマージされIssue #63がOPENと確認された後、別途審査・正確なHEADに対するmerge承認を経てマージする。Setup PRの承認をPR #64の`PR_MERGE`承認へ流用しない。Setup PRマージ自体がActivationの完了を意味しない（post-merge verify / recordが必要）。
 4. **Activation自身がGitHub必須設定を整備。** `consumer-activation-setup`がrepository/profile検査、exact Ruleset plan、別承認、isolated browser device Admin continuation、単一Rulesetへの一度限りのPOST/PUTまたはNOOP、policy double-read、Setup PRの作成・再開、post-merge recordを駆動する。Admin device flowはrunner-managed PTYでURL/codeを表示し、owner-local terminalを必須にしない。変更対象は既定済みの単一 `P-ASES Final Delivery (managed)` Rulesetのみ。Required Checks 4件/App ID 15368、PR必須、review-thread解決、force push禁止、bypass無しを保つ。
@@ -139,7 +139,7 @@ GitHub Actionsが同じHEADでUbuntu 3.10/3.14、Windows 3.14、macOS 3.14（App
 
 ## 10 Completion Report
 
-必須: 変更ファイル、全Checklistの結果、実行したテストと正確な結果、未検証OS、CI run URL、最終ADC digest・正式comment/pointer、`PASES_PHASE_REBASE_INTENT_V1` / `PASES_PHASE_REBASE_APPLIED_V1`実行記録、Setup PR URL/merged SHA、Ruleset plan・適用record、V2 Activation record comment ID・有効時刻、PR #64 URL/merged SHA、Issue #63 close readback、承認別証跡、契約逸脱、実運用blocker、レビュー分類 **A（契約違反）/B（契約曖昧）/C（新要件）/D（任意改善）**。
+必須: 変更ファイル、全Checklistの結果、実行したテストと正確な結果、未検証OS、CI run URL、最終ADC digest・正式comment/pointer、V1 Intent/Appliedの歴史的証跡、各V2 generationのIntent/Applied IDと前Applied ID/payload digest、今回のlabel PUT回数（0）、Setup PR URL/merged SHA、Ruleset plan・適用record、V2 Activation record comment ID・有効時刻、PR #64 URL/merged SHA、Issue #63 close readback、承認別証跡、契約逸脱、実運用blocker、レビュー分類 **A（契約違反）/B（契約曖昧）/C（新要件）/D（任意改善）**。
 
 **実装だけ完了してActivationが権限・承認により止まった場合は `IMPLEMENTATION_READY / ACTIVATION_DELIVERY_BLOCKED` と報告する。全段階の証跡がそろうまで `COMPLETED` としない。**
 
