@@ -225,7 +225,7 @@ class GitHub:
           repository(owner:$owner,name:$name){pullRequest(number:$number){number
             closingIssuesReferences(first:100,after:$cursor){nodes{number repository{nameWithOwner}}
               pageInfo{hasNextPage endCursor}}
-          }}}
+          }}
         }"""
         result: list[dict[str, Any]] = []
         cursor: str | None = None
@@ -264,7 +264,7 @@ class GitHub:
               }}}
               pageInfo{hasNextPage endCursor}
             }
-          }}}
+          }}
         }"""
         result: list[dict[str, Any]] = []
         cursor: str | None = None
