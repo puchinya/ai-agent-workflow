@@ -123,7 +123,7 @@ def ensure_pull_request(repository_root: Path, github: GitHub, *, repository: st
     branch_ref, base_ref = validate_ref(branch_ref), validate_ref(base_ref)
     requested_association_mode = _validate_pr_body(body, issue_number)
     if issue_number == 63 and requested_association_mode != "deferred_close":
-        raise WorkError("Issue #63 delivery requires Refs #63 until Activation V2 is ACTIVE")
+        raise WorkError("Issue #63 deferred delivery requires the standalone Refs #63 association")
     binding.validate()
     if (binding.repository != repository or binding.issue_number != issue_number
             or binding.base_ref != base_ref or binding.branch_ref != branch_ref

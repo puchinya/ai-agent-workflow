@@ -413,7 +413,7 @@ def evaluate_readiness(
                     or pr.closing_issue_number != subject.issue_number):
                 reasons.append("GitHub PR readback is not the same open, non-draft, non-fork exact subject")
             if subject.issue_number == 63 and pr.close_on_merge:
-                reasons.append("Issue #63 requires a deferred-close Refs association until Activation V2 is ACTIVE")
+                reasons.append("Issue #63 requires its deferred-close Refs association")
             digest_refs.add(hashlib.sha256(_canonical({
                 "close_on_merge": pr.close_on_merge,
                 "closing_issue_number": pr.closing_issue_number,

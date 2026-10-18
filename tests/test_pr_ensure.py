@@ -81,7 +81,7 @@ class PREnsureTests(unittest.TestCase):
             issue_63_binding = replace(binding, issue_number=63)
             github.pull = github._pull(body="Review implementation.\n\nRefs #63\n",
                                        head_ref="pases/work", base_ref="main", number=64)
-            with self.assertRaisesRegex(WorkError, "requires Refs #63"):
+            with self.assertRaisesRegex(WorkError, "requires the standalone Refs #63"):
                 ensure_pull_request(repo, github, repository="owner/repo", issue_number=63,
                                     binding=issue_63_binding, branch_ref="pases/work", base_ref="main",
                                     title="Issue #63 work", body="Closes #63\n")

@@ -450,7 +450,7 @@ def _readback_current_pr(github: GitHub, subject: VerificationSubject) -> dict[s
     except WorkError as exc:
         raise CLIError(f"current PR Issue association is invalid: {exc}") from exc
     if subject.issue_number == 63 and (subject.pr_number != 64 or association_mode != "deferred_close"):
-        raise CLIError("Issue #63 delivery requires existing PR #64 with standalone Refs #63")
+        raise CLIError("Issue #63 deferred delivery requires existing PR #64 with standalone Refs #63")
     return {
         "number": subject.pr_number,
         "state": "open",
@@ -1257,7 +1257,7 @@ def _readback_readiness_pr(github: GitHub, repository: str, issue_number: int,
     except WorkError as exc:
         raise CLIError(f"PR Issue association is invalid: {exc}") from exc
     if issue_number == 63 and (pr_number != 64 or association_mode != "deferred_close"):
-        raise CLIError("Issue #63 delivery requires existing PR #64 with standalone Refs #63")
+        raise CLIError("Issue #63 deferred delivery requires existing PR #64 with standalone Refs #63")
     if (not isinstance(base, dict) or not isinstance(head, dict)
             or not isinstance(base_repo, dict) or not isinstance(head_repo, dict)
             or not isinstance(base_repo.get("full_name"), str)
