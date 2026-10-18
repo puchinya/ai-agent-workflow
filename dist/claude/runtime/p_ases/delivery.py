@@ -46,6 +46,7 @@ class PRReadback:
     head_sha40: str
     head_repository: str
     closing_issue_number: int
+    close_on_merge: bool = True
 
     def validate(self) -> "PRReadback":
         if not isinstance(self.repository, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", self.repository):
@@ -70,6 +71,8 @@ class PRReadback:
             raise ReadinessError("PR head repository readback is invalid")
         if type(self.closing_issue_number) is not int or self.closing_issue_number < 1:
             raise ReadinessError("PR closing Issue reference is missing")
+        if type(self.close_on_merge) is not bool:
+            raise ReadinessError("PR merge-close mode must be a boolean")
         return self
 
 
@@ -409,6 +412,15 @@ def evaluate_readiness(
                     or pr.head_sha40 != subject.pr_head_sha40 or pr.head_repository != subject.repository
                     or pr.closing_issue_number != subject.issue_number):
                 reasons.append("GitHub PR readback is not the same open, non-draft, non-fork exact subject")
+            if subject.issue_number == 63 and pr.close_on_merge:
+                reasons.append("Issue #63 requires a deferred-close Refs association until Activation V2 is ACTIVE")
+            digest_refs.add(hashlib.sha256(_canonical({
+                "close_on_merge": pr.close_on_merge,
+                "closing_issue_number": pr.closing_issue_number,
+                "pr_number": pr.pr_number,
+                "schema": "PASES_PR_ISSUE_ASSOCIATION_V1",
+                "subject_sha256": subject.sha256,
+            })).hexdigest())
         except ReadinessError as exc:
             reasons.append(f"PR readback is invalid: {exc}")
 

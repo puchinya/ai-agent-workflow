@@ -20,11 +20,11 @@ from .adc import ADCError, parse_adc, publish_adc, restore_adc, verify_adc, veri
 from .admin_auth import AdminAuthError, temporary_admin_client
 from .owner_authorization import (
     OwnerAuthorizationError, authorize_chat_confirmed_plan, authorize_plan, create_authorization_plan,
-    read_authorization_plan, resume_authorization, write_authorization_plan,
+    issue63_deferred_merge_details, read_authorization_plan, resume_authorization, write_authorization_plan,
 )
 from .consumer_activation import (
     ConsumerActivationError, activation_checkpoint_path, activation_setting_inventory, read_activation_checkpoint,
-    verify_setup_pr_ready_to_merge, write_activation_checkpoint,
+    read_consumer_activation_history, verify_setup_pr_ready_to_merge, write_activation_checkpoint,
     setup_consumer_activation, verify_and_record_activation,
 )
 from .ruleset_management import (
@@ -55,6 +55,7 @@ from .gate_policy import (
 )
 from .work import (
     WorkError, bind_work, ensure_branch, ensure_pull_request, execution_binding_path,
+    closing_issue_references, parse_issue_association,
     pr_binding_path, recover_work,
 )
 from .audits import (
@@ -183,10 +184,6 @@ ISSUE_PR_REFS = {
     29: ("pases/adc-core", "pases/verification"),
     31: ("main", "pases/user-review-integration"),
 }
-PR_CLOSING_REF = re.compile(r"(?i)\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)\s+#([1-9][0-9]*)\b")
-OWN_PR_CLOSING_LINE = re.compile(r"(?im)^Closes #([1-9][0-9]*)\s*$")
-
-
 def _json(value: Any) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2))
 
@@ -448,10 +445,12 @@ def _readback_current_pr(github: GitHub, subject: VerificationSubject) -> dict[s
         raise CLIError("current PR base/head branches do not match the approved Issue branch contract")
     if not isinstance(body, str):
         raise CLIError("current PR body is missing; Issue closing association cannot be verified")
-    closing_refs = [int(value) for value in PR_CLOSING_REF.findall(body)]
-    own_lines = [int(value) for value in OWN_PR_CLOSING_LINE.findall(body)]
-    if closing_refs != [subject.issue_number] or own_lines != [subject.issue_number]:
-        raise CLIError(f"current PR body must contain only one standalone Closes #{subject.issue_number} association")
+    try:
+        association_mode = parse_issue_association(body, subject.issue_number)
+    except WorkError as exc:
+        raise CLIError(f"current PR Issue association is invalid: {exc}") from exc
+    if subject.issue_number == 63 and (subject.pr_number != 64 or association_mode != "deferred_close"):
+        raise CLIError("Issue #63 delivery requires existing PR #64 with standalone Refs #63")
     return {
         "number": subject.pr_number,
         "state": "open",
@@ -462,6 +461,8 @@ def _readback_current_pr(github: GitHub, subject: VerificationSubject) -> dict[s
         "head_ref": head_ref,
         "head_sha": head_sha,
         "body": body,
+        "association_mode": association_mode,
+        "close_on_merge": association_mode == "auto_close",
     }
 
 
@@ -1251,22 +1252,26 @@ def _readback_readiness_pr(github: GitHub, repository: str, issue_number: int,
     base_repo = base.get("repo") if isinstance(base, dict) else None
     head_repo = head.get("repo") if isinstance(head, dict) else None
     body = row.get("body")
-    close_refs = [int(value) for value in ANY_CLOSE.findall(body)] if isinstance(body, str) else []
-    own_lines = [int(value) for value in STANDALONE_CLOSE.findall(body)] if isinstance(body, str) else []
+    try:
+        association_mode = parse_issue_association(body, issue_number)
+    except WorkError as exc:
+        raise CLIError(f"PR Issue association is invalid: {exc}") from exc
+    if issue_number == 63 and (pr_number != 64 or association_mode != "deferred_close"):
+        raise CLIError("Issue #63 delivery requires existing PR #64 with standalone Refs #63")
     if (not isinstance(base, dict) or not isinstance(head, dict)
             or not isinstance(base_repo, dict) or not isinstance(head_repo, dict)
             or not isinstance(base_repo.get("full_name"), str)
             or base_repo["full_name"].lower() != repository.lower()
             or not isinstance(head_repo.get("full_name"), str)
-            or not isinstance(body, str)
-            or close_refs != [issue_number] or own_lines != [issue_number]):
-        raise CLIError("PR readback lacks exact same-repository identity or its standalone Closes #N line")
+            or not isinstance(body, str)):
+        raise CLIError("PR readback lacks exact same-repository identity or a valid Issue association")
     return PRReadback(
         repository=repository, issue_number=issue_number, pr_number=pr_number,
         state=row.get("state"), draft=row.get("draft"),
         base_ref=base.get("ref"), base_sha40=base.get("sha"),
         head_ref=head.get("ref"), head_sha40=head.get("sha"),
         head_repository=head_repo["full_name"], closing_issue_number=issue_number,
+        close_on_merge=association_mode == "auto_close",
     ).validate()
 
 
@@ -2011,11 +2016,13 @@ def _owner_authorization_plan_command(args: argparse.Namespace, repository: str,
                 or args.pr is None or args.head is None or args.target_issue is None):
             raise OwnerAuthorizationError("PR_MERGE plan requires --pr, --head, and --target-issue")
         pr_number, pr_head, target_issue = args.pr, args.head, args.target_issue
-        subject_sha256 = hashlib.sha256(_canonical({
-            "repository": repository, "target_issue_number": target_issue,
-            "pr_number": pr_number, "pr_head_sha40": pr_head,
-        })).hexdigest()
-        details = {"target_issue_number": target_issue}
+        details = (issue63_deferred_merge_details(github, pr_number=pr_number, pr_head_sha40=pr_head)
+                   if target_issue == 63 else {"target_issue_number": target_issue})
+        subject_value = {"repository": repository, "target_issue_number": target_issue,
+                         "pr_number": pr_number, "pr_head_sha40": pr_head}
+        if target_issue == 63:
+            subject_value["details"] = details
+        subject_sha256 = hashlib.sha256(_canonical(subject_value)).hexdigest()
     else:
         raise OwnerAuthorizationError("unsupported owner authorization operation")
     plan = create_authorization_plan(
@@ -2061,11 +2068,15 @@ def _validate_owner_authorization_source(args: argparse.Namespace, plan: dict[st
             raise OwnerAuthorizationError("Ruleset plan changed or no longer requires an approved write")
     elif plan["operation"] == "PR_MERGE":
         target = plan["target_issue_number"]
-        expected = hashlib.sha256(_canonical({
-            "repository": repository, "target_issue_number": target,
-            "pr_number": plan["pr_number"], "pr_head_sha40": plan["pr_head_sha40"],
-        })).hexdigest()
-        if expected != plan["subject_sha256"]:
+        details = (issue63_deferred_merge_details(
+            github, pr_number=plan["pr_number"], pr_head_sha40=plan["pr_head_sha40"],
+        ) if target == 63 else {"target_issue_number": target})
+        expected_value = {"repository": repository, "target_issue_number": target,
+                          "pr_number": plan["pr_number"], "pr_head_sha40": plan["pr_head_sha40"]}
+        if target == 63:
+            expected_value["details"] = details
+        expected = hashlib.sha256(_canonical(expected_value)).hexdigest()
+        if expected != plan["subject_sha256"] or details != plan["details"]:
             raise OwnerAuthorizationError("PR merge subject digest differs from the exact target PR")
     elif plan["operation"] == "USER_REVIEW":
         context = _user_review_owner_context(args, repository, github)
@@ -2229,10 +2240,23 @@ def _merge_readback(github: GitHub, plan: dict[str, Any]) -> dict[str, Any]:
         raise OwnerAuthorizationError("PR merge readback does not prove the exact owner-merged HEAD")
     body = pr.get("body")
     if plan["target_issue_number"] == 63:
-        closes = (re.findall(r"(?im)^\s*closes\s+#([1-9][0-9]*)\s*$", body)
-                  if isinstance(body, str) else [])
-        if closes != ["63"]:
-            raise OwnerAuthorizationError("merged implementation PR no longer closes exact Issue #63")
+        try:
+            details = issue63_deferred_merge_details(
+                github, pr_number=plan["pr_number"], pr_head_sha40=plan["pr_head_sha40"],
+                allow_merged=True,
+            )
+        except OwnerAuthorizationError:
+            raise
+        if details != plan["details"]:
+            raise OwnerAuthorizationError("merged implementation PR association or merge plan differs from approval")
+        issue = github.issue(63)
+        if (issue.get("number") != 63 or issue.get("state") != "open"
+                or issue.get("repository_url") != "https://api.github.com/repos/puchinya/ai-agent-workflow"):
+            raise OwnerAuthorizationError("Issue #63 did not remain open after deferred-close PR merge")
+        merge_commit = github.commit_details(pr["merge_commit_sha"])
+        merge_message = merge_commit.get("message")
+        if not isinstance(merge_message, str) or closing_issue_references(merge_message):
+            raise OwnerAuthorizationError("merged PR commit message contains an auto-close reference or is unreadable")
     else:
         from .consumer_activation import SETUP_MARKER_V2, _decode
         try:
@@ -2242,7 +2266,8 @@ def _merge_readback(github: GitHub, plan: dict[str, Any]) -> dict[str, Any]:
         if payload.get("activation_issue_number") != 57:
             raise OwnerAuthorizationError("merged Activation Setup PR does not bind Issue #57")
     return {"pr_number": plan["pr_number"], "head_sha40": plan["pr_head_sha40"],
-            "merge_commit_sha40": pr["merge_commit_sha"], "merged_by_id": merger["id"]}
+            "merge_commit_sha40": pr["merge_commit_sha"], "merged_by_id": merger["id"],
+            "issue_state": "open" if plan["target_issue_number"] == 63 else None}
 
 
 def _owner_merge_gate(args: argparse.Namespace, root: Path, github: GitHub,
@@ -2312,10 +2337,17 @@ def _perform_authorized_merge(args: argparse.Namespace, root: Path, github: GitH
                     "merge attempt already has durable intent and remains unresolved; read-only recovery only"
                 )
             raise
-        return {**decision, "status": "MERGED_READBACK", **merged,
+        return {**decision, "status": ("MERGED_AWAITING_ISSUE_COMPLETION"
+                                         if plan["target_issue_number"] == 63 else "MERGED_READBACK"), **merged,
                 "merge_request_repeated": False, "recovered_from_intent": True}
 
     gates = _owner_merge_gate(args, root, github, plan)
+    if plan["target_issue_number"] == 63:
+        live_details = issue63_deferred_merge_details(
+            github, pr_number=plan["pr_number"], pr_head_sha40=plan["pr_head_sha40"],
+        )
+        if live_details != plan["details"]:
+            raise OwnerAuthorizationError("Issue #63 close association, commits, or planned message changed before merge")
     current = github.pull_request(plan["pr_number"])
     head = current.get("head") if isinstance(current, dict) else None
     if (current.get("state") != "open" or current.get("merged") is True
@@ -2331,7 +2363,14 @@ def _perform_authorized_merge(args: argparse.Namespace, root: Path, github: GitH
     _create_merge_attempt(path, intent, root=root)
     response_error: GitHubError | None = None
     try:
-        github.merge_pull_request(plan["pr_number"], plan["pr_head_sha40"])
+        if plan["target_issue_number"] == 63:
+            github.merge_pull_request(
+                plan["pr_number"], plan["pr_head_sha40"],
+                commit_title=plan["details"]["merge_commit_title"],
+                commit_message=plan["details"]["merge_commit_message"],
+            )
+        else:
+            github.merge_pull_request(plan["pr_number"], plan["pr_head_sha40"])
     except GitHubError as exc:
         response_error = exc
     try:
@@ -2344,7 +2383,8 @@ def _perform_authorized_merge(args: argparse.Namespace, root: Path, github: GitH
         raise OwnerAuthorizationError(
             "merge endpoint response was not confirmed by exact PR readback; no retry was attempted"
         ) from exc
-    return {**decision, "status": "MERGED", **merged,
+    return {**decision, "status": ("MERGED_AWAITING_ISSUE_COMPLETION"
+                                    if plan["target_issue_number"] == 63 else "MERGED"), **merged,
             "merge_request_repeated": False, "merge_gate": gates,
             "response_recovered": response_error is not None}
 
@@ -2367,7 +2407,8 @@ def _owner_authorization_resume_command(args: argparse.Namespace, repository: st
                         raise OwnerAuthorizationError("merge attempt record conflicts with the exact plan")
                     result = {**result, "merge_attempt_intent": True,
                               "merge_readback": _merge_readback(github, plan)}
-                    result["merge_status"] = "MERGED_READBACK"
+                    result["merge_status"] = ("MERGED_AWAITING_ISSUE_COMPLETION"
+                                               if plan["target_issue_number"] == 63 else "MERGED_READBACK")
                 except (OSError, UnicodeError, json.JSONDecodeError) as exc:
                     raise OwnerAuthorizationError("merge attempt record is unreadable; no retry is permitted") from exc
                 except OwnerAuthorizationError:
@@ -2948,7 +2989,114 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
         return _blocked_result((str(exc),))
 
 
-def _delivery_finalize(args: argparse.Namespace, repository: str, github: GitHub) -> int:
+def _issue_state_triplet(github: GitHub, issue_number: int, repository: str) -> tuple[dict[str, Any], ...]:
+    """Bind Issue state and identity to direct/list/direct GitHub reads."""
+    before = github.issue(issue_number)
+    rows = github.issues_all()
+    listed = [row for row in rows if row.get("number") == issue_number]
+    after = github.issue(issue_number)
+    if len(listed) != 1:
+        raise CLIError("Issue is missing or duplicated in the complete GitHub Issue list")
+    expected_repo = f"https://api.github.com/repos/{repository}"
+
+    def identity(row: dict[str, Any]) -> tuple[Any, ...]:
+        if (row.get("number") != issue_number or row.get("pull_request") is not None
+                or row.get("repository_url") != expected_repo
+                or row.get("state") not in {"open", "closed"}
+                or not isinstance(row.get("closed_at"), (str, type(None)))):
+            raise CLIError("Issue direct/list/direct identity readback is incomplete or mismatched")
+        return row.get("number"), row.get("state"), row.get("repository_url"), row.get("closed_at")
+
+    fingerprints = (identity(before), identity(listed[0]), identity(after))
+    if fingerprints[0] != fingerprints[1] or fingerprints[1] != fingerprints[2]:
+        raise CLIError("Issue state or identity changed during direct/list/direct readback")
+    return before, listed[0], after
+
+
+def _issue_close_intent_path(root: Path, issue_number: int, merge_sha40: str) -> Path:
+    if not re.fullmatch(r"[0-9a-f]{40}", merge_sha40):
+        raise CLIError("deferred Issue close requires the exact PR merge SHA")
+    return root / ".p_ases" / "delivery" / "deferred-close" / str(issue_number) / f"{merge_sha40}.json"
+
+
+def _create_issue_close_intent(path: Path, payload: dict[str, Any], *, root: Path) -> None:
+    destination = Path(path)
+    if not _path_components_without_symlinks(destination, root):
+        raise CLIError("Issue close intent path traverses a symbolic link")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if not _path_components_without_symlinks(destination, root):
+        raise CLIError("Issue close intent path traverses a symbolic link")
+    try:
+        descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError as exc:
+        raise CLIError("Issue close already has durable intent; only read-only recovery is allowed") from exc
+    except OSError as exc:
+        raise CLIError("could not create exclusive Issue close intent") from exc
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(_canonical(payload) + b"\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+    except OSError as exc:
+        raise CLIError("Issue close intent write was interrupted; no close retry is permitted") from exc
+    actual = _read_json(destination, "Issue close intent", root=root)
+    if actual != payload:
+        raise CLIError("Issue close intent failed exact readback; no close retry is permitted")
+
+
+def _activation_v2_issue63_proof(root: Path, github: GitHub, repository: str) -> dict[str, Any] | None:
+    """Return fresh ACTIVE V2 and policy proof, or None while Activation is not active."""
+    history = read_consumer_activation_history(github, repository, 57)
+    if not history or history[-1][0].schema_version != 2:
+        return None
+    record, record_id = history[-1]
+    profile = load_profile(root)
+    if (repository.casefold() != "puchinya/ai-agent-workflow" or profile.activation_issue_number != 57
+            or profile.final_delivery_review_mode != "solo_owner"
+            or record.activation_issue_number != 57 or record.repository.casefold() != repository.casefold()
+            or record.review_mode != "solo_owner" or record.ruleset_id is None
+            or record.branch_policy_sha256 is None or record.ruleset_applied_record_id is None):
+        raise CLIError("latest Activation record is not the configured Consumer Activation V2")
+    required_checks = profile.required_check_policy()
+    checks = tuple((name, app_id) for name, app_id in profile.required_checks if app_id is not None)
+    if len(checks) != len(profile.required_checks):
+        raise CLIError("Activation V2 policy lacks trusted Required Check App IDs")
+    metadata = github.repository_metadata()
+    default_branch = metadata.get("default_branch")
+    if not isinstance(default_branch, str) or not default_branch:
+        raise CLIError("Activation V2 default branch is unavailable")
+    branch_row = github.branch(default_branch)
+    main_sha = branch_row.get("commit", {}).get("sha") if isinstance(branch_row.get("commit"), dict) else None
+    if not isinstance(main_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", main_sha):
+        raise CLIError("Activation V2 current default branch SHA is invalid")
+    if current_branch(root) != default_branch or not worktree_clean(root) or head_sha40(root) != main_sha:
+        raise CLIError("post-merge Activation verification requires a clean local default worktree at current main")
+    profile_bytes = github.regular_content_at_ref(".agent/project.json", main_sha)
+    if hashlib.sha256(profile_bytes).hexdigest() != record.activation_profile_sha256:
+        raise CLIError("current main profile differs from the ACTIVE V2 Activation record")
+    current_adc = verify_adc(github, 57)
+    if (current_adc.pointer.state != "approved" or current_adc.pointer.sha256 != record.adc_sha256
+            or current_adc.pointer.comment_id != record.adc_comment_id):
+        raise CLIError("current approved Activation ADC differs from the ACTIVE V2 record")
+    first = read_verified_managed_policy(github, default_branch, checks, "solo_owner", 57)
+    second = read_verified_managed_policy(github, default_branch, checks, "solo_owner", 57)
+    if (first != second or first.get("ruleset_id") != record.ruleset_id
+            or first.get("effective_policy_sha256") != record.branch_policy_sha256
+            or first.get("applied_record_id") != record.ruleset_applied_record_id):
+        raise CLIError("current Ruleset/effective branch policy does not match ACTIVE V2 evidence")
+    return {
+        "status": "ACTIVE", "activation_record_id": record_id,
+        "activation_record_sha256": hashlib.sha256(_canonical(record.payload())).hexdigest(),
+        "activated_at": record.activated_at, "activation_adc_sha256": record.adc_sha256,
+        "activation_profile_sha256": record.activation_profile_sha256,
+        "ruleset_id": record.ruleset_id, "ruleset_applied_record_id": record.ruleset_applied_record_id,
+        "effective_policy_sha256": first["effective_policy_sha256"],
+        "default_branch": default_branch, "default_branch_sha40": main_sha,
+        "required_check_policy_sha256": required_checks.sha256,
+    }
+
+
+def _delivery_finalize(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
     try:
         pr = github.pull_request(args.pr)
         issue = github.issue(args.issue)
@@ -2956,27 +3104,127 @@ def _delivery_finalize(args: argparse.Namespace, repository: str, github: GitHub
         main = github.repository_metadata().get("default_branch")
         main_row = github.branch(main)
         main_sha = main_row["commit"]["sha"]
-        close_lines = [int(value) for value in OWN_PR_CLOSING_LINE.findall(pr.get("body", ""))]
         reasons = []
         if pr.get("state") != "closed" or pr.get("merged_at") is None:
             reasons.append("PR has not been merged")
-        if close_lines != [args.issue]:
-            reasons.append("PR does not have exactly one standalone Closes #N for the Issue")
-        if issue.get("state") != "closed":
-            reasons.append("GitHub has not closed the Issue after merge")
+        try:
+            association_mode = parse_issue_association(pr.get("body"), args.issue)
+        except WorkError as exc:
+            association_mode = None
+            reasons.append(f"PR Issue association is invalid: {exc}")
+        if args.issue == 63 and (args.pr != 64 or association_mode != "deferred_close"):
+            reasons.append("Issue #63 requires PR #64 with one standalone Refs #63 association")
+        if association_mode == "deferred_close" and args.issue == 63 and pr.get("merged") is True:
+            raw_head = pr.get("head")
+            current_pr_head = raw_head.get("sha") if isinstance(raw_head, dict) else None
+            if not isinstance(current_pr_head, str):
+                raise CLIError("merged deferred-close PR HEAD is unavailable")
+            planned = issue63_deferred_merge_details(
+                github, pr_number=args.pr, pr_head_sha40=current_pr_head,
+                allow_merged=True,
+            )
+            if planned.get("association_mode") != "deferred_close":
+                reasons.append("GitHub does not confirm deferred-close association metadata")
+            if isinstance(merge_sha, str) and re.fullmatch(r"[0-9a-f]{40}", merge_sha):
+                merge_message = github.commit_details(merge_sha).get("message")
+                if not isinstance(merge_message, str) or closing_issue_references(merge_message):
+                    reasons.append("merged PR commit message is unreadable or contains an auto-close reference")
         if not isinstance(merge_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", merge_sha):
             reasons.append("merged PR has no full merge commit SHA")
         else:
             comparison = github.compare_commits(merge_sha, main_sha)
             if comparison.get("status") not in {"ahead", "identical"}:
                 reasons.append("merged PR commit is not contained in current main")
-        value = {"status": "FINALIZED" if not reasons else "BLOCKED", "issue": args.issue,
-                 "pr": args.pr, "merge_sha40": merge_sha, "main_sha40": main_sha,
-                 "reasons": reasons, "issue_state": issue.get("state"),
-                 "note": "readback only; no merge or Issue mutation was performed"}
+        activation_proof = None
+        close_status = None
+        if association_mode == "auto_close":
+            if issue.get("state") != "closed":
+                reasons.append("GitHub has not auto-closed the Issue after merge")
+            close_status = "FINALIZED" if not reasons else "BLOCKED"
+        elif association_mode == "deferred_close":
+            if args.issue != 63 or args.pr != 64:
+                reasons.append("deferred-close finalization is configured only for Issue #63 and PR #64")
+            if not reasons:
+                history = read_consumer_activation_history(github, repository, 57)
+                if not history or history[-1][0].schema_version != 2:
+                    close_intent_path = _issue_close_intent_path(root, 63, merge_sha)
+                    if issue.get("state") == "closed" or close_intent_path.exists() or close_intent_path.is_symlink():
+                        close_status = "BLOCKED"
+                        reasons.append("Issue #63 closure exists without a current verified Activation V2 proof")
+                    else:
+                        close_status = "MERGED_AWAITING_ISSUE_COMPLETION"
+                else:
+                    activation_proof = _activation_v2_issue63_proof(root, github, repository)
+                    if activation_proof is None:
+                        close_status = "MERGED_AWAITING_ISSUE_COMPLETION"
+                    else:
+                        try:
+                            merged_at = datetime.fromisoformat(pr["merged_at"].replace("Z", "+00:00"))
+                            activated_at = datetime.fromisoformat(activation_proof["activated_at"].replace("Z", "+00:00"))
+                        except (KeyError, TypeError, ValueError) as exc:
+                            raise CLIError("PR merge or Activation V2 effective timestamp is invalid") from exc
+                        if merged_at.tzinfo is None or activated_at.tzinfo is None or activated_at <= merged_at:
+                            reasons.append("Activation V2 must become ACTIVE after PR #64 merge")
+                            close_status = "BLOCKED"
+                        else:
+                            intent = {
+                                "schema": "PASES_DEFERRED_ISSUE_CLOSE_INTENT_V1",
+                                "repository": repository, "issue_number": 63, "pr_number": 64,
+                                "pr_merge_sha40": merge_sha,
+                                "activation_record_id": activation_proof["activation_record_id"],
+                                "activation_record_sha256": activation_proof["activation_record_sha256"],
+                                "activated_at": activation_proof["activated_at"],
+                                "ruleset_id": activation_proof["ruleset_id"],
+                                "effective_policy_sha256": activation_proof["effective_policy_sha256"],
+                                "default_branch": activation_proof["default_branch"],
+                                "default_branch_sha40": activation_proof["default_branch_sha40"],
+                            }
+                            intent_path = _issue_close_intent_path(root, 63, merge_sha)
+                            issue_before = _issue_state_triplet(github, 63, repository)[0]
+                            if intent_path.exists() or intent_path.is_symlink():
+                                existing = _read_json(intent_path, "Issue close intent", root=root)
+                                if existing != intent:
+                                    raise CLIError("existing Issue close intent does not match current Activation proof")
+                                if issue_before.get("state") == "closed" and isinstance(issue_before.get("closed_at"), str):
+                                    close_status = "FINALIZED"
+                                else:
+                                    close_status = "BLOCKED"
+                                    reasons.append("Issue close intent exists but Issue remains open; recovery is read-only and no retry is permitted")
+                            else:
+                                if issue_before.get("state") == "closed":
+                                    raise CLIError("Issue #63 closed before this verified P-ASES completion path")
+                                if issue_before.get("state") != "open":
+                                    raise CLIError("Issue #63 was not open immediately before deferred close")
+                                _create_issue_close_intent(intent_path, intent, root=root)
+                                close_error: GitHubError | None = None
+                                try:
+                                    github.close_issue(63)
+                                except GitHubError as exc:
+                                    close_error = exc
+                                issue_after = _issue_state_triplet(github, 63, repository)[0]
+                                if issue_after.get("state") == "closed" and isinstance(issue_after.get("closed_at"), str):
+                                    close_status = "FINALIZED"
+                                else:
+                                    close_status = "BLOCKED"
+                                    reasons.append(
+                                        "Issue close did not read back as closed; durable intent prevents another PATCH"
+                                        + (f" ({close_error})" if close_error else "")
+                                    )
+        if association_mode is None:
+            close_status = "BLOCKED"
+        status = close_status or ("BLOCKED" if reasons else "FINALIZED")
+        value = {"status": status, "issue": args.issue, "pr": args.pr,
+                 "merge_sha40": merge_sha, "main_sha40": main_sha,
+                 "reasons": reasons, "issue_state": github.issue(args.issue).get("state"),
+                 "association_mode": association_mode,
+                 "activation_v2": activation_proof,
+                 "note": ("Issue #63 remains open until post-merge Activation V2 and effective policy verify"
+                          if status == "MERGED_AWAITING_ISSUE_COMPLETION" else
+                          "deferred Issue closure uses one durable close intent and read-only recovery")}
         _json(value)
-        return 0 if not reasons else 2
-    except (GitHubError, CLIError, OSError, ValueError) as exc:
+        return 0 if status == "FINALIZED" and not reasons else 2
+    except (ADCError, ConsumerActivationError, RulesetManagementError,
+            GitHubError, CLIError, OSError, ValueError) as exc:
         return _blocked_result((str(exc),))
 
 
@@ -3685,7 +3933,7 @@ def _parser() -> argparse.ArgumentParser:
     ensure.add_argument("--base-ref", required=True)
     ensure.add_argument("--title", required=True)
     ensure.add_argument("--body-file", type=Path, required=True,
-                        help="UTF-8 PR body with a standalone Closes #N line")
+                        help="UTF-8 PR body with one standalone Closes #N or deferred Refs #N line")
     ensure.add_argument("--repo", help="repository owner/name; defaults to origin")
     ensure.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
 
@@ -3825,7 +4073,7 @@ def _parser() -> argparse.ArgumentParser:
     final.add_argument("user_review_record", type=Path)
     final.add_argument("--repo", help="repository owner/name; defaults to origin")
     final.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
-    finalize = delivery_commands.add_parser("finalize", help="read back an already merged PR and closed Issue")
+    finalize = delivery_commands.add_parser("finalize", help="verify ordinary closure or complete a deferred Issue close")
     finalize.add_argument("issue", type=_positive_number)
     finalize.add_argument("pr", type=_positive_number)
     finalize.add_argument("--repo", help="repository owner/name; defaults to origin")
@@ -4141,7 +4389,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.verb == "final":
                 return _delivery_final(args, repository, root, github)
             if args.verb == "finalize":
-                return _delivery_finalize(args, repository, github)
+                return _delivery_finalize(args, repository, root, github)
             if args.verb == "parent":
                 return _delivery_parent(args, repository, root, github)
             if args.verb == "parent-evidence":

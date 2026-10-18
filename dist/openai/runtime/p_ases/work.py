@@ -23,6 +23,10 @@ from .git import (
     head_sha40, is_ancestor, remote_branch_sha, switch_branch, worktree_clean,
 )
 from .github import GitHub, GitHubError
+from .issue_association import (
+    IssueAssociationError, closing_issue_references as _closing_issue_references,
+    parse_issue_association as _parse_issue_association,
+)
 from .path_safety import path_has_symlink
 from .profile import ProfileError, load_profile
 
@@ -56,22 +60,35 @@ class PREnsureResult:
     reused: bool
 
 
-CLOSING_REF = re.compile(r"(?i)\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)\s+#([1-9][0-9]*)\b")
-OWN_CLOSING_LINE = re.compile(r"(?im)^Closes #([1-9][0-9]*)\s*$")
+def closing_issue_references(body: str) -> tuple[int, ...]:
+    try:
+        return _closing_issue_references(body)
+    except IssueAssociationError as exc:
+        raise WorkError(str(exc)) from exc
 
 
-def _validate_pr_body(body: str, issue_number: int) -> None:
-    if not isinstance(body, str):
-        raise WorkError("PR body must be text")
-    closes = [int(value) for value in CLOSING_REF.findall(body)]
-    own_line = [int(value) for value in OWN_CLOSING_LINE.findall(body)]
-    if closes != [issue_number] or own_line != [issue_number]:
-        raise WorkError(f"PR body must have exactly one standalone Closes #{issue_number} line")
+def parse_issue_association(body: str, issue_number: int) -> str:
+    """Return GitHub's auto-close or P-ASES deferred-close association mode.
+
+    The default is a single standalone ``Closes #N`` line. ``Refs #N`` is
+    reserved for deliveries with a separately verified post-merge lifecycle.
+    Any other closing reference, multiple association, or mismatched Issue
+    fails closed.
+    """
+    try:
+        return _parse_issue_association(body, issue_number)
+    except IssueAssociationError as exc:
+        raise WorkError(str(exc)) from exc
+
+
+def _validate_pr_body(body: str, issue_number: int) -> str:
+    return parse_issue_association(body, issue_number)
 
 
 def _readback_pull(github: GitHub, pull: dict[str, object], *, repository: str,
                    issue_number: int, base_ref: str, base_sha40: str,
-                   head_ref: str, head_sha40: str) -> dict[str, object]:
+                   head_ref: str, head_sha40: str,
+                   expected_association_mode: str) -> dict[str, object]:
     number = pull.get("number")
     if type(number) is not int or number < 1:
         raise WorkError("PR search returned a candidate without a valid number")
@@ -90,7 +107,11 @@ def _readback_pull(github: GitHub, pull: dict[str, object], *, repository: str,
             or not isinstance(base_name, str) or base_name.lower() != repository.lower()
             or not isinstance(head_name, str) or head_name.lower() != repository.lower()):
         raise WorkError("existing PR is closed, draft, forked, or mismatched in Issue/base/head/HEAD")
-    _validate_pr_body(row.get("body"), issue_number)
+    association_mode = _validate_pr_body(row.get("body"), issue_number)
+    if issue_number == 63 and number != 64:
+        raise WorkError("Issue #63 deferred delivery is bound only to existing PR #64")
+    if association_mode != expected_association_mode:
+        raise WorkError("existing PR Issue association mode differs from the requested delivery mode")
     return row
 
 
@@ -100,7 +121,9 @@ def ensure_pull_request(repository_root: Path, github: GitHub, *, repository: st
     """Reuse one exact eligible PR or create once, then read it back before binding."""
     root = Path(repository_root).resolve()
     branch_ref, base_ref = validate_ref(branch_ref), validate_ref(base_ref)
-    _validate_pr_body(body, issue_number)
+    requested_association_mode = _validate_pr_body(body, issue_number)
+    if issue_number == 63 and requested_association_mode != "deferred_close":
+        raise WorkError("Issue #63 delivery requires Refs #63 until Activation V2 is ACTIVE")
     binding.validate()
     if (binding.repository != repository or binding.issue_number != issue_number
             or binding.base_ref != base_ref or binding.branch_ref != branch_ref
@@ -125,6 +148,7 @@ def ensure_pull_request(repository_root: Path, github: GitHub, *, repository: st
             transition_pull = _readback_pull(
                 github, candidates_for_transition[0], repository=repository, issue_number=issue_number,
                 base_ref=base_ref, base_sha40=remote_base, head_ref=branch_ref, head_sha40=local_head,
+                expected_association_mode=requested_association_mode,
             )
             if not binding_history:
                 raise WorkError("Activation base advance requires the original immutable PRBinding")
@@ -176,11 +200,14 @@ def ensure_pull_request(repository_root: Path, github: GitHub, *, repository: st
         raise WorkError(f"PR search failed: {exc}") from exc
     if len(candidates) > 1:
         raise WorkError("multiple PRs match the exact head/base refs; refusing ambiguous reuse")
+    if issue_number == 63 and (not candidates or candidates[0].get("number") != 64):
+        raise WorkError("Issue #63 delivery must reuse existing PR #64; refusing to create or select another PR")
     reused = bool(candidates)
     if candidates:
         pull = _readback_pull(github, candidates[0], repository=repository,
                               issue_number=issue_number, base_ref=base_ref, base_sha40=remote_base,
-                              head_ref=branch_ref, head_sha40=local_head)
+                              head_ref=branch_ref, head_sha40=local_head,
+                              expected_association_mode=requested_association_mode)
     elif stored_binding is not None:
         try:
             prior = github.pull_request(stored_binding.pr_number)
@@ -205,11 +232,13 @@ def ensure_pull_request(repository_root: Path, github: GitHub, *, repository: st
             reused = True
             pull = _readback_pull(github, recovered[0], repository=repository, issue_number=issue_number,
                                   base_ref=base_ref, base_sha40=remote_base,
-                                  head_ref=branch_ref, head_sha40=local_head)
+                                  head_ref=branch_ref, head_sha40=local_head,
+                                  expected_association_mode=requested_association_mode)
         else:
             pull = _readback_pull(github, pull, repository=repository, issue_number=issue_number,
                                   base_ref=base_ref, base_sha40=remote_base,
-                                  head_ref=branch_ref, head_sha40=local_head)
+                                  head_ref=branch_ref, head_sha40=local_head,
+                                  expected_association_mode=requested_association_mode)
     if candidates and stored_binding is not None:
         selected = pull.get("number")
         if stored_binding.pr_number != selected:

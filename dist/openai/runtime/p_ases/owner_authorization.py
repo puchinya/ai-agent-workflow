@@ -24,6 +24,7 @@ from .owner_consent import (
     OwnerDecisionError, read_verified_owner_decision,
     verify_owner_decision_history_tail, _comment_fingerprint, _has_owner_decision_marker,
 )
+from .work import WorkError, closing_issue_references, parse_issue_association
 
 REPOSITORY = "puchinya/ai-agent-workflow"
 ISSUE_NUMBER = 63
@@ -38,6 +39,9 @@ PLAN_FIELDS = frozenset({
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 SHA40 = re.compile(r"[0-9a-f]{40}\Z")
 RULESET_APPROVAL_PREFIX = "PASES-RULESET-APPROVE: "
+ISSUE63_MERGE_COMMIT_MESSAGE = (
+    "Implementation delivered. Issue #63 remains open pending verified Consumer Activation V2."
+)
 
 
 class OwnerAuthorizationError(ValueError):
@@ -167,10 +171,12 @@ def _check_identity(github: Any, issue_number: int, target_issue_number: int | N
         if target_issue_number is not None:
             body = pr.get("body")
             if target_issue_number == 63:
-                closes = (re.findall(r"(?im)^\s*closes\s+#([1-9][0-9]*)\s*$", body)
-                          if isinstance(body, str) else [])
-                if closes != ["63"]:
-                    raise OwnerAuthorizationError("implementation PR must close the exact Issue #63")
+                try:
+                    association = parse_issue_association(body, 63)
+                except WorkError as exc:
+                    raise OwnerAuthorizationError(f"implementation PR Issue association is invalid: {exc}") from exc
+                if association != "deferred_close":
+                    raise OwnerAuthorizationError("implementation PR must use deferred-close Refs #63")
             elif target_issue_number == 57:
                 # The Activation Setup PR is about Issue #57 but must leave that
                 # long-lived control Issue open. Its canonical V2 carrier binds
@@ -182,6 +188,70 @@ def _check_identity(github: Any, issue_number: int, target_issue_number: int | N
                     raise OwnerAuthorizationError("PR is not the exact Activation Setup PR for Issue #57") from exc
                 if payload.get("activation_issue_number") != 57:
                     raise OwnerAuthorizationError("Activation Setup PR does not bind Issue #57")
+
+
+def issue63_deferred_merge_details(github: Any, *, pr_number: int,
+                                   pr_head_sha40: str,
+                                   allow_merged: bool = False) -> dict[str, Any]:
+    """Read every GitHub auto-close surface and freeze a safe merge message."""
+    if (pr_number != 64 or not isinstance(pr_head_sha40, str)
+            or SHA40.fullmatch(pr_head_sha40) is None):
+        raise OwnerAuthorizationError("Issue #63 deferred-close merge is bound only to PR #64 and its exact HEAD")
+    try:
+        pr = github.pull_request(pr_number)
+        body, title = pr.get("body"), pr.get("title")
+        if (pr.get("number") != pr_number
+                or (not allow_merged and (pr.get("state") != "open" or pr.get("merged") is True))
+                or (allow_merged and (pr.get("state") != "closed" or pr.get("merged") is not True))):
+            raise OwnerAuthorizationError("deferred-close PR state does not match the expected merge phase")
+        head = pr.get("head") if isinstance(pr, dict) else None
+        if not isinstance(head, dict) or head.get("sha") != pr_head_sha40:
+            raise OwnerAuthorizationError("deferred-close PR HEAD changed during association readback")
+        if parse_issue_association(body, 63) != "deferred_close":
+            raise OwnerAuthorizationError("Issue #63 PR body does not uniquely use Refs #63")
+        if not isinstance(title, str) or not title.strip() or closing_issue_references(title):
+            raise OwnerAuthorizationError("PR title is invalid or contains an auto-close reference")
+        commits = github.pull_request_commits(pr_number)
+        if not commits:
+            raise OwnerAuthorizationError("Issue #63 PR commit history is unavailable or empty")
+        commit_rows = []
+        for row in commits:
+            if (not isinstance(row, dict) or not isinstance(row.get("sha"), str)
+                    or not SHA40.fullmatch(row["sha"]) or not isinstance(row.get("commit"), dict)
+                    or not isinstance(row["commit"].get("message"), str)):
+                raise OwnerAuthorizationError("Issue #63 PR commit history is incomplete")
+            message = row["commit"]["message"]
+            if closing_issue_references(message):
+                raise OwnerAuthorizationError("Issue #63 PR commit message contains an auto-close reference")
+            commit_rows.append({"sha": row["sha"], "message": message})
+        closing_issues = github.pull_request_closing_issues(pr_number)
+        if closing_issues:
+            raise OwnerAuthorizationError("GitHub reports one or more Issues that this PR will auto-close")
+        timeline = github.issue_pull_request_cross_references(63)
+        close_links = [row for row in timeline
+                       if row.get("pr_number") == pr_number
+                       and str(row.get("repository", "")).casefold() == REPOSITORY.casefold()
+                       and row.get("will_close_target") is True]
+        if close_links:
+            raise OwnerAuthorizationError("GitHub Issue metadata reports an auto-closing PR link for Issue #63")
+    except WorkError as exc:
+        raise OwnerAuthorizationError(f"Issue #63 deferred-close association is invalid: {exc}") from exc
+    except GitHubError as exc:
+        raise OwnerAuthorizationError(f"Issue #63 auto-close metadata could not be read completely: {exc}") from exc
+    merge_title = f"Merge PR #{pr_number} at {pr_head_sha40[:12]}"
+    if closing_issue_references(merge_title) or closing_issue_references(ISSUE63_MERGE_COMMIT_MESSAGE):
+        raise OwnerAuthorizationError("planned merge metadata contains an auto-close token")
+    return {
+        "target_issue_number": 63,
+        "association_mode": "deferred_close",
+        "pr_body_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+        "pr_title_sha256": hashlib.sha256(title.encode("utf-8")).hexdigest(),
+        "pr_commits_sha256": hashlib.sha256(_canonical(commit_rows)).hexdigest(),
+        "closing_issue_numbers": [],
+        "issue_auto_close_link": False,
+        "merge_commit_title": merge_title,
+        "merge_commit_message": ISSUE63_MERGE_COMMIT_MESSAGE,
+    }
 
 
 def create_authorization_plan(
@@ -203,6 +273,8 @@ def create_authorization_plan(
         raise OwnerAuthorizationError("operation plan has an invalid exact subject")
     if operation == "PR_MERGE" and target_issue_number not in {57, 63}:
         raise OwnerAuthorizationError("PR merge decisions are limited to Activation #57 or implementation #63")
+    if operation == "PR_MERGE" and target_issue_number == 63 and pr_number != 64:
+        raise OwnerAuthorizationError("Issue #63 merge authorization is bound only to existing PR #64")
     if operation == "USER_REVIEW" and target_issue_number is not None:
         raise OwnerAuthorizationError("User Review decisions are stored on configured Issue #63")
     root = Path(root)
@@ -221,6 +293,12 @@ def create_authorization_plan(
     try:
         _canonical(details)
         _check_identity(github, issue_number, target_issue_number, pr_number, pr_head_sha40)
+        if operation == "PR_MERGE" and target_issue_number == 63:
+            expected_deferred = issue63_deferred_merge_details(
+                github, pr_number=pr_number, pr_head_sha40=pr_head_sha40,
+            )
+            if details != expected_deferred:
+                raise OwnerAuthorizationError("Issue #63 PR close mode, commit messages, or merge metadata changed")
     except (GitHubError, TypeError, ValueError) as exc:
         if isinstance(exc, OwnerAuthorizationError):
             raise
@@ -265,6 +343,8 @@ def _validate_plan(value: Any) -> dict[str, Any]:
             or SHA256.fullmatch(plan["subject_sha256"]) is None
             or (plan.get("target_issue_number") is not None and not _positive(plan["target_issue_number"]))
             or (plan.get("pr_number") is not None and not _positive(plan["pr_number"]))
+            or (plan.get("operation") == "PR_MERGE" and plan.get("target_issue_number") == 63
+                and plan.get("pr_number") != 64)
             or (plan.get("pr_head_sha40") is not None and (not isinstance(plan["pr_head_sha40"], str)
                                                             or SHA40.fullmatch(plan["pr_head_sha40"]) is None))
             or ((plan.get("pr_number") is None) != (plan.get("pr_head_sha40") is None))
@@ -296,10 +376,29 @@ def _validate_plan(value: Any) -> dict[str, Any]:
     if plan["operation"] == "RULESET_PLAN_APPLY" and (
             details != {"activation_issue_number": 57} or plan["target_issue_number"] != 57):
         raise OwnerAuthorizationError("Ruleset authorization plan must bind Activation Issue #57")
-    if plan["operation"] == "PR_MERGE" and (
-            details != {"target_issue_number": plan["target_issue_number"]}
-            or plan["target_issue_number"] not in {57, 63}):
-        raise OwnerAuthorizationError("PR merge authorization plan target is invalid")
+    if plan["operation"] == "PR_MERGE":
+        target = plan["target_issue_number"]
+        if target == 57 and details != {"target_issue_number": 57}:
+            raise OwnerAuthorizationError("Activation Setup PR merge authorization plan target is invalid")
+        if target == 63:
+            expected_fields = {
+                "target_issue_number", "association_mode", "pr_body_sha256", "pr_title_sha256",
+                "pr_commits_sha256", "closing_issue_numbers", "issue_auto_close_link",
+                "merge_commit_title", "merge_commit_message",
+            }
+            if (set(details) != expected_fields or details.get("target_issue_number") != 63
+                    or details.get("association_mode") != "deferred_close"
+                    or details.get("closing_issue_numbers") != []
+                    or details.get("issue_auto_close_link") is not False
+                    or any(not isinstance(details.get(field), str) or SHA256.fullmatch(details[field]) is None
+                           for field in ("pr_body_sha256", "pr_title_sha256", "pr_commits_sha256"))
+                    or details.get("merge_commit_title") != f"Merge PR #{plan['pr_number']} at {plan['pr_head_sha40'][:12]}"
+                    or details.get("merge_commit_message") != ISSUE63_MERGE_COMMIT_MESSAGE
+                    or closing_issue_references(details.get("merge_commit_title", ""))
+                    or closing_issue_references(details.get("merge_commit_message", ""))):
+                raise OwnerAuthorizationError("deferred-close PR merge authorization plan details are invalid")
+        if target not in {57, 63}:
+            raise OwnerAuthorizationError("PR merge authorization plan target is invalid")
     if plan["operation"] == "USER_REVIEW":
         if (set(details) != {"review_session_sha256", "readiness_sha256", "adc_sha256",
                              "pr_head_sha40", "feedback_sha256"}

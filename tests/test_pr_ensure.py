@@ -16,7 +16,8 @@ from p_ases.git import head_sha40, run_git
 from p_ases.adc import ADCError
 from p_ases.github import GitHubError
 from p_ases.execution import write_binding
-from p_ases.work import WorkError, bind_work, ensure_pull_request, execution_binding_path, read_pr_binding_history
+from p_ases.work import (WorkError, bind_work, ensure_pull_request, execution_binding_path,
+                         parse_issue_association, read_pr_binding_history)
 
 
 BODY = "Review implementation and evidence.\n\nCloses #30\n"
@@ -48,10 +49,10 @@ class FakeGitHub:
             raise GitHubError("PR not found")
         return self.pull
 
-    def _pull(self, *, body, head_ref, base_ref, draft=False, state="open", issue_close=30):
+    def _pull(self, *, body, head_ref, base_ref, number=73, draft=False, state="open", issue_close=30):
         repository = {"full_name": self.repo}
         return {
-            "number": 73, "state": state, "draft": draft, "body": body,
+            "number": number, "state": state, "draft": draft, "body": body,
             "base": {"ref": base_ref, "sha": self.base_sha, "repo": repository},
             "head": {"ref": head_ref, "sha": head_sha40(self.root), "repo": repository},
             "closing_issue": issue_close,
@@ -59,6 +60,55 @@ class FakeGitHub:
 
 
 class PREnsureTests(unittest.TestCase):
+    def test_issue_association_parser_keeps_auto_close_default_and_explicit_deferred_mode(self):
+        self.assertEqual(parse_issue_association("Summary\n\nCloses #41\n", 41), "auto_close")
+        self.assertEqual(parse_issue_association("Summary\n\nRefs #63\n", 63), "deferred_close")
+        for body, number in (
+            ("Closes #41\n\nRefs #41\n", 41),
+            ("Closes #41\nCloses #42\n", 41),
+            ("Refs #63\nRefs #64\n", 63),
+            ("Refs #64\n", 63),
+            ("Fixes #41\n", 41),
+        ):
+            with self.subTest(body=body), self.assertRaises(WorkError):
+                parse_issue_association(body, number)
+
+    def test_issue_63_pr_ensure_requires_refs_and_preserves_default_close_for_other_issues(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo, base, binding = self._bound_repo(root)
+            github = FakeGitHub(repo, base)
+            issue_63_binding = replace(binding, issue_number=63)
+            github.pull = github._pull(body="Review implementation.\n\nRefs #63\n",
+                                       head_ref="pases/work", base_ref="main", number=64)
+            with self.assertRaisesRegex(WorkError, "requires Refs #63"):
+                ensure_pull_request(repo, github, repository="owner/repo", issue_number=63,
+                                    binding=issue_63_binding, branch_ref="pases/work", base_ref="main",
+                                    title="Issue #63 work", body="Closes #63\n")
+            result = ensure_pull_request(repo, github, repository="owner/repo", issue_number=63,
+                                         binding=issue_63_binding, branch_ref="pases/work", base_ref="main",
+                                         title="Issue #63 work", body="Review implementation.\n\nRefs #63\n")
+            self.assertEqual(result.pull_request["body"], "Review implementation.\n\nRefs #63\n")
+
+    def test_issue_63_never_creates_or_selects_a_pr_other_than_existing_64(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo, base, binding = self._bound_repo(root)
+            github = FakeGitHub(repo, base)
+            issue_63_binding = replace(binding, issue_number=63)
+            with self.assertRaisesRegex(WorkError, "reuse existing PR #64"):
+                ensure_pull_request(repo, github, repository="owner/repo", issue_number=63,
+                                    binding=issue_63_binding, branch_ref="pases/work", base_ref="main",
+                                    title="Issue #63 work", body="Review implementation.\n\nRefs #63\n")
+            self.assertEqual(github.create_count, 0)
+            github.pull = github._pull(body="Review implementation.\n\nRefs #63\n",
+                                       head_ref="pases/work", base_ref="main", number=73)
+            with self.assertRaisesRegex(WorkError, "existing PR #64"):
+                ensure_pull_request(repo, github, repository="owner/repo", issue_number=63,
+                                    binding=issue_63_binding, branch_ref="pases/work", base_ref="main",
+                                    title="Issue #63 work", body="Review implementation.\n\nRefs #63\n")
+            self.assertEqual(github.create_count, 0)
+
     def _bound_repo(self, root: Path):
         repo, bare = root / "repo", root / "remote.git"
         repo.mkdir()

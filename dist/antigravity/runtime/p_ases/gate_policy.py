@@ -21,6 +21,7 @@ from urllib.parse import unquote, urlparse
 from .adc import ADC, ADCPointer, ADCError, parse_adc, verify_adc
 from .git import GitError, run_git
 from .github import GitHub, GitHubError
+from .issue_association import IssueAssociationError, parse_issue_association
 from .integration import IntegrationError, ParentGateEvidenceComment
 from .parent_gate import (
     _load_parent_gate_evidence_from_github, _parent_adc_authority,
@@ -903,9 +904,11 @@ def _pr_reasons(subject: BootstrapSubject, pr: dict[str, Any], response_reposito
     if not isinstance(body, str):
         reasons.append("PR body is missing; the Issue closing association cannot be verified")
     else:
-        closing = [int(value) for value in _CLOSES_ANY.findall(body)]
-        own_lines = [int(value) for value in _CLOSES_LINE.findall(body)]
-        if closing != [subject.issue_number] or own_lines != [subject.issue_number]:
+        try:
+            association = parse_issue_association(body, subject.issue_number)
+        except IssueAssociationError:
+            association = None
+        if association != "auto_close":
             reasons.append(f"PR body must contain exactly one standalone Closes #{subject.issue_number} association")
     return reasons
 
@@ -1667,9 +1670,11 @@ def _validate_activation_candidate(
             if expected_pair is None or (base.get("ref"), head.get("ref")) != expected_pair:
                 raise GatePolicyError(f"child PR #{pr_number} has no matching approved base/head branch contract")
             body = pr.get("body")
-            if (not isinstance(body, str)
-                    or [int(value) for value in _CLOSES_ANY.findall(body)] != [issue_number]
-                    or [int(value) for value in _CLOSES_LINE.findall(body)] != [issue_number]):
+            try:
+                association = parse_issue_association(body, issue_number)
+            except IssueAssociationError:
+                association = None
+            if association != "auto_close":
                 raise GatePolicyError(f"child PR #{pr_number} does not have its standalone Closes association")
             if github.compare_commits(merge_sha, record.activation_commit_sha40).get("status") not in {"ahead", "identical"}:
                 raise GatePolicyError(f"child PR #{pr_number} merge SHA is not present in the activation commit")

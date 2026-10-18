@@ -20,6 +20,7 @@ from .git import (
     is_ancestor, patch_sha256_excluding_activation_profile, remote_branch_sha,
 )
 from .github import GitHub, GitHubError
+from .issue_association import IssueAssociationError, parse_issue_association
 from .path_safety import path_has_symlink
 
 
@@ -434,6 +435,7 @@ def _verify_target_pr(repository: str, issue_number: int, binding: PRBinding,
     base_repo = _nested(pr, "base", "repo", "full_name")
     head_repo = _nested(pr, "head", "repo", "full_name")
     if (pr.get("number") != binding.pr_number or pr.get("state") != "open" or pr.get("draft") is not False
+            or (issue_number == 63 and binding.pr_number != 64)
             or not isinstance(base_repo, str) or base_repo.casefold() != repository.casefold()
             or not isinstance(head_repo, str) or head_repo.casefold() != repository.casefold()
             or _nested(pr, "base", "sha") != current_base or _nested(pr, "base", "ref") != base_ref
@@ -442,8 +444,12 @@ def _verify_target_pr(repository: str, issue_number: int, binding: PRBinding,
             or not SHA40.fullmatch(_nested(pr, "head", "sha"))):
         raise CurrentBaseError("target PR identity/base/head readback differs from the exact transition")
     body = pr.get("body")
-    if not isinstance(body, str) or not re.search(rf"(?im)^Closes #{issue_number}\s*$", body):
-        raise CurrentBaseError("target PR body does not preserve its standalone Issue closing line")
+    try:
+        association = parse_issue_association(body, issue_number)
+    except IssueAssociationError as exc:
+        raise CurrentBaseError(f"target PR Issue association is invalid: {exc}") from exc
+    if association != ("deferred_close" if issue_number == 63 else "auto_close"):
+        raise CurrentBaseError("target PR Issue association mode differs from the delivery contract")
 
 
 def _verify_git_transition(root: Path, frozen_base: str, current_base: str, original_head: str,

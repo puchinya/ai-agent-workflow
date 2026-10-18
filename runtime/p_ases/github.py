@@ -120,6 +120,21 @@ class GitHub:
             raise GitHubError("GitHub Issue response must be an object")
         return result
 
+    def issues_all(self) -> list[dict[str, Any]]:
+        """Read every repository Issue for direct/list/direct closure verification."""
+        rows = self._paginate(f"{self.prefix}/issues?state=all")
+        if any(type(row.get("number")) is not int or row["number"] < 1 for row in rows):
+            raise GitHubError("GitHub Issue list contains a row without a valid number")
+        return rows
+
+    def close_issue(self, number: int) -> dict[str, Any]:
+        """Close one Issue through the shared gh API transport."""
+        number = _positive_int(number, "Issue number")
+        result = self.request("PATCH", f"{self.prefix}/issues/{number}", {"state": "closed"})
+        if not isinstance(result, dict) or result.get("number") != number or result.get("state") != "closed":
+            raise GitHubError("GitHub Issue close response is incomplete or does not confirm closure")
+        return result
+
     def repository_metadata(self) -> dict[str, Any]:
         result = self.request("GET", self.prefix)
         if not isinstance(result, dict) or not isinstance(result.get("default_branch"), str):
@@ -165,14 +180,23 @@ class GitHub:
             raise GitHubError("GitHub PR readback is missing or has a mismatched number")
         return result
 
-    def merge_pull_request(self, number: int, expected_head_sha40: str) -> dict[str, Any]:
+    def merge_pull_request(self, number: int, expected_head_sha40: str, *,
+                           commit_title: str | None = None,
+                           commit_message: str | None = None) -> dict[str, Any]:
         """Make one merge request with GitHub's exact-head precondition."""
         number = _positive_int(number, "PR number")
         if not isinstance(expected_head_sha40, str) or not re.fullmatch(r"[0-9a-f]{40}", expected_head_sha40):
             raise GitHubError("PR merge requires a full lowercase expected HEAD SHA")
-        result = self.request("PUT", f"{self.prefix}/pulls/{number}/merge", {
-            "sha": expected_head_sha40, "merge_method": "merge",
-        })
+        payload: dict[str, Any] = {"sha": expected_head_sha40, "merge_method": "merge"}
+        if commit_title is not None:
+            if not isinstance(commit_title, str) or not commit_title.strip() or any(c in commit_title for c in "\x00\r\n"):
+                raise GitHubError("PR merge commit title must be a non-empty single line")
+            payload["commit_title"] = commit_title
+        if commit_message is not None:
+            if not isinstance(commit_message, str) or not commit_message.strip() or "\x00" in commit_message:
+                raise GitHubError("PR merge commit message must be non-empty text")
+            payload["commit_message"] = commit_message
+        result = self.request("PUT", f"{self.prefix}/pulls/{number}/merge", payload)
         if (not isinstance(result, dict) or result.get("merged") is not True
                 or not isinstance(result.get("sha"), str)
                 or not re.fullmatch(r"[0-9a-f]{40}", result["sha"])):
@@ -181,6 +205,103 @@ class GitHub:
 
     def pull_request_files(self, number: int) -> list[dict[str, Any]]:
         return self._paginate(f"{self.prefix}/pulls/{_positive_int(number, 'PR number')}/files")
+
+    def pull_request_commits(self, number: int) -> list[dict[str, Any]]:
+        """Read complete PR commit history and message bytes for merge-scope checks."""
+        rows = self._paginate(f"{self.prefix}/pulls/{_positive_int(number, 'PR number')}/commits")
+        for row in rows:
+            commit = row.get("commit") if isinstance(row, dict) else None
+            if (not isinstance(row, dict) or not isinstance(row.get("sha"), str)
+                    or not re.fullmatch(r"[0-9a-f]{40}", row["sha"])
+                    or not isinstance(commit, dict) or not isinstance(commit.get("message"), str)):
+                raise GitHubError("GitHub PR commit page contains an incomplete commit row")
+        return rows
+
+    def pull_request_closing_issues(self, number: int) -> list[dict[str, Any]]:
+        """Read GitHub's computed auto-close Issue references for one PR."""
+        number = _positive_int(number, "PR number")
+        owner, name = self.repo.split("/", 1)
+        query = """query($owner:String!,$name:String!,$number:Int!,$cursor:String){
+          repository(owner:$owner,name:$name){pullRequest(number:$number){number
+            closingIssuesReferences(first:100,after:$cursor){nodes{number repository{nameWithOwner}}
+              pageInfo{hasNextPage endCursor}}
+          }}}
+        }"""
+        result: list[dict[str, Any]] = []
+        cursor: str | None = None
+        while True:
+            data = self._graphql(query, {"owner": owner, "name": name, "number": number, "cursor": cursor})
+            repository = data.get("repository")
+            pr = repository.get("pullRequest") if isinstance(repository, dict) else None
+            connection = pr.get("closingIssuesReferences") if isinstance(pr, dict) else None
+            nodes = connection.get("nodes") if isinstance(connection, dict) else None
+            page = connection.get("pageInfo") if isinstance(connection, dict) else None
+            if (not isinstance(pr, dict) or pr.get("number") != number or not isinstance(nodes, list)
+                    or any(not isinstance(row, dict) for row in nodes) or not isinstance(page, dict)):
+                raise GitHubError("GitHub closing-Issue reference page is incomplete")
+            for row in nodes:
+                repository_row = row.get("repository")
+                if (type(row.get("number")) is not int or row["number"] < 1
+                        or not isinstance(repository_row, dict)
+                        or not isinstance(repository_row.get("nameWithOwner"), str)):
+                    raise GitHubError("GitHub closing-Issue reference identity is incomplete")
+                result.append({"number": row["number"], "repository": repository_row["nameWithOwner"]})
+            if page.get("hasNextPage") is not True:
+                return result
+            cursor = page.get("endCursor")
+            if not isinstance(cursor, str) or not cursor:
+                raise GitHubError("GitHub closing-Issue reference cursor is missing")
+
+    def issue_pull_request_cross_references(self, issue_number: int) -> list[dict[str, Any]]:
+        """Read PR cross-reference events and GitHub's auto-close flag for an Issue."""
+        issue_number = _positive_int(issue_number, "Issue number")
+        owner, name = self.repo.split("/", 1)
+        query = """query($owner:String!,$name:String!,$number:Int!,$cursor:String){
+          repository(owner:$owner,name:$name){issue(number:$number){number
+            timelineItems(first:100,after:$cursor,itemTypes:[CROSS_REFERENCED_EVENT]){
+              nodes{... on CrossReferencedEvent{willCloseTarget source{
+                __typename ... on PullRequest{number repository{nameWithOwner}}
+              }}}
+              pageInfo{hasNextPage endCursor}
+            }
+          }}}
+        }"""
+        result: list[dict[str, Any]] = []
+        cursor: str | None = None
+        while True:
+            data = self._graphql(query, {"owner": owner, "name": name,
+                                         "number": issue_number, "cursor": cursor})
+            repository = data.get("repository")
+            issue = repository.get("issue") if isinstance(repository, dict) else None
+            connection = issue.get("timelineItems") if isinstance(issue, dict) else None
+            nodes = connection.get("nodes") if isinstance(connection, dict) else None
+            page = connection.get("pageInfo") if isinstance(connection, dict) else None
+            if (not isinstance(issue, dict) or issue.get("number") != issue_number
+                    or not isinstance(nodes, list) or any(not isinstance(row, dict) for row in nodes)
+                    or not isinstance(page, dict)):
+                raise GitHubError("GitHub Issue cross-reference page is incomplete")
+            for row in nodes:
+                source = row.get("source")
+                if source is None:
+                    raise GitHubError("GitHub Issue cross-reference source is missing")
+                if not isinstance(source, dict) or source.get("__typename") not in {"PullRequest", "Issue"}:
+                    raise GitHubError("GitHub Issue cross-reference source type is incomplete")
+                if source.get("__typename") == "Issue":
+                    continue
+                if (type(source.get("number")) is not int or source["number"] < 1
+                        or type(row.get("willCloseTarget")) is not bool):
+                    raise GitHubError("GitHub PR cross-reference identity or close flag is incomplete")
+                repo_row = source.get("repository")
+                if not isinstance(repo_row, dict) or not isinstance(repo_row.get("nameWithOwner"), str):
+                    raise GitHubError("GitHub PR cross-reference repository is incomplete")
+                result.append({"pr_number": source["number"],
+                               "repository": repo_row["nameWithOwner"],
+                               "will_close_target": row["willCloseTarget"]})
+            if page.get("hasNextPage") is not True:
+                return result
+            cursor = page.get("endCursor")
+            if not isinstance(cursor, str) or not cursor:
+                raise GitHubError("GitHub Issue cross-reference cursor is missing")
 
     def collaborator_permission(self, login: str) -> dict[str, Any]:
         if not isinstance(login, str) or not re.fullmatch(r"[A-Za-z0-9-]+", login):

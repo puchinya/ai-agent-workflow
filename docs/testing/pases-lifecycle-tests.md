@@ -45,7 +45,7 @@
     - [2.17.1 ORA-F01-011 Expected result](#2171-ora-f01-011-expected-result)
   - [2.18 TST-F01-012 Prefix and full-history validation](#218-tst-f01-012-prefix-and-full-history-validation)
     - [2.18.1 ORA-F01-012 Expected result](#2181-ora-f01-012-expected-result)
-  - [2.19 TST-F01-013 Pre-merge bootstrap gates](#219-tst-f01-013-pre-merge-bootstrap-gates)
+  - [2.19 TST-F01-013 Deferred Issue close and Activation ordering](#219-tst-f01-013-deferred-issue-close-and-activation-ordering)
     - [2.19.1 ORA-F01-013 Expected result](#2191-ora-f01-013-expected-result)
   - [2.20 TST-F01-014 Activation admin session and approval separation](#220-tst-f01-014-activation-admin-session-and-approval-separation)
     - [2.20.1 ORA-F01-014 Expected result](#2201-ora-f01-014-expected-result)
@@ -91,7 +91,7 @@
 - [ORA-F01-011](#ora-f01-011) — 2.17.1 ORA-F01-011 Expected result
 - [TST-F01-012](#tst-f01-012) — 2.18 TST-F01-012 Prefix and full-history validation
 - [ORA-F01-012](#ora-f01-012) — 2.18.1 ORA-F01-012 Expected result
-- [TST-F01-013](#tst-f01-013) — 2.19 TST-F01-013 Pre-merge bootstrap gates
+- [TST-F01-013](#tst-f01-013) — 2.19 TST-F01-013 Deferred Issue close and Activation ordering
 - [ORA-F01-013](#ora-f01-013) — 2.19.1 ORA-F01-013 Expected result
 - [TST-F01-014](#tst-f01-014) — 2.20 TST-F01-014 Activation admin session and approval separation
 - [ORA-F01-014](#ora-f01-014) — 2.20.1 ORA-F01-014 Expected result
@@ -315,16 +315,16 @@ V2 eligibility begins strictly after the Activation record comment's GitHub crea
 Existing Issue reads validate exactly the Activation prefix through their selected record and, for V2, the Ruleset ownership prefix through its exact bound applied-record ID. Corruption after either selected prefix is ignored. A new selection or successor issuance validates the full Activation and Ruleset ownership histories and blocks on any malformed record.
 
 <a id="tst-f01-013"></a>
-### 2.19 TST-F01-013 Pre-merge bootstrap gates
+### 2.19 TST-F01-013 Deferred Issue close and Activation ordering
 
-**Setup and action:** Exercise the required order: implementation, successor ADC publication and generation-scoped Phase receipts, Activation V2 `ACTIVE` (including its separately reviewed/merged Setup PR), PR #64 merge, then Issue #63 closure readback. Keep PR #64 open after the Setup PR merge and attempt its merge before `ACTIVE`; that must block. After `ACTIVE`, independently remove or stale each #64 CI, Independent Review, User Review, Final Delivery, and exact-HEAD `PR_MERGE` input and verify merge remains blocked. Keep #60/PR #62 and all old #57/#63 evidence unchanged.
+**Setup and action:** Preserve the ordinary `Closes #41` path: after GitHub auto-closes the Issue, Final Delivery reports finalized without sending another close write. Exercise the Issue #63 order: implementation, successor ADC publication and generation-scoped Phase receipts, pre-merge solo-owner Ruleset verification (or an independently approved exact plan/apply), then fresh PR #64 CI, Independent Review, User Review, Final Delivery, and exact-HEAD `PR_MERGE`. Require exactly one standalone `Refs #63`. Inject `Closes #63`, a closer for another Issue, duplicate/wrong `Refs`, PR number other than 64, commit-message closer tokens, non-empty GitHub `closingIssuesReferences`, an auto-closing Issue cross-reference, and incomplete GraphQL pagination; every case must block before merge with zero merge requests. Verify that the exact safe merge request and current Issue metadata are re-read immediately before the merge. After merge, verify Issue #63 is still OPEN and return `MERGED_AWAITING_ISSUE_COMPLETION`. Only then complete Activation V2 and separately review/merge its Setup PR. Require the V2 record ID/`created_at`, current owned Ruleset and effective policy to read back from a clean default worktree, with Activation `created_at` later than #64 merge. Finalize #63 with one durable close intent, one Issue PATCH, and direct/list/direct OPEN→CLOSED readback. Test no V2 record, V1-only history, wrong/older effective time, policy drift/403, closed Issue without matching intent, lost close response, and an existing intent while Issue remains OPEN; none may cause a second PATCH or reopen. Keep #60/PR #62 and old #57/#63 evidence unchanged.
 
 <a id="ora-f01-013"></a>
 #### 2.19.1 ORA-F01-013 Expected result
 
-ADC formalization and its Phase receipts precede Activation. Activation reaches `ACTIVE` only after the exact Setup PR merge, V2 record comment ID/`created_at`, Ruleset ID and effective policy all read back. A Setup PR merge alone cannot authorize #64. PR #64 merge requires its own exact HEAD gates and distinct `PR_MERGE`; Issue closure is read back only after #64 merge.
+Ordinary PRs retain standalone `Closes #N` and GitHub auto-close. ADC formalization and its Phase receipts precede PR #64 merge. Activation `ACTIVE` is not a #64 merge prerequisite; the pre-merge gate still requires its own exact-HEAD CI, independent review, User Review, Final Delivery and distinct `PR_MERGE`, plus a verified effective Ruleset. Only PR #64 uses `Refs #63`; its body, every commit message, planned merge message, GitHub closing-Issue references and Issue cross-reference metadata must prove that merge cannot close #63. Issue #63 remains OPEN after the merge. Post-merge Activation reaches `ACTIVE` only after its separate Setup PR merge, V2 record comment ID/`created_at`, Ruleset ID and effective policy all read back from the current clean default worktree. Only a V2 effective time later than the #64 merge permits the one-shot durable Issue close; every missing, stale, ambiguous or failed proof leaves #63 OPEN and never repeats an ambiguous PATCH.
 
-For the Activation-owned base transition, construct A, one profile-only setup commit, its exact merge commit B, and PR #64 HEAD with B integrated. Verify `pr ensure` appends a V2 PRBinding and readiness accepts the same typed evidence while the original ExecutionBinding and V1 PRBinding bytes stay unchanged. Reject ordinary main drift, any intervening or extra main commit, a wrong Setup PR ID or merge SHA, a profile mismatch at B or target HEAD, a changed code patch, a different target PR identity, and an absent/tampered evidence file. Final Delivery must re-read the same live evidence; changing current main or target base after Readiness blocks it.
+Retain the existing Activation-owned base-transition regression as a separate compatibility test: construct A, one profile-only setup commit, exact merge B, and a PR HEAD with B integrated. Verify `pr ensure` appends a V2 PRBinding while original ExecutionBinding and V1 PRBinding bytes stay unchanged. Reject ordinary main drift, intervening/extra commits, wrong Setup PR ID or merge SHA, profile mismatch, changed code patch, wrong target identity and absent/tampered evidence. Final Delivery re-reads the typed evidence. This path does not advance PR #64 in the new Issue #63 order because its Activation is post-merge.
 
 <a id="tst-f01-014"></a>
 <a id="220-tst-f01-014-activation-admin-session-and-approval-separation"></a>

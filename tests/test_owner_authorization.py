@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT / "runtime"))
 from p_ases.owner_authorization import (
     OwnerAuthorizationError, authorize_chat_confirmed_plan, authorize_plan,
     capture_direct_chat_confirmation, create_authorization_plan, resume_authorization,
-    read_authorization_plan, write_authorization_plan,
+    issue63_deferred_merge_details, read_authorization_plan, write_authorization_plan,
 )
 from p_ases.github import GitHubError
 from p_ases.cli import _create_merge_attempt, _perform_authorized_merge, _publish_owner_approved_adc
@@ -90,21 +90,52 @@ class FakeMergeGitHub:
         self.pr = {
             "number": 64, "state": "open", "merged": False,
             "head": {"sha": "d" * 40, "repo": {"full_name": REPOSITORY}},
-            "base": {"repo": {"full_name": REPOSITORY}}, "body": "Closes #63",
+            "base": {"repo": {"full_name": REPOSITORY}},
+            "title": "Implement deferred delivery", "body": "Implementation delivery.\n\nRefs #63",
         }
+        self.issue_state = "open"
+        self.commit_rows = [{"sha": "a" * 40, "commit": {"message": "Implement deferred delivery"}}]
+        self.closing_issues: list[dict[str, object]] = []
+        self.cross_references: list[dict[str, object]] = []
 
     def pull_request(self, number: int):
         self.assert_number(number)
         return self.pr
 
+    def issue(self, number: int):
+        return {"number": number, "state": self.issue_state,
+                "repository_url": f"https://api.github.com/repos/{REPOSITORY}", "pull_request": None}
+
+    def pull_request_commits(self, number: int):
+        self.assert_number(number)
+        return self.commit_rows
+
+    def pull_request_closing_issues(self, number: int):
+        self.assert_number(number)
+        return self.closing_issues
+
+    def issue_pull_request_cross_references(self, issue_number: int):
+        if issue_number != 63:
+            raise AssertionError("wrong Issue number")
+        return self.cross_references
+
+    def commit_details(self, sha: str):
+        if sha != "e" * 40:
+            raise AssertionError("wrong merge commit")
+        return {"message": "Merge PR #64 at dddddddddddd\n\nImplementation delivered."}
+
     def assert_number(self, number: int):
         if number != 64:
             raise AssertionError("wrong PR number")
 
-    def merge_pull_request(self, number: int, expected_head_sha40: str):
+    def merge_pull_request(self, number: int, expected_head_sha40: str, **kwargs):
         self.assert_number(number)
         if expected_head_sha40 != "d" * 40:
             raise AssertionError("wrong expected HEAD")
+        if kwargs != {
+                "commit_title": "Merge PR #64 at dddddddddddd",
+                "commit_message": "Implementation delivered. Issue #63 remains open pending verified Consumer Activation V2."}:
+            raise AssertionError("unsafe or unbound merge message")
         self.calls += 1
         if self.lose_response:
             raise GitHubError("lost merge response")
@@ -263,8 +294,12 @@ class OwnerAuthorizationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             github = FakeMergeGitHub()
+            details = issue63_deferred_merge_details(
+                github, pr_number=64, pr_head_sha40="d" * 40,
+            )
             plan = {"plan_sha256": "f" * 64, "source_head_sha40": PLAN_HEAD,
-                    "target_issue_number": 63, "pr_number": 64, "pr_head_sha40": "d" * 40}
+                    "target_issue_number": 63, "pr_number": 64, "pr_head_sha40": "d" * 40,
+                    "details": details}
             decision = {"status": "AUTHORIZED", "operation": "PR_MERGE",
                         "evidence_type": "PASES_OWNER_DECISION_V3",
                         "evidence_channel": "chat_confirmed_gh_v1", "chat_signature": False,
@@ -272,9 +307,41 @@ class OwnerAuthorizationTests(unittest.TestCase):
             with patch("p_ases.cli._owner_merge_gate", return_value={"status": "READY"}):
                 first = _perform_authorized_merge(object(), root, github, plan, decision)
                 second = _perform_authorized_merge(object(), root, github, plan, decision)
-            self.assertEqual(first["status"], "MERGED")
-            self.assertEqual(second["status"], "MERGED_READBACK")
+            self.assertEqual(first["status"], "MERGED_AWAITING_ISSUE_COMPLETION")
+            self.assertEqual(second["status"], "MERGED_AWAITING_ISSUE_COMPLETION")
+            self.assertEqual(first["issue_state"], "open")
             self.assertEqual(github.calls, 1)
+
+    def test_issue63_merge_preflight_rejects_auto_close_tokens_and_incomplete_metadata(self):
+        cases = (
+            ("commit", lambda github: github.commit_rows[0]["commit"].update({"message": "Fixes #63"}),
+             "commit message contains an auto-close"),
+            ("closing issue", lambda github: github.closing_issues.append(
+                {"number": 63, "repository": REPOSITORY}), "will auto-close"),
+            ("manual cross-reference", lambda github: github.cross_references.append(
+                {"pr_number": 64, "repository": REPOSITORY, "will_close_target": True}),
+             "auto-closing PR link"),
+            ("incomplete GraphQL", lambda github: setattr(github, "issue_pull_request_cross_references",
+                lambda _number: (_ for _ in ()).throw(GitHubError("incomplete timeline"))),
+             "metadata could not be read completely"),
+        )
+        for name, mutate, message in cases:
+            with self.subTest(name=name):
+                github = FakeMergeGitHub()
+                mutate(github)
+                with self.assertRaisesRegex(OwnerAuthorizationError, message):
+                    issue63_deferred_merge_details(github, pr_number=64, pr_head_sha40="d" * 40)
+
+    def test_issue63_merge_preflight_requires_the_existing_pr64(self):
+        with self.assertRaisesRegex(OwnerAuthorizationError, "bound only to PR #64"):
+            issue63_deferred_merge_details(FakeMergeGitHub(), pr_number=65, pr_head_sha40="d" * 40)
+
+    def test_issue63_merge_authorization_plan_rejects_other_pr_number(self):
+        with self.assertRaisesRegex(OwnerAuthorizationError, "existing PR #64"):
+            create_authorization_plan(
+                FakeGitHub(), Path("."), operation="PR_MERGE", subject_sha256=SUBJECT_SHA,
+                target_issue_number=63, pr_number=65, pr_head_sha40="d" * 40,
+            )
 
     def test_adc_local_commit_dispatches_exact_publication_then_phase_rebaseline(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -315,8 +382,12 @@ class OwnerAuthorizationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             github = FakeMergeGitHub(lose_response=True)
+            details = issue63_deferred_merge_details(
+                github, pr_number=64, pr_head_sha40="d" * 40,
+            )
             plan = {"plan_sha256": "a" * 64, "source_head_sha40": PLAN_HEAD,
-                    "target_issue_number": 63, "pr_number": 64, "pr_head_sha40": "d" * 40}
+                    "target_issue_number": 63, "pr_number": 64, "pr_head_sha40": "d" * 40,
+                    "details": details}
             decision = {"status": "AUTHORIZED", "operation": "PR_MERGE",
                         "evidence_type": "PASES_OWNER_DECISION_V3",
                         "evidence_channel": "chat_confirmed_gh_v1", "chat_signature": False,
