@@ -5,7 +5,12 @@ from __future__ import annotations
 import re
 
 
-_CLOSING_REF = re.compile(r"(?i)\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)\s+#([1-9][0-9]*)\b")
+_REPOSITORY_PART = r"[A-Za-z0-9_.-]+"
+_CLOSING_REF = re.compile(
+    rf"(?i)\b(?P<keyword>close[sd]?|fix(?:es|ed)?|resolve[sd]?)\s*:?[\t ]*"
+    rf"(?:(?P<owner>{_REPOSITORY_PART})/(?P<repository>{_REPOSITORY_PART}))?"
+    r"#(?P<number>[1-9][0-9]*)\b"
+)
 _CLOSING_LINE = re.compile(r"(?im)^\s*(Closes|Fixes|Resolves)\s+#([1-9][0-9]*)\s*$")
 _ISSUE_REF = re.compile(r"(?i)\bRefs?\s+#([1-9][0-9]*)\b")
 _ISSUE_REF_LINE = re.compile(r"(?im)^\s*Refs\s+#([1-9][0-9]*)\s*$")
@@ -15,10 +20,32 @@ class IssueAssociationError(ValueError):
     pass
 
 
-def closing_issue_references(body: str) -> tuple[int, ...]:
+def closing_issue_references(body: str, repository: str | None = None) -> tuple[int, ...]:
+    """Return auto-close Issue numbers, optionally scoped to one repository.
+
+    Unqualified ``#N`` references are relative to the PR's repository. When a
+    repository is supplied, qualified ``OWNER/REPO#N`` references are counted
+    only if their normalized repository matches it. Without a repository, all
+    qualified references are returned so security preflights can reject any
+    unexpected auto-close syntax.
+    """
     if not isinstance(body, str):
         raise IssueAssociationError("Issue-closing text must be text")
-    return tuple(int(value) for value in _CLOSING_REF.findall(body))
+    normalized_repository = None
+    if repository is not None:
+        if (not isinstance(repository, str)
+                or re.fullmatch(rf"{_REPOSITORY_PART}/{_REPOSITORY_PART}", repository) is None):
+            raise IssueAssociationError("repository must be one OWNER/REPO name")
+        normalized_repository = repository.casefold()
+    references = []
+    for match in _CLOSING_REF.finditer(body):
+        owner, name = match.group("owner"), match.group("repository")
+        qualified_repository = f"{owner}/{name}".casefold() if owner and name else None
+        if (normalized_repository is not None and qualified_repository is not None
+                and qualified_repository != normalized_repository):
+            continue
+        references.append(int(match.group("number")))
+    return tuple(references)
 
 
 def parse_issue_association(body: str, issue_number: int) -> str:

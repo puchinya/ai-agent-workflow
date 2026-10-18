@@ -17,7 +17,7 @@ from p_ases.adc import ADCError
 from p_ases.github import GitHubError
 from p_ases.execution import write_binding
 from p_ases.work import (WorkError, bind_work, ensure_pull_request, execution_binding_path,
-                         parse_issue_association, read_pr_binding_history)
+                         closing_issue_references, parse_issue_association, read_pr_binding_history)
 
 
 BODY = "Review implementation and evidence.\n\nCloses #30\n"
@@ -72,6 +72,29 @@ class PREnsureTests(unittest.TestCase):
         ):
             with self.subTest(body=body), self.assertRaises(WorkError):
                 parse_issue_association(body, number)
+
+    def test_github_closing_keyword_parser_handles_colons_and_repository_qualified_refs(self):
+        for keyword in ("close", "closes", "closed", "fix", "fixes", "fixed",
+                        "resolve", "resolves", "resolved"):
+            text = f"{keyword.upper()}: #63"
+            with self.subTest(text=text):
+                self.assertEqual(closing_issue_references(text), (63,))
+                self.assertEqual(closing_issue_references(text, "puchinya/ai-agent-workflow"), (63,))
+        for text in ("Resolves puchinya/ai-agent-workflow#63",
+                     "FIXED: PUCHINYA/AI-AGENT-WORKFLOW#63"):
+            with self.subTest(text=text):
+                self.assertEqual(closing_issue_references(text), (63,))
+                self.assertEqual(closing_issue_references(text, "puchinya/ai-agent-workflow"), (63,))
+        self.assertEqual(
+            closing_issue_references("Resolves another-owner/another-repo#63", "puchinya/ai-agent-workflow"),
+            (),
+        )
+        self.assertEqual(
+            closing_issue_references("Closes puchinya/ai-agent-workflow#63", "PUCHINYA/AI-AGENT-WORKFLOW"),
+            (63,),
+        )
+        with self.assertRaises(WorkError):
+            closing_issue_references("Closes puchinya/ai-agent-workflow#63", "not-a-repository")
 
     def test_issue_63_pr_ensure_requires_refs_and_preserves_default_close_for_other_issues(self):
         with tempfile.TemporaryDirectory() as temporary:

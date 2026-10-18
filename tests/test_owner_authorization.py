@@ -20,7 +20,8 @@ from p_ases.owner_authorization import (
     issue63_deferred_merge_details, read_authorization_plan, write_authorization_plan,
 )
 from p_ases.github import GitHubError
-from p_ases.cli import _create_merge_attempt, _perform_authorized_merge, _publish_owner_approved_adc
+from p_ases.cli import (_create_merge_attempt, _merge_readback, _perform_authorized_merge,
+                        _publish_owner_approved_adc)
 from p_ases.consumer_activation import verify_setup_pr_ready_to_merge
 
 
@@ -331,6 +332,78 @@ class OwnerAuthorizationTests(unittest.TestCase):
                 mutate(github)
                 with self.assertRaisesRegex(OwnerAuthorizationError, message):
                     issue63_deferred_merge_details(github, pr_number=64, pr_head_sha40="d" * 40)
+
+    def test_issue63_merge_preflight_rejects_github_closing_keyword_variants_in_commit_messages(self):
+        for message in ("Fixes: #63", "Closes: #63", "Resolves puchinya/ai-agent-workflow#63"):
+            with self.subTest(message=message):
+                github = FakeMergeGitHub()
+                github.commit_rows[0]["commit"]["message"] = message
+                self.assertEqual(github.closing_issues, [])
+                with self.assertRaisesRegex(OwnerAuthorizationError, "commit message contains an auto-close"):
+                    issue63_deferred_merge_details(github, pr_number=64, pr_head_sha40="d" * 40)
+
+    def test_github_closing_keyword_variants_block_before_any_merge_write(self):
+        for message in ("Fixes: #63", "Closes: #63", "Resolves puchinya/ai-agent-workflow#63"):
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                github = FakeMergeGitHub()
+                details = issue63_deferred_merge_details(
+                    github, pr_number=64, pr_head_sha40="d" * 40,
+                )
+                github.commit_rows[0]["commit"]["message"] = message
+                plan = {"plan_sha256": "a" * 64, "source_head_sha40": PLAN_HEAD,
+                        "target_issue_number": 63, "pr_number": 64, "pr_head_sha40": "d" * 40,
+                        "details": details}
+                decision = {"status": "AUTHORIZED", "operation": "PR_MERGE",
+                            "evidence_type": "PASES_OWNER_DECISION_V3",
+                            "evidence_channel": "chat_confirmed_gh_v1", "chat_signature": False,
+                            "owner_decision_comment_id": 123}
+                self.assertEqual(github.closing_issues, [])
+                with patch("p_ases.cli._owner_merge_gate", return_value={"status": "READY"}):
+                    with self.assertRaisesRegex(OwnerAuthorizationError,
+                                                "commit message contains an auto-close"):
+                        _perform_authorized_merge(object(), root, github, plan, decision)
+                self.assertEqual(github.calls, 0)
+
+    def test_issue63_merged_readback_rejects_new_closing_keyword_variants(self):
+        github = FakeMergeGitHub()
+        details = issue63_deferred_merge_details(
+            github, pr_number=64, pr_head_sha40="d" * 40,
+        )
+        github.pr.update({"state": "closed", "merged": True, "merge_commit_sha": "e" * 40,
+                          "merged_by": {"id": OWNER_ID, "type": "User"}})
+        github.commit_details = lambda _sha: {"message": "Resolves: #63"}
+        plan = {"target_issue_number": 63, "pr_number": 64, "pr_head_sha40": "d" * 40,
+                "details": details}
+        with self.assertRaisesRegex(OwnerAuthorizationError, "merged PR commit message contains"):
+            _merge_readback(github, plan)
+
+    def test_issue63_merge_preflight_checks_pr_title_body_and_planned_merge_message(self):
+        github = FakeMergeGitHub()
+        github.pr["title"] = "Resolves: #63"
+        with self.assertRaisesRegex(OwnerAuthorizationError, "PR title .* auto-close reference"):
+            issue63_deferred_merge_details(github, pr_number=64, pr_head_sha40="d" * 40)
+
+        github = FakeMergeGitHub()
+        github.pr["body"] += "\n\nCloses: #63"
+        with self.assertRaisesRegex(OwnerAuthorizationError,
+                                    "Issue #63 deferred-close association is invalid"):
+            issue63_deferred_merge_details(github, pr_number=64, pr_head_sha40="d" * 40)
+
+        github = FakeMergeGitHub()
+        with patch("p_ases.owner_authorization.ISSUE63_MERGE_COMMIT_MESSAGE",
+                   "Resolves puchinya/ai-agent-workflow#63"):
+            with self.assertRaisesRegex(OwnerAuthorizationError, "planned merge metadata contains an auto-close"):
+                issue63_deferred_merge_details(github, pr_number=64, pr_head_sha40="d" * 40)
+
+    def test_issue63_refs_only_pr_remains_safe_without_github_closing_references(self):
+        github = FakeMergeGitHub()
+        details = issue63_deferred_merge_details(github, pr_number=64, pr_head_sha40="d" * 40)
+        self.assertEqual(github.pr["body"], "Implementation delivery.\n\nRefs #63")
+        self.assertEqual(github.closing_issues, [])
+        self.assertEqual(details["association_mode"], "deferred_close")
+        self.assertEqual(details["closing_issue_numbers"], [])
+        self.assertIs(details["issue_auto_close_link"], False)
 
     def test_issue63_merge_preflight_requires_the_existing_pr64(self):
         with self.assertRaisesRegex(OwnerAuthorizationError, "bound only to PR #64"):

@@ -51,7 +51,7 @@ Issue: [#63](https://github.com/puchinya/ai-agent-workflow/issues/63)
 ### 2.1 Issue #63 の二段階完了順序
 
 - #64 merge前には、通常のFinal Deliveryゲート、solo-owner effective Ruleset、exact HEAD、CI、Independent Review、User Review、別個のPR_MERGE承認を要求する。Activation V2 `ACTIVE`はこのmergeの前提にしない。
-- #64本文は`Closes #63`ではなく一意のstandalone `Refs #63`を使い、merge前にbody、全commit message、planned merge message、GitHub `closingIssuesReferences`、Issue cross-reference metadataを完全にreadbackする。auto-close token/linkまたは不完全readbackはmerge前にBLOCK。merge直後にIssue #63がOPENであることを確認する。
+- #64本文は`Closes #63`ではなく一意のstandalone `Refs #63`を使い、共通検出器はGitHubの大文字小文字を区別しないclose/closes/closed、fix/fixes/fixed、resolve/resolves/resolvedと任意のコロン、`#N`および`OWNER/REPO#N`を検出する。repo-qualified参照はowner/repoをcase-insensitiveに正規化してIssue identityを比較する。merge前にbody、全commit message、planned merge message、GitHub `closingIssuesReferences`、Issue cross-reference metadataを完全にreadbackし、merge後も実merge commitに同じ検出器を適用する。auto-close token/linkまたは不完全readbackはmerge前にBLOCK。merge直後にIssue #63がOPENであることを確認する。
 - Rulesetが必要なら、cleanなPR #64確定HEADと`.agent/project.json`のsolo_owner/Required Checksから`activation_binding`なしでcanonical Ruleset planを作成し、別のRULESET_PLAN_APPLY承認、既存の単一writer/apply/readbackを#64 merge前に使う。既存owned policyはNOOP。Activation V2やSetup PRを前倒ししない。
 - #64 merge後にclean default worktree/current mainからActivation V2 Setup PRをreview/mergeし、`ACTIVE` record、`created_at`、Ruleset/effective policyを再検証する。`created_at`は#64 mergeより後であること。最後にdurable close intentを使ってIssueを一度だけ閉じ、direct/list/directでreadbackする。失敗時はIssueをOPENのままにし、ambiguous PATCHを再送しない。
 - `Setup PR merge = Activation ACTIVE`、Ruleset適用だけでActivation ACTIVE、旧ADC草案のSHA/承認を新しいバイトへ流用、一般的base driftの許可は禁止。

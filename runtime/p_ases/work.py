@@ -60,9 +60,9 @@ class PREnsureResult:
     reused: bool
 
 
-def closing_issue_references(body: str) -> tuple[int, ...]:
+def closing_issue_references(body: str, repository: str | None = None) -> tuple[int, ...]:
     try:
-        return _closing_issue_references(body)
+        return _closing_issue_references(body, repository)
     except IssueAssociationError as exc:
         raise WorkError(str(exc)) from exc
 
