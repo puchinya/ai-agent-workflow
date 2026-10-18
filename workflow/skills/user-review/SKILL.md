@@ -26,6 +26,8 @@ For ordinary single/child Issues, the host follows one sequence: approved ADC an
 
 Readiness cannot newly PASS outside `verification` or while any attention label is present; in `user-review`, it may only reproduce the exact subject and Readiness SHA already held by the immutable session. User Review checks kind/phase/attention before writing a session or feedback snapshot. In `verification`, `start` may create one session; in `user-review`, only a matching existing session may resume. If interruption leaves the exact session in `verification`, `sync` preserves its `started_at`, completes snapshot readback, and performs the normal Phase update/readback. Missing or mismatched sessions block without overwrite. `PENDING` (exit code 2) is ordinary waiting; report `WAITING_USER_REVIEW_DECISION` only after reading back the session, complete feedback snapshot, and `phase:user-review`. This does not record approval.
 
+For `user-review start`, `sync`, and `status`, the current GitHub Issue's unique valid `kind:*` label supplies the Issue kind when `--kind` is omitted. Pass `--kind` only as an explicit assertion; the runtime rejects a mismatch. Missing, malformed, unknown, or duplicate `kind:*` labels block before session, snapshot, result, or Issue-label writes. Ordinary User Review remains limited to `single` and `child` Issues.
+
 ## CLI
 
 ~~~sh

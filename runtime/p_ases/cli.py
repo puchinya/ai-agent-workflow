@@ -2801,7 +2801,8 @@ def _user_review_run(args: argparse.Namespace, repository: str, root: Path, gith
     try:
         issue_row, verified_adc = _approved_issue_adc(github, args.issue, repository)
         issue_kind, issue_phase, issue_attention = _issue_kind_phase(issue_row, args.issue)
-        if issue_kind is not IssueKind(getattr(args, "kind", IssueKind.CHILD.value)):
+        requested_kind = getattr(args, "kind", None)
+        if requested_kind is not None and issue_kind is not IssueKind(requested_kind):
             raise CLIError("User Review --kind differs from the Issue's unique kind:* label")
         if issue_kind not in {IssueKind.SINGLE, IssueKind.CHILD}:
             raise CLIError("ordinary User Review requires a single or child Issue")
@@ -2954,7 +2955,7 @@ def _user_review_run(args: argparse.Namespace, repository: str, root: Path, gith
                     or saved_snapshot_sha256 != snapshot.sha256):
                 raise UserReviewError("persisted User Review result differs from its typed evaluation")
             if args.verb in {"start", "sync"}:
-                _review_phase_transition(github, args.issue, IssueKind(args.kind), result, args.verb)
+                _review_phase_transition(github, args.issue, issue_kind, result, args.verb)
         else:
             snapshot_path = feedback_snapshot_path(root, snapshot)
             record_path = _review_record_path(root, args.issue, user_review_subject, result, snapshot.sha256)
@@ -4311,7 +4312,10 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("head", help="exact current PR HEAD SHA-40")
         command.add_argument("plan", type=Path)
         command.add_argument("readiness", type=Path)
-        command.add_argument("--kind", choices=tuple(kind.value for kind in IssueKind), default="child")
+        command.add_argument(
+            "--kind", choices=tuple(kind.value for kind in IssueKind), default=None,
+            help="assert the Issue kind; when omitted, use its unique verified kind:* label",
+        )
         if verb == "sync":
             command.add_argument("--new-scope", action="store_true",
                                  help="route explicitly triaged new scope back to requirements")

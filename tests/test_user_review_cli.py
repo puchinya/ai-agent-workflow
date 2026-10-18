@@ -22,7 +22,7 @@ from p_ases.user_review import (
     feedback_snapshot_path, review_session_path, write_review_session,
 )
 from p_ases.cli import (
-    _latest_review_snapshot, _readiness_phase_blocker, _review_phase_transition, _user_review_run,
+    _latest_review_snapshot, _parser, _readiness_phase_blocker, _review_phase_transition, _user_review_run,
 )
 
 
@@ -35,9 +35,10 @@ USER_SUBJECT = UserReviewSubject(VERIFICATION_SUBJECT, READINESS.sha256).validat
 
 class UserReviewCliRegressionTests(unittest.TestCase):
     class FakeGitHub:
-        def __init__(self, phase="verification", attention=None):
+        def __init__(self, phase="verification", attention=None, kind_labels=None):
             self.phase = phase
             self.attention = attention
+            self.kind_labels = list(kind_labels if kind_labels is not None else ["kind:child"])
             self.label_writes = []
             self.lose_next_label_response = False
             self.issue_reads = 0
@@ -47,7 +48,8 @@ class UserReviewCliRegressionTests(unittest.TestCase):
             self.issue_reads += 1
             if self.issue_reads == self.add_attention_on_issue_read:
                 self.attention = "blocked"
-            labels = [{"name": "kind:child"}, {"name": f"phase:{self.phase}"}]
+            labels = ([{"name": name} for name in self.kind_labels]
+                      + [{"name": f"phase:{self.phase}"}])
             if self.attention is not None:
                 labels.append({"name": f"attention:{self.attention}"})
             return {"number": 31, "state": "open", "pull_request": None, "labels": labels}
@@ -71,7 +73,7 @@ class UserReviewCliRegressionTests(unittest.TestCase):
 
     @staticmethod
     def _run_review(root, github, verb, *, readiness=READINESS, current_adc=None,
-                    final_adc=None, requested_head=HEAD):
+                    final_adc=None, requested_head=HEAD, requested_kind=None):
         verified_adc = current_adc or SimpleNamespace(
             pointer=SimpleNamespace(state="approved", comment_id=5, sha256="f" * 64),
         )
@@ -79,9 +81,12 @@ class UserReviewCliRegressionTests(unittest.TestCase):
         def feedback(_github, subject, *, observed_at):
             return FeedbackSnapshot(subject, (), (), observed_at).validate()
 
-        args = SimpleNamespace(verb=verb, issue=31, pr=37, head=requested_head,
-                               plan=root / "plan.json", readiness=root / "readiness.json",
-                               kind="child", new_scope=False)
+        argv = ["user-review", verb, "31", "37", requested_head,
+                str(root / "plan.json"), str(root / "readiness.json"),
+                "--repo", "octo/repo", "--root", str(root)]
+        if requested_kind is not None:
+            argv.extend(["--kind", requested_kind])
+        args = _parser().parse_args(argv)
         output = io.StringIO()
         with patch("p_ases.cli._approved_issue_adc", side_effect=lambda gh, _n, _r: (gh.issue(31), verified_adc)), \
                 patch("p_ases.cli.verify_adc", return_value=final_adc or verified_adc), \
@@ -96,6 +101,77 @@ class UserReviewCliRegressionTests(unittest.TestCase):
                 contextlib.redirect_stdout(output):
             status = _user_review_run(args, "octo/repo", root, github)
         return status, json.loads(output.getvalue()), transition
+
+    def test_user_review_parser_leaves_kind_unset_unless_explicitly_requested(self):
+        for verb in ("start", "sync", "status"):
+            with self.subTest(verb=verb):
+                args = _parser().parse_args([
+                    "user-review", verb, "31", "37", HEAD, "plan.json", "readiness.json",
+                ])
+                self.assertIsNone(args.kind)
+                explicit = _parser().parse_args([
+                    "user-review", verb, "31", "37", HEAD, "plan.json", "readiness.json",
+                    "--kind", "single",
+                ])
+                self.assertEqual(explicit.kind, "single")
+
+    def test_single_issue_omitted_kind_starts_and_syncs_from_issue_authority(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            github = self.FakeGitHub(phase="verification", kind_labels=["kind:single"])
+            status, result, transition = self._run_review(root, github, "start")
+            self.assertEqual((status, result["status"]), (2, "PENDING"))
+            self.assertTrue(review_session_path(root, USER_SUBJECT).is_file())
+            self.assertEqual(github.phase, "user-review")
+            self.assertEqual(github.kind_labels, ["kind:single"])
+            self.assertEqual(github.label_writes, [["kind:single", "phase:user-review"]])
+            transition.assert_called_once()
+
+            status, result, transition = self._run_review(root, github, "sync")
+            self.assertEqual((status, result["status"]), (2, "PENDING"))
+            self.assertEqual(github.phase, "user-review")
+            self.assertEqual(len(github.label_writes), 1)
+            transition.assert_called_once()
+
+    def test_child_issue_omitted_kind_remains_compatible(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            github = self.FakeGitHub(phase="verification", kind_labels=["kind:child"])
+            status, result, _transition = self._run_review(root, github, "start")
+            self.assertEqual((status, result["status"]), (2, "PENDING"))
+            self.assertEqual(github.kind_labels, ["kind:child"])
+            self.assertEqual(github.label_writes, [["kind:child", "phase:user-review"]])
+
+    def test_explicit_kind_mismatch_blocks_before_session_snapshot_result_or_label_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            github = self.FakeGitHub(phase="verification", kind_labels=["kind:single"])
+            status, result, transition = self._run_review(
+                root, github, "start", requested_kind="child",
+            )
+            self.assertEqual(status, 2)
+            self.assertEqual(result["status"], "BLOCKED")
+            self.assertIn("--kind differs", " ".join(result["reasons"]))
+            self.assertEqual(list(root.rglob("*")), [])
+            self.assertEqual(github.label_writes, [])
+            transition.assert_not_called()
+
+    def test_malformed_or_duplicate_kind_labels_block_before_any_write(self):
+        cases = (
+            ("malformed", ["kind:singel"]),
+            ("duplicate", ["kind:single", "kind:child"]),
+        )
+        for name, kind_labels in cases:
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                github = self.FakeGitHub(phase="verification", kind_labels=kind_labels)
+                status, result, transition = self._run_review(root, github, "start")
+                self.assertEqual(status, 2)
+                self.assertEqual(result["status"], "BLOCKED")
+                self.assertFalse(review_session_path(root, USER_SUBJECT).exists())
+                self.assertEqual(list(root.rglob("*")), [])
+                self.assertEqual(github.label_writes, [])
+                transition.assert_not_called()
 
     def test_start_sync_status_reaches_pending_and_preserves_session_across_interruption(self):
         with tempfile.TemporaryDirectory() as directory:

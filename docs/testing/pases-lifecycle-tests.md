@@ -57,6 +57,8 @@
     - [2.23.1 ORA-UR-008 Expected result](#2231-ora-ur-008-expected-result)
   - [2.24 TST-UR-009 Attention-safe User Review transition and E2E recovery](#224-tst-ur-009-attention-safe-user-review-transition-and-e2e-recovery)
     - [2.24.1 ORA-UR-009 Expected result](#2241-ora-ur-009-expected-result)
+  - [2.25 TST-UR-010 Issue-authoritative User Review kind](#225-tst-ur-010-issue-authoritative-user-review-kind)
+    - [2.25.1 ORA-UR-010 Expected result](#2251-ora-ur-010-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -109,6 +111,8 @@
 - [ORA-UR-008](#ora-ur-008) — 2.23.1 ORA-UR-008 Expected result
 - [TST-UR-009](#tst-ur-009) — 2.24 TST-UR-009 Attention-safe User Review transition and E2E recovery
 - [ORA-UR-009](#ora-ur-009) — 2.24.1 ORA-UR-009 Expected result
+- [TST-UR-010](#tst-ur-010) — 2.25 TST-UR-010 Issue-authoritative User Review kind
+- [ORA-UR-010](#ora-ur-010) — 2.25.1 ORA-UR-010 Expected result
 <!-- heading-map:end -->
 
 
@@ -408,3 +412,15 @@ Every blocker prevents Readiness PASS and User Review start. A single/child Read
 #### 2.24.1 ORA-UR-009 Expected result
 
 Attention present at a gate or malformed attention state blocks new Readiness PASS and User Review evidence writes; attention is never cleared by this path. If attention appears after session creation, the immutable session remains available for recovery, but the snapshot/result and Phase label update are blocked. A valid verification-phase start creates one session and feedback evidence, changes the actual Issue label to `phase:user-review`, returns `PENDING` with exit code 2, and records no Owner approval. Retrying with the exact existing session preserves `started_at` and issues no additional label PUT. If the first PUT response is lost after it applied, exact Issue readback confirms the intended kind/phase/attention and full label set; a retry resumes as PENDING without another write. Stale HEAD, ADC, or Readiness is blocked and cannot reuse an old session/snapshot/result as current. No User Review decision is inferred.
+
+<a id="tst-ur-010"></a>
+<a id="tst-ur-010-issue-authoritative-user-review-kind"></a>
+### 2.25 TST-UR-010 Issue-authoritative User Review kind
+
+**Setup and action:** Parse `user-review start`, `sync`, and `status` with and without `--kind`. Through `_user_review_run`, use exact-subject Readiness PASS and mutable Issue fixtures for `kind:single` and `kind:child`; omit `--kind` and exercise start then sync. Also request `--kind child` for a single Issue and inject unknown or duplicate `kind:*` labels. Observe parser values, status/exit code, immutable session, snapshot/result files, exact Issue labels, and label PUT count.
+
+<a id="ora-ur-010"></a>
+<a id="ora-ur-010-expected-result"></a>
+#### 2.25.1 ORA-UR-010 Expected result
+
+When `--kind` is omitted, the unique verified GitHub Issue `kind:*` label controls the User Review kind. Both `single` and `child` start as PENDING with exit code 2, create the exact session and feedback evidence, and update the actual phase label once; sync reuses the session and performs zero further label PUTs. An explicit mismatched `--kind`, an unknown kind value, or malformed/duplicate GitHub kind labels block before session, snapshot, result, or label writes. The verified Issue kind is passed to the phase-transition validator. Parent Issues remain outside ordinary User Review.
