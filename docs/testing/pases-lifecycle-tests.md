@@ -2,7 +2,7 @@
 <!-- agent-doc-schema: 2 -->
 # P-ASES Human Review and Integration Test Specification
 
-- Status: Existing cases approved for Issues #31 and #42. The current approved Issue #63 ADC is comment #6271832228 (SHA-256 `221e62a86a5b682237948abec1ee287d24d3808a9ad4fa22960be2c869fdcd05`), pointer #6271833303, with completed Phase V2 pair #6272033112/#6272087499. Issue #63 remains OPEN at `phase:requirements`; no phase-label transition has occurred. Historical receipt #6256068401 belongs to the prior ADC/document/HEAD generation and cannot be reused. The adopted epoch refresh, current-generation receipts, and downstream gates remain outstanding. TST-UR-007 and TST-UR-008 specify host-owned Independent Review handoff and automatic User Review start; TST-UR-009 covers attention-safe Readiness/User Review transitions and interruption recovery.
+- Status: Existing cases approved for Issues #31 and #42. The current approved Issue #63 ADC is comment #6271832228 (SHA-256 `221e62a86a5b682237948abec1ee287d24d3808a9ad4fa22960be2c869fdcd05`), pointer #6271833303, with completed Phase V2 pair #6272033112/#6272087499. Issue #63 is OPEN at `phase:specification`; current-generation specification receipt #6272672508 binds commit `15d4cda596ca3b29fa7bbdd7de4b03f66817aab2`. The adopted epoch refresh completed with current PRBinding digest `55ebf90537af1aa65fc4703267d908d71f1e144fa81f739e7b197d23b430839f`. Design/ready receipts and downstream gates remain outstanding. TST-UR-007 and TST-UR-008 specify host-owned Independent Review handoff and automatic User Review start; TST-UR-009 covers attention-safe Readiness/User Review transitions and interruption recovery.
 - Owning specification: ../specs/workflow-spec.md
 
 <!-- contents:start -->

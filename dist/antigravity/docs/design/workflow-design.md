@@ -2,7 +2,7 @@
 <!-- agent-doc-schema: 2 -->
 # Portable Workflow Design
 
-- Status: The current approved Issue #63 ADC is comment #6271832228 (SHA-256 `221e62a86a5b682237948abec1ee287d24d3808a9ad4fa22960be2c869fdcd05`), pointer #6271833303, with its Phase V2 pair #6272033112/#6272087499 completed. Issue #63 remains OPEN at `phase:requirements`; no phase-label transition has occurred. Historical specification receipt #6256068401 belongs to the prior ADC/document/HEAD generation and cannot be reused. The existing adopted epoch still needs its forward ADC/PRBinding refresh, current-generation Phase receipts, and ordinary Verification, Acceptance, Self-Audit, Independent Review, Readiness, and User Review gates.
+- Status: The current approved Issue #63 ADC is comment #6271832228 (SHA-256 `221e62a86a5b682237948abec1ee287d24d3808a9ad4fa22960be2c869fdcd05`), pointer #6271833303, with its Phase V2 pair #6272033112/#6272087499 completed. Issue #63 is OPEN at `phase:specification`. Current-generation specification receipt #6272672508 binds commit `15d4cda596ca3b29fa7bbdd7de4b03f66817aab2`; the earlier receipt #6256068401 belongs to the prior ADC/document/HEAD generation and cannot be reused. The adopted epoch refresh completed with current PRBinding digest `55ebf90537af1aa65fc4703267d908d71f1e144fa81f739e7b197d23b430839f`. Design/ready receipts and ordinary Verification, Acceptance, Self-Audit, Independent Review, Readiness, and User Review gates remain outstanding.
 - Owning Issue: [Issue #7](https://github.com/puchinya/ai-agent-workflow/issues/7)
 - Related specification: [Portable Workflow Specification](../specs/workflow-spec.md)
 
