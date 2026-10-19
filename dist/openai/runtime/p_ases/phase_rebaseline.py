@@ -227,7 +227,7 @@ def _approved_generations(github: Any) -> tuple[VerifiedADC, ...]:
             "automatic phase rebaseline",
             "automatic #63 Phase Intent/Applied path",
             "`PHASE_REBASE` decisionは要求せず",
-            "必須のIntent/Applied技術記録を残す",
+            "必須の技術記録を残す",
         )
         if ("REQ-F01-015" not in current.contract.requirement_ids
                 or any(term not in successor_text for term in required_authority)):

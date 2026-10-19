@@ -41,7 +41,7 @@ CURRENT_ADC_SHA256 = "f1cab9b9edca34d4e80c486642059881b62abd5d95b993999a52494494
 def verified(comment_id: int, sha256: str, state: str = "approved") -> SimpleNamespace:
     pointer = ADCPointer(comment_id, sha256, 100, state)
     authority = ("REQ-F01-015 automatic phase rebaseline automatic #63 Phase Intent/Applied path "
-                 "`PHASE_REBASE` decisionは要求せず、必須のIntent/Applied技術記録を残す")
+                 "`PHASE_REBASE` decisionは要求せず、必須の技術記録を残す")
     return SimpleNamespace(pointer=pointer, contract=SimpleNamespace(
         sha256=sha256, content=authority.encode("utf-8"), requirement_ids=("REQ-F01-015",)))
 
@@ -265,7 +265,7 @@ class PhaseRebaselineTests(unittest.TestCase):
     def test_published_successor_adc_authority_matches_phase_executor(self):
         github = FakeGitHub()
         github.next_comment_id = 6228771900
-        raw = (ROOT / "docs/contracts/issue-63-successor-adc-draft.md").read_bytes()
+        raw = (ROOT / "docs/contracts/issue-63-ruleset-activation-ownership-successor.md").read_bytes()
         successor = SimpleNamespace(
             pointer=ADCPointer(6228771810, hashlib.sha256(raw).hexdigest(), len(raw), "approved"),
             contract=parse_adc(raw, REPOSITORY, 63),
