@@ -91,7 +91,8 @@ class AdminAuthenticationTests(unittest.TestCase):
 
         def fake_run(argv, **kwargs):
             child_environments.append(dict(kwargs["env"]))
-            return Mock(returncode=0, stdout="{}", stderr="")
+            stdout = '{"data":{}}' if "graphql" in argv else "{}"
+            return Mock(returncode=0, stdout=stdout, stderr="")
 
         parent_auth = {
             "GH_TOKEN": "ambient-gh", "GITHUB_TOKEN": "ambient-github",
@@ -106,6 +107,7 @@ class AdminAuthenticationTests(unittest.TestCase):
                 getpass_fn=lambda _prompt: token, github_factory=GitHub,
             ) as github:
                 github.request("GET", "user")
+                github._graphql("query { viewer { login } }", {})
                 self.assertEqual({key: os.environ.get(key) for key in parent_auth}, parent_before)
 
             GitHub("puchinya/ai-agent-workflow").request("GET", "user")
@@ -114,7 +116,11 @@ class AdminAuthenticationTests(unittest.TestCase):
         self.assertNotIn("GITHUB_TOKEN", child_environments[0])
         self.assertNotIn("GH_ENTERPRISE_TOKEN", child_environments[0])
         self.assertNotIn("GITHUB_ENTERPRISE_TOKEN", child_environments[0])
-        self.assertNotIn(token, child_environments[1].values())
+        self.assertEqual(child_environments[1].get("GH_TOKEN"), token)
+        self.assertNotIn("GITHUB_TOKEN", child_environments[1])
+        self.assertNotIn("GH_ENTERPRISE_TOKEN", child_environments[1])
+        self.assertNotIn("GITHUB_ENTERPRISE_TOKEN", child_environments[1])
+        self.assertNotIn(token, child_environments[2].values())
         self.assertNotIn(token, repr(github))
 
     def test_device_mode_uses_one_private_config_for_gh_children(self):
@@ -133,7 +139,8 @@ class AdminAuthenticationTests(unittest.TestCase):
 
         def fake_api_run(argv, **kwargs):
             calls.append((list(argv), dict(kwargs["env"]), kwargs.get("stdin")))
-            return Mock(returncode=0, stdout="{}", stderr="")
+            stdout = '{"data":{}}' if "graphql" in argv else "{}"
+            return Mock(returncode=0, stdout=stdout, stderr="")
 
         with self.local_environment(), patch.dict(os.environ, token_env), \
              patch("p_ases.admin_auth._secure_private_config", side_effect=self.secure_test_config), \
@@ -151,12 +158,16 @@ class AdminAuthenticationTests(unittest.TestCase):
                     self.assertEqual(stat.S_IMODE(config_dir.stat().st_mode), 0o700)
                 self.assertEqual(github._admin_config_dir, str(config_dir))
                 github.request("GET", "user")
+                github._graphql("query { viewer { login } }", {})
                 self.assertEqual(calls[1][0], ["gh", "api", "--method", "GET", "user"])
                 self.assertEqual(calls[1][1]["GH_CONFIG_DIR"], str(config_dir))
+                self.assertEqual(calls[2][0], ["gh", "api", "graphql", "--input", "-"])
+                self.assertEqual(calls[2][1]["GH_CONFIG_DIR"], str(config_dir))
                 self.assertEqual({key: os.environ.get(key) for key in token_env}, parent_before)
                 for _name in ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"):
                     self.assertNotIn(_name, calls[0][1])
                     self.assertNotIn(_name, calls[1][1])
+                    self.assertNotIn(_name, calls[2][1])
                 self.assertNotIn("--token", calls[0][0])
                 self.assertEqual(calls[0][0], [
                     "gh", "auth", "login", "--hostname", "github.com", "--web",

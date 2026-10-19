@@ -64,17 +64,7 @@ class GitHub:
                 raise GitHubError("GitHub API payload must be an object")
             argv.extend(["--input", "-"])
             input_text = json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
-        child_env = os.environ.copy()
-        if self._admin_token_override is not None and self._admin_config_dir is not None:
-            raise GitHubError("Admin client cannot combine token and isolated gh-config authentication")
-        if self._admin_token_override is not None:
-            for name in ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"):
-                child_env.pop(name, None)
-            child_env["GH_TOKEN"] = self._admin_token_override
-        elif self._admin_config_dir is not None:
-            for name in ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"):
-                child_env.pop(name, None)
-            child_env["GH_CONFIG_DIR"] = self._admin_config_dir
+        child_env = self._child_environment()
         started = time.perf_counter()
         self._api_request_count += 1
         try:
@@ -99,6 +89,21 @@ class GitHub:
             return json.loads(result.stdout)
         except json.JSONDecodeError as exc:
             raise GitHubError(f"GitHub API {verb} {endpoint} returned invalid JSON") from exc
+
+    def _child_environment(self) -> dict[str, str]:
+        """Apply this client's scoped auth boundary to every gh API subprocess."""
+        child_env = os.environ.copy()
+        if self._admin_token_override is not None and self._admin_config_dir is not None:
+            raise GitHubError("Admin client cannot combine token and isolated gh-config authentication")
+        if self._admin_token_override is not None:
+            for name in ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"):
+                child_env.pop(name, None)
+            child_env["GH_TOKEN"] = self._admin_token_override
+        elif self._admin_config_dir is not None:
+            for name in ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"):
+                child_env.pop(name, None)
+            child_env["GH_CONFIG_DIR"] = self._admin_config_dir
+        return child_env
 
     def _paginate(self, endpoint: str) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
@@ -361,7 +366,7 @@ class GitHub:
             result = subprocess.run(
                 ["gh", "api", "graphql", "--input", "-"], input=body, text=True,
                 encoding="utf-8", errors="replace", check=False,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self._child_environment(),
             )
         except OSError as exc:
             raise GitHubError(f"could not start GitHub GraphQL client: {exc}") from exc
