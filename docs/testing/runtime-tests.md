@@ -2,7 +2,7 @@
 <!-- agent-doc-schema: 2 -->
 # Runtime and CLI Test Specification
 
-- Status: TST-RT-018 and TST-RT-019 remain draft cases. ADC #6248703643 remains the current approved successor and its Phase V2 rebaseline is complete. The artifact-impact successor candidate is not yet approved and requires a separate exact-byte `ADC_SUPERSEDE` decision, publication, its own V2 pair, and adopted-epoch refresh; generation-scoped ordinary Phase receipts and downstream User Review/Delivery evidence remain outstanding.
+- Status: TST-RT-018, TST-RT-019, and TST-RT-020 remain draft cases. The current approved Issue #63 ADC is comment #6255961241 (SHA-256 `2c9eeae00c2ff854334f13cd7bd7b55b44ad8d458eb840eae507cbcff7f00208`), pointer #6255961701, with Phase V2 pair #6255967306/#6255987837. Issue #63 remains OPEN at `phase:requirements`. Historical receipt #6256068401 is tied to the prior documents/HEAD and cannot be reused after this amendment. A new exact-byte ADC successor, Phase V2 generation, adoption refresh, current-generation receipts, and downstream Verification/Review/Delivery evidence remain outstanding.
 - Owning specification: ../specs/
 
 The stable RT test IDs preserve the earlier traceability graph. Current CLI cases use the namespaced P-ASES routes. Procedures for APIs that the Runtime Specification marks legacy are regression conditions for retained internal behavior, not public-command compatibility requirements.
@@ -222,13 +222,13 @@ Only the exact current approved ADC authorizes implementation work; no caller bo
 <a id="tst-rt-010-review-and-delivery-evidence"></a>
 ### 2.10 TST-RT-010 Review and delivery evidence
 
-**Setup and action:** Supply current and stale Verification, Acceptance, self-Audit, independent review, User Review, and Required Check records to the delivery gate.
+**Setup and action:** Supply current and stale Verification, Acceptance, self-Audit, independent review, User Review, and Required Check records to the delivery gate. Cover `solo_owner` and external-reviewer modes. For `solo_owner`, make Ruleset inventory/effective-policy endpoints fail with 403 or remain unimplemented and assert Final Delivery makes no call to them. Verify normal `PASES_FINAL_DELIVERY_V3` has a null branch-policy digest and exact User Review/Required Check evidence. Verify V1 and V2 payload hashes remain unchanged. For external-reviewer mode, retain its formal GitHub review and legacy branch-protection behavior without reading Ruleset inventory. Exercise the owner merge gate with valid V1/V2/V3 results and reject malformed schema/evidence shapes. Activation tests separately retain strict failure for Ruleset/policy 403.
 
 <a id="ora-rt-010"></a>
 <a id="ora-rt-010-expected-result"></a>
 #### 2.10.1 ORA-RT-010 Expected result
 
-Delivery accepts only records bound to the same current PR HEAD and keeps missing or stale gates visible. It performs no merge.
+Delivery accepts only records bound to the same current PR HEAD and keeps missing or stale P-ASES gates visible. Ordinary Final Delivery does not read or require Ruleset state; solo-owner readiness is represented by V3 without a Ruleset-policy digest. The owner merge gate accepts valid V3 and legacy V1/V2 shapes, but GitHub remains the final branch/merge-policy enforcer. Activation retains strict Ruleset/policy verification and fails closed on 403. Final Delivery performs no merge.
 
 <a id="tst-rt-011"></a>
 <a id="tst-rt-011-failure-logging-and-cleanup"></a>
@@ -340,7 +340,7 @@ For PR merge, keep separate exact-HEAD grants for the Issue #57 Setup PR and PR 
 
 Only a direct same-conversation explicit user-role event bound to the current exact scope can produce an operator-reported V3 grant. The runtime reports `chat_confirmed_gh_v1` without claiming a signed chat attestation. Owner and repository IDs, actual GitHub actor, comment URLs, operation and predecessor are independently checked; the read-only verifier principal may differ from the pinned owner. CLI/flags/files/vague continuation cannot authorize a write. If user-role provenance is unavailable, V3 is unavailable and no carrier is written. V1/V2 remain read-compatible and unmodified.
 
-V3 User Review enters the complete-session/snapshot evaluator and carries exact session, Readiness, ADC, HEAD, prior feedback, plan and scope. Final Delivery re-reads the complete chain and snapshot. Ruleset requires both the V3 exact-plan owner record and exact #57 two-line comment. Setup PR and PR #64 decisions remain separate exact-HEAD authorizations. Merge is unavailable until Required Checks, independent review, User Review, Final Delivery and Activation V2 gates pass. Phase bootstrap remains automatic after approved ADC publication with Intent/Applied only.
+V3 User Review enters the complete-session/snapshot evaluator and carries exact session, Readiness, ADC, HEAD, prior feedback, plan and scope. Final Delivery re-reads the complete chain and snapshot. Ruleset writes inside Consumer Activation require both the V3 exact-plan owner record and exact #57 two-line comment. Setup PR and PR #64 decisions remain separate exact-HEAD authorizations. PR #64 merge requires Required Checks, independent review, User Review, Final Delivery, and its separate merge authorization; Activation V2 is post-merge and does not gate PR #64. GitHub's native branch and merge constraints are enforced at merge time. Phase bootstrap remains automatic after approved ADC publication with Intent/Applied only.
 
 <a id="tst-rt-020"></a>
 ### 2.20 TST-RT-020 One-time Issue #63 / PR #64 execution adoption

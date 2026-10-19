@@ -2658,9 +2658,31 @@ def _owner_merge_gate(args: argparse.Namespace, root: Path, github: GitHub,
         final = json.loads(output.getvalue())
     except json.JSONDecodeError as exc:
         raise OwnerAuthorizationError("Final Delivery did not return a readable gate result") from exc
+    final_schema = final.get("schema") if isinstance(final, dict) else None
+    final_policy_shape_ok = False
+    if isinstance(final, dict):
+        if final_schema == "PASES_FINAL_DELIVERY_V3":
+            final_policy_shape_ok = (
+                final.get("review_mode") == "solo_owner"
+                and final.get("branch_protection_sha256") is None
+                and re.fullmatch(r"[0-9a-f]{64}", str(final.get("user_review_sha256", ""))) is not None
+                and re.fullmatch(r"[0-9a-f]{64}", str(final.get("required_check_result_sha256", ""))) is not None
+            )
+        elif final_schema in {"PASES_FINAL_DELIVERY_V1", "PASES_FINAL_DELIVERY_V2"}:
+            protection_sha = final.get("branch_protection_sha256")
+            final_policy_shape_ok = (
+                isinstance(protection_sha, str)
+                and re.fullmatch(r"[0-9a-f]{64}", protection_sha) is not None
+                and "review_mode" not in final
+                and (final_schema == "PASES_FINAL_DELIVERY_V1"
+                     and "current_base_advance_sha256" not in final
+                     or final_schema == "PASES_FINAL_DELIVERY_V2"
+                     and re.fullmatch(r"[0-9a-f]{64}", str(final.get("current_base_advance_sha256", ""))) is not None)
+            )
     if (exit_code != 0 or not isinstance(final, dict)
             or final.get("status") != "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION"
             or final.get("merge_authorized") is not False
+            or not final_policy_shape_ok
             or not isinstance(final.get("subject"), dict)
             or final["subject"].get("repository") != "puchinya/ai-agent-workflow"
             or final["subject"].get("issue_number") != 63
@@ -2669,6 +2691,7 @@ def _owner_merge_gate(args: argparse.Namespace, root: Path, github: GitHub,
             or final.get("blockers")):
         raise OwnerAuthorizationError("PR #64 Final Delivery gates are not PASS for this exact merge plan")
     return {"status": final["status"], "final_delivery_sha256": final.get("final_delivery_sha256"),
+            "final_delivery_schema": final_schema,
             "subject": final["subject"]}
 
 
@@ -3331,16 +3354,7 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
             blockers.append("#29 Verification is stale or is not PASS for the exact subject")
         raw_pr = github.pull_request(args.pr)
         aggregate = github.pull_review_decision(args.pr)
-        ruleset_plan = None
-        policy_proof = None
-        if review_mode == "solo_owner":
-            ruleset_plan = build_ruleset_plan(root, github)
-            policy_proof = ruleset_plan.get("policy_proof")
-            if ruleset_plan.get("blockers") or ruleset_plan.get("diff", {}).get("operation") != "noop":
-                blockers.append("current managed Ruleset is not in exact owned no-op state")
-            protection = ruleset_plan.get("policy_evidence")
-        else:
-            protection = github.branch_protection(pr["base_ref"])
+        protection = github.branch_protection(pr["base_ref"]) if review_mode == "external_reviewer" else None
         required_names = tuple(name for name, _app_id in profile.required_checks)
         result = evaluate_final_delivery(
             subject=subject, user_review=current_review, verification=verification,
@@ -3348,10 +3362,7 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
             current_pr_draft=raw_pr.get("draft"), github_review_decision=aggregate.get("reviewDecision"),
             github_review_head_sha40=aggregate.get("headRefOid"), branch_protection=protection,
             required_check_names=required_names, mergeable=raw_pr.get("mergeable"),
-            review_mode=review_mode, effective_branch_policy=policy_proof,
-            required_check_identities=tuple((name, app_id) for name, app_id in profile.required_checks
-                                            if app_id is not None),
-            expected_policy_branch=pr["base_ref"],
+            review_mode=review_mode,
             current_base_advance=current_base_evidence,
             current_pr_base_sha40=pr["base_sha"],
             frozen_base_sha40=frozen_base_sha,
@@ -3372,15 +3383,7 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
             blockers.append("Activation current-base evidence changed during Final Delivery")
         if github.pull_review_decision(args.pr) != aggregate:
             blockers.append("GitHub formal review decision or PR HEAD changed during Final Delivery")
-        if review_mode == "solo_owner":
-            final_ruleset_plan = build_ruleset_plan(root, github)
-            if (final_ruleset_plan.get("plan_sha256") != ruleset_plan.get("plan_sha256")
-                    or final_ruleset_plan.get("policy_proof") != policy_proof
-                    or final_ruleset_plan.get("policy_evidence") != protection
-                    or final_ruleset_plan.get("blockers")
-                    or final_ruleset_plan.get("diff", {}).get("operation") != "noop"):
-                blockers.append("managed Ruleset or effective policy changed during Final Delivery")
-        elif github.branch_protection(pr["base_ref"]) != protection:
+        if review_mode == "external_reviewer" and github.branch_protection(pr["base_ref"]) != protection:
             blockers.append("branch protection changed during Final Delivery")
         final_readiness = read_readiness(args.readiness)
         final_session = read_review_session(session_path)
@@ -3426,7 +3429,8 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
                                          result.required_check_result_sha256,
                                          result.branch_protection_sha256,
                                          tuple((*result.reasons, *blockers)),
-                                         result.current_base_advance_sha256).validate()
+                                         result.current_base_advance_sha256,
+                                         result.review_mode).validate()
         path = root / ".p_ases" / "final-delivery" / str(args.issue) / f"{result.sha256}.json"
         _write_immutable(path, _canonical(result.as_dict()) + b"\n", root=root)
         _json({**result.as_dict(), "subject_sha256": subject.sha256, "path": str(path),

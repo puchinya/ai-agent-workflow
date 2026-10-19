@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -25,6 +27,28 @@ PROTECTION = {
     "required_status_checks": {"contexts": ["ci"]},
     "required_pull_request_reviews": {"required_approving_review_count": 1},
 }
+SOLO_SUBJECT = VerificationSubject(
+    "puchinya/ai-agent-workflow", 63, 64, 90064, "b" * 64, "c" * 64, HEAD,
+).validate()
+SOLO_READINESS = ReadinessResult("PASS", SOLO_SUBJECT, (), ("d" * 64,), "e" * 64).validate()
+SOLO_USER_SUBJECT = UserReviewSubject(SOLO_SUBJECT, SOLO_READINESS.sha256).validate()
+SOLO_USER_REVIEW = UserReviewResult(
+    "APPROVED", SOLO_USER_SUBJECT, "f" * 64, (), "user-review", "user-review-relay:55", (),
+    {
+        "evidence_type": "PASES_USER_REVIEW_DECISION_V3",
+        "evidence_channel": "chat_confirmed_gh_v1",
+        "comment_id": 55,
+        "body_sha256": "1" * 64,
+        "owner_id": 3744776,
+        "created_at": "2026-10-18T00:00:00Z",
+        "review_session_sha256": "2" * 64,
+        "predecessor_comment_id": None,
+        "feedback_sha256": "3" * 64,
+        "plan_sha256": "4" * 64,
+        "approval_scope_sha256": "5" * 64,
+    },
+).validate()
+SOLO_VERIFICATION = VerificationResult("PASS", SOLO_SUBJECT, (), "1" * 64, "2" * 64, ("3" * 64,), ()).validate()
 
 
 def evaluate(**overrides):
@@ -44,6 +68,21 @@ class FinalDeliveryTests(unittest.TestCase):
         self.assertEqual(result.status, "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION")
         self.assertFalse(result.as_dict()["merge_authorized"])
         self.assertEqual(len(result.sha256), 64)
+        self.assertEqual(result.as_dict()["schema"], "PASES_FINAL_DELIVERY_V1")
+        self.assertNotIn("review_mode", result.as_dict())
+
+    def test_v1_and_v2_digest_payloads_remain_byte_compatible(self):
+        result = evaluate()
+        expected_v1 = {
+            "branch_protection_sha256": result.branch_protection_sha256,
+            "required_check_result_sha256": result.required_check_result_sha256,
+            "reasons": [], "schema": "PASES_FINAL_DELIVERY_V1",
+            "status": result.status, "subject": SUBJECT.as_dict(),
+            "user_review_sha256": result.user_review_sha256, "merge_authorized": False,
+        }
+        canonical_v1 = json.dumps(expected_v1, ensure_ascii=False, sort_keys=True,
+                                  separators=(",", ":")).encode("utf-8")
+        self.assertEqual(result.sha256, hashlib.sha256(canonical_v1).hexdigest())
 
     def test_github_review_branch_protection_or_exact_head_failure_blocks(self):
         cases = (
@@ -95,6 +134,68 @@ class FinalDeliveryTests(unittest.TestCase):
         self.assertEqual(result.status, "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION")
         self.assertEqual(result.current_base_advance_sha256, evidence.sha256)
         self.assertEqual(result.as_dict()["schema"], "PASES_FINAL_DELIVERY_V2")
+        expected_v2 = {
+            "branch_protection_sha256": result.branch_protection_sha256,
+            "required_check_result_sha256": result.required_check_result_sha256,
+            "reasons": [], "schema": "PASES_FINAL_DELIVERY_V2",
+            "status": result.status, "subject": SUBJECT.as_dict(),
+            "user_review_sha256": result.user_review_sha256, "merge_authorized": False,
+            "current_base_advance_sha256": evidence.sha256,
+        }
+        canonical_v2 = json.dumps(expected_v2, ensure_ascii=False, sort_keys=True,
+                                  separators=(",", ":")).encode("utf-8")
+        self.assertEqual(result.sha256, hashlib.sha256(canonical_v2).hexdigest())
+
+    def test_solo_owner_uses_v3_without_reading_or_claiming_ruleset_policy(self):
+        result = evaluate_final_delivery(
+            subject=SOLO_SUBJECT, user_review=SOLO_USER_REVIEW, verification=SOLO_VERIFICATION,
+            current_pr_head_sha40=HEAD, current_pr_state="open", current_pr_draft=False,
+            github_review_decision=None, github_review_head_sha40=None,
+            branch_protection=None, required_check_names=("ci",), mergeable=True,
+            review_mode="solo_owner",
+        )
+        value = result.as_dict()
+        self.assertEqual(result.status, "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION")
+        self.assertEqual(value["schema"], "PASES_FINAL_DELIVERY_V3")
+        self.assertEqual(value["review_mode"], "solo_owner")
+        self.assertIsNone(value["branch_protection_sha256"])
+        self.assertFalse(value["merge_authorized"])
+        expected = {
+            "branch_protection_sha256": None,
+            "required_check_result_sha256": result.required_check_result_sha256,
+            "reasons": [], "schema": "PASES_FINAL_DELIVERY_V3",
+            "status": result.status, "subject": SOLO_SUBJECT.as_dict(),
+            "user_review_sha256": result.user_review_sha256, "merge_authorized": False,
+            "review_mode": "solo_owner",
+        }
+        canonical = json.dumps(expected, ensure_ascii=False, sort_keys=True,
+                               separators=(",", ":")).encode("utf-8")
+        self.assertEqual(result.sha256, hashlib.sha256(canonical).hexdigest())
+
+    def test_solo_owner_still_requires_all_pases_gates_and_exact_current_head(self):
+        base = dict(
+            subject=SOLO_SUBJECT, user_review=SOLO_USER_REVIEW, verification=SOLO_VERIFICATION,
+            current_pr_head_sha40=HEAD, current_pr_state="open", current_pr_draft=False,
+            github_review_decision=None, github_review_head_sha40=None,
+            branch_protection=None, required_check_names=("ci",), mergeable=True,
+            review_mode="solo_owner",
+        )
+        for overrides in (
+            {"verification": None},
+            {"user_review": None},
+            {"current_pr_head_sha40": "f" * 40},
+            {"mergeable": False},
+        ):
+            with self.subTest(overrides=overrides):
+                self.assertEqual(evaluate_final_delivery(**(base | overrides)).status, "BLOCKED")
+        self.assertEqual(evaluate(branch_protection=None).status, "BLOCKED")
+
+    def test_ready_without_branch_policy_cannot_use_legacy_schema(self):
+        with self.assertRaisesRegex(ValueError, "status and evidence"):
+            FinalDeliveryResult(
+                "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION", SOLO_SUBJECT, "f" * 64,
+                "1" * 64, None, (),
+            ).validate()
 
 
 if __name__ == "__main__":

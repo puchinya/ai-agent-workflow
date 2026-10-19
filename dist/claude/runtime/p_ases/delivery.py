@@ -194,6 +194,7 @@ class FinalDeliveryResult:
     branch_protection_sha256: str | None
     reasons: tuple[str, ...]
     current_base_advance_sha256: str | None = None
+    review_mode: str | None = None
 
     def validate(self) -> "FinalDeliveryResult":
         self.subject.validate()
@@ -207,12 +208,24 @@ class FinalDeliveryResult:
                 and (not isinstance(self.current_base_advance_sha256, str)
                      or not SHA256.fullmatch(self.current_base_advance_sha256))):
             raise ReadinessError("Final Delivery current-base evidence digest is invalid")
+        if self.review_mode not in {None, "solo_owner"}:
+            raise ReadinessError("Final Delivery review mode is invalid")
+        if self.review_mode == "solo_owner" and self.branch_protection_sha256 is not None:
+            raise ReadinessError("solo_owner Final Delivery V3 cannot claim Ruleset policy evidence")
         if any(value is not None and (not isinstance(value, str) or not SHA256.fullmatch(value)) for value in digests):
             raise ReadinessError("Final Delivery evidence digest is invalid")
+        required_digests = digests[:2] if self.review_mode == "solo_owner" else digests
         if ((self.status == "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION") != (not self.reasons)
-                or self.status == "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION" and any(x is None for x in digests)):
+                or self.status == "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION"
+                and any(x is None for x in required_digests)):
             raise ReadinessError("Final Delivery status and evidence are inconsistent")
         return self
+
+    @property
+    def schema(self) -> str:
+        if self.review_mode == "solo_owner":
+            return "PASES_FINAL_DELIVERY_V3"
+        return "PASES_FINAL_DELIVERY_V2" if self.current_base_advance_sha256 else "PASES_FINAL_DELIVERY_V1"
 
     @property
     def sha256(self) -> str:
@@ -220,12 +233,14 @@ class FinalDeliveryResult:
         value = {"branch_protection_sha256": self.branch_protection_sha256,
                  "required_check_result_sha256": self.required_check_result_sha256,
                  "reasons": list(self.reasons),
-                 "schema": "PASES_FINAL_DELIVERY_V2" if self.current_base_advance_sha256 else "PASES_FINAL_DELIVERY_V1",
+                 "schema": self.schema,
                  "status": self.status, "subject": self.subject.as_dict(),
                  "user_review_sha256": self.user_review_sha256,
                  "merge_authorized": False}
         if self.current_base_advance_sha256 is not None:
             value["current_base_advance_sha256"] = self.current_base_advance_sha256
+        if self.review_mode == "solo_owner":
+            value["review_mode"] = self.review_mode
         return hashlib.sha256(_canonical(value)).hexdigest()
 
     def as_dict(self) -> dict[str, Any]:
@@ -235,11 +250,13 @@ class FinalDeliveryResult:
                 "merge_authorized": False,
                 "required_check_result_sha256": self.required_check_result_sha256,
                 "reasons": list(self.reasons),
-                "schema": "PASES_FINAL_DELIVERY_V2" if self.current_base_advance_sha256 else "PASES_FINAL_DELIVERY_V1",
+                "schema": self.schema,
                 "status": self.status, "subject": self.subject.as_dict(),
                 "user_review_sha256": self.user_review_sha256}
         if self.current_base_advance_sha256 is not None:
             value["current_base_advance_sha256"] = self.current_base_advance_sha256
+        if self.review_mode == "solo_owner":
+            value["review_mode"] = self.review_mode
         return value
 
 
@@ -257,14 +274,11 @@ def evaluate_final_delivery(
     required_check_names: Iterable[str],
     mergeable: bool | None,
     review_mode: str = "external_reviewer",
-    effective_branch_policy: dict[str, Any] | None = None,
-    required_check_identities: Iterable[tuple[str, int]] = (),
-    expected_policy_branch: str | None = None,
     current_base_advance: CurrentBaseAdvanceEvidence | None = None,
     current_pr_base_sha40: str | None = None,
     frozen_base_sha40: str | None = None,
 ) -> FinalDeliveryResult:
-    """Require human review, GitHub review, checks, and branch protection separately."""
+    """Require P-ASES review and check gates; GitHub applies its branch policy at merge time."""
     subject.validate()
     reasons: list[str] = []
     user_review_sha: str | None = None
@@ -294,7 +308,6 @@ def evaluate_final_delivery(
     elif current_base_advance is not None:
         reasons.append("PR base readback is missing for supplied Activation current-base evidence")
     check_names = tuple(required_check_names)
-    check_identities = tuple(required_check_identities)
     if review_mode not in {"external_reviewer", "solo_owner"}:
         reasons.append("final-delivery review mode is unknown")
     if user_review is None:
@@ -310,7 +323,8 @@ def evaluate_final_delivery(
                 review_mode != "solo_owner"
                 or (isinstance(user_review.selected_approval_evidence, dict)
                     and user_review.selected_approval_evidence.get("evidence_type")
-                    == "PASES_USER_REVIEW_DECISION_V1"
+                    in {"PASES_USER_REVIEW_DECISION_V1", "PASES_USER_REVIEW_DECISION_V2",
+                        "PASES_USER_REVIEW_DECISION_V3"}
                     and isinstance(user_review.selected_approval_event, str)
                     and user_review.selected_approval_event.startswith("user-review-relay:"))
             )
@@ -341,36 +355,9 @@ def evaluate_final_delivery(
     if (review_mode == "external_reviewer"
             and (github_review_decision != "APPROVED" or github_review_head_sha40 != subject.pr_head_sha40)):
         reasons.append("GitHub formal review decision is not APPROVED for the current HEAD")
-    branch_evidence_sha: str | None = None
-    if review_mode == "solo_owner":
-        proof = effective_branch_policy
-        if not isinstance(branch_protection, dict) or not isinstance(proof, dict):
-            reasons.append("current effective Ruleset policy could not be read")
-        else:
-            observed_checks = proof.get("required_checks")
-            expected_checks = tuple(sorted(set(check_identities)))
-            try:
-                observed = tuple(sorted((row["name"], row["app_id"])
-                                        for row in observed_checks
-                                        if isinstance(row, dict) and set(row) == {"app_id", "name"}))
-            except (TypeError, KeyError):
-                observed = ()
-            if (proof.get("status") != "VERIFIED" or proof.get("review_mode") != "solo_owner"
-                    or proof.get("repository") != subject.repository
-                    or (expected_policy_branch is not None and proof.get("branch") != expected_policy_branch)
-                    or not expected_checks or observed != expected_checks
-                    or tuple(sorted(name for name, _app_id in observed))
-                       != tuple(sorted(set(check_names)))):
-                reasons.append("effective Ruleset policy is not verified for the exact trusted checks and PR base")
-            if (proof.get("minimum_approvals") != 0 or proof.get("force_push_disabled") is not True
-                    or proof.get("bypass_actor_count") != 0 or proof.get("pull_request_required") is not True):
-                reasons.append("effective solo_owner Ruleset does not enforce the exact safe PR policy")
-            branch_evidence_sha = hashlib.sha256(_canonical({
-                "branch_policy": proof, "policy_evidence": branch_protection,
-            })).hexdigest()
-    elif not isinstance(branch_protection, dict):
+    if review_mode == "external_reviewer" and not isinstance(branch_protection, dict):
         reasons.append("GitHub branch protection could not be read")
-    else:
+    elif review_mode == "external_reviewer":
         required = tuple(sorted(set(check_names)))
         status_checks = branch_protection.get("required_status_checks")
         contexts = status_checks.get("contexts") if isinstance(status_checks, dict) else None
@@ -381,7 +368,7 @@ def evaluate_final_delivery(
                 or type(review_policy.get("required_approving_review_count")) is not int
                 or review_policy["required_approving_review_count"] < 1):
             reasons.append("branch protection does not require a formal pull-request review")
-    protection_sha = branch_evidence_sha
+    protection_sha: str | None = None
     if review_mode == "external_reviewer" and isinstance(branch_protection, dict):
         protection_sha = hashlib.sha256(_canonical(branch_protection)).hexdigest()
     if mergeable is not True:
@@ -389,7 +376,8 @@ def evaluate_final_delivery(
     status = "BLOCKED" if reasons else "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION"
     return FinalDeliveryResult(status, subject, user_review_sha, check_result_sha,
                                protection_sha, tuple(dict.fromkeys(reasons)),
-                               current_base_advance_sha).validate()
+                               current_base_advance_sha,
+                               "solo_owner" if review_mode == "solo_owner" else None).validate()
 
 
 def evaluate_readiness(

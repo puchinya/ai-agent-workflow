@@ -3,9 +3,11 @@ from __future__ import annotations
 import contextlib
 import copy
 import io
+import json
 import sys
 import tempfile
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -14,10 +16,17 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases.adc import publish_adc
-from p_ases.cli import CLI_ADVANCE_TARGETS, CLIError, _parser, _work_command, main
+from p_ases.cli import (
+    CLI_ADVANCE_TARGETS, CLIError, OwnerAuthorizationError, _delivery_final,
+    _owner_merge_gate, _parser, _work_command, main,
+)
+from p_ases.delivery import ReadinessResult
+from p_ases.evidence_store import VerificationSubject
 from p_ases.github import GitHubError
 from p_ases.owner_consent import OwnerDecisionError
 from p_ases.phase_evidence import PhaseEvidenceError
+from p_ases.user_review import UserReviewResult, UserReviewSubject
+from p_ases.verification import VerificationResult
 from test_adc_intake import FakeGitHub, adc_bytes
 
 
@@ -33,6 +42,177 @@ def ordinary_context(github, adc=None):
 
 
 class PasesCLITests(unittest.TestCase):
+    def test_owner_merge_gate_accepts_only_well_shaped_final_delivery_schemas(self):
+        head = "a" * 40
+        subject = {
+            "repository": "puchinya/ai-agent-workflow", "issue_number": 63,
+            "pr_number": 64, "pr_head_sha40": head,
+        }
+        plan = {"target_issue_number": 63, "pr_number": 64, "pr_head_sha40": head}
+        args = SimpleNamespace(
+            delivery_plan=Path("plan.json"), readiness=Path("readiness.json"),
+            verification=Path("verification.json"), acceptance=Path("acceptance.json"),
+            self_audit=Path("self-audit.json"), independent_review=Path("independent-review.json"),
+            user_review_record=Path("user-review.json"),
+        )
+
+        def check(payload):
+            output = io.StringIO()
+            with patch("p_ases.cli._delivery_final", side_effect=lambda *_args, **_kwargs: (
+                    print(json.dumps(payload)), 0)[1]), contextlib.redirect_stdout(output):
+                return _owner_merge_gate(args, Path("."), object(), plan)
+
+        common = {
+            "status": "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION", "merge_authorized": False,
+            "final_delivery_sha256": "9" * 64, "subject": subject, "blockers": [],
+        }
+        v3 = common | {
+            "schema": "PASES_FINAL_DELIVERY_V3", "review_mode": "solo_owner",
+            "branch_protection_sha256": None, "user_review_sha256": "1" * 64,
+            "required_check_result_sha256": "2" * 64,
+        }
+        self.assertEqual(check(v3)["final_delivery_schema"], "PASES_FINAL_DELIVERY_V3")
+
+        v1 = common | {
+            "schema": "PASES_FINAL_DELIVERY_V1", "branch_protection_sha256": "3" * 64,
+        }
+        self.assertEqual(check(v1)["final_delivery_schema"], "PASES_FINAL_DELIVERY_V1")
+        v2 = common | {
+            "schema": "PASES_FINAL_DELIVERY_V2", "branch_protection_sha256": "3" * 64,
+            "current_base_advance_sha256": "4" * 64,
+        }
+        self.assertEqual(check(v2)["final_delivery_schema"], "PASES_FINAL_DELIVERY_V2")
+
+        for invalid in (
+            v3 | {"review_mode": "external_reviewer"},
+            v3 | {"branch_protection_sha256": "5" * 64},
+            v3 | {"required_check_result_sha256": None},
+            v1 | {"branch_protection_sha256": "not-a-digest"},
+            v1 | {"review_mode": "solo_owner"},
+            v2 | {"current_base_advance_sha256": None},
+        ):
+            with self.subTest(invalid=invalid):
+                with self.assertRaisesRegex(OwnerAuthorizationError, "Final Delivery gates"):
+                    check(invalid)
+
+    def test_solo_owner_final_delivery_does_not_call_ruleset_or_branch_policy_apis(self):
+        repository = "puchinya/ai-agent-workflow"
+        head = "a" * 40
+        subject = VerificationSubject(repository, 63, 64, 9064, "b" * 64, "c" * 64, head).validate()
+        readiness = ReadinessResult("PASS", subject, (), ("d" * 64,), "e" * 64).validate()
+        user_subject = UserReviewSubject(subject, readiness.sha256).validate()
+        user_review = UserReviewResult(
+            "APPROVED", user_subject, "f" * 64, (), "user-review", "user-review-relay:555", (),
+            {
+                "evidence_type": "PASES_USER_REVIEW_DECISION_V3",
+                "evidence_channel": "chat_confirmed_gh_v1", "comment_id": 555,
+                "body_sha256": "1" * 64, "owner_id": 3744776,
+                "created_at": "2026-10-18T00:00:00Z", "review_session_sha256": "2" * 64,
+                "predecessor_comment_id": None, "feedback_sha256": "3" * 64,
+                "plan_sha256": "4" * 64, "approval_scope_sha256": "5" * 64,
+            },
+        ).validate()
+        verification = VerificationResult("PASS", subject, (), "6" * 64, "7" * 64, ("8" * 64,), ()).validate()
+        adc = verified_adc(700, "b" * 64)
+        pr = {"number": 64, "state": "open", "head_sha": head, "base_ref": "main", "base_sha": "9" * 40}
+        raw_pr = {"draft": False, "mergeable": True, "head": {"sha": head}}
+        aggregate = {"headRefOid": head, "reviewDecision": None}
+        snapshot_sha = "a" * 64
+        session = SimpleNamespace(subject=user_subject, started_at="2026-10-18T00:00:00Z")
+        snapshot = SimpleNamespace(sha256=snapshot_sha, subject=user_subject, events=())
+        fresh = SimpleNamespace(events=(), unresolved_thread_ids=())
+        readiness_path = Path("/tmp/pases-readiness.json")
+        identity = object()
+        pr_binding = object()
+        profile = SimpleNamespace(final_delivery_review_mode="solo_owner", required_checks=(("ci", 15368),))
+        github = SimpleNamespace(
+            pull_request=Mock(return_value=raw_pr),
+            pull_review_decision=Mock(return_value=aggregate),
+            branch_protection=Mock(side_effect=GitHubError("forbidden", status_code=403)),
+            repository_rulesets=Mock(side_effect=GitHubError("forbidden", status_code=403)),
+            effective_branch_rules=Mock(side_effect=GitHubError("forbidden", status_code=403)),
+            authenticated_user=Mock(return_value={"id": 3744776}),
+        )
+        args = SimpleNamespace(
+            issue=63, pr=64, head=head, plan=Path("plan.json"),
+            readiness=Path("readiness.json"), verification=Path("verification.json"),
+            acceptance=Path("acceptance.json"), self_audit=Path("self-audit.json"),
+            independent_review=Path("independent-review.json"),
+            user_review_record=Path("user-review.json"),
+        )
+
+        def run_readiness(*_args, **_kwargs):
+            print(json.dumps({"path": str(readiness_path)}))
+            return 0
+
+        patch_values = {
+            "_approved_issue_adc": {"return_value": ({"number": 63}, adc)},
+            "_load_plan": {"return_value": (object(), (), (), ())},
+            "_subject": {"return_value": subject},
+            "_readback_current_pr": {"return_value": pr},
+            "load_profile": {"return_value": profile},
+            "_read_execution_identity": {"return_value": identity},
+            "pr_binding_path": {"return_value": Path("binding.json")},
+            "read_pr_binding": {"return_value": pr_binding},
+            "execution_identity_base": {"return_value": ("main", "9" * 40)},
+            "_current_base_evidence_for_pr": {"return_value": None},
+            "_solo_owner_identity": {"return_value": (3744776, 3744776, 3744776)},
+            "read_readiness": {"return_value": readiness},
+            "_delivery_readiness": {"side_effect": run_readiness},
+            "_read_review_record": {"return_value": (user_subject, user_review, snapshot_sha)},
+            "review_session_path": {"return_value": Path("session.json")},
+            "read_review_session": {"return_value": session},
+            "read_feedback_snapshot": {"return_value": snapshot},
+            "feedback_digest": {"return_value": "f" * 64},
+            "_review_payload_from_github": {"return_value": fresh},
+            "_latest_review_snapshot": {"return_value": None},
+            "merge_feedback_history": {"side_effect": lambda _old, current: current},
+            "_read_user_review_relay_approval": {"return_value": {"approval": True}},
+            "evaluate_user_review": {"return_value": user_review},
+            "read_verification_result": {"return_value": verification},
+            "_calculate_verification": {"return_value": (verification, ())},
+            "verify_adc": {"return_value": adc},
+            "_same_snapshot_payload": {"return_value": True},
+            "_write_immutable": {"return_value": None},
+            "build_ruleset_plan": {"side_effect": GitHubError("forbidden", status_code=403)},
+        }
+        def run_delivery():
+            output = io.StringIO()
+            with ExitStack() as stack, contextlib.redirect_stdout(output):
+                patched = {
+                    name: stack.enter_context(patch(f"p_ases.cli.{name}", **kwargs))
+                    for name, kwargs in patch_values.items()
+                }
+                exit_code = _delivery_final(args, repository, Path("/tmp"), github)
+            return exit_code, json.loads(output.getvalue()), patched
+
+        exit_code, result, patched = run_delivery()
+        self.assertEqual(exit_code, 0, result)
+        self.assertEqual(result["status"], "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION")
+        self.assertEqual(result["schema"], "PASES_FINAL_DELIVERY_V3")
+        self.assertEqual(result["review_mode"], "solo_owner")
+        patched["build_ruleset_plan"].assert_not_called()
+        github.repository_rulesets.assert_not_called()
+        github.effective_branch_rules.assert_not_called()
+        github.branch_protection.assert_not_called()
+
+        protection = {
+            "required_status_checks": {"contexts": ["ci"]},
+            "required_pull_request_reviews": {"required_approving_review_count": 1},
+        }
+        profile.final_delivery_review_mode = "external_reviewer"
+        aggregate["reviewDecision"] = "APPROVED"
+        github.pull_review_decision.return_value = aggregate
+        github.branch_protection.side_effect = None
+        github.branch_protection.return_value = protection
+        exit_code, external_result, external_patched = run_delivery()
+        self.assertEqual(exit_code, 0, external_result)
+        self.assertEqual(external_result["status"], "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION")
+        self.assertEqual(external_result["schema"], "PASES_FINAL_DELIVERY_V1")
+        external_patched["build_ruleset_plan"].assert_not_called()
+        github.repository_rulesets.assert_not_called()
+        github.effective_branch_rules.assert_not_called()
+
     def test_adoption_refresh_cli_is_exact_issue_scoped(self):
         args = _parser().parse_args([
             "work", "adoption-refresh", "63", "--repo", "puchinya/ai-agent-workflow",
