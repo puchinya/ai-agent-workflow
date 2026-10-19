@@ -1,0 +1,865 @@
+from __future__ import annotations
+
+import json
+import hashlib
+import os
+import sys
+import tempfile
+import unittest
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "runtime"))
+
+from p_ases.owner_authorization import (
+    OwnerAuthorizationError, authorize_chat_confirmed_plan, authorize_plan,
+    capture_direct_chat_confirmation, create_authorization_plan, resume_authorization,
+    issue63_deferred_merge_details, read_authorization_plan, write_authorization_plan,
+)
+from p_ases.github import GitHubError
+from p_ases.cli import (_create_merge_attempt, _merge_readback, _perform_authorized_merge,
+                        _owner_authorization_plan_command, _publish_owner_approved_adc)
+from p_ases.consumer_activation import verify_setup_pr_ready_to_merge
+
+
+REPOSITORY = "puchinya/ai-agent-workflow"
+REPOSITORY_ID = 1401910271
+OWNER_ID = 3744776
+SUBJECT_SHA = "a" * 64
+PLAN_HEAD = "b" * 40
+
+
+def adoption_plan_payload() -> dict[str, object]:
+    checks = [
+        {"app_id": 15368, "check_run_id": 700 + index, "conclusion": "success",
+         "head_sha40": PLAN_HEAD, "name": name}
+        for index, name in enumerate(("Linux Python 3.10", "Linux Python 3.14", "Windows Python 3.14",
+                                      "macOS Python 3.14", "pull-request-metadata"), start=1)
+    ]
+    checks.sort(key=lambda item: item["name"])
+    value: dict[str, object] = {
+        "schema": "PASES_EXECUTION_ADOPTION_PLAN_V1", "repository": REPOSITORY,
+        "repository_id": REPOSITORY_ID, "owner_id": OWNER_ID, "issue_number": 63,
+        "issue_kind": "single", "issue_phase": "requirements",
+        "issue_labels": ["kind:single", "phase:requirements"],
+        "adc_comment_id": 6248703643,
+        "adc_sha256": "b83620dc5d977c3f96c7ad792fded202b70a78f0c97d637bfcc64d8ef8e89306",
+        "phase_intent_comment_id": 501,
+        "phase_applied_comment_id": 502, "phase_applied_payload_sha256": "d" * 64,
+        "pr_number": 64, "pr_id": 864,
+        "pr_url": f"https://github.com/{REPOSITORY}/pull/64",
+        "pr_title_sha256": "5" * 64, "pr_body_sha256": "6" * 64,
+        "pr_author_user_id": OWNER_ID, "selected_base_ref": "main", "selected_base_sha40": "a" * 40,
+        "branch_ref": "codex/issue-63-adoption", "observed_start_head_sha40": PLAN_HEAD,
+        "attachment_id": "e" * 64, "adoption_id": "f" * 64,
+        "historical_binding_provenance": "UNVERIFIED", "ci_check_runs": checks,
+        "ci_evidence_sha256": hashlib.sha256(json.dumps(
+            checks, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()).hexdigest(),
+    }
+    value["plan_sha256"] = hashlib.sha256(json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()).hexdigest()
+    return value
+
+
+class TTY:
+    def isatty(self):
+        return True
+
+
+class FakeGitHub:
+    repo = REPOSITORY
+
+    def __init__(self, *, actor_id: int = OWNER_ID):
+        self.actor_id = actor_id
+        self.comments: dict[int, list[dict[str, object]]] = {63: [], 57: []}
+        self.writes: list[tuple[int, str]] = []
+        self.prs: dict[int, dict[str, object]] = {}
+
+    def repository_metadata(self):
+        return {"id": REPOSITORY_ID, "full_name": REPOSITORY,
+                "owner": {"id": OWNER_ID, "login": "puchinya", "type": "User"}}
+
+    def issue(self, number: int):
+        return {"number": number, "state": "open", "pull_request": None,
+                "repository_url": f"https://api.github.com/repos/{REPOSITORY}"}
+
+    def authenticated_user(self):
+        return {"id": self.actor_id, "login": "puchinya", "type": "User"}
+
+    def pull_request(self, number: int):
+        return self.prs[number]
+
+    def issue_comments(self, number: int):
+        return list(self.comments[number])
+
+    def issue_comment(self, number: int, comment_id: int):
+        for row in self.comments[number]:
+            if row["id"] == comment_id:
+                return row
+        return None
+
+    def create_issue_comment(self, number: int, body: str):
+        comment_id = 100 + len(self.comments[number])
+        row = {
+            "id": comment_id, "body": body,
+            "created_at": "2026-10-17T15:00:00Z", "updated_at": "2026-10-17T15:00:00Z",
+            "user": {"id": self.actor_id, "login": "puchinya", "type": "User"},
+            "url": f"https://api.github.com/repos/{REPOSITORY}/issues/comments/{comment_id}",
+            "issue_url": f"https://api.github.com/repos/{REPOSITORY}/issues/{number}",
+            "html_url": f"https://github.com/{REPOSITORY}/issues/{number}#issuecomment-{comment_id}",
+        }
+        self.comments[number].append(row)
+        self.writes.append((number, body))
+        return row
+
+
+class FakeMergeGitHub:
+    def __init__(self, *, lose_response: bool = False):
+        self.calls = 0
+        self.lose_response = lose_response
+        self.pr = {
+            "number": 64, "state": "open", "merged": False,
+            "head": {"sha": "d" * 40, "repo": {"full_name": REPOSITORY}},
+            "base": {"repo": {"full_name": REPOSITORY}},
+            "title": "Implement deferred delivery", "body": "Implementation delivery.\n\nRefs #63",
+        }
+        self.issue_state = "open"
+        self.commit_rows = [{"sha": "a" * 40, "commit": {"message": "Implement deferred delivery"}}]
+        self.closing_issues: list[dict[str, object]] = []
+        self.cross_references: list[dict[str, object]] = []
+
+    def pull_request(self, number: int):
+        self.assert_number(number)
+        return self.pr
+
+    def issue(self, number: int):
+        return {"number": number, "state": self.issue_state,
+                "repository_url": f"https://api.github.com/repos/{REPOSITORY}", "pull_request": None}
+
+    def pull_request_commits(self, number: int):
+        self.assert_number(number)
+        return self.commit_rows
+
+    def pull_request_closing_issues(self, number: int):
+        self.assert_number(number)
+        return self.closing_issues
+
+    def issue_pull_request_cross_references(self, issue_number: int):
+        if issue_number != 63:
+            raise AssertionError("wrong Issue number")
+        return self.cross_references
+
+    def commit_details(self, sha: str):
+        if sha != "e" * 40:
+            raise AssertionError("wrong merge commit")
+        return {"message": "Merge PR #64 at dddddddddddd\n\nImplementation delivered."}
+
+    def assert_number(self, number: int):
+        if number != 64:
+            raise AssertionError("wrong PR number")
+
+    def merge_pull_request(self, number: int, expected_head_sha40: str, **kwargs):
+        self.assert_number(number)
+        if expected_head_sha40 != "d" * 40:
+            raise AssertionError("wrong expected HEAD")
+        if kwargs != {
+                "commit_title": "Merge PR #64 at dddddddddddd",
+                "commit_message": "Implementation delivered. Issue #63 remains open pending verified Consumer Activation V2."}:
+            raise AssertionError("unsafe or unbound merge message")
+        self.calls += 1
+        if self.lose_response:
+            raise GitHubError("lost merge response")
+        self.pr.update({
+            "state": "closed", "merged": True, "merge_commit_sha": "e" * 40,
+            "merged_by": {"id": OWNER_ID, "type": "User"},
+        })
+
+
+class OwnerAuthorizationTests(unittest.TestCase):
+    def make_plan(self, root: Path, github: FakeGitHub, directory: Path) -> Path:
+        with patch("p_ases.owner_authorization.worktree_clean", return_value=True), \
+                patch("p_ases.owner_authorization.head_sha40", return_value=PLAN_HEAD):
+            plan = create_authorization_plan(
+                github, root, operation="ADC_SUPERSEDE", subject_sha256=SUBJECT_SHA,
+                details={"predecessor_comment_id": 41, "predecessor_sha256": "9" * 64,
+                         "predecessor_byte_length": 1234, "predecessor_state": "approved"},
+            )
+        path = directory / "owner-plan.json"
+        write_authorization_plan(path, plan)
+        self.assertEqual(read_authorization_plan(path), plan)
+        return path
+
+    def test_adc_plan_preview_rejects_draft_candidate_before_plan_creation(self):
+        args = SimpleNamespace(
+            operation="ADC_SUPERSEDE", subject_file=ROOT / "docs/contracts/issue-63-successor-adc-draft.md",
+            ruleset_plan=None, pr=None, head=None, target_issue=None, output=ROOT / "plan.json",
+        )
+        predecessor = SimpleNamespace(pointer=SimpleNamespace(
+            state="approved", comment_id=6244160653,
+            sha256="f1cab9b9edca34d4e80c486642059881b62abd5d95b993999a52494494bafac8",
+            byte_length=2048,
+        ))
+        with patch("p_ases.cli.verify_adc", return_value=predecessor), \
+                patch("p_ases.cli.create_authorization_plan") as create_plan:
+            with self.assertRaisesRegex(OwnerAuthorizationError, "not approval-ready"):
+                _owner_authorization_plan_command(args, REPOSITORY, ROOT, FakeGitHub())
+        create_plan.assert_not_called()
+
+    def test_chat_grant_is_exact_and_publishes_only_v3_with_scope(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            github = FakeGitHub()
+            candidate = b"final ADC bytes selected by the exact plan"
+            subject_sha256 = hashlib.sha256(candidate).hexdigest()
+            github.comments[63].append({
+                "id": 99, "body": "Contract prose mentions `PASES_OWNER_DECISION_V1`.",
+                "user": {"id": OWNER_ID, "login": "puchinya", "type": "User"},
+            })
+            details = {"predecessor_comment_id": 41, "predecessor_sha256": "9" * 64,
+                       "predecessor_byte_length": 1234, "predecessor_state": "approved"}
+            with patch("p_ases.owner_authorization.worktree_clean", return_value=True), \
+                    patch("p_ases.owner_authorization.head_sha40", return_value=PLAN_HEAD):
+                plan = create_authorization_plan(
+                    github, root, operation="ADC_SUPERSEDE", subject_sha256=subject_sha256,
+                    details=details,
+                )
+                grant = capture_direct_chat_confirmation(
+                    plan, response="Markdown全文を確認して承認する", user_role="user", same_conversation=True,
+                )
+                with patch("p_ases.owner_authorization._validate_adc_authorization_subject") as preflight:
+                    result = authorize_chat_confirmed_plan(
+                        github, root, plan, grant, subject_bytes=candidate,
+                        source_validator=lambda: None,
+                    )
+            preflight.assert_called_once_with(github, plan, candidate)
+            self.assertEqual(result["evidence_type"], "PASES_OWNER_DECISION_V3")
+            self.assertEqual(result["evidence_channel"], "chat_confirmed_gh_v1")
+            self.assertFalse(result["chat_signature"])
+            self.assertEqual(len(github.writes), 1)
+            body = github.writes[0][1]
+            self.assertIn("PASES_OWNER_DECISION_V3", body)
+            self.assertIn(plan["approval_scope_sha256"], body)
+
+    def test_execution_adoption_requires_direct_chat_grant_and_publishes_exact_v3_scope(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            github = FakeGitHub()
+            adoption = adoption_plan_payload()
+            github.prs[64] = {
+                "number": 64, "state": "open", "draft": False,
+                "body": "Implementation delivery.\n\nRefs #63",
+                "head": {"sha": PLAN_HEAD, "repo": {"full_name": REPOSITORY}},
+                "base": {"repo": {"full_name": REPOSITORY}},
+            }
+            with patch("p_ases.owner_authorization.worktree_clean", return_value=True), \
+                    patch("p_ases.owner_authorization.head_sha40", return_value=PLAN_HEAD):
+                plan = create_authorization_plan(
+                    github, root, operation="EXECUTION_ADOPTION", subject_sha256=adoption["plan_sha256"],
+                    target_issue_number=63, pr_number=64, pr_head_sha40=PLAN_HEAD,
+                    details={"adoption_plan": adoption},
+                )
+                with self.assertRaisesRegex(OwnerAuthorizationError, "typed direct-chat grant"):
+                    authorize_chat_confirmed_plan(
+                        github, root, plan, None, source_validator=lambda: adoption,
+                    )
+                grant = capture_direct_chat_confirmation(
+                    plan, response="承認する", user_role="user", same_conversation=True,
+                )
+                result = authorize_chat_confirmed_plan(
+                    github, root, plan, grant, source_validator=lambda: adoption,
+                )
+            self.assertEqual(result["operation"], "EXECUTION_ADOPTION")
+            self.assertEqual(result["evidence_channel"], "chat_confirmed_gh_v1")
+            self.assertEqual(len(github.writes), 1)
+            self.assertIn("PASES_OWNER_DECISION_V3", github.writes[0][1])
+            self.assertEqual(github.comments[63][0]["user"]["id"], OWNER_ID)
+
+    def test_tty_v2_authorization_cannot_authorize_execution_adoption(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            github = FakeGitHub()
+            adoption = adoption_plan_payload()
+            github.prs[64] = {
+                "number": 64, "state": "open", "draft": False,
+                "body": "Implementation delivery.\n\nRefs #63",
+                "head": {"sha": PLAN_HEAD, "repo": {"full_name": REPOSITORY}},
+                "base": {"repo": {"full_name": REPOSITORY}},
+            }
+            with patch("p_ases.owner_authorization.worktree_clean", return_value=True), \
+                    patch("p_ases.owner_authorization.head_sha40", return_value=PLAN_HEAD):
+                plan = create_authorization_plan(
+                    github, root, operation="EXECUTION_ADOPTION", subject_sha256=adoption["plan_sha256"],
+                    target_issue_number=63, pr_number=64, pr_head_sha40=PLAN_HEAD,
+                    details={"adoption_plan": adoption},
+                )
+            plan_path = root / "owner-plan.json"
+            write_authorization_plan(plan_path, plan)
+            with patch("p_ases.owner_authorization._check_owner_local_tty"):
+                with self.assertRaisesRegex(OwnerAuthorizationError, "V2 cannot authorize"):
+                    authorize_plan(github, root, plan_path)
+            self.assertEqual(github.writes, [])
+
+    def test_resume_reports_v3_scope_and_channel_after_readback(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            github = FakeGitHub()
+            candidate = b"resume final ADC bytes"
+            details = {"predecessor_comment_id": 41, "predecessor_sha256": "9" * 64,
+                       "predecessor_byte_length": 1234, "predecessor_state": "approved"}
+            with patch("p_ases.owner_authorization.worktree_clean", return_value=True), \
+                    patch("p_ases.owner_authorization.head_sha40", return_value=PLAN_HEAD):
+                plan = create_authorization_plan(
+                    github, root, operation="ADC_SUPERSEDE",
+                    subject_sha256=hashlib.sha256(candidate).hexdigest(), details=details,
+                )
+            path = root / "owner-plan.json"
+            write_authorization_plan(path, plan)
+            grant = capture_direct_chat_confirmation(
+                plan, response="承認する", user_role="user", same_conversation=True,
+            )
+            with patch("p_ases.owner_authorization.worktree_clean", return_value=True), \
+                    patch("p_ases.owner_authorization.head_sha40", return_value=PLAN_HEAD), \
+                    patch("p_ases.adc.verify_adc", return_value=SimpleNamespace(pointer=SimpleNamespace(
+                        state="approved", comment_id=41, sha256="9" * 64, byte_length=1234))):
+                with patch("p_ases.owner_authorization._validate_adc_authorization_subject"):
+                    authorize_chat_confirmed_plan(
+                        github, root, plan, grant, subject_bytes=candidate,
+                        source_validator=lambda: None,
+                    )
+                resumed = resume_authorization(github, path)
+            self.assertEqual(resumed["status"], "AUTHORIZED")
+            self.assertEqual(resumed["evidence_type"], "PASES_OWNER_DECISION_V3")
+            self.assertEqual(resumed["evidence_channel"], "chat_confirmed_gh_v1")
+            self.assertEqual(resumed["approval_scope_sha256"], plan["approval_scope_sha256"])
+
+    def test_chat_grant_rejects_vague_response_and_untrusted_provenance(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            github = FakeGitHub()
+            with patch("p_ases.owner_authorization.worktree_clean", return_value=True), \
+                    patch("p_ases.owner_authorization.head_sha40", return_value=PLAN_HEAD):
+                plan = create_authorization_plan(
+                    github, root, operation="ADC_SUPERSEDE", subject_sha256=SUBJECT_SHA,
+                    details={"predecessor_comment_id": 41, "predecessor_sha256": "9" * 64,
+                             "predecessor_byte_length": 1234, "predecessor_state": "approved"},
+                )
+                with self.assertRaisesRegex(OwnerAuthorizationError, "CHAT_CONFIRMATION_REQUIRED"):
+                    capture_direct_chat_confirmation(
+                        plan, response="続けて", user_role="user", same_conversation=True,
+                    )
+                with self.assertRaisesRegex(OwnerAuthorizationError, "CHAT_PROVENANCE_UNAVAILABLE"):
+                    capture_direct_chat_confirmation(
+                        plan, response="承認する", user_role="assistant", same_conversation=True,
+                    )
+            self.assertEqual(github.writes, [])
+
+    def test_adc_chat_grant_requires_subject_bytes_and_live_source_revalidation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            github = FakeGitHub()
+            details = {"predecessor_comment_id": 41, "predecessor_sha256": "9" * 64,
+                       "predecessor_byte_length": 1234, "predecessor_state": "approved"}
+            with patch("p_ases.owner_authorization.worktree_clean", return_value=True), \
+                    patch("p_ases.owner_authorization.head_sha40", return_value=PLAN_HEAD):
+                plan = create_authorization_plan(
+                    github, root, operation="ADC_SUPERSEDE", subject_sha256=SUBJECT_SHA,
+                    details=details,
+                )
+                grant = capture_direct_chat_confirmation(
+                    plan, response="承認する", user_role="user", same_conversation=True,
+                )
+                with self.assertRaisesRegex(OwnerAuthorizationError, "exact approval-ready ADC bytes"):
+                    authorize_chat_confirmed_plan(
+                        github, root, plan, grant, source_validator=lambda: None,
+                    )
+            self.assertEqual(github.writes, [])
+
+    def test_adc_chat_commit_rejects_draft_header_before_decision_write(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            github = FakeGitHub()
+            candidate = (ROOT / "docs/contracts/issue-63-successor-adc-draft.md").read_bytes()
+            predecessor = SimpleNamespace(pointer=SimpleNamespace(
+                state="approved", comment_id=6244160653,
+                sha256="f1cab9b9edca34d4e80c486642059881b62abd5d95b993999a52494494bafac8",
+                byte_length=2048,
+            ))
+            details = {"predecessor_comment_id": predecessor.pointer.comment_id,
+                       "predecessor_sha256": predecessor.pointer.sha256,
+                       "predecessor_byte_length": predecessor.pointer.byte_length,
+                       "predecessor_state": "approved"}
+            with patch("p_ases.owner_authorization.worktree_clean", return_value=True), \
+                    patch("p_ases.owner_authorization.head_sha40", return_value=PLAN_HEAD):
+                plan = create_authorization_plan(
+                    github, root, operation="ADC_SUPERSEDE",
+                    subject_sha256=hashlib.sha256(candidate).hexdigest(), details=details,
+                )
+                grant = capture_direct_chat_confirmation(
+                    plan, response="承認する", user_role="user", same_conversation=True,
+                )
+                with patch("p_ases.adc.verify_adc", return_value=predecessor):
+                    with self.assertRaisesRegex(OwnerAuthorizationError, "approval-ready preflight failed"):
+                        authorize_chat_confirmed_plan(
+                            github, root, plan, grant, subject_bytes=candidate,
+                            source_validator=lambda: None,
+                        )
+            self.assertEqual(github.writes, [])
+
+    def test_non_tty_cloud_and_shared_token_are_zero_write(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = self.make_plan(root, FakeGitHub(), root)
+            github = FakeGitHub()
+            with patch.dict(os.environ, {}, clear=True):
+                with self.assertRaisesRegex(OwnerAuthorizationError, "AUTH_TRANSPORT_UNAVAILABLE"):
+                    authorize_plan(github, root, path, stdin=object())
+                self.assertEqual(github.writes, [])
+            with patch.dict(os.environ, {"CODEX_ENVIRONMENT_ID": "cloud-test"}, clear=True):
+                with self.assertRaisesRegex(OwnerAuthorizationError, "AUTH_TRANSPORT_UNAVAILABLE"):
+                    authorize_plan(github, root, path, stdin=TTY())
+                self.assertEqual(github.writes, [])
+            with patch.dict(os.environ, {"GH_TOKEN": "shared"}, clear=True):
+                with self.assertRaisesRegex(OwnerAuthorizationError, "AUTH_TRANSPORT_UNAVAILABLE"):
+                    authorize_plan(github, root, path, stdin=TTY())
+                self.assertEqual(github.writes, [])
+
+    def test_activation_setup_merge_plan_targets_issue_without_closing_it(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            github = FakeGitHub()
+            head = "c" * 40
+            payload = {"activation_issue_number": 57, "schema": "PASES_CONSUMER_ACTIVATION_SETUP_V2"}
+            body = "<!-- PASES_CONSUMER_ACTIVATION_SETUP_V2\n" + json.dumps(
+                payload, sort_keys=True, separators=(",", ":"),
+            ) + "\n-->"
+            github.prs[72] = {
+                "number": 72, "state": "open", "draft": False, "body": body,
+                "head": {"sha": head, "repo": {"full_name": REPOSITORY}},
+                "base": {"repo": {"full_name": REPOSITORY}},
+            }
+            with patch("p_ases.owner_authorization.worktree_clean", return_value=True), \
+                    patch("p_ases.owner_authorization.head_sha40", return_value=PLAN_HEAD):
+                plan = create_authorization_plan(
+                    github, root, operation="PR_MERGE", subject_sha256=SUBJECT_SHA,
+                    target_issue_number=57, pr_number=72, pr_head_sha40=head,
+                    details={"target_issue_number": 57},
+                )
+            self.assertEqual(plan["target_issue_number"], 57)
+
+    def test_activation_setup_merge_plan_rejects_unbound_pr(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            github = FakeGitHub()
+            github.prs[72] = {
+                "number": 72, "state": "open", "draft": False, "body": "Closes #57",
+                "head": {"sha": "c" * 40, "repo": {"full_name": REPOSITORY}},
+                "base": {"repo": {"full_name": REPOSITORY}},
+            }
+            with patch("p_ases.owner_authorization.worktree_clean", return_value=True), \
+                    patch("p_ases.owner_authorization.head_sha40", return_value=PLAN_HEAD):
+                with self.assertRaisesRegex(OwnerAuthorizationError, "Activation Setup PR"):
+                    create_authorization_plan(
+                        github, root, operation="PR_MERGE", subject_sha256=SUBJECT_SHA,
+                        target_issue_number=57, pr_number=72, pr_head_sha40="c" * 40,
+                        details={"target_issue_number": 57},
+                    )
+
+    def test_merge_attempt_is_at_most_once_and_recovers_by_readback(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            github = FakeMergeGitHub()
+            details = issue63_deferred_merge_details(
+                github, pr_number=64, pr_head_sha40="d" * 40,
+            )
+            plan = {"plan_sha256": "f" * 64, "source_head_sha40": PLAN_HEAD,
+                    "target_issue_number": 63, "pr_number": 64, "pr_head_sha40": "d" * 40,
+                    "details": details}
+            decision = {"status": "AUTHORIZED", "operation": "PR_MERGE",
+                        "evidence_type": "PASES_OWNER_DECISION_V3",
+                        "evidence_channel": "chat_confirmed_gh_v1", "chat_signature": False,
+                        "owner_decision_comment_id": 123}
+            with patch("p_ases.cli._owner_merge_gate", return_value={"status": "READY"}):
+                first = _perform_authorized_merge(object(), root, github, plan, decision)
+                second = _perform_authorized_merge(object(), root, github, plan, decision)
+            self.assertEqual(first["status"], "MERGED_AWAITING_ISSUE_COMPLETION")
+            self.assertEqual(second["status"], "MERGED_AWAITING_ISSUE_COMPLETION")
+            self.assertEqual(first["issue_state"], "open")
+            self.assertEqual(github.calls, 1)
+
+    def test_issue63_merge_preflight_rejects_auto_close_tokens_and_incomplete_metadata(self):
+        cases = (
+            ("commit", lambda github: github.commit_rows[0]["commit"].update({"message": "Fixes #63"}),
+             "commit message contains an auto-close"),
+            ("closing issue", lambda github: github.closing_issues.append(
+                {"number": 63, "repository": REPOSITORY}), "will auto-close"),
+            ("manual cross-reference", lambda github: github.cross_references.append(
+                {"pr_number": 64, "repository": REPOSITORY, "will_close_target": True}),
+             "auto-closing PR link"),
+            ("incomplete GraphQL", lambda github: setattr(github, "issue_pull_request_cross_references",
+                lambda _number: (_ for _ in ()).throw(GitHubError("incomplete timeline"))),
+             "metadata could not be read completely"),
+        )
+        for name, mutate, message in cases:
+            with self.subTest(name=name):
+                github = FakeMergeGitHub()
+                mutate(github)
+                with self.assertRaisesRegex(OwnerAuthorizationError, message):
+                    issue63_deferred_merge_details(github, pr_number=64, pr_head_sha40="d" * 40)
+
+    def test_issue63_merge_preflight_rejects_github_closing_keyword_variants_in_commit_messages(self):
+        for message in ("Fixes: #63", "Closes: #63", "Resolves puchinya/ai-agent-workflow#63"):
+            with self.subTest(message=message):
+                github = FakeMergeGitHub()
+                github.commit_rows[0]["commit"]["message"] = message
+                self.assertEqual(github.closing_issues, [])
+                with self.assertRaisesRegex(OwnerAuthorizationError, "commit message contains an auto-close"):
+                    issue63_deferred_merge_details(github, pr_number=64, pr_head_sha40="d" * 40)
+
+    def test_github_closing_keyword_variants_block_before_any_merge_write(self):
+        for message in ("Fixes: #63", "Closes: #63", "Resolves puchinya/ai-agent-workflow#63"):
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                github = FakeMergeGitHub()
+                details = issue63_deferred_merge_details(
+                    github, pr_number=64, pr_head_sha40="d" * 40,
+                )
+                github.commit_rows[0]["commit"]["message"] = message
+                plan = {"plan_sha256": "a" * 64, "source_head_sha40": PLAN_HEAD,
+                        "target_issue_number": 63, "pr_number": 64, "pr_head_sha40": "d" * 40,
+                        "details": details}
+                decision = {"status": "AUTHORIZED", "operation": "PR_MERGE",
+                            "evidence_type": "PASES_OWNER_DECISION_V3",
+                            "evidence_channel": "chat_confirmed_gh_v1", "chat_signature": False,
+                            "owner_decision_comment_id": 123}
+                self.assertEqual(github.closing_issues, [])
+                with patch("p_ases.cli._owner_merge_gate", return_value={"status": "READY"}):
+                    with self.assertRaisesRegex(OwnerAuthorizationError,
+                                                "commit message contains an auto-close"):
+                        _perform_authorized_merge(object(), root, github, plan, decision)
+                self.assertEqual(github.calls, 0)
+
+    def test_issue63_merged_readback_rejects_new_closing_keyword_variants(self):
+        github = FakeMergeGitHub()
+        details = issue63_deferred_merge_details(
+            github, pr_number=64, pr_head_sha40="d" * 40,
+        )
+        github.pr.update({"state": "closed", "merged": True, "merge_commit_sha": "e" * 40,
+                          "merged_by": {"id": OWNER_ID, "type": "User"}})
+        github.commit_details = lambda _sha: {"message": "Resolves: #63"}
+        plan = {"target_issue_number": 63, "pr_number": 64, "pr_head_sha40": "d" * 40,
+                "details": details}
+        with self.assertRaisesRegex(OwnerAuthorizationError, "merged PR commit message contains"):
+            _merge_readback(github, plan)
+
+    def test_issue63_merge_preflight_checks_pr_title_body_and_planned_merge_message(self):
+        github = FakeMergeGitHub()
+        github.pr["title"] = "Resolves: #63"
+        with self.assertRaisesRegex(OwnerAuthorizationError, "PR title .* auto-close reference"):
+            issue63_deferred_merge_details(github, pr_number=64, pr_head_sha40="d" * 40)
+
+        github = FakeMergeGitHub()
+        github.pr["body"] += "\n\nCloses: #63"
+        with self.assertRaisesRegex(OwnerAuthorizationError,
+                                    "Issue #63 deferred-close association is invalid"):
+            issue63_deferred_merge_details(github, pr_number=64, pr_head_sha40="d" * 40)
+
+        github = FakeMergeGitHub()
+        with patch("p_ases.owner_authorization.ISSUE63_MERGE_COMMIT_MESSAGE",
+                   "Resolves puchinya/ai-agent-workflow#63"):
+            with self.assertRaisesRegex(OwnerAuthorizationError, "planned merge metadata contains an auto-close"):
+                issue63_deferred_merge_details(github, pr_number=64, pr_head_sha40="d" * 40)
+
+    def test_issue63_refs_only_pr_remains_safe_without_github_closing_references(self):
+        github = FakeMergeGitHub()
+        details = issue63_deferred_merge_details(github, pr_number=64, pr_head_sha40="d" * 40)
+        self.assertEqual(github.pr["body"], "Implementation delivery.\n\nRefs #63")
+        self.assertEqual(github.closing_issues, [])
+        self.assertEqual(details["association_mode"], "deferred_close")
+        self.assertEqual(details["closing_issue_numbers"], [])
+        self.assertIs(details["issue_auto_close_link"], False)
+
+    def test_issue63_merge_preflight_requires_the_existing_pr64(self):
+        with self.assertRaisesRegex(OwnerAuthorizationError, "bound only to PR #64"):
+            issue63_deferred_merge_details(FakeMergeGitHub(), pr_number=65, pr_head_sha40="d" * 40)
+
+    def test_issue63_merge_authorization_plan_rejects_other_pr_number(self):
+        with self.assertRaisesRegex(OwnerAuthorizationError, "existing PR #64"):
+            create_authorization_plan(
+                FakeGitHub(), Path("."), operation="PR_MERGE", subject_sha256=SUBJECT_SHA,
+                target_issue_number=63, pr_number=65, pr_head_sha40="d" * 40,
+            )
+
+    def test_adc_local_commit_dispatches_exact_publication_then_phase_rebaseline(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "successor.md"
+            source.write_bytes(b"exact successor bytes\n")
+            contract = SimpleNamespace(sha256=hashlib.sha256(source.read_bytes()).hexdigest())
+            previous = SimpleNamespace(pointer=SimpleNamespace(
+                state="approved", comment_id=12, sha256="b" * 64, byte_length=1200))
+            published_pointer = SimpleNamespace(state="approved", comment_id=13,
+                                                 sha256=contract.sha256)
+            published = SimpleNamespace(pointer=published_pointer,
+                                        contract=SimpleNamespace(content=source.read_bytes()))
+            verified_decision = SimpleNamespace(
+                comment_id=123,
+                decision=SimpleNamespace(schema="PASES_OWNER_DECISION_V3",
+                                         evidence_channel="chat_confirmed_gh_v1"),
+            )
+            plan = {"subject_sha256": contract.sha256, "plan_sha256": "a" * 64,
+                    "approval_scope_sha256": "d" * 64,
+                    "details": {"predecessor_comment_id": 12, "predecessor_sha256": "b" * 64,
+                                "predecessor_byte_length": 1200, "predecessor_state": "approved"}}
+            decision = {"owner_decision_comment_id": 123}
+            args = SimpleNamespace(subject_file=source)
+            with patch("p_ases.cli.parse_adc", return_value=contract), \
+                    patch("p_ases.cli.validate_approval_ready_adc", return_value=contract) as preflight, \
+                    patch("p_ases.cli.read_verified_owner_decision", return_value=verified_decision), \
+                    patch("p_ases.cli.verify_adc", side_effect=[previous, published]), \
+                    patch("p_ases.cli.publish_adc", return_value=published_pointer) as publish, \
+                    patch("p_ases.cli.rebaseline_issue_phase", return_value={"status": "APPLIED"}) as rebaseline:
+                result = _publish_owner_approved_adc(args, REPOSITORY, FakeGitHub(), plan, decision)
+            self.assertEqual(result["status"], "PUBLISHED")
+            self.assertEqual(result["phase_rebaseline"], {"status": "APPLIED"})
+            self.assertEqual(publish.call_args.kwargs["state"], "approved")
+            self.assertIs(publish.call_args.kwargs["expected_current"], previous.pointer)
+            preflight.assert_called_once_with(
+                source.read_bytes(), REPOSITORY, 63,
+                current_pointer=previous.pointer, check_current_pointer=True,
+            )
+            rebaseline.assert_called_once()
+
+    def test_lost_merge_response_never_retries_while_pr_remains_open(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            github = FakeMergeGitHub(lose_response=True)
+            details = issue63_deferred_merge_details(
+                github, pr_number=64, pr_head_sha40="d" * 40,
+            )
+            plan = {"plan_sha256": "a" * 64, "source_head_sha40": PLAN_HEAD,
+                    "target_issue_number": 63, "pr_number": 64, "pr_head_sha40": "d" * 40,
+                    "details": details}
+            decision = {"status": "AUTHORIZED", "operation": "PR_MERGE",
+                        "evidence_type": "PASES_OWNER_DECISION_V3",
+                        "evidence_channel": "chat_confirmed_gh_v1", "chat_signature": False,
+                        "owner_decision_comment_id": 123}
+            with patch("p_ases.cli._owner_merge_gate", return_value={"status": "READY"}):
+                with self.assertRaisesRegex(OwnerAuthorizationError, "no retry was attempted"):
+                    _perform_authorized_merge(object(), root, github, plan, decision)
+                with self.assertRaisesRegex(OwnerAuthorizationError, "read-only recovery only"):
+                    _perform_authorized_merge(object(), root, github, plan, decision)
+            self.assertEqual(github.calls, 1)
+
+    def test_merge_attempt_claim_is_exclusive_for_concurrent_invocations(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / ".p_ases" / "owner-authorization" / "merge-attempts" / ("a" * 64 + ".json")
+            payload = {"plan_sha256": "a" * 64, "pr_number": 64, "head_sha40": "d" * 40}
+            _create_merge_attempt(path, payload, root=root)
+            with self.assertRaisesRegex(OwnerAuthorizationError, "another invocation"):
+                _create_merge_attempt(path, payload, root=root)
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8")), payload)
+
+    def test_setup_pr_preflight_requires_policy_checks_and_independent_review(self):
+        class SetupGitHub:
+            repo = REPOSITORY
+
+            def __init__(self):
+                now = datetime.now(timezone.utc)
+                self.created = (now - timedelta(minutes=2)).isoformat().replace("+00:00", "Z")
+                self.completed = (now - timedelta(minutes=1)).isoformat().replace("+00:00", "Z")
+                self.head = "1" * 40
+                self.base = "2" * 40
+                self.payload = {"activation_issue_number": 57, "schema": "PASES_CONSUMER_ACTIVATION_SETUP_V2",
+                                "adc_comment_id": 17, "adc_sha256": "a" * 64, "adc_state": "approved",
+                                "activation_profile_sha256": hashlib.sha256(b"profile").hexdigest(),
+                                "predecessor_record_id": None,
+                                "required_checks": [{"context": "ci", "integration_id": 15368}],
+                                "review_mode": "solo_owner", "ruleset_id": 4,
+                                "ruleset_applied_record_id": 18, "branch_policy_sha256": "c" * 64,
+                                "setup_branch": "pases/consumer-activation-57-v2", "schema": "PASES_CONSUMER_ACTIVATION_SETUP_V2"}
+                self.pr = {
+                    "number": 72, "state": "open", "merged": False, "draft": False, "mergeable": True,
+                    "body": "setup", "user": {"id": OWNER_ID, "type": "User"},
+                    "head": {"sha": self.head, "ref": self.payload["setup_branch"],
+                             "repo": {"id": REPOSITORY_ID, "full_name": REPOSITORY}},
+                    "base": {"sha": self.base, "ref": "main",
+                             "repo": {"id": REPOSITORY_ID, "full_name": REPOSITORY}},
+                }
+
+            def repository_metadata(self):
+                return {"id": REPOSITORY_ID, "full_name": REPOSITORY,
+                        "default_branch": "main", "owner": {"id": OWNER_ID, "type": "User"}}
+
+            def pull_request(self, number):
+                self.assert_number(number)
+                return self.pr
+
+            def assert_number(self, number):
+                if number != 72:
+                    raise AssertionError("wrong PR number")
+
+            def pull_request_files(self, number):
+                self.assert_number(number)
+                return [{"filename": ".agent/project.json"}]
+
+            def branch(self, _name):
+                return {"commit": {"sha": self.base}}
+
+            def issue(self, number):
+                if number != 57:
+                    raise AssertionError("wrong Activation Issue")
+                return {"number": 57, "state": "open", "pull_request": None,
+                        "body": "<!-- PASES_CONSUMER_ACTIVATION_ISSUE_V1 -->",
+                        "repository_url": f"https://api.github.com/repos/{REPOSITORY}"}
+
+            def regular_content_at_ref(self, _path, _ref):
+                return b"profile"
+
+            def check_runs_for_ref(self, sha):
+                return [{"id": 7, "name": "ci", "head_sha": sha,
+                         "created_at": self.created, "completed_at": self.completed,
+                         "status": "completed", "conclusion": "success", "app": {"id": 15368}}]
+
+            def pull_review_decision(self, number):
+                self.assert_number(number)
+                return {"state": "OPEN", "headRefOid": self.head, "reviewDecision": "APPROVED"}
+
+            def pull_reviews(self, number):
+                self.assert_number(number)
+                return [{"id": 19, "state": "APPROVED", "commit_id": self.head,
+                         "user": {"id": OWNER_ID + 1, "type": "User"}}]
+
+            def pull_review_threads(self, number):
+                self.assert_number(number)
+                return []
+
+        github = SetupGitHub()
+        verified_adc = SimpleNamespace(pointer=SimpleNamespace(sha256="a" * 64),
+                                       contract=SimpleNamespace(content=b"adc"))
+        with patch("p_ases.consumer_activation._decode", side_effect=lambda *_a, **_k: github.payload), \
+                patch("p_ases.consumer_activation._check_setup_pr", return_value=github.pr), \
+                patch("p_ases.consumer_activation.read_consumer_activation_history", return_value=[]), \
+                patch("p_ases.consumer_activation.verify_adc_generation", return_value=verified_adc), \
+                patch("p_ases.consumer_activation.verify_adc", return_value=verified_adc), \
+                patch("p_ases.consumer_activation._validate_profile_bytes",
+                      return_value=({"final_delivery": {"review_mode": "solo_owner"}}, (("ci", 15368),))), \
+                patch("p_ases.consumer_activation.read_verified_managed_policy", return_value={
+                    "ruleset_id": 4, "applied_record_id": 18, "effective_policy_sha256": "c" * 64,
+                }):
+            result = verify_setup_pr_ready_to_merge(github, 72)
+        self.assertEqual(result["status"], "READY")
+        self.assertEqual(result["reviewer_ids"], [OWNER_ID + 1])
+        github.pull_reviews = lambda _number: []
+        with patch("p_ases.consumer_activation._decode", side_effect=lambda *_a, **_k: github.payload), \
+                patch("p_ases.consumer_activation._check_setup_pr", return_value=github.pr), \
+                patch("p_ases.consumer_activation.read_consumer_activation_history", return_value=[]), \
+                patch("p_ases.consumer_activation.verify_adc_generation", return_value=verified_adc), \
+                patch("p_ases.consumer_activation.verify_adc", return_value=verified_adc), \
+                patch("p_ases.consumer_activation._validate_profile_bytes",
+                      return_value=({"final_delivery": {"review_mode": "solo_owner"}}, (("ci", 15368),))), \
+                patch("p_ases.consumer_activation.read_verified_managed_policy", return_value={
+                    "ruleset_id": 4, "applied_record_id": 18, "effective_policy_sha256": "c" * 64,
+                }):
+            with self.assertRaisesRegex(ValueError, "independent human approval"):
+                verify_setup_pr_ready_to_merge(github, 72)
+
+    def test_authenticated_wrong_owner_is_zero_write(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = self.make_plan(root, FakeGitHub(), root)
+            github = FakeGitHub(actor_id=OWNER_ID + 1)
+            with patch.dict(os.environ, {}, clear=True), \
+                    patch("p_ases.owner_authorization.worktree_clean", return_value=True), \
+                    patch("p_ases.owner_authorization.head_sha40", return_value=PLAN_HEAD), \
+                    self.assertRaisesRegex(OwnerAuthorizationError, "not the configured owner"):
+                authorize_plan(github, root, path, stdin=TTY(), input_fn=lambda _prompt: "")
+            self.assertEqual(github.writes, [])
+
+    def test_owner_local_commit_appends_v2_once_and_retries_by_readback(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            github = FakeGitHub()
+            path = self.make_plan(root, github, root)
+            plan = read_authorization_plan(path)
+            typed = lambda _prompt: plan["plan_sha256"]
+            with patch.dict(os.environ, {}, clear=True), \
+                    patch("p_ases.owner_authorization.worktree_clean", return_value=True), \
+                    patch("p_ases.owner_authorization.head_sha40", return_value=PLAN_HEAD), \
+                    patch("p_ases.owner_authorization._validate_adc_authorization_subject") as preflight:
+                first = authorize_plan(
+                    github, root, path, stdin=TTY(), input_fn=typed,
+                    subject_bytes=b"exact planned bytes", source_validator=lambda: None,
+                )
+                second = authorize_plan(
+                    github, root, path, stdin=TTY(), input_fn=typed,
+                    subject_bytes=b"exact planned bytes", source_validator=lambda: None,
+                )
+            self.assertEqual(preflight.call_count, 2)
+            self.assertEqual(first["status"], "AUTHORIZED")
+            self.assertEqual(first["evidence_type"], "PASES_OWNER_DECISION_V2")
+            self.assertFalse(first["chat_signature"])
+            self.assertEqual(second["owner_decision_comment_id"], first["owner_decision_comment_id"])
+            self.assertEqual(len(github.writes), 1)
+            body = github.writes[0][1]
+            self.assertTrue(body.startswith("<!-- PASES_OWNER_DECISION_V2\n"))
+            payload = json.loads(body.split("\n", 1)[1].removesuffix("\n-->"))
+            self.assertEqual(payload["evidence_channel"], "owner_local_tty_v1")
+            self.assertEqual(payload["plan_sha256"], plan["plan_sha256"])
+            self.assertEqual(payload["subject_sha256"], SUBJECT_SHA)
+
+    def test_ruleset_commit_writes_v2_and_existing_exact_two_line_issue_57_approval(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            github = FakeGitHub()
+            with patch("p_ases.owner_authorization.worktree_clean", return_value=True), \
+                    patch("p_ases.owner_authorization.head_sha40", return_value=PLAN_HEAD):
+                plan = create_authorization_plan(
+                    github, root, operation="RULESET_PLAN_APPLY", subject_sha256="c" * 64,
+                    target_issue_number=57, details={"activation_issue_number": 57},
+                )
+            path = root / "ruleset-owner-plan.json"
+            write_authorization_plan(path, plan)
+            with patch.dict(os.environ, {}, clear=True), \
+                    patch("p_ases.owner_authorization.worktree_clean", return_value=True), \
+                    patch("p_ases.owner_authorization.head_sha40", return_value=PLAN_HEAD):
+                result = authorize_plan(
+                    github, root, path, stdin=TTY(), input_fn=lambda _prompt: plan["plan_sha256"],
+                )
+            self.assertEqual(result["operation"], "RULESET_PLAN_APPLY")
+            self.assertEqual(result["ruleset_approval_comment_id"], 100)
+            self.assertEqual(len(github.comments[63]), 1)
+            self.assertEqual(len(github.comments[57]), 1)
+            expected = ("PASES-RULESET-APPROVE: " + "c" * 64 + "\n"
+                        "PASES-REPOSITORY: " + REPOSITORY)
+            self.assertEqual(github.comments[57][0]["body"], expected)
+            decision = json.loads(github.comments[63][0]["body"].split("\n", 1)[1].removesuffix("\n-->"))
+            self.assertEqual(decision["operation_plan_sha256"], "c" * 64)
+
+    def test_typed_plan_mismatch_and_stale_live_issue_are_zero_write(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = self.make_plan(root, FakeGitHub(), root)
+            github = FakeGitHub()
+            with patch.dict(os.environ, {}, clear=True), patch(
+                    "p_ases.owner_authorization.worktree_clean", return_value=True), patch(
+                    "p_ases.owner_authorization.head_sha40", return_value=PLAN_HEAD):
+                with self.assertRaisesRegex(OwnerAuthorizationError, "typed plan SHA"):
+                    authorize_plan(github, root, path, stdin=TTY(), input_fn=lambda _prompt: "f" * 64)
+            self.assertEqual(github.writes, [])
+
+            stale = FakeGitHub()
+            original_issue = stale.issue
+            stale.issue = lambda number: {**original_issue(number), "state": "closed"}
+            with patch.dict(os.environ, {}, clear=True):
+                with self.assertRaises(OwnerAuthorizationError):
+                    authorize_plan(stale, root, path, stdin=TTY(), input_fn=lambda _prompt: "")
+            self.assertEqual(stale.writes, [])
+
+
+if __name__ == "__main__":
+    unittest.main()

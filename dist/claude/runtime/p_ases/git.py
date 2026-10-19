@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import hashlib
 from pathlib import Path
 
 
@@ -37,6 +38,32 @@ def discover_repository(repo: Path) -> str:
     if not match:
         raise GitError("origin is not a recognizable GitHub repository")
     return match.group(1)
+
+
+def verify_remote_repository(repo: Path, expected_repository: str, remote: str = "origin") -> None:
+    """Require every configured fetch and push URL for one remote to target a GitHub repo.
+
+    Remote URLs are parsed only in memory and are never included in errors. This
+    is useful for exact-scope operations where a distinct push URL could send
+    Git objects to another repository despite a correct fetch URL.
+    """
+    if not isinstance(expected_repository, str) or not re.fullmatch(
+            r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", expected_repository):
+        raise GitError("expected GitHub repository identity is invalid")
+    if not isinstance(remote, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", remote):
+        raise GitError("Git remote name is invalid")
+    try:
+        fetch_urls = run_git(repo, "remote", "get-url", "--all", remote).splitlines()
+        push_urls = run_git(repo, "remote", "get-url", "--push", "--all", remote).splitlines()
+    except GitError as exc:
+        raise GitError("could not read all configured Git remote URLs") from exc
+    urls = [url.strip() for url in (*fetch_urls, *push_urls) if url.strip()]
+    if not urls:
+        raise GitError("Git remote has no configured fetch or push URL")
+    for url in urls:
+        match = re.search(r"(?:github\.com[:/])([^/\s:]+/[^/\s]+?)(?:\.git)?$", url, re.I)
+        if not match or match.group(1).casefold() != expected_repository.casefold():
+            raise GitError("configured Git remote does not target the pinned GitHub repository")
 
 
 def current_branch(repo: Path) -> str:
@@ -137,12 +164,40 @@ def commit_parent_sha40(repo: Path, commit_sha40: str) -> str:
     return row[1]
 
 
+def commit_parents_sha40(repo: Path, commit_sha40: str) -> tuple[str, ...]:
+    if not isinstance(commit_sha40, str) or not re.fullmatch(r"[0-9a-f]{40}", commit_sha40):
+        raise GitError("commit ref must be a full SHA-40")
+    row = run_git(repo, "rev-list", "--parents", "-n", "1", commit_sha40).split()
+    if (not row or row[0] != commit_sha40
+            or any(not re.fullmatch(r"[0-9a-f]{40}", value) for value in row[1:])):
+        raise GitError("commit parent readback is malformed")
+    return tuple(row[1:])
+
+
 def changed_paths_between(repo: Path, base_sha40: str, head_sha40: str) -> tuple[str, ...]:
     for value, label in ((base_sha40, "base"), (head_sha40, "head")):
         if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40}", value):
             raise GitError(f"Git {label} ref must be a full SHA-40")
     output = run_git(repo, "diff", "--name-only", "--diff-filter=ACDMRTUXB", base_sha40, head_sha40, "--")
     return tuple(output.splitlines())
+
+
+def patch_sha256_excluding_activation_profile(repo: Path, base_sha40: str, head_sha40: str) -> str:
+    """Hash the exact binary patch outside the one Activation-owned profile path."""
+    for value, label in ((base_sha40, "base"), (head_sha40, "head")):
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40}", value):
+            raise GitError(f"Git {label} ref must be a full SHA-40")
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--binary", base_sha40, head_sha40, "--", ".",
+             ":(exclude).agent/project.json"], cwd=repo, check=False,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+    except OSError as exc:
+        raise GitError("could not start git patch readback") from exc
+    if result.returncode:
+        raise GitError("git patch readback failed")
+    return hashlib.sha256(result.stdout).hexdigest()
 
 
 def activation_profile_bytes_at_commit(repo: Path, commit_sha40: str) -> bytes:

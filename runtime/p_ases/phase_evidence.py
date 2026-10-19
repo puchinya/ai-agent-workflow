@@ -41,6 +41,10 @@ DOCUMENT_ROOTS = {
 }
 BOOTSTRAP_ISSUES = {26, 27, 28, 29, 30, 31, 32}
 IMPACT_LINE = re.compile(r"(?im)^\s*[-*]\s*(Specification|Design|Testing):\s*(.*?)\s*$")
+CANONICAL_IMPACT_LINE = re.compile(r"(?im)^\s*Canonical:\s*(.*?)\s*$")
+BRACED_DOC_PATH = re.compile(
+    r"(docs/(?:specs|design|testing)/[A-Za-z0-9._/-]*?)\{([^{}]+)\}([A-Za-z0-9._/-]*)"
+)
 DOC_PATH = re.compile(r"(?<![A-Za-z0-9_.-])docs/(?:specs|design|testing)/[A-Za-z0-9._/-]+")
 
 
@@ -164,6 +168,35 @@ def _artifact_impacts(verified: VerifiedADC) -> tuple[dict[str, tuple[str, ...]]
             raise PhaseEvidenceError(f"approved ADC duplicates its {match.group(1)} artifact impact")
         lines[role] = match.group(2).strip()
     if set(lines) != DOCUMENT_ROLES:
+        canonical_matches = list(CANONICAL_IMPACT_LINE.finditer(text))
+        if len(canonical_matches) != 1:
+            raise PhaseEvidenceError(
+                "approved ADC must declare Specification, Design, and Testing impacts or one Canonical path list"
+            )
+        canonical = canonical_matches[0].group(1)
+        while True:
+            expanded, count = BRACED_DOC_PATH.subn(
+                lambda match: ", ".join(
+                    match.group(1) + item.strip() + match.group(3)
+                    for item in match.group(2).split(",") if item.strip()
+                ), canonical,
+            )
+            canonical = expanded
+            if count == 0:
+                break
+        declarations = {role: [] for role in DOCUMENT_ROLES}
+        for path in DOC_PATH.findall(canonical):
+            if path.startswith(DOCUMENT_ROOTS["specification"]):
+                declarations["specification"].append(path)
+            elif path.startswith(DOCUMENT_ROOTS["design"]):
+                declarations["design"].append(path)
+            elif path.startswith(DOCUMENT_ROOTS["test-oracle"]):
+                declarations["test-oracle"].append(path)
+        if lines:
+            for role, declaration in lines.items():
+                declarations[role].extend(DOC_PATH.findall(declaration))
+        lines = {role: ", ".join(paths) for role, paths in declarations.items()}
+    if set(lines) != DOCUMENT_ROLES:
         raise PhaseEvidenceError("approved ADC must declare Specification, Design, and Testing artifact impact")
     paths: dict[str, tuple[str, ...]] = {}
     reasons: dict[str, str] = {}
@@ -224,8 +257,36 @@ def _kind_from_issue(issue: dict[str, Any]) -> tuple[IssueKind, list[str]]:
 
 def _verify_frozen_binding(github: GitHub, root: Path, issue_number: int, verified: VerifiedADC,
                            branch_ref: str, commit_sha: str) -> None:
+    path = execution_binding_path(root.resolve(), issue_number)
+    if not path.exists():
+        if issue_number != 63 or not (
+                (root / ".p_ases" / "state" / str(issue_number) / "execution-adoption.json").exists()
+                or (root / ".p_ases" / "state" / str(issue_number) / "workspace-attachment.json").exists()):
+            raise PhaseEvidenceError("a valid frozen Issue ExecutionBinding is required when no adopted epoch exists")
+        try:
+            from .execution_adoption import ExecutionAdoptionError, verify_adopted_execution
+            adopted_readback = verify_adopted_execution(
+                github, root, expected_adc_comment_id=verified.pointer.comment_id,
+                expected_adc_sha256=verified.contract.sha256,
+            )
+            adopted = adopted_readback["epoch"]
+            current_binding = adopted_readback["pr_binding"]
+            if (issue_number != 63 or adopted.repository.casefold() != github.repo.casefold()
+                    or adopted.issue_number != issue_number
+                    or current_binding.adoption_id != adopted.adoption_id
+                    or current_binding.adc_comment_id != verified.pointer.comment_id
+                    or current_binding.adc_sha256 != verified.contract.sha256
+                    or adopted.branch_ref != branch_ref
+                    or current_binding.branch_ref != branch_ref
+                    or current_binding.pr_head_sha40 != commit_sha
+                    or not is_ancestor(root, adopted.selected_base_sha40, commit_sha)
+                    or not is_ancestor(root, adopted.observed_start_head_sha40, commit_sha)):
+                raise PhaseEvidenceError("verified adopted epoch/PRBinding does not match this Issue/ADC/branch/HEAD")
+            return
+        except (ExecutionAdoptionError, GitError) as exc:
+            raise PhaseEvidenceError(f"a valid authenticated adopted execution epoch is required: {exc}") from exc
     try:
-        binding = read_binding(execution_binding_path(root.resolve(), issue_number))
+        binding = read_binding(path)
         if (binding.repository.casefold() != github.repo.casefold()
                 or binding.issue_number != issue_number
                 or binding.adc_comment_id != verified.pointer.comment_id
@@ -422,7 +483,10 @@ def _check_activation(github: GitHub, issue_number: int) -> None:
         activation_issue_number = pinned.activation_issue_number
         if activation_issue_number is None:
             raise PhaseEvidenceError("Gate Selection does not name its consumer Activation Issue")
-        history = read_consumer_activation_history(github, github.repo, activation_issue_number)
+        history = read_consumer_activation_history(
+            github, github.repo, activation_issue_number,
+            through_record_id=pinned.activation_comment_id,
+        )
         activation_row = next((row for row in history if row[1] == pinned.activation_comment_id), None)
         if activation_row is None:
             raise PhaseEvidenceError("Gate Selection does not point to a valid historical consumer Activation")

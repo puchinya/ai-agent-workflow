@@ -64,6 +64,10 @@ REQUIRED_SECTIONS = {
     "artifact_impact", "exact_changes", "invariants", "non_goals",
     "verification_obligations", "reviewer_checklist", "completion_gates",
 }
+PREDECESSOR_ADC_FIELDS = re.compile(
+    r"^Predecessor ADC:\s*Issue\s+#?([1-9][0-9]*)\s+comment\s+#?([1-9][0-9]*),\s*"
+    r"SHA-256\s+`?([0-9a-f]{64})`?(?:\s+\(.*\))?$"
+)
 
 
 @dataclass(frozen=True)
@@ -309,6 +313,71 @@ def parse_adc(data: bytes, repository: str, issue_number: int) -> ADC:
         requirement_ids=requirement_ids,
         child_key=child_key,
     )
+
+
+def validate_approval_ready_adc(
+    data: bytes,
+    repository: str,
+    issue_number: int,
+    *,
+    current_pointer: ADCPointer | None = None,
+    check_current_pointer: bool = False,
+) -> ADC:
+    """Validate a new approved publication without changing historical reads.
+
+    ``parse_adc`` remains structural and is intentionally used by verification of
+    old immutable generations. This stricter check applies only when preparing a
+    new approved publication or its exact owner-authorization plan.
+    """
+    contract = parse_adc(data, repository, issue_number)
+    if check_current_pointer and current_pointer is not None and not isinstance(current_pointer, ADCPointer):
+        raise ADCError("current ADC predecessor pointer is malformed")
+
+    text = data.decode("utf-8", errors="strict")
+    lines = text.splitlines()
+    first_nonempty = next((line.strip() for line in lines if line.strip()), "")
+    if not first_nonempty.startswith("# Agent Development Contract"):
+        raise ADCError("approved ADC must have a final Agent Development Contract title")
+    if re.search(r"(?i)\b(?:draft|proposal|unapproved)\b", first_nonempty):
+        raise ADCError("approved ADC title still marks the contract as a draft or proposal")
+
+    preamble: list[str] = []
+    for line in lines:
+        if re.match(r"^ {0,3}##(?:[ \t]+|$)", line):
+            break
+        preamble.append(line)
+    for line in preamble:
+        value = line.strip()
+        if re.match(r"(?i)^draft\b", value):
+            raise ADCError("approved ADC header still contains a draft-only status")
+        status = re.match(r"(?i)^(?:status|state)\s*:\s*(.+)$", value)
+        if status and re.match(r"(?i)^(?:draft|unapproved|pending|not approved)\b", status.group(1).strip()):
+            raise ADCError("approved ADC header status is not final")
+
+    predecessor_lines = [line.strip() for line in preamble
+                         if line.strip().startswith("Predecessor ADC:")]
+    if len(predecessor_lines) > 1:
+        raise ADCError("approved ADC header has multiple predecessor declarations")
+    declared: tuple[int, int, str] | None = None
+    if predecessor_lines:
+        match = PREDECESSOR_ADC_FIELDS.fullmatch(predecessor_lines[0])
+        if match is None:
+            raise ADCError("approved ADC predecessor declaration is malformed")
+        declared = (int(match.group(1)), int(match.group(2)), match.group(3))
+
+    if check_current_pointer:
+        is_issue63 = contract.repository == "puchinya/ai-agent-workflow" and issue_number == 63
+        if is_issue63 and current_pointer is not None and current_pointer.state != "approved":
+            raise ADCError("approved ADC successor requires a current approved predecessor")
+        if is_issue63 and current_pointer is not None and declared is None:
+            raise ADCError("Issue #63 approved successor must name its current predecessor ADC")
+        if is_issue63 and declared is not None:
+            if current_pointer is None:
+                raise ADCError("approved ADC declares a predecessor but the current pointer is absent")
+            if (declared[0] != issue_number or declared[1] != current_pointer.comment_id
+                    or declared[2] != current_pointer.sha256):
+                raise ADCError("approved ADC predecessor does not match the current approved pointer")
+    return contract
 
 
 def parse_pointer(body: str) -> ADCPointer | None:
@@ -623,7 +692,8 @@ def publish_adc(
         raise ADCError("expected current ADC pointer is malformed")
     if state == "approved" and explicitly_approved is not True:
         raise ADCError("publishing an approved ADC requires explicit user approval")
-    contract = parse_adc(data, github.repo, issue_number)
+    contract = (validate_approval_ready_adc(data, github.repo, issue_number)
+                if state == "approved" else parse_adc(data, github.repo, issue_number))
     try:
         before = _check_issue(github.issue(issue_number), github.repo, issue_number)
     except GitHubError as exc:
@@ -650,6 +720,13 @@ def publish_adc(
             return current_verified.pointer
         if not supersede:
             raise ADCError("Issue already has an ADC; use explicit supersession to publish another immutable comment")
+    if state == "approved":
+        # Validate a new publication against the currently verified generation
+        # before creating its durable transaction marker or any other comment.
+        validate_approval_ready_adc(
+            data, github.repo, issue_number,
+            current_pointer=existing_pointer, check_current_pointer=True,
+        )
     if expected_current is not None and existing_pointer != expected_current:
         raise ADCError("current ADC pointer differs from the exact expected predecessor")
     try:
@@ -838,6 +915,81 @@ def verify_adc_generation(github: GitHub, issue_number: int, comment_id: int, sh
     if contract.sha256 != sha256 or contract.byte_length != matching[0].byte_length:
         raise ADCError("historical ADC comment does not match its immutable pointer")
     return VerifiedADC(contract, matching[0])
+
+
+def verify_adc_forward_generations(
+    github: GitHub, issue_number: int, *, prior_comment_id: int, prior_sha256: str,
+    current_comment_id: int, current_sha256: str, allow_historical_target: bool = False,
+) -> tuple[VerifiedADC, ...]:
+    """Verify an approved range in the current ADC chain.
+
+    New state must end at the current pointer. Immutable history may validate an
+    earlier edge of that same current chain by explicitly opting into a
+    historical target.
+    """
+    if (type(prior_comment_id) is not int or prior_comment_id < 1
+            or type(current_comment_id) is not int or current_comment_id <= prior_comment_id
+            or not isinstance(prior_sha256, str) or not SHA256.fullmatch(prior_sha256)
+            or not isinstance(current_sha256, str) or not SHA256.fullmatch(current_sha256)
+            or type(allow_historical_target) is not bool):
+        raise ADCError("ADC successor range is malformed, stale or backward")
+    try:
+        issue = _check_issue(github.issue(issue_number), github.repo, issue_number)
+        current = verify_adc(github, issue_number)
+        if current.pointer.state != "approved":
+            raise ADCError("current ADC pointer is not approved")
+        if (not allow_historical_target
+                and (current.pointer.comment_id != current_comment_id
+                     or current.pointer.sha256 != current_sha256)):
+            raise ADCError("PRBinding does not match the current approved ADC pointer")
+        _latest_pointer_record(github, issue_number, issue_body=issue.get("body") or "")
+        entries: list[tuple[int, ADCPointer]] = []
+        legacy = parse_pointer(issue.get("body") or "")
+        if legacy is not None:
+            entries.append((legacy.comment_id, legacy))
+        for row in github.issue_comments(issue_number):
+            body = row.get("body") if isinstance(row, dict) else None
+            if not isinstance(body, str) or not body.startswith(POINTER_RECORD_SENTINEL):
+                continue
+            record_id = row.get("id")
+            if type(record_id) is not int or record_id < 1:
+                raise ADCError("ADC pointer journal contains an invalid record ID")
+            match = _parse_pointer_record_body(body, github.repo, issue_number)
+            if match is None:
+                raise ADCError("ADC pointer journal contains a malformed generation")
+            groups = match.groups()
+            pointer = ADCPointer(int(groups[2]), groups[3], int(groups[4]), groups[5])
+            if pointer.comment_id >= record_id:
+                raise ADCError("ADC generation pointer is not forward of its journal record")
+            entries.append((record_id, pointer))
+        entries.sort(key=lambda pair: pair[0])
+        pointers = [pointer for _record_id, pointer in entries]
+        pointer_ids = [pointer.comment_id for pointer in pointers]
+        if (len(pointer_ids) != len(set(pointer_ids))
+                or any(right <= left for left, right in zip(pointer_ids, pointer_ids[1:]))):
+            raise ADCError("ADC generation journal is duplicated or not forward-only")
+        if not pointers or pointers[-1] != current.pointer:
+            raise ADCError("current ADC pointer is not the terminal generation in its journal")
+        prior_matches = [index for index, row in enumerate(pointers)
+                         if row.comment_id == prior_comment_id and row.sha256 == prior_sha256]
+        current_matches = [index for index, row in enumerate(pointers)
+                           if row.comment_id == current_comment_id and row.sha256 == current_sha256]
+        if len(prior_matches) != 1 or len(current_matches) != 1 or prior_matches[0] >= current_matches[0]:
+            raise ADCError("ADC successor journal has a gap, rollback or unknown generation")
+        selected = pointers[prior_matches[0]:current_matches[0] + 1]
+        verified_rows: list[VerifiedADC] = []
+        for pointer in selected:
+            if pointer.state != "approved":
+                raise ADCError("ADC successor range contains a non-approved generation")
+            verified = verify_adc_generation(
+                github, issue_number, pointer.comment_id, pointer.sha256, state="approved",
+            )
+            if verified.pointer != pointer:
+                raise ADCError("ADC successor generation differs from its verified journal record")
+            verified_rows.append(verified)
+        return tuple(verified_rows)
+    except GitHubError as exc:
+        raise ADCError(str(exc)) from exc
 
 
 def restore_adc(github: GitHub, issue_number: int, destination: Path) -> VerifiedADC:

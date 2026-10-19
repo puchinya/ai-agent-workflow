@@ -42,6 +42,33 @@ class FakeGitHub(GitHub):
 
 
 class GitHubCheckRunTests(unittest.TestCase):
+    def test_github_api_json_body_uses_gh_input_stdin(self):
+        github = GitHub("octo/repo")
+        completed = __import__("subprocess").CompletedProcess(
+            ["gh", "api"], 0, '{"id": 123}', "")
+        payload = {"body": "approval marker", "secret": "marker-secret"}
+        with patch("p_ases.github.subprocess.run", return_value=completed) as run:
+            result = github.request("POST", "repos/octo/repo/issues/26/comments", payload)
+        self.assertEqual(result, {"id": 123})
+        argv = run.call_args.args[0]
+        self.assertEqual(argv, [
+            "gh", "api", "--method", "POST", "repos/octo/repo/issues/26/comments",
+            "--input", "-",
+        ])
+        self.assertNotIn("approval marker", argv)
+        self.assertNotIn("marker-secret", argv)
+        self.assertEqual(run.call_args.kwargs["input"],
+                         '{"body":"approval marker","secret":"marker-secret"}')
+
+    def test_runtime_has_no_second_direct_http_client(self):
+        runtime = ROOT / "runtime" / "p_ases"
+        forbidden = ("urllib.request", "requests.", "httpx.", "http.client", "urlopen(")
+        for path in runtime.glob("*.py"):
+            source = path.read_text(encoding="utf-8").casefold()
+            for marker in forbidden:
+                with self.subTest(path=path.name, marker=marker):
+                    self.assertNotIn(marker, source)
+
     def test_api_metrics_count_requests_and_measure_client_latency(self):
         github = GitHub("octo/repo")
         completed = __import__("subprocess").CompletedProcess(
@@ -226,6 +253,47 @@ class GitHubCheckRunTests(unittest.TestCase):
             FakeGitHub((GitHubError("HTTP 404"),)).workflow_run_attempt(30, 1)
         with self.assertRaises(GitHubError):
             FakeGitHub(()).workflow_run_jobs(30, 0)
+
+    def test_effective_branch_rules_paginate_with_explicit_page_identity(self):
+        first = [{"type": "pull_request", "ruleset_id": value,
+                  "ruleset_source_type": "Repository", "ruleset_source": "octo/repo"}
+                 for value in range(1, 101)]
+        second = [{"type": "non_fast_forward", "ruleset_id": 101,
+                   "ruleset_source_type": "Organization", "ruleset_source": "octo"}]
+        github = FakeGitHub((first, second))
+        result = github.effective_branch_rules("release/1.0")
+        self.assertEqual(len(result), 101)
+        self.assertEqual(result[-1]["ruleset_id"], 101)
+        self.assertEqual(github.calls, [
+            ("GET", "repos/octo/repo/rules/branches/release%2F1.0?page=1&per_page=100", None),
+            ("GET", "repos/octo/repo/rules/branches/release%2F1.0?page=2&per_page=100", None),
+        ])
+
+    def test_ruleset_details_use_verified_repository_or_organization_source(self):
+        repository = {"id": 17, "source": "octo/repo", "source_type": "Repository",
+                      "target": "branch", "enforcement": "active", "rules": [], "bypass_actors": []}
+        organization = {**repository, "source": "octo", "source_type": "Organization"}
+        repo_api = FakeGitHub((repository,))
+        org_api = FakeGitHub((organization,))
+        self.assertEqual(repo_api.ruleset_details(17, source_type="Repository"), repository)
+        self.assertEqual(org_api.ruleset_details(17, source_type="Organization"), organization)
+        self.assertEqual(repo_api.calls[0][1], "repos/octo/repo/rulesets/17")
+        self.assertEqual(org_api.calls[0][1], "orgs/octo/rulesets/17")
+        with self.assertRaises(GitHubError):
+            FakeGitHub((repository,)).ruleset_details(17, source_type="Unknown")
+
+    def test_http_status_is_preserved_without_exposing_gh_error_body(self):
+        import subprocess
+
+        completed = subprocess.CompletedProcess(
+            ["gh", "api"], 1, "", "gh: HTTP 403: Resource not accessible SECRET_TOKEN"
+        )
+        github = GitHub("octo/repo")
+        with patch("p_ases.github.subprocess.run", return_value=completed):
+            with self.assertRaises(GitHubError) as raised:
+                github.request("GET", "repos/octo/repo/branches/main/protection")
+        self.assertEqual(raised.exception.status_code, 403)
+        self.assertNotIn("SECRET_TOKEN", str(raised.exception))
 
 
 if __name__ == "__main__":

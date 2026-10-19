@@ -6,11 +6,15 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
 
-from p_ases.adc import ADCError, parse_adc, publish_adc, restore_adc, verify_adc
+from p_ases.adc import (
+    ADCPointer, ADCError, parse_adc, publish_adc, restore_adc,
+    validate_approval_ready_adc, verify_adc, verify_adc_forward_generations, verify_adc_generation,
+)
 from p_ases.github import GitHubError
 from p_ases.intake import (
     Decision,
@@ -73,13 +77,13 @@ def adc_bytes(repository: str = "octo/repo", *, child_key: str | None = None,
 
 
 class FakeGitHub:
-    repo = "octo/repo"
-
-    def __init__(self) -> None:
+    def __init__(self, repo: str = "octo/repo", issue_number: int = 1) -> None:
+        self.repo = repo
+        self.issue_number = issue_number
         self.issue_data = {
             "id": 1001,
-            "number": 1,
-            "repository_url": "https://api.github.com/repos/octo/repo",
+            "number": issue_number,
+            "repository_url": f"https://api.github.com/repos/{repo}",
             "state": "open",
             "body": "# Parent issue\nKeep this text.\n",
             "pull_request": None,
@@ -95,16 +99,16 @@ class FakeGitHub:
         self.extra_listed_comments: list[dict[str, object]] = []
         self.altered_readback: dict[int, str] = {}
         self.comment_identity: dict[str, object] | None = {
-            "user": {"id": 101, "login": "octo"},
+            "user": {"id": 101, "login": "octo", "type": "User"},
             "author_association": "OWNER",
         }
 
     def issue(self, number: int) -> dict[str, object]:
-        assert number == 1
+        assert number == self.issue_number
         return copy.deepcopy(self.issue_data)
 
     def create_issue_comment(self, number: int, body: str) -> dict[str, object]:
-        assert number == 1
+        assert number == self.issue_number
         if body.startswith("<!-- PASES_ADC_POINTER_V1\n"):
             if self.concurrent_body_on_pointer_record is not None:
                 self.issue_data["body"] = self.concurrent_body_on_pointer_record
@@ -114,7 +118,7 @@ class FakeGitHub:
                 self.comments[competing_id] = {
                     "id": competing_id,
                     "body": self.competing_pointer_body,
-                    "issue_url": "https://api.github.com/repos/octo/repo/issues/1",
+                    "issue_url": f"https://api.github.com/repos/{self.repo}/issues/{number}",
                     "user": {"id": 102, "login": "collaborator"},
                     "author_association": "COLLABORATOR",
                 }
@@ -126,7 +130,11 @@ class FakeGitHub:
         comment = {
             "id": comment_id,
             "body": body,
-            "issue_url": "https://api.github.com/repos/octo/repo/issues/1",
+            "created_at": "2026-10-18T08:00:00Z",
+            "updated_at": "2026-10-18T08:00:00Z",
+            "url": f"https://api.github.com/repos/{self.repo}/issues/comments/{comment_id}",
+            "issue_url": f"https://api.github.com/repos/{self.repo}/issues/{number}",
+            "html_url": f"https://github.com/{self.repo}/issues/{number}#issuecomment-{comment_id}",
         }
         if self.comment_identity is not None:
             comment.update(copy.deepcopy(self.comment_identity))
@@ -134,7 +142,7 @@ class FakeGitHub:
         return copy.deepcopy(self.comments[comment_id])
 
     def issue_comment(self, number: int, comment_id: int) -> dict[str, object]:
-        assert number == 1
+        assert number == self.issue_number
         comment = copy.deepcopy(self.comments[comment_id])
         if comment_id in self.altered_readback:
             comment["body"] = self.altered_readback[comment_id]
@@ -145,12 +153,12 @@ class FakeGitHub:
         return comment
 
     def issue_comments(self, number: int) -> list[dict[str, object]]:
-        assert number == 1
+        assert number == self.issue_number
         return ([copy.deepcopy(comment) for comment in self.comments.values()]
                 + copy.deepcopy(self.extra_listed_comments))
 
     def update_issue(self, number: int, body: str) -> dict[str, object]:
-        assert number == 1
+        assert number == self.issue_number
         self.issue_update_calls += 1
         self.issue_data["body"] = body
         return self.issue(number)
@@ -210,6 +218,81 @@ class ADCValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ADCError, "credential or secret"):
             parse_adc(secret, "octo/repo", 1)
 
+    def test_approval_preflight_rejects_draft_title_header_and_status(self):
+        draft_title = adc_bytes().replace(
+            b"# Agent Development Contract", "# Agent Development Contract — successor-draft".encode("utf-8"), 1,
+        )
+        draft_header = adc_bytes().replace(
+            b"\nState: approved", "\nDraft only — not approved for execution or publication.\nState: approved".encode("utf-8"), 1,
+        )
+        draft_state = adc_bytes().replace(b"State: approved", b"State: draft", 1)
+        for candidate in (draft_title, draft_header, draft_state):
+            with self.subTest(candidate=candidate[:80]), self.assertRaises(ADCError):
+                validate_approval_ready_adc(candidate, "octo/repo", 1)
+            # Structural and historical parsing deliberately remain compatible.
+            self.assertEqual(parse_adc(candidate, "octo/repo", 1).content, candidate)
+
+    def test_approval_preflight_ignores_draft_prose_outside_header(self):
+        candidate = adc_bytes().replace(
+            b"## Exact changes\nAdd the scoped core modules.",
+            b"## Exact changes\nThe historical draft said Draft only; this final section is descriptive.",
+        )
+        self.assertEqual(validate_approval_ready_adc(candidate, "octo/repo", 1).content, candidate)
+
+    def test_approval_preflight_requires_exact_declared_predecessor(self):
+        predecessor = ADCPointer(41, "a" * 64, 1234, "approved")
+        stale = adc_bytes("puchinya/ai-agent-workflow", issue=63).replace(
+            b"Repository: puchinya/ai-agent-workflow\n",
+            b"Repository: puchinya/ai-agent-workflow\nPredecessor ADC: Issue #63 comment #40, SHA-256 `" + b"b" * 64 + b"`\n",
+            1,
+        )
+        with self.assertRaisesRegex(ADCError, "does not match the current approved pointer"):
+            validate_approval_ready_adc(
+                stale, "puchinya/ai-agent-workflow", 63,
+                current_pointer=predecessor, check_current_pointer=True,
+            )
+        exact = stale.replace(b"Issue #63 comment #40, SHA-256 `" + b"b" * 64,
+                              b"Issue #63 comment #41, SHA-256 `" + b"a" * 64, 1)
+        self.assertEqual(validate_approval_ready_adc(
+            exact, "puchinya/ai-agent-workflow", 63,
+            current_pointer=predecessor, check_current_pointer=True,
+        ).content, exact)
+
+    def test_issue63_approval_preflight_requires_latest_pointer_predecessor(self):
+        current = ADCPointer(6244160653, "f1cab9b9edca34d4e80c486642059881b62abd5d95b993999a52494494bafac8",
+                             2048, "approved")
+        candidate = adc_bytes("puchinya/ai-agent-workflow", issue=63)
+        with self.assertRaisesRegex(ADCError, "must name its current predecessor"):
+            validate_approval_ready_adc(
+                candidate, "puchinya/ai-agent-workflow", 63,
+                current_pointer=current, check_current_pointer=True,
+            )
+        candidate = candidate.replace(
+            b"Repository: puchinya/ai-agent-workflow\n",
+            b"Repository: puchinya/ai-agent-workflow\nPredecessor ADC: Issue #63 comment #6244160653, SHA-256 `f1cab9b9edca34d4e80c486642059881b62abd5d95b993999a52494494bafac8`\n",
+            1,
+        )
+        self.assertEqual(validate_approval_ready_adc(
+            candidate, "puchinya/ai-agent-workflow", 63,
+            current_pointer=current, check_current_pointer=True,
+        ).content, candidate)
+
+    def test_final_issue63_candidate_is_approval_ready_for_exact_journal_predecessor(self):
+        candidate = (ROOT / "docs/contracts/issue-63-successor-adc-final.md").read_bytes()
+        current = ADCPointer(
+            6244160653,
+            "f1cab9b9edca34d4e80c486642059881b62abd5d95b993999a52494494bafac8",
+            2048,
+            "approved",
+        )
+        self.assertEqual(validate_approval_ready_adc(
+            candidate,
+            "puchinya/ai-agent-workflow",
+            63,
+            current_pointer=current,
+            check_current_pointer=True,
+        ).content, candidate)
+
 
 class ADCPublicationTests(unittest.TestCase):
     def setUp(self):
@@ -236,6 +319,46 @@ class ADCPublicationTests(unittest.TestCase):
             if isinstance(comment.get("body"), str)
             and comment["body"].startswith("<!-- PASES_ADC_POINTER_V1\n")
         }
+
+    def test_approved_draft_rejected_before_any_github_write(self):
+        draft = self.payload.replace(
+            b"# Agent Development Contract", "# Agent Development Contract — successor-draft".encode("utf-8"), 1,
+        ).replace(b"State: approved", "Draft only — not approved for execution or publication.\nState: approved".encode("utf-8"), 1)
+        with self.assertRaisesRegex(ADCError, "draft"):
+            publish_adc(self.github, 1, draft, state="approved", explicitly_approved=True)
+        self.assertEqual(self.github.comments, {})
+
+    def test_mismatched_predecessor_is_rejected_before_publication_marker(self):
+        self.github = FakeGitHub("puchinya/ai-agent-workflow", 63)
+        candidate = adc_bytes("puchinya/ai-agent-workflow", issue=63)
+        predecessor = publish_adc(self.github, 63, candidate, state="approved", explicitly_approved=True)
+        successor = candidate.replace(b"REQ-01", b"REQ-02").replace(
+            b"Repository: puchinya/ai-agent-workflow\n",
+            b"Repository: puchinya/ai-agent-workflow\nPredecessor ADC: Issue #63 comment #999, SHA-256 `" + b"f" * 64 + b"`\n",
+            1,
+        )
+        before = set(self.github.comments)
+        with self.assertRaisesRegex(ADCError, "does not match the current approved pointer"):
+            publish_adc(self.github, 63, successor, state="approved", explicitly_approved=True,
+                        supersede=True, expected_current=predecessor)
+        self.assertEqual(set(self.github.comments), before)
+
+    def test_historical_approved_draft_generation_remains_readable(self):
+        historical = self.payload.replace(
+            b"# Agent Development Contract", "# Agent Development Contract — successor-draft".encode("utf-8"), 1,
+        ).replace(b"State: approved", "Draft only — not approved for execution or publication.\nState: approved".encode("utf-8"), 1)
+        # Simulate the immutable generation as it was written before the stricter
+        # approval-ready preflight existed; historical verification must not apply
+        # today's publication rules retroactively.
+        with patch("p_ases.adc.validate_approval_ready_adc",
+                   side_effect=lambda raw, repo, issue, **_kwargs: parse_adc(raw, repo, issue)):
+            pointer = publish_adc(
+                self.github, 1, historical, state="approved", explicitly_approved=True,
+            )
+        verified = verify_adc_generation(
+            self.github, 1, pointer.comment_id, pointer.sha256, state="approved",
+        )
+        self.assertEqual(verified.contract.content, historical)
 
     def set_legacy_pointer(self, pointer):
         self.github.issue_data["body"] = (
@@ -335,6 +458,41 @@ class ADCPublicationTests(unittest.TestCase):
         operation_ids = {body.splitlines()[1] for body in marker_bodies}
         self.assertEqual(len(operation_ids), 3)
         self.assertEqual(verify_adc(self.github, 1).pointer.comment_id, second_a.comment_id)
+
+    def test_historical_successor_range_is_valid_only_inside_current_approved_chain(self):
+        first = publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
+        payload_b = self.payload.replace(b"REQ-01", b"REQ-02")
+        second = publish_adc(
+            self.github, 1, payload_b, state="approved", explicitly_approved=True, supersede=True,
+        )
+        payload_c = self.payload.replace(b"REQ-01", b"REQ-03")
+        third = publish_adc(
+            self.github, 1, payload_c, state="approved", explicitly_approved=True, supersede=True,
+        )
+
+        with self.assertRaisesRegex(ADCError, "current approved ADC pointer"):
+            verify_adc_forward_generations(
+                self.github, 1, prior_comment_id=first.comment_id, prior_sha256=first.sha256,
+                current_comment_id=second.comment_id, current_sha256=second.sha256,
+            )
+        historical = verify_adc_forward_generations(
+            self.github, 1, prior_comment_id=first.comment_id, prior_sha256=first.sha256,
+            current_comment_id=second.comment_id, current_sha256=second.sha256,
+            allow_historical_target=True,
+        )
+        self.assertEqual([item.pointer for item in historical], [first, second])
+
+        latest = verify_adc_forward_generations(
+            self.github, 1, prior_comment_id=first.comment_id, prior_sha256=first.sha256,
+            current_comment_id=third.comment_id, current_sha256=third.sha256,
+        )
+        self.assertEqual([item.pointer for item in latest], [first, second, third])
+        with self.assertRaisesRegex(ADCError, "malformed, stale or backward"):
+            verify_adc_forward_generations(
+                self.github, 1, prior_comment_id=first.comment_id, prior_sha256=first.sha256,
+                current_comment_id=second.comment_id, current_sha256=second.sha256,
+                allow_historical_target=1,
+            )
 
     def test_publish_reads_back_comment_before_pointer_and_verifies(self):
         pointer = publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
