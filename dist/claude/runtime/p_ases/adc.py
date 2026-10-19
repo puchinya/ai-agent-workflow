@@ -919,19 +919,28 @@ def verify_adc_generation(github: GitHub, issue_number: int, comment_id: int, sh
 
 def verify_adc_forward_generations(
     github: GitHub, issue_number: int, *, prior_comment_id: int, prior_sha256: str,
-    current_comment_id: int, current_sha256: str,
+    current_comment_id: int, current_sha256: str, allow_historical_target: bool = False,
 ) -> tuple[VerifiedADC, ...]:
-    """Verify every approved ADC pointer from one PRBinding generation to the next."""
+    """Verify an approved range in the current ADC chain.
+
+    New state must end at the current pointer. Immutable history may validate an
+    earlier edge of that same current chain by explicitly opting into a
+    historical target.
+    """
     if (type(prior_comment_id) is not int or prior_comment_id < 1
             or type(current_comment_id) is not int or current_comment_id <= prior_comment_id
             or not isinstance(prior_sha256, str) or not SHA256.fullmatch(prior_sha256)
-            or not isinstance(current_sha256, str) or not SHA256.fullmatch(current_sha256)):
+            or not isinstance(current_sha256, str) or not SHA256.fullmatch(current_sha256)
+            or type(allow_historical_target) is not bool):
         raise ADCError("ADC successor range is malformed, stale or backward")
     try:
         issue = _check_issue(github.issue(issue_number), github.repo, issue_number)
         current = verify_adc(github, issue_number)
-        if (current.pointer.comment_id != current_comment_id or current.pointer.sha256 != current_sha256
-                or current.pointer.state != "approved"):
+        if current.pointer.state != "approved":
+            raise ADCError("current ADC pointer is not approved")
+        if (not allow_historical_target
+                and (current.pointer.comment_id != current_comment_id
+                     or current.pointer.sha256 != current_sha256)):
             raise ADCError("PRBinding does not match the current approved ADC pointer")
         _latest_pointer_record(github, issue_number, issue_body=issue.get("body") or "")
         entries: list[tuple[int, ADCPointer]] = []
@@ -959,6 +968,8 @@ def verify_adc_forward_generations(
         if (len(pointer_ids) != len(set(pointer_ids))
                 or any(right <= left for left, right in zip(pointer_ids, pointer_ids[1:]))):
             raise ADCError("ADC generation journal is duplicated or not forward-only")
+        if not pointers or pointers[-1] != current.pointer:
+            raise ADCError("current ADC pointer is not the terminal generation in its journal")
         prior_matches = [index for index, row in enumerate(pointers)
                          if row.comment_id == prior_comment_id and row.sha256 == prior_sha256]
         current_matches = [index for index, row in enumerate(pointers)

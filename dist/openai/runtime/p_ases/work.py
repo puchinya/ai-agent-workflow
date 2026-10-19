@@ -179,7 +179,8 @@ def ensure_pull_request(repository_root: Path, github: GitHub, *, repository: st
                     raise WorkError("immutable PRBinding HEAD history is not a forward-only chain")
             if prior_binding is not None:
                 _verify_pr_binding_successor(github, issue_number, prior_binding, item,
-                                             current_base_evidence=current_base_evidence)
+                                             current_base_evidence=current_base_evidence,
+                                             allow_historical_adc_target=True)
             prior_head = item.pr_head_sha40
             prior_binding = item
     stored_binding = binding_history[-1][1] if binding_history else None
@@ -305,7 +306,8 @@ def _same_pr_execution_identity(left: PRBinding, right: PRBinding) -> bool:
 
 def _verify_pr_binding_successor(github: GitHub, issue_number: int,
                                  old: PRBinding, new: PRBinding, *,
-                                 current_base_evidence: CurrentBaseAdvanceEvidence | None = None) -> None:
+                                 current_base_evidence: CurrentBaseAdvanceEvidence | None = None,
+                                 allow_historical_adc_target: bool = False) -> None:
     if not _same_pr_execution_identity(old, new):
         raise WorkError("PRBinding successor changes its frozen PR execution identity")
     if (old.adoption_id is not None or new.adoption_id is not None) and old.adoption_id != new.adoption_id:
@@ -330,6 +332,7 @@ def _verify_pr_binding_successor(github: GitHub, issue_number: int,
         verified = verify_adc_forward_generations(
             github, issue_number, prior_comment_id=old.adc_comment_id, prior_sha256=old.adc_sha256,
             current_comment_id=new.adc_comment_id, current_sha256=new.adc_sha256,
+            allow_historical_target=allow_historical_adc_target,
         )
     except ADCError as exc:
         raise WorkError(f"PRBinding ADC successor is not a complete approved forward generation: {exc}") from exc
@@ -396,7 +399,8 @@ def read_pr_binding_history(work_directory: Path, issue_number: int, *,
             if github is None:
                 raise WorkError("PRBinding ADC generations require current GitHub journal verification")
         _verify_pr_binding_successor(github, issue_number, previous, current,
-                                     current_base_evidence=current_base_evidence)
+                                     current_base_evidence=current_base_evidence,
+                                     allow_historical_adc_target=True)
     return rows
 
 

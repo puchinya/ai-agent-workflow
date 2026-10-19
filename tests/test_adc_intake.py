@@ -13,7 +13,7 @@ sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases.adc import (
     ADCPointer, ADCError, parse_adc, publish_adc, restore_adc,
-    validate_approval_ready_adc, verify_adc, verify_adc_generation,
+    validate_approval_ready_adc, verify_adc, verify_adc_forward_generations, verify_adc_generation,
 )
 from p_ases.github import GitHubError
 from p_ases.intake import (
@@ -458,6 +458,41 @@ class ADCPublicationTests(unittest.TestCase):
         operation_ids = {body.splitlines()[1] for body in marker_bodies}
         self.assertEqual(len(operation_ids), 3)
         self.assertEqual(verify_adc(self.github, 1).pointer.comment_id, second_a.comment_id)
+
+    def test_historical_successor_range_is_valid_only_inside_current_approved_chain(self):
+        first = publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
+        payload_b = self.payload.replace(b"REQ-01", b"REQ-02")
+        second = publish_adc(
+            self.github, 1, payload_b, state="approved", explicitly_approved=True, supersede=True,
+        )
+        payload_c = self.payload.replace(b"REQ-01", b"REQ-03")
+        third = publish_adc(
+            self.github, 1, payload_c, state="approved", explicitly_approved=True, supersede=True,
+        )
+
+        with self.assertRaisesRegex(ADCError, "current approved ADC pointer"):
+            verify_adc_forward_generations(
+                self.github, 1, prior_comment_id=first.comment_id, prior_sha256=first.sha256,
+                current_comment_id=second.comment_id, current_sha256=second.sha256,
+            )
+        historical = verify_adc_forward_generations(
+            self.github, 1, prior_comment_id=first.comment_id, prior_sha256=first.sha256,
+            current_comment_id=second.comment_id, current_sha256=second.sha256,
+            allow_historical_target=True,
+        )
+        self.assertEqual([item.pointer for item in historical], [first, second])
+
+        latest = verify_adc_forward_generations(
+            self.github, 1, prior_comment_id=first.comment_id, prior_sha256=first.sha256,
+            current_comment_id=third.comment_id, current_sha256=third.sha256,
+        )
+        self.assertEqual([item.pointer for item in latest], [first, second, third])
+        with self.assertRaisesRegex(ADCError, "malformed, stale or backward"):
+            verify_adc_forward_generations(
+                self.github, 1, prior_comment_id=first.comment_id, prior_sha256=first.sha256,
+                current_comment_id=second.comment_id, current_sha256=second.sha256,
+                allow_historical_target=1,
+            )
 
     def test_publish_reads_back_comment_before_pointer_and_verifies(self):
         pointer = publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)

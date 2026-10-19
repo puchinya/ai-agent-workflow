@@ -14,9 +14,11 @@ sys.path.insert(0, str(ROOT / "runtime"))
 from p_ases.execution import binding_digest
 from p_ases.git import head_sha40, run_git
 from p_ases.adc import ADCError
+from p_ases.checkpoint import PRBinding, write_pr_binding
 from p_ases.github import GitHubError
 from p_ases.execution import write_binding
 from p_ases.work import (WorkError, bind_work, ensure_pull_request, execution_binding_path,
+                         _pr_binding_version_path,
                          closing_issue_references, parse_issue_association, read_pr_binding_history)
 
 
@@ -276,6 +278,48 @@ class PREnsureTests(unittest.TestCase):
             self.assertEqual(first_path.read_bytes(), first_bytes)
             self.assertEqual(rows[1][0].name, "pr-binding-000002.json")
             self.assertGreaterEqual(verify.call_count, 2)
+            self.assertIn(False, [call.kwargs.get("allow_historical_target", False)
+                                  for call in verify.call_args_list])
+            self.assertIn(True, [call.kwargs.get("allow_historical_target", False)
+                                 for call in verify.call_args_list])
+
+    def test_pr_binding_history_accepts_multiple_historical_adc_edges_in_current_chain(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo, base, _binding = self._bound_repo(root)
+            current_head = head_sha40(repo)
+            state = repo / ".p_ases" / "state" / "63"
+            state.mkdir(parents=True)
+            first = PRBinding(
+                "owner/repo", 63, 123, "a" * 64, base, "pases/work", 73, current_head,
+            ).validate()
+            second = replace(first, adc_comment_id=124, adc_sha256="b" * 64).validate()
+            third = replace(second, adc_comment_id=125, adc_sha256="c" * 64).validate()
+            for version, binding in enumerate((first, second, third), start=1):
+                write_pr_binding(_pr_binding_version_path(repo, 63, version), binding)
+
+            pointers = {
+                123: "a" * 64,
+                124: "b" * 64,
+                125: "c" * 64,
+            }
+
+            def verify_range(_github, _issue, *, prior_comment_id, prior_sha256,
+                             current_comment_id, current_sha256, allow_historical_target=False):
+                self.assertTrue(allow_historical_target)
+                self.assertEqual(pointers[prior_comment_id], prior_sha256)
+                self.assertEqual(pointers[current_comment_id], current_sha256)
+                ids = list(pointers)
+                selected = ids[ids.index(prior_comment_id):ids.index(current_comment_id) + 1]
+                return tuple(SimpleNamespace(pointer=SimpleNamespace(
+                    comment_id=comment_id, sha256=pointers[comment_id],
+                )) for comment_id in selected)
+
+            with patch("p_ases.work.verify_adc_forward_generations", side_effect=verify_range) as verify:
+                rows = read_pr_binding_history(repo, 63, github=object())
+
+            self.assertEqual([row[1].adc_comment_id for row in rows], [123, 124, 125])
+            self.assertEqual(verify.call_count, 2)
 
     def test_pr_binding_adc_gap_or_backward_generation_blocks_append(self):
         with tempfile.TemporaryDirectory() as temporary:
