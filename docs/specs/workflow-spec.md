@@ -29,6 +29,16 @@
   - [9.2 REQ-F01-003 Append-only approval and Activation history](#92-req-f01-003-append-only-approval-and-activation-history)
   - [9.3 REQ-F01-005 Eligibility by Activation time](#93-req-f01-005-eligibility-by-activation-time)
   - [9.4 REQ-F01-007 Successor Activation](#94-req-f01-007-successor-activation)
+- [10 Multi-host Independent Review assurance](#10-multi-host-independent-review-assurance)
+    - [10.1.1 REQ-F06-001 Independent Review V2 and V1 compatibility](#1011-req-f06-001-independent-review-v2-and-v1-compatibility)
+    - [10.1.2 REQ-F06-002 Host-verified provenance](#1012-req-f06-002-host-verified-provenance)
+    - [10.1.3 REQ-F06-003 Independently attested native result](#1013-req-f06-003-independently-attested-native-result)
+    - [10.1.4 REQ-F06-004 Canonical evidence and identity checks](#1014-req-f06-004-canonical-evidence-and-identity-checks)
+    - [10.1.5 REQ-F06-005 Explicit project minimum assurance](#1015-req-f06-005-explicit-project-minimum-assurance)
+    - [10.1.6 REQ-F06-006 Readiness and downstream gates](#1016-req-f06-006-readiness-and-downstream-gates)
+    - [10.1.7 REQ-F06-007 Host-specific evidence adapters](#1017-req-f06-007-host-specific-evidence-adapters)
+    - [10.1.8 REQ-F06-008 Capability documentation and distributions](#1018-req-f06-008-capability-documentation-and-distributions)
+    - [10.1.9 REQ-F06-009 Issue #63 and PR #64 isolation](#1019-req-f06-009-issue-63-and-pr-64-isolation)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -47,6 +57,15 @@
 - [REQ-F01-003](#req-f01-003) — 9.2 REQ-F01-003 Append-only approval and Activation history
 - [REQ-F01-005](#req-f01-005) — 9.3 REQ-F01-005 Eligibility by Activation time
 - [REQ-F01-007](#req-f01-007) — 9.4 REQ-F01-007 Successor Activation
+- [REQ-F06-001](#req-f06-001) — 10.1.1 REQ-F06-001 Independent Review V2 and V1 compatibility
+- [REQ-F06-002](#req-f06-002) — 10.1.2 REQ-F06-002 Host-verified provenance
+- [REQ-F06-003](#req-f06-003) — 10.1.3 REQ-F06-003 Independently attested native result
+- [REQ-F06-004](#req-f06-004) — 10.1.4 REQ-F06-004 Canonical evidence and identity checks
+- [REQ-F06-005](#req-f06-005) — 10.1.5 REQ-F06-005 Explicit project minimum assurance
+- [REQ-F06-006](#req-f06-006) — 10.1.6 REQ-F06-006 Readiness and downstream gates
+- [REQ-F06-007](#req-f06-007) — 10.1.7 REQ-F06-007 Host-specific evidence adapters
+- [REQ-F06-008](#req-f06-008) — 10.1.8 REQ-F06-008 Capability documentation and distributions
+- [REQ-F06-009](#req-f06-009) — 10.1.9 REQ-F06-009 Issue #63 and PR #64 isolation
 <!-- heading-map:end -->
 
 
@@ -302,3 +321,61 @@ New P-ASES work is eligible only for same-repository non-PR Issues created stric
 ### 9.4 REQ-F01-007 Successor Activation
 
 Policy or locator changes require a new setup PR and merge, append a successor Activation effective at its verified `merged_at`, and preserve prior records and selections. The successor governs only Issues created after that merge time.
+
+## 10 Multi-host Independent Review assurance
+
+This section defines how an independent review's occurrence is distinguished from the assurance that a host authenticated its provenance. It applies across Codex Cloud, local Codex CLI, Codex Desktop, and Claude Code. A host surface that does not expose sufficient evidence remains unavailable at the corresponding assurance level; other delivery gates remain required.
+
+<a id="req-f06-001"></a>
+<a id="req-f06-001-independent-review-v2-and-v1-compatibility"></a>
+#### 10.1.1 REQ-F06-001 Independent Review V2 and V1 compatibility
+
+The runtime MUST add `PASES_INDEPENDENT_REVIEW_V2` and preserve existing `PASES_INDEPENDENT_REVIEW_V1` bytes, digests, reader, and semantics exactly. V2 MUST record exactly one of `HOST_VERIFIED`, `INDEPENDENT_ATTESTED`, `SELF_REVIEW`, or `UNAVAILABLE`, distinguishing review occurrence from provenance assurance.
+
+<a id="req-f06-002"></a>
+<a id="req-f06-002-host-verified-provenance"></a>
+#### 10.1.2 REQ-F06-002 Host-verified provenance
+
+`HOST_VERIFIED` MUST require a trusted host-owned, agent-nonwritable source that binds one parent, a unique native spawn, a separate child, successful terminal completion, the exact reviewed subject, and the child-authored result. Missing, ambiguous, or agent-writable host evidence MUST NOT be promoted to this assurance.
+
+<a id="req-f06-003"></a>
+<a id="req-f06-003-independently-attested-native-result"></a>
+#### 10.1.3 REQ-F06-003 Independently attested native result
+
+`INDEPENDENT_ATTESTED` MUST require the exact native delegation request, successful terminal tool return/completion, and actual child-authored review output, preserved byte-for-byte and SHA-256-bound to the repository, Issue/PR, HEAD, ADC, plan, and implementation context. The record MUST declare `evidence_origin=operator_captured_native_tool_result` and explain that this proves tamper evidence after capture, not cryptographic host authentication. Task names/status, parent-authored summaries, arbitrary JSON, and same-agent prompts MUST NOT qualify.
+
+<a id="req-f06-004"></a>
+<a id="req-f06-004-canonical-evidence-and-identity-checks"></a>
+#### 10.1.4 REQ-F06-004 Canonical evidence and identity checks
+
+The runtime MUST provide strict canonical `IndependentReviewV2`, `AttestedNativeDelegationEvidenceV1`, optional `HostProvenanceV1`, and assurance evaluation. `host_spawn_id`, `host_child_id`, and `host_join_id` MAY be null when unavailable; the runtime MUST NOT synthesize or relabel them. `execution_identity_context_id` remains mandatory. Stale subject, Binding, profile, replay, duplicate/conflicting results, incomplete completion, changed bytes, or blocking findings MUST fail closed.
+
+<a id="req-f06-005"></a>
+<a id="req-f06-005-explicit-project-minimum-assurance"></a>
+#### 10.1.5 REQ-F06-005 Explicit project minimum assurance
+
+Profile Schema 2 MUST support `independent_review.minimum_assurance` with values `host_verified` and `independent_attested`; absence defaults to `host_verified`. The `host_verified` minimum accepts only `HOST_VERIFIED`; `independent_attested` accepts either `HOST_VERIFIED` or `INDEPENDENT_ATTESTED`. The exact committed profile and digest MUST be re-read when review evidence is issued and consumed. Host detection, Issue number, PR comment, CLI override, or a one-run setting MUST NOT lower the minimum.
+
+<a id="req-f06-006"></a>
+<a id="req-f06-006-readiness-and-downstream-gates"></a>
+#### 10.1.6 REQ-F06-006 Readiness and downstream gates
+
+Independent-review ingestion, Readiness, and Final Delivery MUST require a positive current review eligible under the committed profile. V1-only, `SELF_REVIEW`, `UNAVAILABLE`, stale evidence, incomplete checklist, blocking A/B/C findings, and policy drift MUST block. A blocked review MUST cause zero Phase mutations and zero User Review session starts.
+
+<a id="req-f06-007"></a>
+<a id="req-f06-007-host-specific-evidence-adapters"></a>
+#### 10.1.7 REQ-F06-007 Host-specific evidence adapters
+
+Codex Cloud, local Codex CLI, Codex Desktop, and Claude Code MUST have distinct adapters that expose only native requests, returns, completion, and optional trusted host events actually observable on their surface. Executor CLI flags MUST NOT establish Cloud capability. Agent-writable Hook files MUST NOT establish `HOST_VERIFIED`. The P-ASES runtime MUST NOT spawn another coding-agent executable.
+
+<a id="req-f06-008"></a>
+<a id="req-f06-008-capability-documentation-and-distributions"></a>
+#### 10.1.8 REQ-F06-008 Capability documentation and distributions
+
+The implementation MUST record per-surface capability observations and host/OS smoke-test status in `docs/status/issue-46-review-assurance.md`. It MUST update the canonical specification, design, test oracles, traceability, Skills, adapter documentation, and generated distributions. Inaccessible host/OS tests MUST be reported as `NOT RUN` or `UNAVAILABLE`, never as passing.
+
+<a id="req-f06-009"></a>
+<a id="req-f06-009-issue-63-and-pr-64-isolation"></a>
+#### 10.1.9 REQ-F06-009 Issue #63 and PR #64 isolation
+
+Issue #46 implementation MUST keep Issue #63 / PR #64 evidence and workflow state unchanged. It MUST NOT create an Independent Review PASS for #63, change its profile minimum, advance its phase, authorize User Review, Ruleset changes, Activation, merge, or closure. Any later #64 application requires a separately approved forward-generation policy and exact-subject review.
