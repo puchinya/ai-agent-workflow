@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,6 +33,8 @@ class ProjectProfile:
     branch_prefix: str
     required_checks: tuple[tuple[str, int | None], ...]
     activation_issue_number: int | None = None
+    independent_review_minimum_assurance: str = "host_verified"
+    profile_sha256: str = ""
 
     def required_check_policy(self) -> RequiredCheckPolicy:
         if any(app_id is None for _, app_id in self.required_checks):
@@ -51,12 +54,13 @@ def load_profile(repository_root: Path) -> ProjectProfile:
     if path_has_symlink(path, root=root) or not path.is_file():
         raise ProfileError("project configuration is missing or traverses a symbolic link")
     try:
-        value = json.loads(path.read_text(encoding="utf-8", errors="strict"), object_pairs_hook=_unique_object)
+        raw = path.read_bytes()
+        value = json.loads(raw.decode("utf-8", errors="strict"), object_pairs_hook=_unique_object)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ProfileError("project configuration is unreadable JSON") from exc
     expected = {"schema_version", "initialized", "project_name", "components", "branch", "workspace", "milestones", "hooks"}
     if (not isinstance(value, dict) or not expected.issubset(value)
-            or set(value) - expected - {"activation"}):
+            or set(value) - expected - {"activation", "independent_review"}):
         raise ProfileError("project configuration has unknown or missing top-level fields")
     if value["schema_version"] != 2 or value["initialized"] is not True:
         raise ProfileError("project configuration schema is unknown or not initialized")
@@ -95,4 +99,12 @@ def load_profile(repository_root: Path) -> ProjectProfile:
                 or type(activation.get("issue_number")) is not int or activation["issue_number"] < 1):
             raise ProfileError("activation configuration must contain only a positive issue_number")
         activation_issue_number = activation["issue_number"]
-    return ProjectProfile(root, project_name.strip(), prefix, tuple(checks), activation_issue_number)
+    minimum_assurance = "host_verified"
+    if "independent_review" in value:
+        review_policy = value["independent_review"]
+        if (not isinstance(review_policy, dict) or set(review_policy) != {"minimum_assurance"}
+                or review_policy.get("minimum_assurance") not in {"host_verified", "independent_attested"}):
+            raise ProfileError("independent_review must configure a supported minimum_assurance")
+        minimum_assurance = review_policy["minimum_assurance"]
+    return ProjectProfile(root, project_name.strip(), prefix, tuple(checks), activation_issue_number,
+                          minimum_assurance, hashlib.sha256(raw).hexdigest())

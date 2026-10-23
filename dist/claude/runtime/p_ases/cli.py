@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import hashlib
 import io
@@ -30,13 +31,19 @@ from .context import WorkContext
 from .profile import ProfileError, load_profile
 from .gate_policy import (
     BOOTSTRAP_COHORT, BOOTSTRAP_ISSUES, BOOTSTRAP_POLICY, BOOTSTRAP_REPOSITORY,
-    BootstrapResult, BootstrapSubject, GateSelection,
+    BootstrapResult, BootstrapSubject, GateSelection, LegacyGateSelection,
     GatePolicyError, bootstrap_policy_digest, choose_gate_for_new_issue, current_checkout_subject,
     evaluate_bootstrap,
     pin_gate_selection, publish_immutable_record, read_bootstrap_adc, read_bootstrap_evidence,
-    read_gate_selection, read_latest_bootstrap_evidence,
+    read_gate_selection, read_gate_selection_if_present, read_latest_bootstrap_evidence,
     run_local_bootstrap_checks_bound,
     validate_bootstrap_pr_identity,
+)
+from .legacy_adoption import (
+    LegacyAdoptionError, LegacyAdoptionPlan, LegacyResetPlan, apply_legacy_adoption,
+    apply_legacy_reset, build_legacy_adoption_plan, build_legacy_reset_plan,
+    owner_approval_comment, read_legacy_adoption_plan, read_legacy_reset_plan,
+    verify_legacy_gate_selection, write_legacy_adoption_plan, write_legacy_reset_plan,
 )
 from .work import (
     WorkError, bind_work, ensure_branch, ensure_pull_request, execution_binding_path,
@@ -45,6 +52,11 @@ from .work import (
 from .audits import (
     AuditError, AuditItem, IndependentReview, ReviewFinding, SelfAudit,
     read_independent_review, read_self_audit, write_independent_review, write_self_audit,
+)
+from .review_assurance import (
+    CapturedBytes, IndependentReviewV2, ReviewAssuranceError, attest_native_review,
+    evaluate_review_assurance,
+    read_independent_review_v2, write_independent_review_v2,
 )
 from .delivery import (
     FinalDeliveryResult, PRReadback, ReadinessError, evaluate_final_delivery,
@@ -1173,6 +1185,54 @@ def _audit_self(args: argparse.Namespace, repository: str, root: Path, github: G
 def _audit_independent(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
     _verified, subject, _required, _checklist_labels = _audit_subject(args, repository, root, github)
     value = _read_json(args.input, "independent-review context artifact", root=root)
+    if isinstance(value, dict) and value.get("schema") == "PASES_NATIVE_REVIEW_CAPTURE_INPUT_V1":
+        expected = {"child_output", "execution_identity_context_id", "host_child_id", "host_join_id",
+                    "host_spawn_id", "profile_sha256", "request", "schema", "subject", "terminal_return"}
+        if set(value) != expected or VerificationSubject.from_dict(value.get("subject")) != subject:
+            raise CLIError("native review capture is stale or has unknown/missing fields")
+        binding = read_binding(execution_binding_path(root, args.issue))
+        execution_identity = f"execution-binding:{binding_digest(binding)}"
+        if value.get("execution_identity_context_id") != execution_identity:
+            raise CLIError("native review capture is bound to a different implementation Binding")
+        profile = load_profile(root)
+        if value.get("profile_sha256") != profile.profile_sha256:
+            raise CLIError("native review capture is bound to a different committed profile")
+        request = CapturedBytes.from_dict(value["request"], "native request")
+        terminal = CapturedBytes.from_dict(value["terminal_return"], "native terminal return")
+        child = CapturedBytes.from_dict(value["child_output"], "child review output")
+        review_v2 = attest_native_review(
+            subject=subject, execution_identity_context_id=execution_identity,
+            profile_sha256=profile.profile_sha256,
+            request=request.validate("native request"),
+            terminal_return=terminal.validate("native terminal return"),
+            child_output=child.validate("child review output"),
+            host_spawn_id=value["host_spawn_id"], host_child_id=value["host_child_id"],
+            host_join_id=value["host_join_id"],
+        )
+        _read_audit_references(root, review_v2)
+        if load_profile(root) != profile or read_binding(execution_binding_path(root, args.issue)) != binding:
+            raise CLIError("profile or ExecutionBinding changed while issuing Independent Review V2")
+        _fresh_verified, fresh_subject, _fresh_required, _fresh_checklist = _audit_subject(
+            args, repository, root, github,
+        )
+        if fresh_subject != subject:
+            raise CLIError("ADC, PR, plan, or HEAD changed while issuing Independent Review V2")
+        path = root / ".p_ases" / "audits" / str(args.issue) / subject.sha256 / f"independent-v2-{review_v2.sha256}.json"
+        _validate_v2_review_history(root, args.issue, review_v2, reject_any_existing=True)
+        write_independent_review_v2(path, review_v2)
+        _validate_v2_review_history(root, args.issue, review_v2, expected_path=path)
+        decision = evaluate_review_assurance(
+            review_v2, subject=subject, execution_identity_context_id=execution_identity,
+            minimum_assurance=profile.independent_review_minimum_assurance,
+            profile_sha256=profile.profile_sha256,
+        )
+        _json({"status": decision.status if decision.status != "PASS" else review_v2.verdict,
+               "assurance": review_v2.assurance, "minimum_assurance": profile.independent_review_minimum_assurance,
+               "subject": subject.as_dict(), "subject_sha256": subject.sha256,
+               "review_sha256": review_v2.sha256, "profile_sha256": profile.profile_sha256,
+               "path": str(path), "reasons": list(decision.reasons),
+               "evidence_refs": [str(path), str(args.input)]})
+        return 0 if decision.status == "PASS" and review_v2.verdict == "PASS" else 2
     expected = {"context_id", "findings", "provenance", "reviewed_head_sha40", "schema",
                 "session_description", "subject", "verdict"}
     if (not isinstance(value, dict) or set(value) != expected
@@ -1241,12 +1301,14 @@ def _readback_readiness_pr(github: GitHub, repository: str, issue_number: int,
     ).validate()
 
 
-def _read_audit_references(root: Path, audit: SelfAudit | IndependentReview) -> tuple[str, ...]:
+def _read_audit_references(root: Path, audit: SelfAudit | IndependentReview | IndependentReviewV2) -> tuple[str, ...]:
     references: list[str] = []
     if isinstance(audit, SelfAudit):
         refs = [ref for item in audit.items for ref in item.evidence_refs]
-    else:
+    elif isinstance(audit, IndependentReview):
         refs = [audit.context_artifact_ref, *(item.evidence_ref for item in audit.findings)]
+    else:
+        refs = [item.evidence_ref for item in audit.findings]
     for ref in refs:
         if isinstance(audit, IndependentReview) and ref == audit.context_artifact_ref:
             if (not isinstance(ref, str) or Path(ref).is_absolute() or "\\" in ref
@@ -1264,6 +1326,55 @@ def _read_audit_references(root: Path, audit: SelfAudit | IndependentReview) -> 
         _canonical_ref, _digest = _verified_file_evidence(root, ref)
         references.append(ref)
     return tuple(references)
+
+
+def _read_independent_review_artifact(path: Path, root: Path) -> IndependentReview | IndependentReviewV2:
+    raw = _safe_file_bytes(path, "independent-review artifact", root=root)
+    try:
+        value = json.loads(raw.decode("utf-8", errors="strict"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CLIError("independent-review artifact is not UTF-8 JSON") from exc
+    if not isinstance(value, dict):
+        raise CLIError("independent-review artifact must be a JSON object")
+    if value.get("schema") == "PASES_INDEPENDENT_REVIEW_V2":
+        return IndependentReviewV2.from_bytes(raw)
+    if value.get("schema") == "PASES_INDEPENDENT_REVIEW_V1":
+        return read_independent_review(path)
+    raise CLIError("independent-review artifact schema is unsupported")
+
+
+def _validate_v2_review_history(root: Path, issue_number: int, review: IndependentReviewV2,
+                                *, expected_path: Path | None = None,
+                                reject_any_existing: bool = False) -> tuple[Path, ...]:
+    folder = root / ".p_ases" / "audits" / str(issue_number) / review.subject.sha256
+    if path_has_symlink(folder):
+        raise CLIError("Independent Review V2 history must not traverse a symbolic link")
+    if not folder.exists():
+        if expected_path is not None:
+            raise CLIError("Independent Review V2 is absent from its immutable subject history")
+        return ()
+    if not folder.is_dir():
+        raise CLIError("Independent Review V2 history path is not a directory")
+    rows: list[Path] = []
+    for path in folder.iterdir():
+        match = re.fullmatch(r"independent-v2-([0-9a-f]{64})\.json", path.name)
+        if match is None:
+            continue
+        if path.is_symlink() or not path.is_file():
+            raise CLIError("Independent Review V2 history contains a non-regular record")
+        item = read_independent_review_v2(path)
+        if item.subject != review.subject or item.sha256 != match.group(1):
+            raise CLIError("Independent Review V2 history filename or subject does not match its bytes")
+        rows.append(path)
+    if reject_any_existing and rows:
+        raise CLIError("Independent Review V2 replay or duplicate issuance is not allowed")
+    if len(rows) > 1:
+        raise CLIError("duplicate or conflicting Independent Review V2 history blocks readiness")
+    if expected_path is not None:
+        if (len(rows) != 1 or rows[0].resolve() != expected_path.resolve()
+                or read_independent_review_v2(rows[0]) != review):
+            raise CLIError("Independent Review V2 is not the unique exact record in subject history")
+    return tuple(rows)
 
 
 def _delivery_gate_policy(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
@@ -1286,6 +1397,20 @@ def _delivery_gate_policy(args: argparse.Namespace, repository: str, root: Path,
         issue = github.issue(args.issue)
         if issue.get("state") != "open" or issue.get("pull_request") is not None:
             raise GatePolicyError("gate policy selection requires an open Issue")
+        existing = read_gate_selection_if_present(github, args.issue)
+        if existing is not None and isinstance(existing[1], LegacyGateSelection):
+            gate_id, legacy_selection, _gate_body = existing
+            try:
+                verify_legacy_gate_selection(github, root, args.issue, gate_id, legacy_selection)
+            except LegacyAdoptionError as exc:
+                raise GatePolicyError(f"legacy Gate Adoption evidence is invalid: {exc}") from exc
+            _json({"status": "LEGACY_GATE_ADOPTED", "repository": repository,
+                   "issue": args.issue, "policy": legacy_selection.policy_version,
+                   "gate_selection_comment_id": gate_id,
+                   "adoption_comment_id": legacy_selection.adoption_comment_id,
+                   "adoption_record_sha256": legacy_selection.adoption_record_sha256,
+                   "reasons": []})
+            return 0
         selection = choose_gate_for_new_issue(
             github, repository, args.issue, selected_at,
             activation_issue_number=activation_issue_number,
@@ -1309,6 +1434,69 @@ def _delivery_gate_policy(args: argparse.Namespace, repository: str, root: Path,
         _json({"status": "UNDETERMINED", "repository": repository, "issue": args.issue,
                "policy": None, "reasons": [str(exc)]})
         return 2
+
+
+def _delivery_legacy_adoption_plan(args: argparse.Namespace, repository: str,
+                                   root: Path, github: GitHub) -> int:
+    try:
+        plan = build_legacy_adoption_plan(github, root, args.issue)
+        if args.output is not None:
+            write_legacy_adoption_plan(args.output, plan)
+        _json({"status": "PLAN_READY", "risk_status": "AWAITING_OWNER_APPROVAL",
+               "accepted_risks": plan.value["accepted_risks"],
+               "writer_policy": plan.value["writer_policy"], "plan": plan.value,
+               "plan_file": None if args.output is None else str(args.output),
+               "owner_approval_comment": owner_approval_comment(plan),
+               "approval_instructions": "The repository Owner must post this exact comment through GitHub UI; the agent does not post it."})
+        return 0
+    except (LegacyAdoptionError, GitHubError) as exc:
+        return _blocked_result((str(exc),))
+
+
+def _delivery_legacy_adoption_apply(args: argparse.Namespace, repository: str,
+                                    root: Path, github: GitHub) -> int:
+    try:
+        plan = read_legacy_adoption_plan(args.plan)
+        if plan.value["issue_number"] != args.issue or plan.value["repository"].casefold() != repository.casefold():
+            raise LegacyAdoptionError("plan repository/Issue differs from the command subject")
+        result = apply_legacy_adoption(github, root, plan, args.approval_comment_id)
+        _json({**result, "repository": repository, "issue": args.issue,
+               "phase_write": False, "labels_changed": False})
+        return 0
+    except (LegacyAdoptionError, GitHubError) as exc:
+        return _blocked_result((str(exc),))
+
+
+def _delivery_legacy_reset_plan(args: argparse.Namespace, repository: str,
+                                root: Path, github: GitHub) -> int:
+    try:
+        plan = build_legacy_reset_plan(github, root, args.issue)
+        if plan is None:
+            _json({"status": "NOOP", "repository": repository, "issue": args.issue,
+                   "phase": "requirements", "reason": "Issue is already at requirements"})
+            return 0
+        if args.output is not None:
+            write_legacy_reset_plan(args.output, plan)
+        _json({"status": "PLAN_READY", "plan": plan.value,
+               "plan_file": None if args.output is None else str(args.output),
+               "owner_approval_comment": owner_approval_comment(plan, operation="RESET_TO_REQUIREMENTS"),
+               "approval_instructions": "The repository Owner must post this exact comment through GitHub UI; the agent does not post it."})
+        return 0
+    except (LegacyAdoptionError, GitHubError) as exc:
+        return _blocked_result((str(exc),))
+
+
+def _delivery_legacy_reset_apply(args: argparse.Namespace, repository: str,
+                                 root: Path, github: GitHub) -> int:
+    try:
+        plan = read_legacy_reset_plan(args.plan)
+        if plan.value["issue_number"] != args.issue or plan.value["repository"].casefold() != repository.casefold():
+            raise LegacyAdoptionError("reset plan repository/Issue differs from the command subject")
+        result = apply_legacy_reset(github, root, plan, args.approval_comment_id)
+        _json({**result, "repository": repository, "issue": args.issue})
+        return 0
+    except (LegacyAdoptionError, GitHubError) as exc:
+        return _blocked_result((str(exc),))
 
 
 def _bootstrap_pr_identity(pr: dict[str, Any]) -> tuple[Any, ...]:
@@ -1610,6 +1798,7 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
 
     self_audit = None
     independent_review = None
+    independent_review_v2 = None
     if verified_adc is not None:
         try:
             checklist_text = verified_adc.contract.section("reviewer_checklist")
@@ -1625,20 +1814,33 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
             if subject is None or self_audit.subject != subject:
                 blockers.append("self-audit is stale or does not match the current exact subject")
             _read_audit_references(root, self_audit)
-        except (AuditError, CLIError, OSError) as exc:
+        except (AuditError, ReviewAssuranceError, CLIError, OSError) as exc:
             blockers.append(f"self-audit readback/evidence validation failed: {exc}")
             self_audit = None
         try:
-            independent_review = read_independent_review(args.independent_review)
-            independent_review.validate()
-            if subject is None or independent_review.subject != subject:
-                blockers.append("independent review is stale or does not match the current exact subject")
-            if binding is not None and independent_review.implementation_context_id != f"execution-binding:{binding_digest(binding)}":
-                blockers.append("independent-review implementation context does not match the current work binding")
-            _read_audit_references(root, independent_review)
+            artifact = _read_independent_review_artifact(args.independent_review, root)
+            if isinstance(artifact, IndependentReviewV2):
+                independent_review_v2 = artifact
+                _validate_v2_review_history(root, args.issue, artifact,
+                                             expected_path=args.independent_review)
+                if subject is None or artifact.subject != subject:
+                    blockers.append("Independent Review V2 is stale or does not match the current exact subject")
+                if binding is None or artifact.execution_identity_context_id != f"execution-binding:{binding_digest(binding)}":
+                    blockers.append("Independent Review V2 implementation identity does not match the current work binding")
+                _read_audit_references(root, artifact)
+            else:
+                independent_review = artifact
+                independent_review.validate()
+                blockers.append("V1-only Independent Review evidence does not satisfy the V2 assurance policy")
+                if subject is None or independent_review.subject != subject:
+                    blockers.append("independent review is stale or does not match the current exact subject")
+                if binding is not None and independent_review.implementation_context_id != f"execution-binding:{binding_digest(binding)}":
+                    blockers.append("independent-review implementation context does not match the current work binding")
+                _read_audit_references(root, independent_review)
         except (AuditError, CLIError, OSError) as exc:
             blockers.append(f"independent-review readback/evidence validation failed: {exc}")
             independent_review = None
+            independent_review_v2 = None
 
     dependency_reasons: tuple[str, ...] = ()
     if verified_adc is not None:
@@ -1646,9 +1848,10 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
         blockers.extend(dependency_reasons)
 
     check_sha = None if verification is None else verification.check_result_sha256
+    current_profile = None
     try:
-        profile = load_profile(root)
-        policy = profile.required_check_policy()
+        current_profile = load_profile(root)
+        policy = current_profile.required_check_policy()
         if verification is None or verification.required_check_policy_sha256 != policy.sha256:
             blockers.append("current Required Check policy has no matching trusted #29 Verification")
     except (ProfileError, VerificationError) as exc:
@@ -1718,14 +1921,28 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
                 _read_audit_references(root, final_audit)
             except (AuditError, CLIError, OSError) as exc:
                 blockers.append(f"self-audit final readback failed before Readiness persistence: {exc}")
-        if independent_review is not None:
+        if independent_review_v2 is not None:
             try:
-                final_review = read_independent_review(args.independent_review)
+                final_review = _read_independent_review_artifact(args.independent_review, root)
+                if not isinstance(final_review, IndependentReviewV2) or final_review != independent_review_v2:
+                    blockers.append("Independent Review V2 changed before Readiness persistence")
+                _read_audit_references(root, final_review)
+            except (AuditError, CLIError, OSError, ReviewAssuranceError) as exc:
+                blockers.append(f"Independent Review V2 final readback failed before Readiness persistence: {exc}")
+        elif independent_review is not None:
+            try:
+                final_review = _read_independent_review_artifact(args.independent_review, root)
                 if final_review != independent_review:
                     blockers.append("independent review changed before Readiness persistence")
                 _read_audit_references(root, final_review)
             except (AuditError, CLIError, OSError) as exc:
                 blockers.append(f"independent-review final readback failed before Readiness persistence: {exc}")
+        if current_profile is not None:
+            try:
+                if load_profile(root) != current_profile:
+                    blockers.append("committed project profile changed before Readiness persistence")
+            except ProfileError as exc:
+                blockers.append(f"project profile final readback failed before Readiness persistence: {exc}")
 
     if subject is None:
         _json({"status": "BLOCKED", "subject": None, "subject_sha256": None,
@@ -1738,6 +1955,12 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
         verification=verification, acceptance=acceptance, self_audit=self_audit,
         required_item_ids=required_item_ids, independent_review=independent_review,
         required_checks_sha256=check_sha, blocker_reasons=blockers,
+        independent_review_v2=independent_review_v2,
+        review_minimum_assurance=(None if current_profile is None
+                                  else current_profile.independent_review_minimum_assurance),
+        current_profile_sha256=(None if current_profile is None else current_profile.profile_sha256),
+        execution_identity_context_id=(None if binding is None
+                                       else f"execution-binding:{binding_digest(binding)}"),
     )
     path = readiness_path(root, result)
     write_readiness(path, result)
@@ -1857,6 +2080,37 @@ def _review_phase_transition(github: GitHub, issue_number: int, kind: IssueKind,
         raise CLIError("GitHub did not confirm the requested User Review phase transition")
 
 
+def _require_readiness_review_assurance(root: Path, issue_number: int,
+                                        readiness: Any, subject: VerificationSubject,
+                                        binding: Any) -> tuple[Any, IndependentReviewV2]:
+    profile = load_profile(root)
+    folder = root / ".p_ases" / "audits" / str(issue_number) / subject.sha256
+    if path_has_symlink(folder) or not folder.is_dir():
+        raise CLIError("User Review requires a unique current Independent Review V2 history")
+    rows = sorted(folder.glob("independent-v2-*.json"))
+    if len(rows) != 1 or rows[0].is_symlink() or not rows[0].is_file():
+        raise CLIError("User Review requires exactly one current Independent Review V2 record")
+    review = read_independent_review_v2(rows[0])
+    if rows[0].name != f"independent-v2-{review.sha256}.json":
+        raise CLIError("Independent Review V2 history filename does not match its digest")
+    if (review.subject != subject or review.sha256 not in readiness.evidence_sha256s
+            or profile.profile_sha256 not in readiness.evidence_sha256s):
+        raise CLIError("Readiness does not bind the current V2 review and committed profile")
+    execution_identity = f"execution-binding:{binding_digest(binding)}"
+    if review.execution_identity_context_id != execution_identity:
+        raise CLIError("Independent Review V2 is bound to another ExecutionBinding")
+    _read_audit_references(root, review)
+    decision = evaluate_review_assurance(
+        review, subject=subject, execution_identity_context_id=execution_identity,
+        minimum_assurance=profile.independent_review_minimum_assurance,
+        profile_sha256=profile.profile_sha256,
+    )
+    if decision.status != "PASS":
+        raise CLIError("User Review cannot start because Independent Review V2 is ineligible: "
+                       + "; ".join(decision.reasons))
+    return profile, review
+
+
 def _user_review_run(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
     blockers: list[str] = []
     result: UserReviewResult | None = None
@@ -1877,11 +2131,17 @@ def _user_review_run(args: argparse.Namespace, repository: str, root: Path, gith
         readiness = read_readiness(args.readiness)
         if (readiness.status != "PASS" or readiness.subject != subject):
             raise CLIError("User Review cannot start without current exact-subject Review Readiness PASS")
+        binding = read_binding(execution_binding_path(root, args.issue))
+        assurance_profile, assurance_review = _require_readiness_review_assurance(
+            root, args.issue, readiness, subject, binding,
+        )
         user_review_subject = UserReviewSubject(subject, readiness.sha256).validate()
         session_started_at = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
-        session_path = review_session_path(root, UserReviewSession(user_review_subject, session_started_at))
+        session = UserReviewSession(user_review_subject, session_started_at).validate()
+        session_path = review_session_path(root, session)
         if args.verb == "start":
-            session = write_review_session(session_path, UserReviewSession(user_review_subject, session_started_at))
+            # Persist only after Readiness/V2/profile and all live feedback reads pass.
+            pass
         else:
             session = read_review_session(session_path)
             if session.subject != user_review_subject:
@@ -1912,7 +2172,14 @@ def _user_review_run(args: argparse.Namespace, repository: str, root: Path, gith
                 or feedback_digest(second.events) != feedback_digest(snapshot.events)
                 or second.unresolved_thread_ids != snapshot.unresolved_thread_ids):
             raise CLIError("Issue, ADC, PR, Readiness, identity, or feedback changed during User Review readback")
+        final_profile, final_review = _require_readiness_review_assurance(
+            root, args.issue, current_readiness, subject, read_binding(execution_binding_path(root, args.issue)),
+        )
+        if final_profile != assurance_profile or final_review != assurance_review:
+            raise CLIError("Independent Review V2 or committed profile changed during User Review")
         if args.verb != "status":
+            if args.verb == "start":
+                session = write_review_session(session_path, session)
             snapshot_path = feedback_snapshot_path(root, snapshot)
             write_feedback_snapshot(snapshot_path, snapshot)
             record = {"result": result.as_dict(), "result_sha256": result.sha256,
@@ -2825,6 +3092,32 @@ def _parser() -> argparse.ArgumentParser:
     gate_policy.add_argument("issue", type=_positive_number)
     gate_policy.add_argument("--repo", help="repository owner/name; defaults to origin")
     gate_policy.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
+    legacy_plan = delivery_commands.add_parser(
+        "legacy-adoption-plan", help="read current evidence and create an exact Owner-approved legacy Gate plan")
+    legacy_plan.add_argument("issue", type=_positive_number)
+    legacy_plan.add_argument("--output", type=Path, help="write canonical immutable plan JSON to a new file")
+    legacy_plan.add_argument("--repo", help="repository owner/name; defaults to origin")
+    legacy_plan.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
+    legacy_apply = delivery_commands.add_parser(
+        "legacy-adoption-apply", help="append Adoption and legacy Gate after exact Owner approval readback")
+    legacy_apply.add_argument("issue", type=_positive_number)
+    legacy_apply.add_argument("--plan", type=Path, required=True)
+    legacy_apply.add_argument("--approval-comment-id", type=_positive_number, required=True)
+    legacy_apply.add_argument("--repo", help="repository owner/name; defaults to origin")
+    legacy_apply.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
+    legacy_reset_plan = delivery_commands.add_parser(
+        "legacy-reset-plan", help="read current evidence and plan a separately approved reset to requirements")
+    legacy_reset_plan.add_argument("issue", type=_positive_number)
+    legacy_reset_plan.add_argument("--output", type=Path, help="write canonical immutable reset plan JSON to a new file")
+    legacy_reset_plan.add_argument("--repo", help="repository owner/name; defaults to origin")
+    legacy_reset_plan.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
+    legacy_reset_apply = delivery_commands.add_parser(
+        "legacy-reset-apply", help="apply a separately approved reset to requirements")
+    legacy_reset_apply.add_argument("issue", type=_positive_number)
+    legacy_reset_apply.add_argument("--plan", type=Path, required=True)
+    legacy_reset_apply.add_argument("--approval-comment-id", type=_positive_number, required=True)
+    legacy_reset_apply.add_argument("--repo", help="repository owner/name; defaults to origin")
+    legacy_reset_apply.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
     activation_setup = delivery_commands.add_parser(
         "consumer-activation-setup", help="create the consumer Activation Issue and setup PR")
     activation_setup.add_argument("--repo", help="repository owner/name; defaults to origin")
@@ -2952,6 +3245,14 @@ def main(argv: list[str] | None = None) -> int:
                 return _user_review_run(args, repository, root, github)
             if args.verb == "gate-policy":
                 return _delivery_gate_policy(args, repository, root, github)
+            if args.verb == "legacy-adoption-plan":
+                return _delivery_legacy_adoption_plan(args, repository, root, github)
+            if args.verb == "legacy-adoption-apply":
+                return _delivery_legacy_adoption_apply(args, repository, root, github)
+            if args.verb == "legacy-reset-plan":
+                return _delivery_legacy_reset_plan(args, repository, root, github)
+            if args.verb == "legacy-reset-apply":
+                return _delivery_legacy_reset_apply(args, repository, root, github)
             if args.verb == "consumer-activation-setup":
                 try:
                     result = setup_consumer_activation(root, github)

@@ -17,6 +17,7 @@ from .checkpoint import CheckpointError, PRBinding
 from .context import WorkContext, WorkContextError
 from .evidence_store import VerificationSubject
 from .path_safety import path_has_symlink
+from .review_assurance import IndependentReviewV2, ReviewAssuranceError, evaluate_review_assurance
 from .verification import VerificationResult, VERDICTS
 
 
@@ -291,6 +292,10 @@ def evaluate_readiness(
     independent_review: IndependentReview | None,
     required_checks_sha256: str | None,
     blocker_reasons: Iterable[str] = (),
+    independent_review_v2: IndependentReviewV2 | None = None,
+    review_minimum_assurance: str | None = None,
+    current_profile_sha256: str | None = None,
+    execution_identity_context_id: str | None = None,
 ) -> ReadinessResult:
     """Pass only when every exact-subject proof and the open PR read back agree."""
     if not isinstance(subject, VerificationSubject):
@@ -409,6 +414,32 @@ def evaluate_readiness(
             if self_audit.status != "PASS":
                 reasons.append(f"self-audit status is {self_audit.status}")
             digest_refs.add(self_audit.sha256)
+
+    if independent_review_v2 is not None:
+        try:
+            independent_review_v2.validate()
+            if (review_minimum_assurance is None or current_profile_sha256 is None
+                    or execution_identity_context_id is None):
+                raise ReviewAssuranceError("Readiness requires the current profile and execution identity")
+            assurance = evaluate_review_assurance(
+                independent_review_v2, subject=subject,
+                execution_identity_context_id=execution_identity_context_id,
+                minimum_assurance=review_minimum_assurance,
+                profile_sha256=current_profile_sha256,
+            )
+            if assurance.status != "PASS":
+                reasons.extend(assurance.reasons)
+            projection = independent_review_v2.as_v1_readiness_projection()
+            if independent_review is not None and independent_review != projection:
+                reasons.append("legacy projection differs from Independent Review V2")
+            independent_review = projection
+            digest_refs.add(independent_review_v2.sha256)
+            digest_refs.add(current_profile_sha256)
+        except (AuditError, ReviewAssuranceError, ValueError) as exc:
+            reasons.append(f"Independent Review V2 assurance is invalid: {exc}")
+            independent_review = None
+    elif isinstance(independent_review, IndependentReview):
+        reasons.append("V1-only Independent Review evidence does not satisfy the V2 assurance policy")
 
     if not isinstance(independent_review, IndependentReview):
         reasons.append("independent review artifact is missing")

@@ -12,6 +12,23 @@ from p_ases.document_format import DocumentFormatError, extract_headings, format
 
 
 class DocumentFormatTests(unittest.TestCase):
+    def test_contract_markdown_is_preserved_byte_for_byte(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            contract = repo / "docs" / "contracts" / "approved.md"
+            contract.parent.mkdir(parents=True)
+            raw = "# Agent Development Contract\n\n## Exact Heading\n\n[link](../missing.md)\n"
+            contract.write_text(raw, encoding="utf-8")
+            archived = repo / "docs" / "status" / "review.raw.md"
+            archived.parent.mkdir(parents=True)
+            raw_review = "# Raw child review\n\n## Original evidence\n\nNo generated map.\n"
+            archived.write_text(raw_review, encoding="utf-8")
+
+            self.assertEqual(format_tree(repo, write=False), ())
+            self.assertEqual(format_tree(repo, write=True), ())
+            self.assertEqual(contract.read_text(encoding="utf-8"), raw)
+            self.assertEqual(archived.read_text(encoding="utf-8"), raw_review)
+
     def test_hierarchical_numbering_ignores_opaque_blocks_and_is_idempotent(self):
         source = """---
 title: "## front matter"

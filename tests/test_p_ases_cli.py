@@ -76,6 +76,28 @@ class PasesCLITests(unittest.TestCase):
         ])
         self.assertEqual((advance.phase_evidence_comment_id, advance.root), (99, ROOT))
 
+    def test_legacy_adoption_and_reset_routes_require_exact_plan_and_comment_ids(self):
+        adoption_plan = _parser().parse_args([
+            "delivery", "legacy-adoption-plan", "46", "--repo", "octo/repo", "--root", str(ROOT),
+        ])
+        adoption_apply = _parser().parse_args([
+            "delivery", "legacy-adoption-apply", "46", "--plan", "plan.json",
+            "--approval-comment-id", "900", "--repo", "octo/repo", "--root", str(ROOT),
+        ])
+        reset_plan = _parser().parse_args([
+            "delivery", "legacy-reset-plan", "46", "--repo", "octo/repo", "--root", str(ROOT),
+        ])
+        reset_apply = _parser().parse_args([
+            "delivery", "legacy-reset-apply", "46", "--plan", "reset.json",
+            "--approval-comment-id", "901", "--repo", "octo/repo", "--root", str(ROOT),
+        ])
+        self.assertEqual(adoption_plan.verb, "legacy-adoption-plan")
+        self.assertEqual((adoption_apply.verb, adoption_apply.approval_comment_id),
+                         ("legacy-adoption-apply", 900))
+        self.assertEqual(reset_plan.verb, "legacy-reset-plan")
+        self.assertEqual((reset_apply.verb, reset_apply.approval_comment_id),
+                         ("legacy-reset-apply", 901))
+
     def test_advance_refuses_caller_kind_mismatch_without_label_write(self):
         class GitHub:
             repo = "octo/repo"

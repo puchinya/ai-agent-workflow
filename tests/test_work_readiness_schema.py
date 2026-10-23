@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import sys
 import tempfile
 import unittest
@@ -15,6 +17,7 @@ from p_ases.context import WorkContext
 from p_ases.delivery import PRReadback, ReadinessResult, evaluate_readiness, read_readiness, readiness_path, write_readiness
 from p_ases.evidence_store import VerificationSubject
 from p_ases.execution import ExecutionBinding, binding_digest
+from p_ases.review_assurance import attest_native_review
 from p_ases.verification import (
     GateResult, RequiredCheckPolicy, VerificationResult, evaluate_required_checks,
 )
@@ -78,17 +81,43 @@ def setup(*, draft=False, fork=False, stale=False, unresolved=False):
         subject, "fresh-review-session", "implementation-session", "review-context.json",
         "2" * 64, findings, "CONCERNS" if unresolved else "PASS",
     ).validate()
-    return subject, context, pr_binding, pr, pass_result, check, acceptance, audit, review
+    execution = "execution-binding:" + "e" * 64
+    child_output = json.dumps({
+        "findings": [{"description": row.description, "evidence_ref": row.evidence_ref,
+                      "finding_id": row.finding_id, "resolved": row.resolved, "severity": row.severity}
+                     for row in findings],
+        "reviewer_context_id": "fresh-review-session", "schema": "PASES_CHILD_REVIEW_OUTPUT_V1",
+        "subject": subject.as_dict(), "verdict": "CONCERNS" if unresolved else "PASS",
+    }, sort_keys=True, separators=(",", ":")).encode()
+    request = json.dumps({
+        "execution_identity_context_id": execution, "operation": "spawn_independent_review_child",
+        "reviewer_context_id": "fresh-review-session", "schema": "PASES_NATIVE_REVIEW_REQUEST_V1",
+        "subject": subject.as_dict(),
+    }, sort_keys=True, separators=(",", ":")).encode()
+    terminal = json.dumps({
+        "child_output_sha256": hashlib.sha256(child_output).hexdigest(), "completed": True,
+        "request_sha256": hashlib.sha256(request).hexdigest(),
+        "schema": "PASES_NATIVE_REVIEW_TERMINAL_V1", "status": "success",
+    }, sort_keys=True, separators=(",", ":")).encode()
+    review_v2 = attest_native_review(
+        subject=subject, execution_identity_context_id=execution, profile_sha256="f" * 64,
+        request=request, terminal_return=terminal, child_output=child_output,
+    )
+    return subject, context, pr_binding, pr, pass_result, check, acceptance, audit, review, review_v2
 
 
 class WorkReadinessSchemaTests(unittest.TestCase):
     def test_readiness_passes_only_for_matching_open_exact_subject_and_all_evidence(self):
-        subject, context, pr_binding, pr, passed, check, acceptance, audit, review = setup()
+        subject, context, pr_binding, pr, passed, check, acceptance, audit, review, review_v2 = setup()
         result = evaluate_readiness(
             subject=subject, pr=pr, pr_binding=pr_binding, work_context=context,
             verification=passed, acceptance=acceptance, self_audit=audit,
             required_item_ids=("REQ-08", "REQ-09", "checklist:exact-head"),
-            independent_review=review, required_checks_sha256=check.sha256,
+            independent_review=review_v2.as_v1_readiness_projection(),
+            independent_review_v2=review_v2,
+            review_minimum_assurance="independent_attested", current_profile_sha256="f" * 64,
+            execution_identity_context_id="execution-binding:" + "e" * 64,
+            required_checks_sha256=check.sha256,
         )
         self.assertEqual(result.status, "PASS")
         self.assertTrue(result.ready_for_user_review)
@@ -100,27 +129,38 @@ class WorkReadinessSchemaTests(unittest.TestCase):
             self.assertEqual(read_readiness(path), result)
 
     def test_missing_stale_draft_fork_and_unresolved_review_block_readiness(self):
-        subject, context, pr_binding, pr, passed, check, acceptance, audit, review = setup()
+        subject, context, pr_binding, pr, passed, check, acceptance, audit, review, review_v2 = setup()
         args = dict(
             subject=subject, pr=pr, pr_binding=pr_binding, work_context=context,
             verification=passed, acceptance=acceptance, self_audit=audit,
             required_item_ids=("REQ-08", "REQ-09", "checklist:exact-head"),
-            independent_review=review, required_checks_sha256=check.sha256,
+            independent_review=review_v2.as_v1_readiness_projection(),
+            independent_review_v2=review_v2,
+            review_minimum_assurance="independent_attested", current_profile_sha256="f" * 64,
+            execution_identity_context_id="execution-binding:" + "e" * 64,
+            required_checks_sha256=check.sha256,
         )
         self.assertEqual(evaluate_readiness(**{**args, "verification": None}).status, "BLOCKED")
         self.assertEqual(evaluate_readiness(**{**args, "pr": setup(draft=True)[3]}).status, "BLOCKED")
         self.assertEqual(evaluate_readiness(**{**args, "pr": setup(fork=True)[3]}).status, "BLOCKED")
         self.assertEqual(evaluate_readiness(**{**args, "pr_binding": setup(stale=True)[2]}).status, "BLOCKED")
-        self.assertEqual(evaluate_readiness(**{**args, "independent_review": None}).status, "BLOCKED")
-        self.assertEqual(evaluate_readiness(**{**args, "independent_review": setup(unresolved=True)[8]}).status, "CONCERNS")
+        self.assertEqual(evaluate_readiness(**{**args, "independent_review": None,
+                                               "independent_review_v2": None}).status, "BLOCKED")
+        self.assertEqual(evaluate_readiness(**{**args, "independent_review_v2": setup(unresolved=True)[9]}).status, "CONCERNS")
+        self.assertEqual(evaluate_readiness(**{**args, "independent_review_v2": None,
+                                               "independent_review": review}).status, "BLOCKED")
 
     def test_unaccepted_dependency_is_an_explicit_readiness_blocker(self):
-        subject, context, pr_binding, pr, passed, check, acceptance, audit, review = setup()
+        subject, context, pr_binding, pr, passed, check, acceptance, audit, review, review_v2 = setup()
         result = evaluate_readiness(
             subject=subject, pr=pr, pr_binding=pr_binding, work_context=context,
             verification=passed, acceptance=acceptance, self_audit=audit,
             required_item_ids=("REQ-08", "REQ-09", "checklist:exact-head"),
-            independent_review=review, required_checks_sha256=check.sha256,
+            independent_review=review_v2.as_v1_readiness_projection(),
+            independent_review_v2=review_v2,
+            review_minimum_assurance="independent_attested", current_profile_sha256="f" * 64,
+            execution_identity_context_id="execution-binding:" + "e" * 64,
+            required_checks_sha256=check.sha256,
             blocker_reasons=("WAITING_DEPENDENCY #28: formal Oracle has not been accepted",),
         )
         self.assertEqual(result.status, "BLOCKED")

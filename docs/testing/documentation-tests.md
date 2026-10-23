@@ -92,13 +92,13 @@ H1 remains unnumbered, including a year-leading title. H2-H6 have deterministic 
 <a id="tst-doc-004-opaque-source-blocks"></a>
 ### 2.4 TST-DOC-004 Opaque source blocks
 
-**Setup and action:** Place heading-like lines and generated contents markers inside fenced code, including a fence-like line with an info string that cannot close the block; four-column indented code with multiple internal blank lines; HTML comments; raw pre blocks; and front matter. Put a real heading after the protected examples following H1. Run `format_markdown` twice and run `format_tree --write` followed by `format_tree --check` on the same source document.
+**Setup and action:** Place heading-like lines and generated contents markers inside fenced code, including a fence-like line with an info string that cannot close the block; four-column indented code with multiple internal blank lines; HTML comments; raw pre blocks; and front matter. Put a real heading after the protected examples following H1. Also put an exact contract Markdown file under `docs/contracts/` and run `format_tree --write` followed by `format_tree --check`.
 
 <a id="ora-doc-004"></a>
 <a id="ora-doc-004-expected-result"></a>
 #### 2.4.1 ORA-DOC-004 Expected result
 
-Protected headings, generated-marker examples, and blank lines inside the examples are unchanged byte-for-byte. The info-string fence does not close a fenced block, and indented markers are never treated as generated markers. Formatting is idempotent; the second tree write changes no files and tree check reports clean. Contents and heading maps are inserted outside protected regions, before the first real heading after H1.
+Protected headings, generated-marker examples, and blank lines inside the examples are unchanged byte-for-byte. The info-string fence does not close a fenced block, and indented markers are never treated as generated markers. Contract files remain byte-for-byte unchanged. Formatting is idempotent; the second tree write changes no files and tree check reports clean. Contents and heading maps are inserted outside protected regions, before the first real heading after H1.
 
 <a id="tst-doc-005"></a>
 <a id="tst-doc-005-contents-and-anchor-continuity"></a>

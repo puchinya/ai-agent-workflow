@@ -41,6 +41,8 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
     - [2.14.1 ORA-RT-014 Expected result](#2141-ora-rt-014-expected-result)
   - [2.15 TST-RT-015 Error and boundary cases](#215-tst-rt-015-error-and-boundary-cases)
     - [2.15.1 ORA-RT-015 Fail-closed result](#2151-ora-rt-015-fail-closed-result)
+  - [2.16 TST-RT-016 Legacy Adoption CLI and plan file](#216-tst-rt-016-legacy-adoption-cli-and-plan-file)
+    - [2.16.1 ORA-RT-016 Expected result](#2161-ora-rt-016-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -75,6 +77,8 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
 - [ORA-RT-014](#ora-rt-014) — 2.14.1 ORA-RT-014 Expected result
 - [TST-RT-015](#tst-rt-015) — 2.15 TST-RT-015 Error and boundary cases
 - [ORA-RT-015](#ora-rt-015) — 2.15.1 ORA-RT-015 Fail-closed result
+- [TST-RT-016](#tst-rt-016) — 2.16 TST-RT-016 Legacy Adoption CLI and plan file
+- [ORA-RT-016](#ora-rt-016) — 2.16.1 ORA-RT-016 Expected result
 <!-- heading-map:end -->
 
 
@@ -265,3 +269,17 @@ No credentials or Issue bodies are emitted, and local state stays scoped to its 
 #### 2.15.1 ORA-RT-015 Fail-closed result
 
 Every invalid boundary returns a nonzero bounded error before an unrelated local or GitHub mutation.
+
+<a id="tst-rt-016"></a>
+<a id="tst-rt-016-legacy-adoption-cli-and-plan-file"></a>
+### 2.16 TST-RT-016 Legacy Adoption CLI and plan file
+<!-- agent-doc-type: test-specification -->
+<!-- agent-doc-schema: 2 -->
+
+**Setup and action:** Parse the read-only `legacy-adoption-plan` and `legacy-reset-plan` routes, then the separate apply routes. Write a plan file once, read it back, and vary canonical JSON, schema, plan digest, output overwrite, and exact approval comment ID.
+
+<a id="ora-rt-016"></a>
+<a id="ora-rt-016-expected-result"></a>
+#### 2.16.1 ORA-RT-016 Expected result
+
+CLI plan output is deterministic, labels risk acknowledgement `AWAITING_OWNER_APPROVAL`, and exposes the exact Owner-authored comment template, both risk IDs, and the single-writer condition. Apply requires the exact canonical V2 plan file, Owner-authored comment, and current authenticated Owner User; success reports `KNOWN_RISK_ACCEPTED_BY_OWNER` separately from technical `ADOPTED` or `NOOP`. Missing, changed, non-Owner, or overwritten plan data blocks; CLI does not generate or publish an Owner approval or claim atomicity/history immutability.

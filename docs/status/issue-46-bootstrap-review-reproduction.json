@@ -1,0 +1,11 @@
+{
+  "concurrency": {
+    "command": "temporary untracked harness using tests.test_legacy_adoption FakeGitHub; thread barrier at both pre-append history reads",
+    "result": "Two concurrent apply calls created Adoption IDs 931 and 932. One returned ADOPTED; other raised duplicate-history error. Two matching Adoption records remained."
+  },
+  "marker_removal": {
+    "command": "complete normal apply, remove only legacy Gate sentinel in stored Issue comment, replay same exact plan/approval",
+    "result": "First returned Gate 932, replay returned ADOPTED with new Gate 933; one visible Gate marker remained and deleted/edited prior record was ignored."
+  },
+  "tracked_or_github_changes": 0
+}

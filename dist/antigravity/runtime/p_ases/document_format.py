@@ -443,6 +443,16 @@ def _markdown_files(root: Path) -> list[Path]:
     return files
 
 
+def _is_immutable_contract(path: Path, root: Path) -> bool:
+    """Keep exact contract and archived raw-review bytes instead of normalizing Markdown."""
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        return False
+    return (relative.parts[:2] == ("docs", "contracts")
+            or (relative.parts[:2] == ("docs", "status") and relative.name.endswith(".raw.md")))
+
+
 def format_tree(root: Path, *, write: bool) -> tuple[str, ...]:
     root = root.resolve()
     files = _markdown_files(root)
@@ -456,6 +466,10 @@ def format_tree(root: Path, *, write: bool) -> tuple[str, ...]:
             raise DocumentFormatError(f"cannot read UTF-8 Markdown {path.relative_to(root)}: {exc}") from exc
         resolved = path.resolve()
         originals[resolved] = original
+        if _is_immutable_contract(path, root):
+            prepared[resolved] = original
+            link_maps[resolved] = {}
+            continue
         formatted = format_markdown(original)
         prepared[resolved] = _strip_generated_blocks(formatted.text)
         link_maps[resolved] = formatted.link_map
@@ -464,6 +478,10 @@ def format_tree(root: Path, *, write: bool) -> tuple[str, ...]:
     final_texts: dict[Path, str] = {}
     for path in files:
         resolved = path.resolve()
+        if _is_immutable_contract(path, root):
+            final = originals[resolved]
+            final_texts[resolved] = final
+            continue
         rewritten = rewrite_markdown_links(prepared[resolved], resolved, link_maps)
         final = _contents_blocks(rewritten)
         final_texts[resolved] = final

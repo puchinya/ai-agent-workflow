@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import json
 import sys
@@ -15,6 +16,9 @@ sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases.delivery import ReadinessResult
 from p_ases.evidence_store import VerificationSubject
+from p_ases.execution import ExecutionBinding, binding_digest, write_binding
+from p_ases.profile import load_profile
+from p_ases.review_assurance import attest_native_review, write_independent_review_v2
 from p_ases.user_review import FeedbackSnapshot, UserReviewError, UserReviewSubject, feedback_snapshot_path
 from p_ases.cli import _latest_review_snapshot, _user_review_run
 
@@ -45,6 +49,52 @@ class UserReviewCliRegressionTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            profile_value = {
+                "schema_version": 2, "initialized": True, "project_name": "test",
+                "components": [], "branch": {"prefix": "feature", "max_slug_length": 48,
+                    "cleanup_on_switch": [], "required_checks": [{"name": "ci", "trusted_app_id": 2}]},
+                "workspace": {}, "milestones": {}, "hooks": {},
+                "independent_review": {"minimum_assurance": "independent_attested"},
+            }
+            profile_path = root / ".agent" / "project.json"
+            profile_path.parent.mkdir(parents=True)
+            profile_path.write_text(json.dumps(profile_value), encoding="utf-8")
+            profile = load_profile(root)
+            binding = ExecutionBinding(
+                repository="octo/repo", issue_number=31, adc_comment_id=123,
+                adc_sha256="b" * 64, base_ref="main", base_sha="1" * 40,
+                work_directory=str(root), branch_ref="feature/review", initial_head_sha="1" * 40,
+            ).validate()
+            write_binding(root / ".p_ases" / "state" / "31" / "execution-binding.json", binding)
+            execution = f"execution-binding:{binding_digest(binding)}"
+            child_output = json.dumps({
+                "findings": [], "reviewer_context_id": "fresh-child",
+                "schema": "PASES_CHILD_REVIEW_OUTPUT_V1", "subject": VERIFICATION_SUBJECT.as_dict(),
+                "verdict": "PASS",
+            }, sort_keys=True, separators=(",", ":")).encode()
+            request = json.dumps({
+                "execution_identity_context_id": execution,
+                "operation": "spawn_independent_review_child", "reviewer_context_id": "fresh-child",
+                "schema": "PASES_NATIVE_REVIEW_REQUEST_V1", "subject": VERIFICATION_SUBJECT.as_dict(),
+            }, sort_keys=True, separators=(",", ":")).encode()
+            terminal = json.dumps({
+                "child_output_sha256": hashlib.sha256(child_output).hexdigest(), "completed": True,
+                "request_sha256": hashlib.sha256(request).hexdigest(),
+                "schema": "PASES_NATIVE_REVIEW_TERMINAL_V1", "status": "success",
+            }, sort_keys=True, separators=(",", ":")).encode()
+            review = attest_native_review(
+                subject=VERIFICATION_SUBJECT, execution_identity_context_id=execution,
+                profile_sha256=profile.profile_sha256, request=request,
+                terminal_return=terminal, child_output=child_output,
+            )
+            review_path = (root / ".p_ases" / "audits" / "31" / VERIFICATION_SUBJECT.sha256
+                           / f"independent-v2-{review.sha256}.json")
+            write_independent_review_v2(review_path, review)
+            readiness = ReadinessResult(
+                "PASS", VERIFICATION_SUBJECT, (), tuple(sorted((review.sha256, profile.profile_sha256)),),
+                "e" * 64,
+            ).validate()
+            user_subject = UserReviewSubject(VERIFICATION_SUBJECT, readiness.sha256).validate()
             for verb in ("start", "sync", "status"):
                 args = SimpleNamespace(verb=verb, issue=31, pr=37, head=HEAD,
                                        plan=root / "plan.json", readiness=root / "readiness.json",
@@ -55,7 +105,7 @@ class UserReviewCliRegressionTests(unittest.TestCase):
                         patch("p_ases.cli._load_plan", return_value=(object(), (), (), ())), \
                         patch("p_ases.cli._subject", return_value=VERIFICATION_SUBJECT), \
                         patch("p_ases.cli._readback_current_pr", return_value={"head_sha": HEAD}), \
-                        patch("p_ases.cli.read_readiness", return_value=READINESS), \
+                        patch("p_ases.cli.read_readiness", return_value=readiness), \
                         patch("p_ases.cli._review_payload_from_github", side_effect=feedback), \
                         patch("p_ases.cli._review_phase_transition"), \
                         contextlib.redirect_stdout(output):
@@ -63,7 +113,7 @@ class UserReviewCliRegressionTests(unittest.TestCase):
                 result = json.loads(output.getvalue())
                 self.assertEqual(result["status"], "PENDING")
                 self.assertEqual(status, 2)
-                self.assertTrue((root / ".p_ases" / "user-review" / "31" / USER_SUBJECT.sha256
+                self.assertTrue((root / ".p_ases" / "user-review" / "31" / user_subject.sha256
                                  / "session.json").is_file())
 
     def test_snapshot_hash_name_is_required_and_tampered_snapshot_fails_closed(self):
