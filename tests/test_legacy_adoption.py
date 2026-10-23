@@ -357,14 +357,16 @@ class LegacyAdoptionContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             record_path = Path(directory) / "authorization.json"
             scope_path = Path(directory) / "scope.json"
-            record_path.write_text(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
+            record_path.write_bytes(
+                (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+            )
             scope_path.write_text(json.dumps(scope))
             loaded = read_bootstrap_authorization_record(
                 record_path, scope_path, changed_paths=["runtime/p_ases/legacy_adoption.py"],
                 prework_subject=body["prework_subject"],
             )
             self.assertEqual(loaded, record)
-            record_path.write_text(json.dumps(record, indent=2) + "\n")
+            record_path.write_bytes((json.dumps(record, indent=2) + "\n").encode("utf-8"))
             with self.assertRaisesRegex(LegacyAdoptionError, "canonical JSON"):
                 read_bootstrap_authorization_record(record_path, scope_path)
 
