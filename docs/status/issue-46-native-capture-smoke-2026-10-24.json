@@ -7,6 +7,32 @@
     "task_name": "/root/issue46_native_review_blind"
   },
   "normalized_correlation_envelope": null,
+  "probe_exchange": {
+    "normalized_correlation_envelope": null,
+    "raw_child_final_answer": "{\"schema\":\"PASES_NATIVE_CAPTURE_PROBE_V1\",\"subject_head\":\"fe34716412a0a6ff17197608b0eedbffe80dca28\",\"observed_runtime_bridge\":false,\"evidence\":[\"runtime/p_ases/review_assurance.py:31-33,398-405,467-475\",\"runtime/p_ases/review_host_adapters/base.py:31-36,39-49\",\"runtime/p_ases/review_host_adapters/codex_cloud.py:1-7\",\"runtime/p_ases/cli.py:1186-1208\",\"workflow/skills/independent-review/SKILL.md:19-21\"],\"conclusion\":\"Repository code inspection found no bridge from a Codex Cloud collaboration child result into the Python P-ASES runtime as raw host-owned request, terminal, and output bytes. The Codex Cloud adapter only names the surface; shared capabilities report capture unavailable, and the CLI blocks caller-supplied capture while the boundary flag is false. The child result reaches the parent conversation, with no runtime capture path observed. This is only repository code inspection and does not claim a formal Independent Review PASS.\"}\n",
+    "raw_child_final_answer_sha256": "cd02900eea769ddc1a59c74aa19e4f7e659b463c866d25989b19cd13485c2d8b",
+    "raw_host_request": {
+      "arguments": {
+        "fork_turns": "none",
+        "message": "Read-only probe of the current repo at /workspace/ai-agent-workflow-issue46, HEAD fe34716412a0a6ff17197608b0eedbffe80dca28. Check whether the Codex Cloud collaboration child result can enter the Python P-ASES runtime as raw host-owned request/terminal/output bytes, or whether only the parent conversation receives it. Do not edit files, test, contact GitHub, or spawn other agents. Return a short JSON FINAL_ANSWER with schema='PASES_NATIVE_CAPTURE_PROBE_V1', subject_head, observed_runtime_bridge (true/false), evidence (paths), conclusion. Be explicit that this is only a repository code inspection; do not claim formal Independent Review PASS.",
+        "task_name": "issue46_host_capture_probe"
+      },
+      "tool": "collaboration.spawn_agent"
+    },
+    "raw_spawn_response": {
+      "task_name": "/root/issue46_host_capture_probe"
+    },
+    "raw_wait_call": {
+      "arguments": {
+        "timeout_ms": 60000
+      },
+      "result": {
+        "message": "Wait completed.",
+        "timed_out": false
+      },
+      "tool": "collaboration.wait_agent"
+    }
+  },
   "raw_child_final_answer": "{\n  \"schema\": \"PASES_CHILD_REVIEW_OUTPUT_V1\",\n  \"reviewer_context_id\": \"issue46_native_review_blind\",\n  \"subject\": {\n    \"repo\": \"puchinya/ai-agent-workflow\",\n    \"issue\": 46,\n    \"pr\": 67,\n    \"head\": \"67f9252bbfa348e3dbb572a25a885b1ed710e7c1\"\n  },\n  \"verdict\": \"FAIL\",\n  \"findings\": [\n    {\n      \"finding_id\": \"F46-DOC-HASH\",\n      \"severity\": \"INFO\",\n      \"resolved\": true,\n      \"description\": \"At the specified HEAD, docs/design/workflow-design.md and all three dist copies have raw SHA-256 a7e8a1b63f2943956cfeb211333fa14d476a9f39da727fb29266bf2637c53b1c.\",\n      \"evidence_ref\": \"sha256sum of docs/design/workflow-design.md, dist/openai/docs/design/workflow-design.md, dist/claude/docs/design/workflow-design.md, and dist/antigravity/docs/design/workflow-design.md at HEAD 67f9252bbfa348e3dbb572a25a885b1ed710e7c1\"\n    },\n    {\n      \"finding_id\": \"F46-NATIVE-CAPTURE\",\n      \"severity\": \"A\",\n      \"resolved\": false,\n      \"description\": \"No real native child request-to-terminal-result-to-child-output capture route is implemented for Codex Cloud, local Codex CLI, Codex Desktop, or Claude Code. The four modules only inherit a shared validator; its capability report says capture is unavailable, and its attestation path delegates to a factory that rejects caller-supplied bytes. The repository reports host smoke tests as NOT RUN; no live host behavior is claimed here.\",\n      \"evidence_ref\": \"docs/design/workflow-design.md:279,303; docs/status/issue-46-review-assurance.md:29-40; runtime/p_ases/review_host_adapters/base.py:31-59; runtime/p_ases/review_assurance.py:398-406\"\n    },\n    {\n      \"finding_id\": \"F46-FABRICATED-INPUT\",\n      \"severity\": \"INFO\",\n      \"resolved\": true,\n      \"description\": \"Locally fabricated, self-consistent request, terminal-return, and child-output bytes cannot satisfy the production gate. The public factory rejects them, and even a manually constructed INDEPENDENT_ATTESTED record is downgraded to UNAVAILABLE and blocked by assurance evaluation. The CLI also blocks the capture-input path while no boundary is configured.\",\n      \"evidence_ref\": \"runtime/p_ases/review_assurance.py:31-33,398-406,467-482; runtime/p_ases/cli.py:1201-1207; tests/test_review_assurance.py:70-88\"\n    },\n    {\n      \"finding_id\": \"F46-PROJECT-MINIMUM\",\n      \"severity\": \"INFO\",\n      \"resolved\": true,\n      \"description\": \".agent/project.json explicitly sets independent_review.minimum_assurance to independent_attested. That setting does not make review PASS possible without real capture: the evaluator downgrades caller-supplied evidence and blocks it even under this minimum. A real native capture path is still required.\",\n      \"evidence_ref\": \".agent/project.json:5-7; docs/design/workflow-design.md:289-297; runtime/p_ases/review_assurance.py:467-482\"\n    }\n  ]\n}\n",
   "raw_child_final_answer_sha256": "2236b6a1ed4c0af853345a70c5a9f7e5533121ede7139b13fa90a3855ff6dba6",
   "raw_host_request": {
@@ -17,15 +43,7 @@
     },
     "tool": "collaboration.spawn_agent"
   },
-  "raw_spawn_response": {
-    "task_name": "/root/issue46_native_review_blind"
-  },
-  "raw_terminal_readback": {
-    "agent_name": "/root/issue46_native_review_blind",
-    "agent_status": "completed",
-    "tool": "collaboration.list_agents"
-  },
-  "raw_wait_call": {
+  "raw_review_wait_call": {
     "arguments": {
       "timeout_ms": 30000
     },
@@ -34,6 +52,14 @@
       "timed_out": true
     },
     "tool": "collaboration.wait_agent"
+  },
+  "raw_spawn_response": {
+    "task_name": "/root/issue46_native_review_blind"
+  },
+  "raw_terminal_readback": {
+    "agent_name": "/root/issue46_native_review_blind",
+    "agent_status": "completed",
+    "tool": "collaboration.list_agents"
   },
   "runtime_ingestion": "UNAVAILABLE",
   "schema": "PASES_CODEX_CLOUD_NATIVE_CAPTURE_OBSERVATION_V1",

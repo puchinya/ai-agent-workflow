@@ -23,6 +23,7 @@
 - Host IDs remain optional and are never synthesized.
 - The project profile explicitly selects `independent_attested`. This is an Owner-authorized project setting; it does not make caller-supplied or fabricated bytes acceptable and does not bypass actual capture.
 - On 2026-10-24, a separate Codex Cloud collaboration child was started for exact HEAD `67f9252bbfa348e3dbb572a25a885b1ed710e7c1`. The host returned its child-authored `FINAL_ANSWER`; the exact request and answer text are preserved in [the capture observation](issue-46-native-capture-smoke-2026-10-24.json). The child verdict was `FAIL` because the runtime adapter still has no native capture path. The captured observation is operator-copied from tool messages, not host-signed evidence or an `IndependentReviewV2`.
+- A second blind probe child completed through `spawn_agent` → `wait_agent` on HEAD `fe34716412a0a6ff17197608b0eedbffe80dca28` and confirmed that the parent conversation receives the child result, while the Python runtime has no bridge for the raw host request/terminal/output. Its tool request, completion, and `FINAL_ANSWER` are kept as a separate exchange in the same observation file. This verifies the host orchestration call only, not the runtime adapter.
 
 <a id="surface-and-os-status"></a>
 ## 2 Surface and OS status
