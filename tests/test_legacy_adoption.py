@@ -413,9 +413,11 @@ class LegacyAdoptionContractTests(unittest.TestCase):
                     LegacyAdoptionError, "exact repository, Owner, and Issue #46"):
                 _validate_plan_payload(changed_identity)
 
-    def test_risk_accepted_adoption_plan_is_limited_to_issue_46(self):
-        with self.assertRaisesRegex(LegacyAdoptionError, "limited to Issue #46"):
-            build_legacy_adoption_plan(adoption_github(), Path("."), 47)
+    def test_risk_accepted_adoption_plan_cannot_target_issue_63_or_pr_64_number(self):
+        for issue_number in (63, 64):
+            with self.subTest(issue_number=issue_number), self.assertRaisesRegex(
+                    LegacyAdoptionError, "limited to Issue #46"):
+                build_legacy_adoption_plan(adoption_github(), Path("."), issue_number)
 
     def test_adoption_apply_requires_authenticated_repository_owner_before_writing(self):
         plan = make_plan()
