@@ -391,12 +391,12 @@ Only exact bytes obtained through a registered native capture boundary with succ
 <a id="tst-f06-004"></a>
 ### 2.22 TST-F06-004 Canonical identity, freshness, and replay
 
-**Setup and action:** Vary duplicate JSON keys, base64 encoding, evidence digests, issue/PR/HEAD/ADC/plan, ExecutionBinding, profile, optional host IDs, findings order, duplicate history, and replay.
+**Setup and action:** Vary duplicate JSON keys, base64 encoding, evidence digests, issue/PR/HEAD/ADC/plan, ExecutionBinding, profile, optional host IDs, findings order, duplicate history, and replay. Submit child-authored output with a shortened `{repo, issue, pr, head}` subject, an `INFO` finding, and unsorted finding IDs.
 
 <a id="ora-f06-004"></a>
 #### 2.22.1 ORA-F06-004 Expected result
 
-Exact null host IDs remain null. Every malformed, changed, stale, duplicate, replayed, conflicting, or blocking result is rejected before Readiness persistence.
+Exact null host IDs remain null. Child output must use the exact seven-field `VerificationSubject.as_dict()` subject; findings use only A/B/C severity and unique lexicographically sorted IDs. Every malformed, changed, stale, duplicate, replayed, conflicting, or blocking result is rejected before Readiness persistence. Historical malformed child bytes are never rewritten into canonical form.
 
 <a id="tst-f06-005"></a>
 ### 2.23 TST-F06-005 Committed minimum assurance

@@ -12,9 +12,11 @@ Owner: `runtime/p_ases/audits.py` for V1 compatibility and `runtime/p_ases/revie
 
 1. Establish a separate context from the implementation session. Read back the same PR HEAD and approved ADC before reviewing.
 2. Inspect every contract section and checklist item; classify findings with severity and evidence.
-3. Capture the exact native delegation request, terminal return, and child-authored output bytes. Record their digests and the exact subject in V2. Do not replace native bytes with a parent-authored summary.
-4. Re-run after HEAD or ADC changes; do not reuse stale review evidence.
-5. Preserve ordinary product review gates. Issue #32's fixed Bootstrap waiver only waives review procedure for that PR.
+3. Build the review request from the current `VerificationSubject.as_dict()` returned by the runtime. The child-authored `PASES_CHILD_REVIEW_OUTPUT_V1` must contain exactly `findings`, `reviewer_context_id`, `schema`, `subject`, and `verdict`; `subject` must contain the exact seven canonical fields `repository`, `issue_number`, `pr_number`, `adc_comment_id`, `adc_sha256`, `plan_sha256`, and `pr_head_sha40`. Do not substitute a shortened `{repo, issue, pr, head}` object.
+4. Each finding must contain exactly `description`, `evidence_ref`, `finding_id`, `resolved`, and `severity`. Use only severity `A`, `B`, or `C`; finding IDs must be unique and sorted lexicographically. Return an empty finding list when there are no findings. Do not add `INFO` findings or extra fields.
+5. Capture the exact native delegation request, terminal return, and child-authored output bytes. Record their digests and the exact subject in V2. Do not replace native bytes with a parent-authored summary, normalize a child's output after the call, or repair a prior malformed result. Reissue a new exact-subject review after any request or subject correction.
+6. Re-run after HEAD, ADC, Verification Plan, Binding, or profile changes; do not reuse stale review evidence.
+7. Preserve ordinary product review gates. Issue #32's fixed Bootstrap waiver only waives review procedure for that PR.
 
 V2 separates review occurrence from provenance assurance. `HOST_VERIFIED` requires a real trusted host event verifier; agent-writable logs and Hook files do not qualify. `INDEPENDENT_ATTESTED` records `operator_captured_native_tool_result` and proves tamper evidence after capture, not cryptographic host authentication. The `host_spawn_id`, `host_child_id`, and `host_join_id` fields remain null when the host does not expose them. A self-consistent JSON bundle supplied by the implementation agent does not prove that native delegation occurred. The current adapters have no host-capture boundary, so such a record evaluates to effective assurance `UNAVAILABLE` and blocks Readiness.
 

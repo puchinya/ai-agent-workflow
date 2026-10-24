@@ -28,7 +28,8 @@ def canonical(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
 
 
-def native_capture(*, same_context=False, completed=True):
+def native_capture(*, same_context=False, completed=True, child_subject=None,
+                   findings=None, verdict="PASS"):
     reviewer = EXECUTION if same_context else "native-review-child-7"
     request = canonical({
         "execution_identity_context_id": EXECUTION,
@@ -38,8 +39,9 @@ def native_capture(*, same_context=False, completed=True):
         "subject": SUBJECT.as_dict(),
     })
     child_output = canonical({
-        "findings": [], "reviewer_context_id": reviewer,
-        "schema": "PASES_CHILD_REVIEW_OUTPUT_V1", "subject": SUBJECT.as_dict(), "verdict": "PASS",
+        "findings": [] if findings is None else findings, "reviewer_context_id": reviewer,
+        "schema": "PASES_CHILD_REVIEW_OUTPUT_V1",
+        "subject": SUBJECT.as_dict() if child_subject is None else child_subject, "verdict": verdict,
     })
     terminal = canonical({
         "child_output_sha256": hashlib.sha256(child_output).hexdigest(),
@@ -117,6 +119,39 @@ class ReviewAssuranceTests(unittest.TestCase):
                 subject=SUBJECT, execution_identity_context_id=EXECUTION,
                 request=request, terminal_return=tampered, child_output=output,
             )
+
+    def test_child_output_requires_canonical_subject_and_findings(self):
+        def finding(finding_id, severity="C"):
+            return {
+                "description": "Diagnostic finding",
+                "evidence_ref": "tests/test_review_assurance.py",
+                "finding_id": finding_id,
+                "resolved": True,
+                "severity": severity,
+            }
+
+        invalid_results = (
+            (
+                "short subject",
+                {"repo": "owner/repo", "issue": 46, "pr": 91, "head": "c" * 40},
+                [],
+                "child output is not bound",
+            ),
+            ("INFO severity", SUBJECT.as_dict(), [finding("A-01", "INFO")],
+             "severity must be A, B, or C"),
+            ("unsorted findings", SUBJECT.as_dict(), [finding("B-01"), finding("A-01")],
+             "canonical ID order"),
+        )
+        for label, subject, findings, expected_error in invalid_results:
+            with self.subTest(label=label):
+                request, terminal, child_output = native_capture(
+                    child_subject=subject, findings=findings, verdict="FAIL",
+                )
+                with self.assertRaisesRegex(ReviewAssuranceError, expected_error):
+                    AttestedNativeDelegationEvidenceV1.capture(
+                        subject=SUBJECT, execution_identity_context_id=EXECUTION,
+                        request=request, terminal_return=terminal, child_output=child_output,
+                    )
 
     def test_stale_profile_or_subject_blocks_assurance(self):
         review = fabricated_review()

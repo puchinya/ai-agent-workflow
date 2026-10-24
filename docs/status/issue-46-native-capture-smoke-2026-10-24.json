@@ -61,6 +61,16 @@
     "agent_status": "completed",
     "tool": "collaboration.list_agents"
   },
+  "historical_child_output_validation": {
+    "raw_child_final_answer_sha256": "2236b6a1ed4c0af853345a70c5a9f7e5533121ede7139b13fa90a3855ff6dba6",
+    "status": "REJECTED_AS_INDEPENDENT_REVIEW_V2",
+    "raw_bytes_rewritten": false,
+    "reasons": [
+      "The child subject has repo/issue/pr/head instead of the exact seven VerificationSubject fields.",
+      "Finding severity INFO is not allowed; V2 accepts only A, B, or C.",
+      "The review subject HEAD 67f9252bbfa348e3dbb572a25a885b1ed710e7c1 is stale relative to PR HEAD 6df5978ab6bae619cb059e0e56c5a19354116003 at the time of review."
+    ]
+  },
   "runtime_ingestion": "UNAVAILABLE",
   "schema": "PASES_CODEX_CLOUD_NATIVE_CAPTURE_OBSERVATION_V1",
   "subject": {
