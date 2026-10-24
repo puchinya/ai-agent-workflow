@@ -10,7 +10,8 @@ sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases.evidence_store import VerificationSubject
 from p_ases.review_assurance import (
-    IndependentReviewV2, ReviewAssuranceError, evaluate_review_assurance,
+    AttestedNativeDelegationEvidenceV1, IndependentReviewV2, ReviewAssuranceError,
+    evaluate_review_assurance,
 )
 from p_ases.review_host_adapters import (
     ClaudeCodeReviewAdapter, CodexCloudReviewAdapter, CodexDesktopReviewAdapter,
@@ -50,14 +51,31 @@ def native_capture(*, same_context=False, completed=True):
     return request, terminal, child_output
 
 
+def fabricated_review(*, subject=SUBJECT, profile_sha256=PROFILE_SHA):
+    request, terminal, output = native_capture()
+    evidence = AttestedNativeDelegationEvidenceV1.capture(
+        subject=subject, execution_identity_context_id=EXECUTION,
+        request=request, terminal_return=terminal, child_output=output,
+    )
+    return IndependentReviewV2(
+        subject=subject, assurance="INDEPENDENT_ATTESTED",
+        reviewer_context_id=evidence.reviewer_context_id,
+        execution_identity_context_id=EXECUTION, verdict="PASS", findings=(),
+        native_evidence=evidence, profile_sha256=profile_sha256,
+        evidence_origin="operator_captured_native_tool_result",
+    ).validate()
+
+
 class ReviewAssuranceTests(unittest.TestCase):
     def test_locally_synthesized_capture_cannot_satisfy_attested_policy(self):
         request, terminal, output = native_capture()
-        review = CodexCloudReviewAdapter.attest(
-            subject=SUBJECT, execution_identity_context_id=EXECUTION,
-            profile_sha256=PROFILE_SHA, request=request, terminal_return=terminal,
-            child_output=output,
-        )
+        with self.assertRaisesRegex(ReviewAssuranceError, "cannot be attested"):
+            CodexCloudReviewAdapter.attest(
+                subject=SUBJECT, execution_identity_context_id=EXECUTION,
+                profile_sha256=PROFILE_SHA, request=request, terminal_return=terminal,
+                child_output=output,
+            )
+        review = fabricated_review()
         self.assertEqual(review.assurance, "INDEPENDENT_ATTESTED")
         self.assertIsNone(review.native_evidence.host_spawn_id)
         self.assertEqual(IndependentReviewV2.from_bytes(review.to_bytes()), review)
@@ -70,11 +88,7 @@ class ReviewAssuranceTests(unittest.TestCase):
         self.assertTrue(any("capture boundary" in reason for reason in decision.reasons))
 
     def test_attested_result_does_not_satisfy_default_host_verified_minimum(self):
-        review = CodexCloudReviewAdapter.attest(
-            subject=SUBJECT, execution_identity_context_id=EXECUTION,
-            profile_sha256=PROFILE_SHA, request=native_capture()[0],
-            terminal_return=native_capture()[1], child_output=native_capture()[2],
-        )
+        review = fabricated_review()
         decision = evaluate_review_assurance(
             review, subject=SUBJECT, execution_identity_context_id=EXECUTION,
             minimum_assurance="host_verified", profile_sha256=PROFILE_SHA,
@@ -86,30 +100,26 @@ class ReviewAssuranceTests(unittest.TestCase):
     def test_same_context_incomplete_completion_and_changed_terminal_are_rejected(self):
         request, terminal, output = native_capture(same_context=True)
         with self.assertRaisesRegex(ReviewAssuranceError, "distinct child"):
-            CodexCloudReviewAdapter.attest(
+            AttestedNativeDelegationEvidenceV1.capture(
                 subject=SUBJECT, execution_identity_context_id=EXECUTION,
-                profile_sha256=PROFILE_SHA, request=request, terminal_return=terminal, child_output=output,
+                request=request, terminal_return=terminal, child_output=output,
             )
         request, terminal, output = native_capture(completed=False)
         with self.assertRaisesRegex(ReviewAssuranceError, "successful completion"):
-            CodexCloudReviewAdapter.attest(
+            AttestedNativeDelegationEvidenceV1.capture(
                 subject=SUBJECT, execution_identity_context_id=EXECUTION,
-                profile_sha256=PROFILE_SHA, request=request, terminal_return=terminal, child_output=output,
+                request=request, terminal_return=terminal, child_output=output,
             )
         request, terminal, output = native_capture()
         tampered = terminal.replace(b"success", b"failed")
         with self.assertRaisesRegex(ReviewAssuranceError, "exact bytes"):
-            CodexCloudReviewAdapter.attest(
+            AttestedNativeDelegationEvidenceV1.capture(
                 subject=SUBJECT, execution_identity_context_id=EXECUTION,
-                profile_sha256=PROFILE_SHA, request=request, terminal_return=tampered, child_output=output,
+                request=request, terminal_return=tampered, child_output=output,
             )
 
     def test_stale_profile_or_subject_blocks_assurance(self):
-        request, terminal, output = native_capture()
-        review = CodexCloudReviewAdapter.attest(
-            subject=SUBJECT, execution_identity_context_id=EXECUTION, profile_sha256=PROFILE_SHA,
-            request=request, terminal_return=terminal, child_output=output,
-        )
+        review = fabricated_review()
         decision = evaluate_review_assurance(
             review, subject=VerificationSubject("owner/repo", 46, 91, 123, "f" * 64, "b" * 64, "c" * 40),
             execution_identity_context_id=EXECUTION, minimum_assurance="independent_attested",

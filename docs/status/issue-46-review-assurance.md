@@ -19,7 +19,7 @@
 
 - Runtime: Python unit and schema tests exercise exact native request, terminal return, child output, identity binding, profile policy, and V1-only rejection.
 - `HOST_VERIFIED`: unavailable. No trusted host-owned event verifier is configured. A JSON event or an agent-writable Hook cannot satisfy this assurance.
-- `INDEPENDENT_ATTESTED`: the runtime validates the internal byte bundle, but the current adapters accept caller-supplied bytes and do not capture a host-native invocation. Readiness therefore reports the effective assurance as `UNAVAILABLE` and blocks it, even when the profile explicitly selects `independent_attested`.
+- `INDEPENDENT_ATTESTED`: the data model validates internal byte bundles, but no adapter captures a host-native invocation. The attestation factory refuses caller-supplied bytes, the CLI reports `UNAVAILABLE` without writing a V2 review, and Readiness blocks even a manually constructed claim.
 - Host IDs remain optional and are never synthesized.
 - Project profile default remains `host_verified`. `independent_attested` requires an explicit committed profile setting.
 
@@ -37,4 +37,4 @@
 <a id="acceptance-boundary"></a>
 ## 3 Acceptance boundary
 
-No host or OS integration is reported as verified by unit tests. The current package has no verifiable host-capture boundary; locally supplied, self-consistent request/terminal/output JSON is not accepted as evidence that a child actually ran. Until a surface-specific native capture integration exists, `INDEPENDENT_ATTESTED` has effective assurance `UNAVAILABLE` and cannot satisfy Readiness. A future trusted host verifier must be independently implemented and tested before any surface can issue `HOST_VERIFIED`.
+No host or OS integration is reported as verified by unit tests. The current package has no verifiable host-capture boundary; locally supplied, self-consistent request/terminal/output JSON is not accepted as evidence that a child actually ran. The public attestation factory refuses to issue an `INDEPENDENT_ATTESTED` record from such bytes; if a claim is constructed outside that factory, evaluation downgrades it to effective `UNAVAILABLE` and blocks Readiness. A future trusted host verifier must be independently implemented and tested before any surface can issue `HOST_VERIFIED`.

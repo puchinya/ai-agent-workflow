@@ -18,7 +18,7 @@ from p_ases.delivery import ReadinessResult
 from p_ases.evidence_store import VerificationSubject
 from p_ases.execution import ExecutionBinding, binding_digest, write_binding
 from p_ases.profile import load_profile
-from p_ases.review_assurance import attest_native_review, write_independent_review_v2
+from p_ases.review_assurance import IndependentReviewV2, write_independent_review_v2
 from p_ases.user_review import FeedbackSnapshot, UserReviewError, UserReviewSubject, feedback_snapshot_path
 from p_ases.cli import _latest_review_snapshot, _user_review_run
 
@@ -67,26 +67,13 @@ class UserReviewCliRegressionTests(unittest.TestCase):
             ).validate()
             write_binding(root / ".p_ases" / "state" / "31" / "execution-binding.json", binding)
             execution = f"execution-binding:{binding_digest(binding)}"
-            child_output = json.dumps({
-                "findings": [], "reviewer_context_id": "fresh-child",
-                "schema": "PASES_CHILD_REVIEW_OUTPUT_V1", "subject": VERIFICATION_SUBJECT.as_dict(),
-                "verdict": "PASS",
-            }, sort_keys=True, separators=(",", ":")).encode()
-            request = json.dumps({
-                "execution_identity_context_id": execution,
-                "operation": "spawn_independent_review_child", "reviewer_context_id": "fresh-child",
-                "schema": "PASES_NATIVE_REVIEW_REQUEST_V1", "subject": VERIFICATION_SUBJECT.as_dict(),
-            }, sort_keys=True, separators=(",", ":")).encode()
-            terminal = json.dumps({
-                "child_output_sha256": hashlib.sha256(child_output).hexdigest(), "completed": True,
-                "request_sha256": hashlib.sha256(request).hexdigest(),
-                "schema": "PASES_NATIVE_REVIEW_TERMINAL_V1", "status": "success",
-            }, sort_keys=True, separators=(",", ":")).encode()
-            review = attest_native_review(
-                subject=VERIFICATION_SUBJECT, execution_identity_context_id=execution,
-                profile_sha256=profile.profile_sha256, request=request,
-                terminal_return=terminal, child_output=child_output,
-            )
+            review = IndependentReviewV2(
+                subject=VERIFICATION_SUBJECT, assurance="UNAVAILABLE",
+                reviewer_context_id="native-capture-unavailable",
+                execution_identity_context_id=execution, verdict="BLOCKED", findings=(),
+                profile_sha256=profile.profile_sha256,
+                evidence_origin="no_host_native_capture_boundary",
+            ).validate()
             review_path = (root / ".p_ases" / "audits" / "31" / VERIFICATION_SUBJECT.sha256
                            / f"independent-v2-{review.sha256}.json")
             write_independent_review_v2(review_path, review)

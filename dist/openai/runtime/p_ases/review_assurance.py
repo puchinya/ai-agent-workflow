@@ -399,7 +399,11 @@ def attest_native_review(*, subject: VerificationSubject, execution_identity_con
                          request: bytes, terminal_return: bytes, child_output: bytes,
                          profile_sha256: str, host_spawn_id: str | None = None,
                          host_child_id: str | None = None, host_join_id: str | None = None) -> IndependentReviewV2:
-    """Build V2 from exact bytes returned by a host's native delegation tool."""
+    """Issue attested V2 only when a real host capture boundary is connected."""
+    if not NATIVE_CAPTURE_BOUNDARY_CONFIGURED:
+        raise ReviewAssuranceError(
+            "no host-native capture boundary is configured; caller-supplied bytes cannot be attested"
+        )
     evidence = AttestedNativeDelegationEvidenceV1.capture(
         subject=subject, execution_identity_context_id=execution_identity_context_id,
         request=request, terminal_return=terminal_return, child_output=child_output,
@@ -469,11 +473,12 @@ def evaluate_review_assurance(review: IndependentReviewV2, *, subject: Verificat
             "effective assurance is UNAVAILABLE"
         )
         effective_assurance = "UNAVAILABLE"
-        if minimum_assurance == "host_verified":
-            reasons.append("project requires HOST_VERIFIED Independent Review evidence")
-    elif minimum_assurance == "host_verified":
+    elif review.assurance == "UNAVAILABLE":
+        reasons.append("native review capture is unavailable because no host capture boundary is configured")
+    if minimum_assurance == "host_verified" and effective_assurance != "HOST_VERIFIED":
         reasons.append("project requires HOST_VERIFIED Independent Review evidence")
-    elif review.assurance != "INDEPENDENT_ATTESTED":
+    elif (minimum_assurance == "independent_attested"
+          and effective_assurance not in {"HOST_VERIFIED", "INDEPENDENT_ATTESTED"}):
         reasons.append(f"review assurance {review.assurance} does not meet the project minimum")
     if review.verdict != "PASS":
         reasons.append(f"independent review verdict is {review.verdict}")

@@ -17,7 +17,7 @@ from p_ases.context import WorkContext
 from p_ases.delivery import PRReadback, ReadinessResult, evaluate_readiness, read_readiness, readiness_path, write_readiness
 from p_ases.evidence_store import VerificationSubject
 from p_ases.execution import ExecutionBinding, binding_digest
-from p_ases.review_assurance import attest_native_review
+from p_ases.review_assurance import IndependentReviewV2
 from p_ases.verification import (
     GateResult, RequiredCheckPolicy, VerificationResult, evaluate_required_checks,
 )
@@ -82,27 +82,12 @@ def setup(*, draft=False, fork=False, stale=False, unresolved=False):
         "2" * 64, findings, "CONCERNS" if unresolved else "PASS",
     ).validate()
     execution = "execution-binding:" + "e" * 64
-    child_output = json.dumps({
-        "findings": [{"description": row.description, "evidence_ref": row.evidence_ref,
-                      "finding_id": row.finding_id, "resolved": row.resolved, "severity": row.severity}
-                     for row in findings],
-        "reviewer_context_id": "fresh-review-session", "schema": "PASES_CHILD_REVIEW_OUTPUT_V1",
-        "subject": subject.as_dict(), "verdict": "CONCERNS" if unresolved else "PASS",
-    }, sort_keys=True, separators=(",", ":")).encode()
-    request = json.dumps({
-        "execution_identity_context_id": execution, "operation": "spawn_independent_review_child",
-        "reviewer_context_id": "fresh-review-session", "schema": "PASES_NATIVE_REVIEW_REQUEST_V1",
-        "subject": subject.as_dict(),
-    }, sort_keys=True, separators=(",", ":")).encode()
-    terminal = json.dumps({
-        "child_output_sha256": hashlib.sha256(child_output).hexdigest(), "completed": True,
-        "request_sha256": hashlib.sha256(request).hexdigest(),
-        "schema": "PASES_NATIVE_REVIEW_TERMINAL_V1", "status": "success",
-    }, sort_keys=True, separators=(",", ":")).encode()
-    review_v2 = attest_native_review(
-        subject=subject, execution_identity_context_id=execution, profile_sha256="f" * 64,
-        request=request, terminal_return=terminal, child_output=child_output,
-    )
+    review_v2 = IndependentReviewV2(
+        subject=subject, assurance="UNAVAILABLE", reviewer_context_id="native-capture-unavailable",
+        execution_identity_context_id=execution,
+        verdict="CONCERNS" if unresolved else "BLOCKED", findings=(),
+        profile_sha256="f" * 64, evidence_origin="no_host_native_capture_boundary",
+    ).validate()
     return subject, context, pr_binding, pr, pass_result, check, acceptance, audit, review, review_v2
 
 

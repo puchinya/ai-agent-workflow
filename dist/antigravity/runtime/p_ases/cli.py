@@ -54,7 +54,8 @@ from .audits import (
     read_independent_review, read_self_audit, write_independent_review, write_self_audit,
 )
 from .review_assurance import (
-    CapturedBytes, IndependentReviewV2, ReviewAssuranceError, attest_native_review,
+    CapturedBytes, IndependentReviewV2, NATIVE_CAPTURE_BOUNDARY_CONFIGURED,
+    ReviewAssuranceError, attest_native_review,
     evaluate_review_assurance,
     read_independent_review_v2, write_independent_review_v2,
 )
@@ -1197,6 +1198,14 @@ def _audit_independent(args: argparse.Namespace, repository: str, root: Path, gi
         profile = load_profile(root)
         if value.get("profile_sha256") != profile.profile_sha256:
             raise CLIError("native review capture is bound to a different committed profile")
+        if not NATIVE_CAPTURE_BOUNDARY_CONFIGURED:
+            _json({"status": "BLOCKED", "assurance": "UNAVAILABLE",
+                   "minimum_assurance": profile.independent_review_minimum_assurance,
+                   "subject": subject.as_dict(), "subject_sha256": subject.sha256,
+                   "profile_sha256": profile.profile_sha256,
+                   "reasons": ["no host-native capture boundary is configured; caller-supplied bytes cannot be attested"],
+                   "evidence_refs": [str(args.input)]})
+            return 2
         request = CapturedBytes.from_dict(value["request"], "native request")
         terminal = CapturedBytes.from_dict(value["terminal_return"], "native terminal return")
         child = CapturedBytes.from_dict(value["child_output"], "child review output")
