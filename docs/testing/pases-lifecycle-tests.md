@@ -381,12 +381,12 @@ Only a trusted registered host verifier can establish `HOST_VERIFIED`. With no v
 <a id="tst-f06-003"></a>
 ### 2.21 TST-F06-003 Native attested result
 
-**Setup and action:** Capture request, terminal return, and child-output bytes. Vary a task-name-only summary, parent-authored output, same-context result, missing completion, stale subject, and mismatched request/output digest.
+**Setup and action:** Supply both locally synthesized byte bundles and host-captured request, terminal return, and child-output bytes. Vary a task-name-only summary, parent-authored output, same-context result, missing completion, stale subject, mismatched request/output digest, and absence of a registered host capture boundary.
 
 <a id="ora-f06-003"></a>
 #### 2.21.1 ORA-F06-003 Expected result
 
-Only exact linked native bytes with successful completion and a separate reviewer context yield `INDEPENDENT_ATTESTED`; the record states operator capture and makes no host-authentication claim.
+Only exact bytes obtained through a registered native capture boundary with successful completion and a separate reviewer context may yield effective `INDEPENDENT_ATTESTED`. Locally synthesized, internally consistent JSON does not prove native execution. While no capture boundary is registered, every supplied bundle blocks with effective assurance `UNAVAILABLE`, including when the project explicitly selects `independent_attested`.
 
 <a id="tst-f06-004"></a>
 ### 2.22 TST-F06-004 Canonical identity, freshness, and replay

@@ -28,6 +28,9 @@ ASSURANCES = {"HOST_VERIFIED", "INDEPENDENT_ATTESTED", "SELF_REVIEW", "UNAVAILAB
 MINIMUMS = {"host_verified", "independent_attested"}
 EVIDENCE_ORIGIN = "operator_captured_native_tool_result"
 MAX_CAPTURE_BYTES = 2_000_000
+# The repository currently contains payload validators, not integrations that
+# capture results directly from a host-owned native delegation API.
+NATIVE_CAPTURE_BOUNDARY_CONFIGURED = False
 
 
 def _canonical(value: Any) -> bytes:
@@ -452,9 +455,22 @@ def evaluate_review_assurance(review: IndependentReviewV2, *, subject: Verificat
         reasons.append("Independent Review V2 is bound to a different implementation identity")
     if review.profile_sha256 != profile_sha256:
         reasons.append("Independent Review V2 was not issued against the current committed profile digest")
+    effective_assurance = review.assurance
     if review.assurance == "HOST_VERIFIED":
         # No current adapter provides a trusted, agent-nonwritable event verifier.
         reasons.append("HOST_VERIFIED is unavailable because no trusted host event verifier is configured")
+        effective_assurance = "UNAVAILABLE"
+    elif review.assurance == "INDEPENDENT_ATTESTED" and not NATIVE_CAPTURE_BOUNDARY_CONFIGURED:
+        # Self-consistent JSON can be authored by the implementation process.
+        # Byte integrity does not prove that a host actually spawned or joined a
+        # separate reviewer, so no policy minimum may consume it as attested.
+        reasons.append(
+            "operator-supplied native-review bytes have no configured host capture boundary; "
+            "effective assurance is UNAVAILABLE"
+        )
+        effective_assurance = "UNAVAILABLE"
+        if minimum_assurance == "host_verified":
+            reasons.append("project requires HOST_VERIFIED Independent Review evidence")
     elif minimum_assurance == "host_verified":
         reasons.append("project requires HOST_VERIFIED Independent Review evidence")
     elif review.assurance != "INDEPENDENT_ATTESTED":
@@ -463,7 +479,7 @@ def evaluate_review_assurance(review: IndependentReviewV2, *, subject: Verificat
         reasons.append(f"independent review verdict is {review.verdict}")
     if review.blocking_findings:
         reasons.append("independent review has unresolved A/B findings")
-    return ReviewAssuranceDecision("BLOCKED" if reasons else "PASS", review.assurance,
+    return ReviewAssuranceDecision("BLOCKED" if reasons else "PASS", effective_assurance,
                                    minimum_assurance, review.sha256, profile_sha256,
                                    tuple(dict.fromkeys(reasons))).validate()
 

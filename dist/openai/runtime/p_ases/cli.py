@@ -1227,7 +1227,8 @@ def _audit_independent(args: argparse.Namespace, repository: str, root: Path, gi
             profile_sha256=profile.profile_sha256,
         )
         _json({"status": decision.status if decision.status != "PASS" else review_v2.verdict,
-               "assurance": review_v2.assurance, "minimum_assurance": profile.independent_review_minimum_assurance,
+               "assurance": decision.assurance, "reported_assurance": review_v2.assurance,
+               "minimum_assurance": profile.independent_review_minimum_assurance,
                "subject": subject.as_dict(), "subject_sha256": subject.sha256,
                "review_sha256": review_v2.sha256, "profile_sha256": profile.profile_sha256,
                "path": str(path), "reasons": list(decision.reasons),

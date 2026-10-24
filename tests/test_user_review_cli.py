@@ -31,7 +31,7 @@ USER_SUBJECT = UserReviewSubject(VERIFICATION_SUBJECT, READINESS.sha256).validat
 
 
 class UserReviewCliRegressionTests(unittest.TestCase):
-    def test_start_sync_status_reaches_pending_with_session_in_snapshot_directory(self):
+    def test_operator_supplied_native_bytes_block_all_user_review_verbs(self):
         class FakeGitHub:
             def issue(self, _number):
                 return {"number": 31, "state": "open", "pull_request": None}
@@ -111,10 +111,11 @@ class UserReviewCliRegressionTests(unittest.TestCase):
                         contextlib.redirect_stdout(output):
                     status = _user_review_run(args, "octo/repo", root, FakeGitHub())
                 result = json.loads(output.getvalue())
-                self.assertEqual(result["status"], "PENDING")
+                self.assertEqual(result["status"], "BLOCKED")
+                self.assertTrue(any("capture boundary" in reason for reason in result["reasons"]))
                 self.assertEqual(status, 2)
-                self.assertTrue((root / ".p_ases" / "user-review" / "31" / user_subject.sha256
-                                 / "session.json").is_file())
+                self.assertFalse((root / ".p_ases" / "user-review" / "31" / user_subject.sha256
+                                  / "session.json").exists())
 
     def test_snapshot_hash_name_is_required_and_tampered_snapshot_fails_closed(self):
         with tempfile.TemporaryDirectory() as directory:

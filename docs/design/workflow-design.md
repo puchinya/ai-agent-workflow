@@ -276,7 +276,7 @@ When the Bootstrap evaluator lives on a downstream stacked PR, run its CLI from 
 <a id="des-f06-003-attested-native-result"></a>
 ### 12.3 DES-F06-003 Attested native result
 
-`AttestedNativeDelegationEvidenceV1` embeds the exact native request, successful terminal return, and child output bytes using canonical Base64 and SHA-256. The request and terminal return cross-reference the exact subject and byte digests; the child output must match its declared reviewer context, verdict, and findings. `evidence_origin=operator_captured_native_tool_result` records operator capture and tamper evidence after capture. It is not a host signature or cryptographic origin proof.
+`AttestedNativeDelegationEvidenceV1` embeds the supplied request, terminal return, and child output bytes using canonical Base64 and SHA-256. These checks establish internal consistency only. A native host-capture boundary must establish that the bytes came from a real delegation call; the current adapters do not provide one. Therefore `evaluate_review_assurance` maps caller-supplied `INDEPENDENT_ATTESTED` evidence to effective `UNAVAILABLE` and blocks Readiness until a surface-specific capture integration is implemented. `evidence_origin=operator_captured_native_tool_result` is not a host signature or cryptographic origin proof.
 
 <a id="des-f06-004"></a>
 <a id="des-f06-004-canonical-identity-and-replay"></a>

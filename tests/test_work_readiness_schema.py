@@ -107,7 +107,7 @@ def setup(*, draft=False, fork=False, stale=False, unresolved=False):
 
 
 class WorkReadinessSchemaTests(unittest.TestCase):
-    def test_readiness_passes_only_for_matching_open_exact_subject_and_all_evidence(self):
+    def test_operator_supplied_capture_cannot_make_readiness_pass(self):
         subject, context, pr_binding, pr, passed, check, acceptance, audit, review, review_v2 = setup()
         result = evaluate_readiness(
             subject=subject, pr=pr, pr_binding=pr_binding, work_context=context,
@@ -119,8 +119,9 @@ class WorkReadinessSchemaTests(unittest.TestCase):
             execution_identity_context_id="execution-binding:" + "e" * 64,
             required_checks_sha256=check.sha256,
         )
-        self.assertEqual(result.status, "PASS")
-        self.assertTrue(result.ready_for_user_review)
+        self.assertEqual(result.status, "BLOCKED")
+        self.assertFalse(result.ready_for_user_review)
+        self.assertTrue(any("capture boundary" in reason for reason in result.reasons))
         self.assertEqual(len(result.sha256), 64)
         self.assertEqual(ReadinessResult.from_bytes(result.to_bytes()), result)
         with tempfile.TemporaryDirectory() as temporary:

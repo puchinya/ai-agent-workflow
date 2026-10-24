@@ -51,7 +51,7 @@ def native_capture(*, same_context=False, completed=True):
 
 
 class ReviewAssuranceTests(unittest.TestCase):
-    def test_native_capture_binds_request_terminal_and_child_output_exactly(self):
+    def test_locally_synthesized_capture_cannot_satisfy_attested_policy(self):
         request, terminal, output = native_capture()
         review = CodexCloudReviewAdapter.attest(
             subject=SUBJECT, execution_identity_context_id=EXECUTION,
@@ -65,7 +65,9 @@ class ReviewAssuranceTests(unittest.TestCase):
             review, subject=SUBJECT, execution_identity_context_id=EXECUTION,
             minimum_assurance="independent_attested", profile_sha256=PROFILE_SHA,
         )
-        self.assertEqual(decision.status, "PASS")
+        self.assertEqual(decision.status, "BLOCKED")
+        self.assertEqual(decision.assurance, "UNAVAILABLE")
+        self.assertTrue(any("capture boundary" in reason for reason in decision.reasons))
 
     def test_attested_result_does_not_satisfy_default_host_verified_minimum(self):
         review = CodexCloudReviewAdapter.attest(
@@ -78,6 +80,7 @@ class ReviewAssuranceTests(unittest.TestCase):
             minimum_assurance="host_verified", profile_sha256=PROFILE_SHA,
         )
         self.assertEqual(decision.status, "BLOCKED")
+        self.assertEqual(decision.assurance, "UNAVAILABLE")
         self.assertTrue(any("HOST_VERIFIED" in reason for reason in decision.reasons))
 
     def test_same_context_incomplete_completion_and_changed_terminal_are_rejected(self):

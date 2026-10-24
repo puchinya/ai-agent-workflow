@@ -92,8 +92,10 @@ def expected_files() -> dict[str, bytes]:
                 if file.is_file():
                     rel = file.relative_to(ROOT / "docs").as_posix()
                     result[f"{prefix}/docs/{rel}"] = _read(file)
-        for file in sorted((ROOT / "runtime" / "p_ases").glob("*.py")):
-            result[f"{prefix}/runtime/p_ases/{file.name}"] = _read(file)
+        runtime_root = ROOT / "runtime" / "p_ases"
+        for file in sorted(runtime_root.rglob("*.py")):
+            rel = file.relative_to(runtime_root).as_posix()
+            result[f"{prefix}/runtime/p_ases/{rel}"] = _read(file)
     return result
 
 
