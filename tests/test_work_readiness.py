@@ -32,6 +32,10 @@ def project_config(required_checks=None):
 
 
 class WorkReadinessTests(unittest.TestCase):
+    def test_repository_profile_explicitly_accepts_independent_attested_reviews(self):
+        profile = load_profile(ROOT)
+        self.assertEqual(profile.independent_review_minimum_assurance, "independent_attested")
+
     def test_skipped_or_flaky_self_audit_items_never_count_as_pass(self):
         items = tuple(sorted((
             AuditItem("REQ-08", "PASS", ("one#sha256=" + "1" * 64,)),

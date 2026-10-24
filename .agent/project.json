@@ -2,6 +2,9 @@
   "activation": {
     "issue_number": 57
   },
+  "independent_review": {
+    "minimum_assurance": "independent_attested"
+  },
   "branch": {
     "cleanup_on_switch": [],
     "max_slug_length": 48,
