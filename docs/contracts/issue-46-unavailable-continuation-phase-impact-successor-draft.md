@@ -168,9 +168,9 @@ Read back Required CI for Ubuntu Python 3.10/3.14, Windows Python 3.14, macOS Py
 3. Run the existing `delivery legacy-reset-apply 46` once with that exact plan and Owner comment ID. Verify the immutable Intent/Applied receipts and exact `phase:requirements` label by readback. On any stale/mismatch/block, perform no label or document mutation.
 4. Commit the specification, design, test-oracle, and traceability updates in dependency order. Publish new-ADC-generation requirements→specification, specification→design, and design→ready receipts, advance the matching labels through the existing CLI, verify ready preparation, then re-enter execution.
 5. Implement and verify the typed exception path on existing PR #67. Commit repository opt-in only after governance approval.
-4. Require a frozen current Verification Plan; passing Verification/Acceptance/Self-Audit/Required CI; clean exact subject; current PRBinding; and eligible non-draft PR before making an exception plan.
-5. Present the exact exception plan. The Owner personally posts its exact approval comment; the implementation agent never posts it. Apply once and read back.
-6. Require current V2 `READY_WITH_EXCEPTION`, then real User Review and separately authorized exact-HEAD `PR_MERGE` through the ordinary process.
+6. Require a frozen current Verification Plan; passing Verification/Acceptance/Self-Audit/Required CI; clean exact subject; current PRBinding; and eligible non-draft PR before making an exception plan.
+7. Present the exact exception plan. The Owner personally posts its exact approval comment; the implementation agent never posts it. Apply once and read back.
+8. Require current V2 `READY_WITH_EXCEPTION`, then real User Review and separately authorized exact-HEAD `PR_MERGE` through the ordinary process.
 
 Report successor ADC/pointer, forward Phase receipts, Binding generations/digests, plan and Owner comment IDs/digests, exception record, V2 Readiness and Final Delivery, tests/CI, User Review, explicit merge decision, unverified hosts, and deviations. If approval or a technical prerequisite is unavailable, report BLOCKED, not COMPLETE. Never invent a merge SHA or Issue closure.
 
