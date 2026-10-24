@@ -12,7 +12,9 @@ from typing import Any, Mapping
 from urllib.parse import urlsplit
 
 from .adc import ADCError, VerifiedADC, verify_adc
-from .gate_policy import BOOTSTRAP_REPOSITORY, GatePolicyError, read_gate_selection, select_gate
+from .gate_policy import (
+    BOOTSTRAP_REPOSITORY, GatePolicyError, LegacyGateSelection, read_gate_selection, select_gate,
+)
 from .consumer_activation import ConsumerActivationError, read_consumer_activation_history
 from .github import GitHub, GitHubError
 from .execution import ExecutionError, read_binding
@@ -243,7 +245,7 @@ def _verify_frozen_binding(github: GitHub, root: Path, issue_number: int, verifi
 def verify_ordinary_issue_context(github: GitHub, root: Path, issue_number: int,
                                  expected_kind: IssueKind | None = None, *, require_binding: bool = False
                                  ) -> tuple[dict[str, Any], VerifiedADC, IssueKind, str, str]:
-    _check_activation(github, issue_number)
+    _check_activation(github, issue_number, root)
     try:
         issue = github.issue(issue_number)
         if issue.get("number") != issue_number or issue.get("state") != "open" or issue.get("pull_request") is not None:
@@ -410,7 +412,7 @@ def _validate_ready_traceability(root: Path, path: str, content: bytes, github: 
     return verified_targets
 
 
-def _check_activation(github: GitHub, issue_number: int) -> None:
+def _check_activation(github: GitHub, issue_number: int, root: Path | None = None) -> None:
     if github.repo.casefold() == BOOTSTRAP_REPOSITORY.casefold() and issue_number in BOOTSTRAP_ISSUES:
         raise PhaseEvidenceError("fixed Bootstrap and parent Issues do not use ordinary phase evidence")
     try:
@@ -419,6 +421,15 @@ def _check_activation(github: GitHub, issue_number: int) -> None:
                 or not isinstance(issue.get("created_at"), str)):
             raise PhaseEvidenceError("P-ASES gate selection requires the exact GitHub Issue resource")
         gate_comment_id, pinned, _body = read_gate_selection(github, issue_number)
+        if isinstance(pinned, LegacyGateSelection):
+            if root is None:
+                raise PhaseEvidenceError("legacy Gate validation requires the bound worktree")
+            from .legacy_adoption import LegacyAdoptionError, verify_legacy_gate_selection
+            try:
+                verify_legacy_gate_selection(github, root, issue_number, gate_comment_id, pinned)
+            except LegacyAdoptionError as exc:
+                raise PhaseEvidenceError(f"legacy Gate Adoption evidence is invalid: {exc}") from exc
+            return
         activation_issue_number = pinned.activation_issue_number
         if activation_issue_number is None:
             raise PhaseEvidenceError("Gate Selection does not name its consumer Activation Issue")

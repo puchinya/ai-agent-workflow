@@ -32,6 +32,10 @@ def project_config(required_checks=None):
 
 
 class WorkReadinessTests(unittest.TestCase):
+    def test_repository_profile_explicitly_accepts_independent_attested_reviews(self):
+        profile = load_profile(ROOT)
+        self.assertEqual(profile.independent_review_minimum_assurance, "independent_attested")
+
     def test_skipped_or_flaky_self_audit_items_never_count_as_pass(self):
         items = tuple(sorted((
             AuditItem("REQ-08", "PASS", ("one#sha256=" + "1" * 64,)),
@@ -85,10 +89,20 @@ class WorkReadinessTests(unittest.TestCase):
             path.write_text(json.dumps(project_config()), encoding="utf-8")
             profile = load_profile(root)
             self.assertEqual(profile.branch_prefix, "feature")
+            self.assertEqual(profile.independent_review_minimum_assurance, "host_verified")
+            self.assertEqual(len(profile.profile_sha256), 64)
             with self.assertRaises(ProfileError):
                 profile.required_check_policy()
             path.write_text(json.dumps(project_config([{"name": "ci", "trusted_app_id": 789}])), encoding="utf-8")
             self.assertEqual(load_profile(root).required_check_policy().checks, (("ci", 789),))
+            configured = project_config([{"name": "ci", "trusted_app_id": 789}])
+            configured["independent_review"] = {"minimum_assurance": "independent_attested"}
+            path.write_text(json.dumps(configured), encoding="utf-8")
+            self.assertEqual(load_profile(root).independent_review_minimum_assurance, "independent_attested")
+            configured["independent_review"] = {"minimum_assurance": "automatic_downgrade"}
+            path.write_text(json.dumps(configured), encoding="utf-8")
+            with self.assertRaises(ProfileError):
+                load_profile(root)
             invalid = project_config()
             invalid["branch"]["surprise"] = "unknown"
             path.write_text(json.dumps(invalid), encoding="utf-8")

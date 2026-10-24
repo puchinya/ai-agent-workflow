@@ -35,6 +35,34 @@
     - [2.12.1 ORA-F01-006 Expected result](#2121-ora-f01-006-expected-result)
   - [2.13 TST-F01-007 Successor/reapproval](#213-tst-f01-007-successorreapproval)
     - [2.13.1 ORA-F01-007 Expected result](#2131-ora-f01-007-expected-result)
+  - [2.14 TST-F07-001 Legacy Gate is prospective and typed](#214-tst-f07-001-legacy-gate-is-prospective-and-typed)
+    - [2.14.1 ORA-F07-001 Expected result](#2141-ora-f07-001-expected-result)
+  - [2.15 TST-F07-002 Exact bootstrap authorization](#215-tst-f07-002-exact-bootstrap-authorization)
+    - [2.15.1 ORA-F07-002 Expected result](#2151-ora-f07-002-expected-result)
+  - [2.16 TST-F07-003 Exact Adoption plan and Owner UI grant](#216-tst-f07-003-exact-adoption-plan-and-owner-ui-grant)
+    - [2.16.1 ORA-F07-003 Expected result](#2161-ora-f07-003-expected-result)
+  - [2.17 TST-F07-004 Append-only Adoption, Gate, and recovery](#217-tst-f07-004-append-only-adoption-gate-and-recovery)
+    - [2.17.1 ORA-F07-004 Expected result](#2171-ora-f07-004-expected-result)
+  - [2.18 TST-F07-005 Reset and resume normal governance](#218-tst-f07-005-reset-and-resume-normal-governance)
+    - [2.18.1 ORA-F07-005 Expected result](#2181-ora-f07-005-expected-result)
+  - [2.19 TST-F06-001 Independent Review V2 and V1 compatibility](#219-tst-f06-001-independent-review-v2-and-v1-compatibility)
+    - [2.19.1 ORA-F06-001 Expected result](#2191-ora-f06-001-expected-result)
+  - [2.20 TST-F06-002 Host-verified provenance](#220-tst-f06-002-host-verified-provenance)
+    - [2.20.1 ORA-F06-002 Expected result](#2201-ora-f06-002-expected-result)
+  - [2.21 TST-F06-003 Native attested result](#221-tst-f06-003-native-attested-result)
+    - [2.21.1 ORA-F06-003 Expected result](#2211-ora-f06-003-expected-result)
+  - [2.22 TST-F06-004 Canonical identity, freshness, and replay](#222-tst-f06-004-canonical-identity-freshness-and-replay)
+    - [2.22.1 ORA-F06-004 Expected result](#2221-ora-f06-004-expected-result)
+  - [2.23 TST-F06-005 Committed minimum assurance](#223-tst-f06-005-committed-minimum-assurance)
+    - [2.23.1 ORA-F06-005 Expected result](#2231-ora-f06-005-expected-result)
+  - [2.24 TST-F06-006 Readiness and downstream enforcement](#224-tst-f06-006-readiness-and-downstream-enforcement)
+    - [2.24.1 ORA-F06-006 Expected result](#2241-ora-f06-006-expected-result)
+  - [2.25 TST-F06-007 Host-specific adapters](#225-tst-f06-007-host-specific-adapters)
+    - [2.25.1 ORA-F06-007 Expected result](#2251-ora-f06-007-expected-result)
+  - [2.26 TST-F06-008 Capability documentation and package distributions](#226-tst-f06-008-capability-documentation-and-package-distributions)
+    - [2.26.1 ORA-F06-008 Expected result](#2261-ora-f06-008-expected-result)
+  - [2.27 TST-F06-009 Issue #63 / PR #64 isolation](#227-tst-f06-009-issue-63-pr-64-isolation)
+    - [2.27.1 ORA-F06-009 Expected result](#2271-ora-f06-009-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -65,6 +93,34 @@
 - [ORA-F01-006](#ora-f01-006) — 2.12.1 ORA-F01-006 Expected result
 - [TST-F01-007](#tst-f01-007) — 2.13 TST-F01-007 Successor/reapproval
 - [ORA-F01-007](#ora-f01-007) — 2.13.1 ORA-F01-007 Expected result
+- [TST-F07-001](#tst-f07-001) — 2.14 TST-F07-001 Legacy Gate is prospective and typed
+- [ORA-F07-001](#ora-f07-001) — 2.14.1 ORA-F07-001 Expected result
+- [TST-F07-002](#tst-f07-002) — 2.15 TST-F07-002 Exact bootstrap authorization
+- [ORA-F07-002](#ora-f07-002) — 2.15.1 ORA-F07-002 Expected result
+- [TST-F07-003](#tst-f07-003) — 2.16 TST-F07-003 Exact Adoption plan and Owner UI grant
+- [ORA-F07-003](#ora-f07-003) — 2.16.1 ORA-F07-003 Expected result
+- [TST-F07-004](#tst-f07-004) — 2.17 TST-F07-004 Append-only Adoption, Gate, and recovery
+- [ORA-F07-004](#ora-f07-004) — 2.17.1 ORA-F07-004 Expected result
+- [TST-F07-005](#tst-f07-005) — 2.18 TST-F07-005 Reset and resume normal governance
+- [ORA-F07-005](#ora-f07-005) — 2.18.1 ORA-F07-005 Expected result
+- [TST-F06-001](#tst-f06-001) — 2.19 TST-F06-001 Independent Review V2 and V1 compatibility
+- [ORA-F06-001](#ora-f06-001) — 2.19.1 ORA-F06-001 Expected result
+- [TST-F06-002](#tst-f06-002) — 2.20 TST-F06-002 Host-verified provenance
+- [ORA-F06-002](#ora-f06-002) — 2.20.1 ORA-F06-002 Expected result
+- [TST-F06-003](#tst-f06-003) — 2.21 TST-F06-003 Native attested result
+- [ORA-F06-003](#ora-f06-003) — 2.21.1 ORA-F06-003 Expected result
+- [TST-F06-004](#tst-f06-004) — 2.22 TST-F06-004 Canonical identity, freshness, and replay
+- [ORA-F06-004](#ora-f06-004) — 2.22.1 ORA-F06-004 Expected result
+- [TST-F06-005](#tst-f06-005) — 2.23 TST-F06-005 Committed minimum assurance
+- [ORA-F06-005](#ora-f06-005) — 2.23.1 ORA-F06-005 Expected result
+- [TST-F06-006](#tst-f06-006) — 2.24 TST-F06-006 Readiness and downstream enforcement
+- [ORA-F06-006](#ora-f06-006) — 2.24.1 ORA-F06-006 Expected result
+- [TST-F06-007](#tst-f06-007) — 2.25 TST-F06-007 Host-specific adapters
+- [ORA-F06-007](#ora-f06-007) — 2.25.1 ORA-F06-007 Expected result
+- [TST-F06-008](#tst-f06-008) — 2.26 TST-F06-008 Capability documentation and package distributions
+- [ORA-F06-008](#ora-f06-008) — 2.26.1 ORA-F06-008 Expected result
+- [TST-F06-009](#tst-f06-009) — 2.27 TST-F06-009 Issue #63 / PR #64 isolation
+- [ORA-F06-009](#ora-f06-009) — 2.27.1 ORA-F06-009 Expected result
 <!-- heading-map:end -->
 
 
@@ -231,3 +287,163 @@ An existing selection remains bound to its exact historical record and gate-poli
 #### 2.13.1 ORA-F01-007 Expected result
 
 Policy or locator changes require a new setup PR and explicit admin merge. The successor links the previous record, governs only later-created Issues, and leaves earlier Activation records and Gate Selections unchanged. Removing the locator blocks new selections.
+
+<a id="tst-f07-001"></a>
+<a id="tst-f07-001-legacy-gate-is-prospective-and-typed"></a>
+### 2.14 TST-F07-001 Legacy Gate is prospective and typed
+<!-- agent-doc-type: test-specification -->
+<!-- agent-doc-schema: 2 -->
+
+**Setup and action:** Exercise the ordinary timestamp selector at pre-Activation, equal, and post-Activation creation times, plus the fixed #26–#32 Bootstrap cohort. Then read Issues with no Gate, one ordinary V1 Gate, one Owner-adopted legacy Gate, duplicate records, and conflicting V1/legacy records.
+
+<a id="ora-f07-001"></a>
+<a id="ora-f07-001-expected-result"></a>
+#### 2.14.1 ORA-F07-001 Expected result
+
+Ordinary selection and the fixed cohort retain their existing behavior. No old Issue receives a Gate without the exact adoption workflow. `read_gate_selection` returns a typed V1 or legacy record and blocks duplicate/conflicting history.
+
+<a id="tst-f07-002"></a>
+<a id="tst-f07-002-exact-bootstrap-authorization"></a>
+### 2.15 TST-F07-002 Exact bootstrap authorization
+<!-- agent-doc-type: test-specification -->
+<!-- agent-doc-schema: 2 -->
+
+**Setup and action:** Verify the canonical local grant record against its approved scope digest, repository/Owner IDs, Issue stable ID, approved ADC, Activation prefix, Binding generation, branch, exact pre-work remote HEAD, changed-file budget, decision, and time. Mutate each field, scope SHA, record key, or budget path; also try a tracked file outside the budget.
+
+<a id="ora-f07-002"></a>
+<a id="ora-f07-002-expected-result"></a>
+#### 2.15.1 ORA-F07-002 Expected result
+
+Only the complete canonical operator-reported grant for the exact scope verifies. The record does not claim cryptographic chat-host authentication. Any stale, malformed, mismatched, or out-of-budget case blocks before the first tracked edit and produces no Phase PASS evidence.
+
+<a id="tst-f07-003"></a>
+<a id="tst-f07-003-exact-adoption-plan-and-owner-ui-grant"></a>
+### 2.16 TST-F07-003 Exact Adoption plan and Owner UI grant
+<!-- agent-doc-type: test-specification -->
+<!-- agent-doc-schema: 2 -->
+
+**Setup and action:** Build a canonical per-Issue plan and vary repository/Owner ID, Issue ID/creation time/kind/phase/attention labels, Activation prefix, ADC pointer/state, Binding history/base/branch, remote HEAD, and proposed action. Verify an Owner-authored UI comment with correct/incorrect actor, operation, plan SHA, Issue attribution URLs, timestamps, direct/list/direct snapshots, missing pages, and duplicate comments.
+
+<a id="ora-f07-003"></a>
+<a id="ora-f07-003-expected-result"></a>
+#### 2.16.1 ORA-F07-003 Expected result
+
+Plan SHA covers every bound input and the planned Gate payload. For the Issue #46 risk-bound V2 plan, the repository ID `1401910271`, Issue stable ID `5846549384`, and Owner User ID `3744776` are exact; only one exact, immutable comment by that Owner User ID approves it. The authenticated writer must also be that Owner. Runtime, CLI flags, local JSON, another actor, another Issue, edited comment, or stale plan cannot substitute.
+
+<a id="tst-f07-004"></a>
+<a id="tst-f07-004-append-only-adoption-gate-and-recovery"></a>
+### 2.17 TST-F07-004 Append-only Adoption, Gate, and recovery
+<!-- agent-doc-type: test-specification -->
+<!-- agent-doc-schema: 2 -->
+
+**Setup and action:** Validate a V2 plan that binds both exact risk IDs and the Owner-only single-writer condition. Apply an approved exact plan as the authenticated Owner, lose the first response, lose the second response, replay a complete pair, inject one exact partial Adoption, and vary duplicate/conflicting/edited records, non-Owner writer, approval, ADC, Activation, Binding, labels, remote HEAD, observed concurrent modification, and Issue state. Keep the barrier-synchronized duplicate-write and privileged-marker-removal reproductions in the known-risk report; label them `KNOWN_RISK`, not PASS.
+
+<a id="ora-f07-004"></a>
+<a id="ora-f07-004-expected-result"></a>
+#### 2.17.1 ORA-F07-004 Expected result
+
+The Adoption record binds the exact planned Gate payload digest. The Gate references that Adoption record without a cyclic ID. Readback of Adoption completes before Gate append. The V2 plan binds `owner_trusted_single_writer_v1`, the Owner writer ID, and both known-risk IDs. A non-Owner process, stale input, observed duplicate, ambiguity, edit, drift, or conflict blocks and never writes a phase label. Exact complete records are read-only `NOOP`; a lost response recovers only through complete exact readback. Concurrent races between reads and privileged deletion/marker removal remain disclosed `KNOWN_RISK` cases and are not represented as passing guarantees.
+
+<a id="tst-f07-005"></a>
+<a id="tst-f07-005-reset-and-resume-normal-governance"></a>
+### 2.18 TST-F07-005 Reset and resume normal governance
+<!-- agent-doc-type: test-specification -->
+<!-- agent-doc-schema: 2 -->
+
+**Setup and action:** Adopt an Issue already at requirements and an eligible Issue in a later phase. Verify the separate reset plan/grant, Intent/Applied sequence, parent/dependency state, complete label set, one label PUT, lost response, existing attention, `phase:user-review` or resolved Owner decision, closed Issue, and readback failure. Then publish a new requirements-to-specification receipt for the adopted Issue.
+
+<a id="ora-f07-005"></a>
+<a id="ora-f07-005-expected-result"></a>
+#### 2.18.1 ORA-F07-005 Expected result
+
+Requirements adoption makes no label change. A later-phase reset requires its own exact Owner grant, complete append-only Intent/Applied evidence, valid dependencies, and one verified label replacement; User Review decisions and closed Issues block, and the phase graph gains no backward edge. Phase receipts restart from requirements and bind current ADC/HEAD/documents. All ordinary Design, Test Oracle, readiness, review, and delivery gates remain active.
+
+<a id="tst-f06-001"></a>
+### 2.19 TST-F06-001 Independent Review V2 and V1 compatibility
+
+**Setup and action:** Round-trip exact V2 review records and compare fixed V1 fixture bytes and digests before and after adding V2. Pass a V1-only record to Readiness.
+
+<a id="ora-f06-001"></a>
+#### 2.19.1 ORA-F06-001 Expected result
+
+V2 canonical bytes round-trip and preserve exact assurance. V1 bytes and reads remain unchanged, but V1-only evidence blocks current Readiness.
+
+<a id="tst-f06-002"></a>
+### 2.20 TST-F06-002 Host-verified provenance
+
+**Setup and action:** Supply agent-writable, missing, ambiguous, wrong-parent, wrong-child, wrong-subject, and unverified host event wrappers; attempt `HOST_VERIFIED` evaluation.
+
+<a id="ora-f06-002"></a>
+#### 2.20.1 ORA-F06-002 Expected result
+
+Only a trusted registered host verifier can establish `HOST_VERIFIED`. With no verifier configured, all such records block and no host ID or provenance is synthesized.
+
+<a id="tst-f06-003"></a>
+### 2.21 TST-F06-003 Native attested result
+
+**Setup and action:** Supply both locally synthesized byte bundles and host-captured request, terminal return, and child-output bytes. Vary a task-name-only summary, parent-authored output, same-context result, missing completion, stale subject, mismatched request/output digest, and absence of a registered host capture boundary.
+
+<a id="ora-f06-003"></a>
+#### 2.21.1 ORA-F06-003 Expected result
+
+Only exact bytes obtained through a registered native capture boundary with successful completion and a separate reviewer context may yield effective `INDEPENDENT_ATTESTED`. Locally synthesized, internally consistent JSON does not prove native execution. While no capture boundary is registered, every supplied bundle blocks with effective assurance `UNAVAILABLE`, including when the project explicitly selects `independent_attested`.
+
+<a id="tst-f06-004"></a>
+### 2.22 TST-F06-004 Canonical identity, freshness, and replay
+
+**Setup and action:** Vary duplicate JSON keys, base64 encoding, evidence digests, issue/PR/HEAD/ADC/plan, ExecutionBinding, profile, optional host IDs, findings order, duplicate history, and replay. Submit child-authored output with a shortened `{repo, issue, pr, head}` subject, an `INFO` finding, and unsorted finding IDs.
+
+<a id="ora-f06-004"></a>
+#### 2.22.1 ORA-F06-004 Expected result
+
+Exact null host IDs remain null. Child output must use the exact seven-field `VerificationSubject.as_dict()` subject; findings use only A/B/C severity and unique lexicographically sorted IDs. Every malformed, changed, stale, duplicate, replayed, conflicting, or blocking result is rejected before Readiness persistence. Historical malformed child bytes are never rewritten into canonical form.
+
+<a id="tst-f06-005"></a>
+### 2.23 TST-F06-005 Committed minimum assurance
+
+**Setup and action:** Evaluate the same attested review with no setting, explicit `host_verified`, explicit `independent_attested`, and a changed profile digest.
+
+<a id="ora-f06-005"></a>
+#### 2.23.1 ORA-F06-005 Expected result
+
+Absent setting defaults to `host_verified`. Attested evidence passes only the explicit `independent_attested` minimum and only with the exact current profile digest.
+
+<a id="tst-f06-006"></a>
+### 2.24 TST-F06-006 Readiness and downstream enforcement
+
+**Setup and action:** Attempt review ingestion, Readiness, Final Delivery, and phase transitions with V1-only, stale, unresolved, SELF_REVIEW, UNAVAILABLE, policy-drifted, and valid V2 records.
+
+<a id="ora-f06-006"></a>
+#### 2.24.1 ORA-F06-006 Expected result
+
+Only current positive V2 evidence meeting the committed minimum proceeds. A blocked review creates no User Review session and causes zero phase mutations.
+
+<a id="tst-f06-007"></a>
+### 2.25 TST-F06-007 Host-specific adapters
+
+**Setup and action:** Exercise separate Cloud, local CLI, Desktop, and Claude Code adapters with observed native requests, returns, IDs, and completion. Ensure no agent executable or agent-writable Hook is used as trusted host evidence.
+
+<a id="ora-f06-007"></a>
+#### 2.25.1 ORA-F06-007 Expected result
+
+Each adapter reports only capabilities actually available on its surface. Unavailable native capture and trusted host verification are reported unavailable; a unit fixture does not count as a live host smoke test.
+
+<a id="tst-f06-008"></a>
+### 2.26 TST-F06-008 Capability documentation and package distributions
+
+**Setup and action:** Read the per-surface status report and compare generated package files with canonical runtime, adapters, Skills, specs, design, test-oracles, and traceability.
+
+<a id="ora-f06-008"></a>
+#### 2.26.1 ORA-F06-008 Expected result
+
+Each host/OS smoke status is PASS only after direct observation; inaccessible surfaces are NOT RUN or UNAVAILABLE. All distributions are generator-consistent.
+
+<a id="tst-f06-009"></a>
+### 2.27 TST-F06-009 Issue #63 / PR #64 isolation
+
+**Setup and action:** Snapshot Issue #63, PR #64, their ADC/pointer/Binding/profile and labels before an Issue #46 run, then compare after all #46 commands.
+
+<a id="ora-f06-009"></a>
+#### 2.27.1 ORA-F06-009 Expected result
+
+All #63/#64 workflow and evidence snapshots remain byte-for-byte unchanged. Any attempt to issue #63 review, User Review, policy, Activation, merge, or closure evidence is rejected.

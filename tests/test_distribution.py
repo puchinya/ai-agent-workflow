@@ -114,12 +114,15 @@ class DistributionMigrationTests(unittest.TestCase):
         self.assertEqual(tuple(build_dist.EXPECTED_SKILLS), SKILLS)
         self.assertEqual({path.name for path in (ROOT / "workflow/skills").iterdir() if path.is_dir()}, set(SKILLS))
         expected = build_dist.expected_files()
-        canonical_runtime = {path.name for path in (ROOT / "runtime/p_ases").glob("*.py")}
+        canonical_runtime = {
+            path.relative_to(ROOT / "runtime").as_posix()
+            for path in (ROOT / "runtime/p_ases").rglob("*.py")
+        }
         for host in build_dist.HOSTS:
             with self.subTest(host=host):
                 prefix = f"dist/{host}/"
                 skills = {path.name for path in (ROOT / prefix / "skills").iterdir() if path.is_dir()}
-                runtime = {path.removeprefix(prefix + "runtime/p_ases/")
+                runtime = {path.removeprefix(prefix + "runtime/")
                            for path in expected if path.startswith(prefix + "runtime/p_ases/")}
                 self.assertEqual(skills, set(SKILLS))
                 self.assertEqual(runtime, canonical_runtime)
@@ -127,6 +130,37 @@ class DistributionMigrationTests(unittest.TestCase):
                 self.assertIn(prefix + "runtime/p_ases/cli.py", expected)
         self.assertEqual(build_dist.check(expected), [])
         self.assertEqual(validate_dist.validate(), [])
+
+    def test_each_generated_distribution_imports_review_adapters_without_source_checkout(self):
+        import_script = """
+import importlib
+import pathlib
+import sys
+
+package_root = pathlib.Path(sys.argv[1]).resolve()
+sys.path.insert(0, str(package_root))
+from p_ases.review_host_adapters import (
+    ClaudeCodeReviewAdapter, CodexCloudReviewAdapter,
+    CodexDesktopReviewAdapter, CodexLocalCLIReviewAdapter,
+)
+module = importlib.import_module("p_ases.review_host_adapters")
+classes = (ClaudeCodeReviewAdapter, CodexCloudReviewAdapter,
+          CodexDesktopReviewAdapter, CodexLocalCLIReviewAdapter)
+assert pathlib.Path(module.__file__).resolve().is_relative_to(package_root)
+for adapter in classes:
+    source = pathlib.Path(sys.modules[adapter.__module__].__file__).resolve()
+    assert source.is_relative_to(package_root), (adapter.__name__, source)
+    assert adapter.capabilities().native_request_return_capture is False
+"""
+        with tempfile.TemporaryDirectory() as isolated_cwd:
+            for host in build_dist.HOSTS:
+                package_root = ROOT / "dist" / host / "runtime"
+                with self.subTest(host=host):
+                    result = subprocess.run(
+                        [sys.executable, "-B", "-I", "-c", import_script, str(package_root)],
+                        cwd=isolated_cwd, check=False, capture_output=True, text=True,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_generated_manifests_are_versioned_and_host_specific(self):
         files = build_dist.expected_files()

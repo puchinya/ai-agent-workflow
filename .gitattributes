@@ -3,3 +3,7 @@
 /.claude-plugin/marketplace.json text eol=lf
 /dist/openai/plugin.json text eol=lf
 /dist/claude/.claude-plugin/plugin.json text eol=lf
+
+# Published contracts and archived review captures must retain their exact bytes.
+docs/contracts/*.md whitespace=-blank-at-eol
+docs/status/*.raw.md whitespace=-blank-at-eol
