@@ -105,12 +105,12 @@ from .ready_rebaseline import (
     read_plan as read_ready_rebaseline_plan, verify_checkpoint as verify_ready_rebaseline_checkpoint,
     write_plan as write_ready_rebaseline_plan,
 )
-from .requirements_rebaseline import (
-    RequirementsRebaselineError, apply_plan as apply_requirements_rebaseline_plan,
-    build_plan as build_requirements_rebaseline_plan,
-    owner_approval_comment as requirements_rebaseline_owner_comment,
-    read_plan as read_requirements_rebaseline_plan,
-    write_plan as write_requirements_rebaseline_plan,
+from .requirements_rebaseline import RequirementsRebaselineError
+from .requirements_rebaseline_chat import (
+    apply_plan as apply_chat_requirements_rebaseline_plan,
+    build_plan as build_chat_requirements_rebaseline_plan,
+    read_plan as read_chat_requirements_rebaseline_plan,
+    write_plan as write_chat_requirements_rebaseline_plan,
 )
 from .oracle_trace import (
     OracleDefinition, OracleTraceError, TestDefinition, validate_plan_oracles,
@@ -1566,15 +1566,12 @@ def _delivery_legacy_reset_apply(args: argparse.Namespace, repository: str,
 def _delivery_requirements_rebaseline_plan(args: argparse.Namespace, repository: str,
                                            root: Path, github: GitHub) -> int:
     try:
-        plan = build_requirements_rebaseline_plan(github, root, args.issue)
-        write_requirements_rebaseline_plan(args.output, plan)
+        plan = build_chat_requirements_rebaseline_plan(github, root, args.issue)
+        write_chat_requirements_rebaseline_plan(args.output, plan)
         _json({"status": "PLAN_READY", "repository": repository, "issue": args.issue,
                "plan_sha256": plan.sha256, "plan": plan.value, "plan_file": str(args.output),
-               "owner_approval_comment": requirements_rebaseline_owner_comment(plan),
-               "approval_instructions": (
-                   "The repository Owner must personally post this exact comment on Issue #46. "
-                   "The implementation agent does not post the approval."
-               )})
+               "authorization": "The approved successor ADC grants this one rebaseline; the plan is read-only evidence.",
+               "additional_approval_required": False})
         return 0
     except (RequirementsRebaselineError, GitHubError, OSError, ValueError) as exc:
         return _blocked_result((str(exc),))
@@ -1583,12 +1580,12 @@ def _delivery_requirements_rebaseline_plan(args: argparse.Namespace, repository:
 def _delivery_requirements_rebaseline_apply(args: argparse.Namespace, repository: str,
                                             root: Path, github: GitHub) -> int:
     try:
-        plan = read_requirements_rebaseline_plan(args.plan)
+        plan = read_chat_requirements_rebaseline_plan(args.plan)
         snapshot = plan.value["snapshot"]
         if (snapshot["issue_number"] != args.issue
                 or snapshot["repository"].casefold() != repository.casefold()):
             raise RequirementsRebaselineError("plan repository/Issue differs from the command subject")
-        result = apply_requirements_rebaseline_plan(github, root, plan, args.approval_comment_id)
+        result = apply_chat_requirements_rebaseline_plan(github, root, plan)
         _json({"repository": repository, "issue": args.issue, **result})
         return 0
     except (RequirementsRebaselineError, GitHubError, OSError, ValueError) as exc:
@@ -3792,7 +3789,7 @@ def _parser() -> argparse.ArgumentParser:
     legacy_reset_apply.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
     requirements_rebaseline_plan = delivery_commands.add_parser(
         "requirements-rebaseline-plan",
-        help="plan the exact Owner-authorized Issue #46 return to requirements")
+        help="create read-only evidence for the ADC-authorized Issue #46 return to requirements")
     requirements_rebaseline_plan.add_argument("issue", type=_positive_number)
     requirements_rebaseline_plan.add_argument("--output", type=Path, required=True,
                                               help="new path for canonical immutable plan JSON")
@@ -3801,10 +3798,9 @@ def _parser() -> argparse.ArgumentParser:
                                               help="repository root; defaults to the current checkout")
     requirements_rebaseline_apply = delivery_commands.add_parser(
         "requirements-rebaseline-apply",
-        help="apply the exact Owner-approved Issue #46 return to requirements once")
+        help="apply the one ADC-authorized Issue #46 return to requirements after precondition checks")
     requirements_rebaseline_apply.add_argument("issue", type=_positive_number)
     requirements_rebaseline_apply.add_argument("--plan", type=Path, required=True)
-    requirements_rebaseline_apply.add_argument("--approval-comment-id", type=_positive_number, required=True)
     requirements_rebaseline_apply.add_argument("--repo", help="repository owner/name; defaults to origin")
     requirements_rebaseline_apply.add_argument("--root", type=Path,
                                                 help="repository root; defaults to the current checkout")

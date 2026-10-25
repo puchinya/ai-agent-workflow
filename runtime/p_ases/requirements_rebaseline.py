@@ -1,4 +1,9 @@
-"""One-time Owner-authorized Issue #46 requirements rebaseline recovery."""
+"""Legacy V1 Issue #46 rebaseline readers and compatibility helpers.
+
+The Issue #46 CLI now uses :mod:`p_ases.requirements_rebaseline_chat` for the
+forward V2 path. V1 schemas remain available to validate immutable historical
+receipts; new rebaseline plans and writes must use V2's ADC-granted chat route.
+"""
 
 from __future__ import annotations
 
