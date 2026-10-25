@@ -1800,8 +1800,8 @@ def _review_unavailable_current_context(
     if pr.get("draft") is not False:
         raise CLIError("review-unavailable exception requires a non-draft PR")
     if (head_sha40(root) != head or not worktree_clean(root)
-            or current_branch(root) != pr["head"]["ref"]
-            or remote_branch_sha(root, pr["head"]["ref"]) != head):
+            or current_branch(root) != pr["head_ref"]
+            or remote_branch_sha(root, pr["head_ref"]) != head):
         raise CLIError("review-unavailable exception requires the clean current PR worktree and remote HEAD")
     binding = read_binding(execution_binding_path(root, issue_number))
     pr_binding = read_pr_binding(pr_binding_path(root, issue_number))
@@ -1811,12 +1811,13 @@ def _review_unavailable_current_context(
     if (binding.repository != repository or binding.issue_number != issue_number
             or binding.adc_comment_id != verified_adc.pointer.comment_id
             or binding.adc_sha256 != verified_adc.pointer.sha256
-            or binding.base_ref != pr["base"]["ref"] or binding.base_sha != pr["base"]["sha"]):
-        raise CLIError("ExecutionBinding does not match the current approved ADC and PR base")
+            or binding.base_ref != pr["base_ref"] or binding.base_sha != pr["base_sha"]
+            or binding.branch_ref != pr["head_ref"]):
+        raise CLIError("ExecutionBinding does not match the current approved ADC, PR base, or head branch")
     if (pr_binding.repository != repository or pr_binding.issue_number != issue_number
             or pr_binding.pr_number != pr_number or pr_binding.adc_comment_id != verified_adc.pointer.comment_id
-            or pr_binding.adc_sha256 != verified_adc.pointer.sha256 or pr_binding.base_sha40 != pr["base"]["sha"]
-            or pr_binding.branch_ref != pr["head"]["ref"] or pr_binding.pr_head_sha40 != head):
+            or pr_binding.adc_sha256 != verified_adc.pointer.sha256 or pr_binding.base_sha40 != pr["base_sha"]
+            or pr_binding.branch_ref != pr["head_ref"] or pr_binding.pr_head_sha40 != head):
         raise CLIError("PRBinding does not match the current approved ADC and PR identity")
     observation, observation_sha = capture_unavailability_observation(
         host_surface, _review_adapter_capabilities(host_surface))
@@ -1828,8 +1829,8 @@ def _review_unavailable_current_context(
     snapshot = {
         "adc_comment_id": verified_adc.pointer.comment_id,
         "adc_sha256": verified_adc.pointer.sha256,
-        "base_ref": pr["base"]["ref"], "base_sha40": pr["base"]["sha"],
-        "branch_ref": pr["head"]["ref"],
+        "base_ref": pr["base_ref"], "base_sha40": pr["base_sha"],
+        "branch_ref": pr["head_ref"],
         "capability_observation_sha256s": list(eligibility.observation_sha256s),
         "execution_binding_sha256": binding_digest(binding), "head_sha40": head,
         "host_surface": host_surface, "issue_id": issue["id"], "issue_number": issue_number,
