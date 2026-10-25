@@ -13,7 +13,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Iterable
 
 from .audits import AuditError, IndependentReview, ReviewFinding
 from .evidence_store import VerificationSubject
@@ -487,6 +487,110 @@ def evaluate_review_assurance(review: IndependentReviewV2, *, subject: Verificat
     return ReviewAssuranceDecision("BLOCKED" if reasons else "PASS", effective_assurance,
                                    minimum_assurance, review.sha256, profile_sha256,
                                    tuple(dict.fromkeys(reasons))).validate()
+
+
+@dataclass(frozen=True)
+class ReviewCaptureEligibility:
+    """Typed distinction between absent host capture, a failed review, and bad evidence."""
+
+    status: str
+    host_surface: str
+    observation_sha256s: tuple[str, ...]
+    reasons: tuple[str, ...]
+
+    def validate(self) -> "ReviewCaptureEligibility":
+        if self.status not in {"HOST_NATIVE_CAPTURE_UNAVAILABLE", "REVIEW_FAILED", "INVALID_EVIDENCE"}:
+            raise ReviewAssuranceError("review capture eligibility status is invalid")
+        if self.host_surface not in {"codex_cloud", "codex_local_cli", "codex_desktop", "claude_code"}:
+            raise ReviewAssuranceError("review capture eligibility host surface is invalid")
+        if (type(self.observation_sha256s) is not tuple
+                or any(not isinstance(item, str) or not SHA256.fullmatch(item)
+                       for item in self.observation_sha256s)
+                or self.observation_sha256s != tuple(sorted(set(self.observation_sha256s)))):
+            raise ReviewAssuranceError("review capability observation digests are invalid")
+        if self.status == "HOST_NATIVE_CAPTURE_UNAVAILABLE":
+            if not self.observation_sha256s or self.reasons:
+                raise ReviewAssuranceError("eligible capture-unavailable evidence is incomplete")
+        elif not self.reasons:
+            raise ReviewAssuranceError("ineligible review evidence needs an explicit reason")
+        return self
+
+
+def capture_unavailability_observation(host_surface: str, capabilities: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """Bind the adapter's actual capability report without asserting host provenance."""
+    if host_surface not in {"codex_cloud", "codex_local_cli", "codex_desktop", "claude_code"}:
+        raise ReviewAssuranceError("review host surface is unsupported")
+    expected_fields = {"host_ids_optional", "native_request_return_capture", "surface",
+                       "trusted_host_event_verification"}
+    if (not isinstance(capabilities, dict) or set(capabilities) != expected_fields
+            or capabilities.get("surface") != host_surface
+            or type(capabilities.get("native_request_return_capture")) is not bool
+            or type(capabilities.get("trusted_host_event_verification")) is not bool
+            or type(capabilities.get("host_ids_optional")) is not bool):
+        raise ReviewAssuranceError("native review adapter capability observation is malformed")
+    observation = {
+        "capabilities": dict(capabilities),
+        "configured_capture_boundary": NATIVE_CAPTURE_BOUNDARY_CONFIGURED,
+        "host_surface": host_surface,
+        "schema": "PASES_REVIEW_CAPTURE_OBSERVATION_V1",
+    }
+    return observation, hashlib.sha256(_canonical(observation)).hexdigest()
+
+
+def evaluate_capture_unavailability(*, host_surface: str, observation: dict[str, Any],
+                                    observation_sha256: str,
+                                    current_reviews: Iterable[IndependentReviewV2] = ()
+                                    ) -> ReviewCaptureEligibility:
+    """Permit only observed missing native capture, never a completed failed review."""
+    reasons: list[str] = []
+    digest_tuple: tuple[str, ...] = ()
+    if host_surface not in {"codex_cloud", "codex_local_cli", "codex_desktop", "claude_code"}:
+        reasons.append("host surface is unknown")
+    if (not isinstance(observation_sha256, str) or not SHA256.fullmatch(observation_sha256)
+            or not isinstance(observation, dict)
+            or hashlib.sha256(_canonical(observation)).hexdigest() != observation_sha256):
+        reasons.append("native capture capability observation is malformed or changed")
+    else:
+        digest_tuple = (observation_sha256,)
+        capabilities = observation.get("capabilities")
+        if (observation.get("schema") != "PASES_REVIEW_CAPTURE_OBSERVATION_V1"
+                or observation.get("host_surface") != host_surface
+                or observation.get("configured_capture_boundary") is not False
+                or NATIVE_CAPTURE_BOUNDARY_CONFIGURED is not False
+                or not isinstance(capabilities, dict)
+                or capabilities.get("surface") != host_surface
+                or capabilities.get("native_request_return_capture") is not False):
+            reasons.append("host-to-runtime native request/return capture is not positively observed unavailable")
+    for review in tuple(current_reviews):
+        if not isinstance(review, IndependentReviewV2):
+            reasons.append("current review evidence has an unsupported type")
+            continue
+        try:
+            review.validate()
+        except (ReviewAssuranceError, ValueError):
+            reasons.append("current review evidence is malformed")
+            continue
+        has_unresolved_abc = any(f.severity in {"A", "B", "C"} and not f.resolved
+                                 for f in review.findings)
+        if review.assurance in {"HOST_VERIFIED", "INDEPENDENT_ATTESTED"}:
+            if review.verdict in {"FAIL", "BLOCKED", "CONCERNS"} or has_unresolved_abc:
+                return ReviewCaptureEligibility(
+                    "REVIEW_FAILED", host_surface, digest_tuple,
+                    ("a current completed native review failed or has unresolved A/B/C findings",),
+                ).validate()
+            reasons.append("a current native review exists; use its ordinary assurance path")
+        elif review.assurance == "SELF_REVIEW":
+            reasons.append("self-review cannot establish host capture unavailability")
+        elif review.assurance == "UNAVAILABLE" and (review.verdict in {"FAIL", "CONCERNS"} or has_unresolved_abc):
+            return ReviewCaptureEligibility(
+                "REVIEW_FAILED", host_surface, digest_tuple,
+                ("current review evidence contains a failed verdict or unresolved A/B/C finding",),
+            ).validate()
+    if reasons:
+        return ReviewCaptureEligibility("INVALID_EVIDENCE", host_surface, digest_tuple,
+                                        tuple(dict.fromkeys(reasons))).validate()
+    return ReviewCaptureEligibility("HOST_NATIVE_CAPTURE_UNAVAILABLE", host_surface,
+                                    digest_tuple, ()).validate()
 
 
 def write_independent_review_v2(path: Any, review: IndependentReviewV2) -> str:

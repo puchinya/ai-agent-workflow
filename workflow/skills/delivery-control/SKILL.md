@@ -45,8 +45,12 @@ Pre-Activation Issues remain untouched. Subsequent policy approval uses a succes
 
 ~~~sh
 python -m p_ases delivery readiness 32 42 HEAD40 path/to/plan.json path/to/verification.json path/to/acceptance.json path/to/self-audit.json path/to/independent-review.json --repo OWNER/REPO --root .
+python -m p_ases delivery review-unavailable-plan 46 67 HEAD40 path/to/frozen-plan.json --host-surface codex_cloud --output /tmp/review-unavailable-plan.json --repo puchinya/ai-agent-workflow --root .
+python -m p_ases delivery review-unavailable-apply 46 67 HEAD40 path/to/frozen-plan.json --plan /tmp/review-unavailable-plan.json --approval-comment-id OWNER_COMMENT_ID --repo puchinya/ai-agent-workflow --root .
+python -m p_ases delivery readiness 46 67 HEAD40 path/to/plan.json path/to/verification.json path/to/acceptance.json path/to/self-audit.json --review-unavailable-exception path/to/exception.json --repo puchinya/ai-agent-workflow --root .
 python -m p_ases delivery bootstrap-check 32 42 --repo OWNER/REPO --root .
 python -m p_ases delivery final 32 42 HEAD40 path/to/plan.json path/to/verification.json path/to/acceptance.json path/to/self-audit.json path/to/independent-review.json path/to/readiness.json path/to/user-review.json --repo OWNER/REPO --root .
+python -m p_ases delivery final 46 67 HEAD40 path/to/plan.json path/to/verification.json path/to/acceptance.json path/to/self-audit.json path/to/readiness-v2.json path/to/user-review.json --review-unavailable-exception path/to/exception.json --repo puchinya/ai-agent-workflow --root .
 python -m p_ases delivery finalize 32 42 --repo OWNER/REPO --root .
 python -m p_ases delivery parent-migrate-labels 26 --repo OWNER/REPO --root .
 ~~~

@@ -446,6 +446,37 @@ class PasesCLITests(unittest.TestCase):
         ])
         self.assertEqual((args.namespace, args.verb), ("delivery", "final"))
 
+    def test_unavailable_review_cli_uses_explicit_plan_apply_and_union_inputs(self):
+        plan = _parser().parse_args([
+            "delivery", "review-unavailable-plan", "46", "67", "a" * 40, "frozen-plan.json",
+            "--host-surface", "codex_cloud", "--output", "exception-plan.json",
+            "--repo", "puchinya/ai-agent-workflow", "--root", str(ROOT),
+        ])
+        self.assertEqual((plan.verb, plan.host_surface), ("review-unavailable-plan", "codex_cloud"))
+        apply = _parser().parse_args([
+            "delivery", "review-unavailable-apply", "46", "67", "a" * 40, "frozen-plan.json",
+            "--plan", "exception-plan.json", "--approval-comment-id", "123",
+            "--repo", "puchinya/ai-agent-workflow", "--root", str(ROOT),
+        ])
+        self.assertEqual((apply.verb, apply.approval_comment_id), ("review-unavailable-apply", 123))
+        readiness = _parser().parse_args([
+            "delivery", "readiness", "46", "67", "a" * 40, "plan.json", "verification.json",
+            "acceptance.json", "self.json", "--review-unavailable-exception", "exception.json",
+        ])
+        self.assertIsNone(readiness.independent_review)
+        self.assertEqual(readiness.review_unavailable_exception.name, "exception.json")
+        final = _parser().parse_args([
+            "delivery", "final", "46", "67", "a" * 40, "plan.json", "verification.json",
+            "acceptance.json", "self.json", "readiness.json", "review.json",
+            "--review-unavailable-exception", "exception.json",
+        ])
+        self.assertIsNone(final.independent_review)
+        review = _parser().parse_args([
+            "user-review", "start", "46", "67", "a" * 40, "plan.json", "readiness.json",
+            "--review-unavailable-exception", "exception.json",
+        ])
+        self.assertEqual(review.review_unavailable_exception.name, "exception.json")
+
 
 if __name__ == "__main__":
     unittest.main()

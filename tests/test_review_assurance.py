@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT / "runtime"))
 from p_ases.evidence_store import VerificationSubject
 from p_ases.review_assurance import (
     AttestedNativeDelegationEvidenceV1, IndependentReviewV2, ReviewAssuranceError,
+    capture_unavailability_observation, evaluate_capture_unavailability,
     evaluate_review_assurance,
 )
 from p_ases.review_host_adapters import (
@@ -172,6 +173,62 @@ class ReviewAssuranceTests(unittest.TestCase):
                 capabilities = adapter.capabilities()
                 self.assertFalse(capabilities.native_request_return_capture)
                 self.assertFalse(capabilities.trusted_host_event_verification)
+
+    def test_capture_unavailability_is_typed_and_does_not_override_a_failed_native_review(self):
+        capabilities = CodexCloudReviewAdapter.capabilities().as_dict()
+        observation, digest = capture_unavailability_observation("codex_cloud", capabilities)
+        eligible = evaluate_capture_unavailability(
+            host_surface="codex_cloud", observation=observation, observation_sha256=digest,
+        )
+        self.assertEqual(eligible.status, "HOST_NATIVE_CAPTURE_UNAVAILABLE")
+        failed_output = canonical({
+            "findings": [], "reviewer_context_id": "native-review-child-7",
+            "schema": "PASES_CHILD_REVIEW_OUTPUT_V1", "subject": SUBJECT.as_dict(), "verdict": "FAIL",
+        })
+        request = canonical({
+            "execution_identity_context_id": EXECUTION, "operation": "spawn_independent_review_child",
+            "reviewer_context_id": "native-review-child-7", "schema": "PASES_NATIVE_REVIEW_REQUEST_V1",
+            "subject": SUBJECT.as_dict(),
+        })
+        terminal = canonical({
+            "child_output_sha256": hashlib.sha256(failed_output).hexdigest(), "completed": True,
+            "request_sha256": hashlib.sha256(request).hexdigest(), "schema": "PASES_NATIVE_REVIEW_TERMINAL_V1",
+            "status": "success",
+        })
+        native = AttestedNativeDelegationEvidenceV1.capture(
+            subject=SUBJECT, execution_identity_context_id=EXECUTION,
+            request=request, terminal_return=terminal, child_output=failed_output,
+        )
+        failed_review = IndependentReviewV2(
+            subject=SUBJECT, assurance="INDEPENDENT_ATTESTED",
+            reviewer_context_id=native.reviewer_context_id, execution_identity_context_id=EXECUTION,
+            verdict="FAIL", findings=(), native_evidence=native, profile_sha256=PROFILE_SHA,
+            evidence_origin="operator_captured_native_tool_result",
+        ).validate()
+        failed = evaluate_capture_unavailability(
+            host_surface="codex_cloud", observation=observation, observation_sha256=digest,
+            current_reviews=(failed_review,),
+        )
+        self.assertEqual(failed.status, "REVIEW_FAILED")
+        fabricated_pass = fabricated_review()
+        ineligible = evaluate_capture_unavailability(
+            host_surface="codex_cloud", observation=observation, observation_sha256=digest,
+            current_reviews=(fabricated_pass,),
+        )
+        self.assertEqual(ineligible.status, "INVALID_EVIDENCE")
+
+    def test_capture_observation_must_match_surface_and_digest(self):
+        observation, digest = capture_unavailability_observation(
+            "claude_code", ClaudeCodeReviewAdapter.capabilities().as_dict())
+        mismatch = evaluate_capture_unavailability(
+            host_surface="codex_cloud", observation=observation, observation_sha256=digest,
+        )
+        self.assertEqual(mismatch.status, "INVALID_EVIDENCE")
+        tampered = {**observation, "host_surface": "codex_cloud"}
+        invalid = evaluate_capture_unavailability(
+            host_surface="claude_code", observation=tampered, observation_sha256=digest,
+        )
+        self.assertEqual(invalid.status, "INVALID_EVIDENCE")
 
 
 if __name__ == "__main__":

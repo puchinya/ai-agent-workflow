@@ -24,6 +24,8 @@ The project profile sets `independent_review.minimum_assurance`. Omission means 
 
 For Issue #46 / PR #67 only, the approved successor ADC defines a separate, opt-in path when host-to-runtime native capture is positively observed as unavailable. That path records `review_assurance=UNAVAILABLE` and `INDEPENDENT_REVIEW_NOT_PERFORMED`; it never creates a review PASS. Use its exact-subject exception plan and separate Owner-posted approval only after the required phase/document rebaseline. A genuine failed review, unresolved A/B/C finding, stale evidence, missing Verification Plan, or failed non-review gate remains blocking. The exception is not reusable for other repositories or Issues.
 
+The exception plan is read-only and binds the current approved ADC, frozen Verification Plan, PR/base/HEAD, both bindings, profile, host capability observation, and accepted risk. The Owner must post the exact approval text printed by the plan command; the runtime must never post it on the Owner's behalf. Apply writes a separate implementation-authored receipt only after direct/list/direct Owner-comment verification. The Owner grant is account-authenticated operational provenance, not a host signature.
+
 ## CLI
 
 ~~~sh
@@ -31,6 +33,15 @@ python -m p_ases audit independent 32 42 HEAD40 path/to/plan.json path/to/indepe
 ~~~
 
 For V2 native capture, the `audit independent` input schema is `PASES_NATIVE_REVIEW_CAPTURE_INPUT_V1` and carries canonical base64+SHA-256 objects for the native request, successful terminal return, and child output, plus the exact subject, Binding identity, and profile digest. V1 inputs remain readable but cannot satisfy current Readiness.
+
+For the Issue #46 capture-unavailable path:
+
+~~~sh
+python -m p_ases delivery review-unavailable-plan 46 67 HEAD40 path/to/frozen-plan.json --host-surface codex_cloud --output /tmp/review-unavailable-plan.json --repo puchinya/ai-agent-workflow --root .
+python -m p_ases delivery review-unavailable-apply 46 67 HEAD40 path/to/frozen-plan.json --plan /tmp/review-unavailable-plan.json --approval-comment-id OWNER_COMMENT_ID --repo puchinya/ai-agent-workflow --root .
+~~~
+
+The plan is unavailable until the exact current Verification is PASS and the PR/worktree/profile/bindings match. After Owner approval and apply, pass the resulting local exception record with `--review-unavailable-exception` to Readiness and User Review. The fallback never substitutes for Verification, Acceptance, Self-Audit, Required CI, dependency checks, or the separate human User Review.
 
 ## Failure handling and output
 

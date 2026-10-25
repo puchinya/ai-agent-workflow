@@ -23,6 +23,7 @@ Owner: runtime/p_ases/user_review.py. Inputs are an open PR, current HEAD, appro
 python -m p_ases user-review start 32 42 HEAD40 path/to/plan.json path/to/readiness.json --repo OWNER/REPO --root .
 python -m p_ases user-review sync 32 42 HEAD40 path/to/plan.json path/to/readiness.json --repo OWNER/REPO --root .
 python -m p_ases user-review status 32 42 HEAD40 path/to/plan.json path/to/readiness.json --repo OWNER/REPO --root .
+python -m p_ases user-review start 46 67 HEAD40 path/to/plan.json path/to/readiness-v2.json --review-unavailable-exception path/to/exception.json --repo puchinya/ai-agent-workflow --root .
 python -m p_ases user-review record 32 42 path/to/host-event.json --repo OWNER/REPO --root .
 ~~~
 

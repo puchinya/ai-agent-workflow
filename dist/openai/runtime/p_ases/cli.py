@@ -55,13 +55,25 @@ from .audits import (
 )
 from .review_assurance import (
     CapturedBytes, IndependentReviewV2, NATIVE_CAPTURE_BOUNDARY_CONFIGURED,
-    ReviewAssuranceError, attest_native_review,
-    evaluate_review_assurance,
+    ReviewAssuranceError, attest_native_review, capture_unavailability_observation,
+    evaluate_capture_unavailability, evaluate_review_assurance,
     read_independent_review_v2, write_independent_review_v2,
 )
 from .delivery import (
-    FinalDeliveryResult, PRReadback, ReadinessError, evaluate_final_delivery,
-    evaluate_readiness, read_readiness, readiness_path, write_readiness,
+    FinalDeliveryResult, FinalDeliveryResultV2, PRReadback, ReadinessCore, ReadinessError,
+    ReadinessResult, ReadinessResultV2, evaluate_final_delivery, evaluate_final_delivery_with_exception,
+    evaluate_readiness, evaluate_readiness_core, evaluate_readiness_with_exception,
+    read_readiness, readiness_path, write_readiness,
+)
+from .review_unavailable_exception import (
+    HOST_SURFACES, OWNER_USER_ID as REVIEW_EXCEPTION_OWNER_ID,
+    PR_NUMBER as REVIEW_EXCEPTION_PR_NUMBER, REPOSITORY as REVIEW_EXCEPTION_REPOSITORY,
+    REPOSITORY_ID as REVIEW_EXCEPTION_REPOSITORY_ID, ReviewUnavailableError,
+    ReviewUnavailableException, ReviewUnavailablePlan, apply_exception as apply_review_unavailable_exception,
+    approval_comment as review_unavailable_approval_comment,
+    read_exception as read_review_unavailable_exception,
+    read_exception_comment, read_plan as read_review_unavailable_plan,
+    verify_owner_approval, write_plan as write_review_unavailable_plan,
 )
 from .acceptance import (
     ACCEPTANCE_POLICY_VERSION, ARTIFACT_TYPES, OBSERVATION_KINDS, AcceptanceError,
@@ -1716,9 +1728,185 @@ def _delivery_bootstrap_check(args: argparse.Namespace, repository: str, root: P
     return 0 if result.status == "BOOTSTRAP_TECHNICAL_READY" else 2
 
 
+def _review_adapter_capabilities(host_surface: str) -> dict[str, Any]:
+    from .review_host_adapters.claude_code import ClaudeCodeReviewAdapter
+    from .review_host_adapters.codex_cloud import CodexCloudReviewAdapter
+    from .review_host_adapters.codex_desktop import CodexDesktopReviewAdapter
+    from .review_host_adapters.codex_local_cli import CodexLocalCLIReviewAdapter
+
+    adapters = {"claude_code": ClaudeCodeReviewAdapter, "codex_cloud": CodexCloudReviewAdapter,
+                "codex_desktop": CodexDesktopReviewAdapter, "codex_local_cli": CodexLocalCLIReviewAdapter}
+    if host_surface not in adapters:
+        raise CLIError("review host surface is unsupported")
+    return adapters[host_surface].capabilities().as_dict()
+
+
+def _current_review_v2_records(root: Path, subject: VerificationSubject) -> tuple[IndependentReviewV2, ...]:
+    folder = root / ".p_ases" / "audits" / str(subject.issue_number) / subject.sha256
+    if path_has_symlink(folder):
+        raise CLIError("current Independent Review history traverses a symbolic link")
+    if not folder.exists():
+        return ()
+    if not folder.is_dir():
+        raise CLIError("current Independent Review history is not a directory")
+    records: list[IndependentReviewV2] = []
+    for path in sorted(folder.iterdir()):
+        if path.name.startswith("independent-") and not path.name.startswith("independent-v2-"):
+            raise CLIError("V1-only current review history cannot prove native capture unavailability")
+        if not path.name.startswith("independent-v2-"):
+            continue
+        if path.is_symlink() or not path.is_file():
+            raise CLIError("current Independent Review history contains a non-regular record")
+        record = read_independent_review_v2(path)
+        if path.name != f"independent-v2-{record.sha256}.json" or record.subject != subject:
+            raise CLIError("current Independent Review history has a stale or mismatched record")
+        records.append(record)
+    if len(records) > 1:
+        raise CLIError("current Independent Review history is duplicate or conflicting")
+    return tuple(records)
+
+
+def _review_unavailable_current_context(
+    github: GitHub, repository: str, root: Path, issue_number: int, pr_number: int,
+    head: str, verification_plan_path: Path, host_surface: str,
+) -> tuple[dict[str, Any], Any]:
+    if (repository.casefold() != REVIEW_EXCEPTION_REPOSITORY.casefold() or issue_number != 46
+            or pr_number != REVIEW_EXCEPTION_PR_NUMBER or host_surface not in HOST_SURFACES):
+        raise CLIError("review-unavailable exception is restricted to Issue #46 / PR #67")
+    issue, verified_adc = _approved_issue_adc(github, issue_number, repository)
+    if type(issue.get("id")) is not int or issue["id"] != 5846549384:
+        raise CLIError("Issue #46 stable GitHub ID does not match the approved exception scope")
+    metadata = github.repository_metadata()
+    if metadata.get("id") != REVIEW_EXCEPTION_REPOSITORY_ID:
+        raise CLIError("repository stable GitHub ID does not match the approved exception scope")
+    plan, _requirements, _oracles, _tests = _load_plan(
+        root, repository, issue_number, verification_plan_path, verified_adc)
+    subject = _subject(repository, issue_number, pr_number, head, verified_adc, plan)
+    current_verification, _verification_refs = _calculate_verification(
+        argparse.Namespace(issue=issue_number, pr=pr_number, head=head, plan=verification_plan_path),
+        repository, root, github,
+    )
+    if current_verification.subject != subject or current_verification.status != "PASS":
+        raise CLIError("capture-unavailable exception is ineligible without current exact-subject Verification PASS")
+    pr = _readback_current_pr(github, subject)
+    if pr.get("draft") is not False:
+        raise CLIError("review-unavailable exception requires a non-draft PR")
+    if (head_sha40(root) != head or not worktree_clean(root)
+            or current_branch(root) != pr["head"]["ref"]
+            or remote_branch_sha(root, pr["head"]["ref"]) != head):
+        raise CLIError("review-unavailable exception requires the clean current PR worktree and remote HEAD")
+    binding = read_binding(execution_binding_path(root, issue_number))
+    pr_binding = read_pr_binding(pr_binding_path(root, issue_number))
+    profile = load_profile(root)
+    if profile.independent_review_unavailable_handling != "owner_exception":
+        raise CLIError("committed profile does not opt in to Owner-authorized unavailable review handling")
+    if (binding.repository != repository or binding.issue_number != issue_number
+            or binding.adc_comment_id != verified_adc.pointer.comment_id
+            or binding.adc_sha256 != verified_adc.pointer.sha256
+            or binding.base_ref != pr["base"]["ref"] or binding.base_sha != pr["base"]["sha"]):
+        raise CLIError("ExecutionBinding does not match the current approved ADC and PR base")
+    if (pr_binding.repository != repository or pr_binding.issue_number != issue_number
+            or pr_binding.pr_number != pr_number or pr_binding.adc_comment_id != verified_adc.pointer.comment_id
+            or pr_binding.adc_sha256 != verified_adc.pointer.sha256 or pr_binding.base_sha40 != pr["base"]["sha"]
+            or pr_binding.branch_ref != pr["head"]["ref"] or pr_binding.pr_head_sha40 != head):
+        raise CLIError("PRBinding does not match the current approved ADC and PR identity")
+    observation, observation_sha = capture_unavailability_observation(
+        host_surface, _review_adapter_capabilities(host_surface))
+    eligibility = evaluate_capture_unavailability(
+        host_surface=host_surface, observation=observation, observation_sha256=observation_sha,
+        current_reviews=_current_review_v2_records(root, subject))
+    if eligibility.status != "HOST_NATIVE_CAPTURE_UNAVAILABLE":
+        raise CLIError("review exception is not eligible: " + "; ".join(eligibility.reasons))
+    snapshot = {
+        "adc_comment_id": verified_adc.pointer.comment_id,
+        "adc_sha256": verified_adc.pointer.sha256,
+        "base_ref": pr["base"]["ref"], "base_sha40": pr["base"]["sha"],
+        "branch_ref": pr["head"]["ref"],
+        "capability_observation_sha256s": list(eligibility.observation_sha256s),
+        "execution_binding_sha256": binding_digest(binding), "head_sha40": head,
+        "host_surface": host_surface, "issue_id": issue["id"], "issue_number": issue_number,
+        "owner_user_id": REVIEW_EXCEPTION_OWNER_ID,
+        "pr_binding_sha256": pr_binding.sha256, "pr_number": pr_number,
+        "profile_sha256": profile.profile_sha256,
+        "reason": "HOST_NATIVE_CAPTURE_UNAVAILABLE", "repository": repository,
+        "repository_id": metadata["id"], "risk": "INDEPENDENT_REVIEW_NOT_PERFORMED",
+        "verification_plan_sha256": plan.sha256,
+    }
+    return snapshot, eligibility
+
+
+def _validate_review_unavailable_exception(
+    github: GitHub, repository: str, root: Path, issue_number: int, pr_number: int,
+    head: str, verification_plan_path: Path, exception_path: Path,
+) -> tuple[Any, ReviewUnavailableException, Any]:
+    record = read_review_unavailable_exception(exception_path)
+    current, eligibility = _review_unavailable_current_context(
+        github, repository, root, issue_number, pr_number, head,
+        verification_plan_path, record.snapshot["host_surface"])
+    if record.snapshot != current:
+        changed = sorted(key for key in set(record.snapshot) | set(current)
+                         if record.snapshot.get(key) != current.get(key))
+        raise CLIError("Owner exception is stale against current inputs: " + ", ".join(changed))
+    read_exception_comment(github, record)
+    return load_profile(root), record, eligibility
+
+
+def _delivery_review_unavailable_plan(args: argparse.Namespace, repository: str,
+                                      root: Path, github: GitHub) -> int:
+    try:
+        snapshot, _eligibility = _review_unavailable_current_context(
+            github, repository, root, args.issue, args.pr, args.head,
+            args.verification_plan, args.host_surface)
+        plan = ReviewUnavailablePlan.create(snapshot)
+        write_review_unavailable_plan(args.output, plan)
+        _json({"status": "PLAN_READY", "plan_sha256": plan.sha256, "plan": plan.value,
+               "path": str(args.output), "approval_comment": review_unavailable_approval_comment(plan),
+               "disclosure": "Independent Review was not performed; code defects may go undetected."})
+        return 0
+    except (ADCError, PlanError, OracleTraceError, EvidenceError, GitError, ExecutionError,
+            CheckpointError, ProfileError, ReviewAssuranceError, ReviewUnavailableError,
+            GitHubError, CLIError, OSError, ValueError) as exc:
+        return _blocked_result((str(exc),))
+
+
+def _delivery_review_unavailable_apply(args: argparse.Namespace, repository: str,
+                                       root: Path, github: GitHub) -> int:
+    try:
+        plan = read_review_unavailable_plan(args.plan)
+        if args.issue != 46 or args.pr != 67 or args.head != plan.snapshot["head_sha40"]:
+            raise CLIError("apply arguments do not match the exact exception plan subject")
+        snapshot, eligibility = _review_unavailable_current_context(
+            github, repository, root, args.issue, args.pr, args.head,
+            args.verification_plan, plan.snapshot["host_surface"])
+        if snapshot != plan.snapshot or list(eligibility.observation_sha256s) != plan.snapshot["capability_observation_sha256s"]:
+            raise CLIError("exception plan is stale against the exact current subject or capability observation")
+        verify_owner_approval(github, plan, args.approval_comment_id)
+        final_snapshot, final_eligibility = _review_unavailable_current_context(
+            github, repository, root, args.issue, args.pr, args.head,
+            args.verification_plan, plan.snapshot["host_surface"])
+        if final_snapshot != plan.snapshot or final_eligibility != eligibility:
+            raise CLIError("exception plan inputs changed immediately before publication")
+        record, path, replayed = apply_review_unavailable_exception(
+            github, plan, args.approval_comment_id, local_root=root)
+        _json({"status": "NOOP" if replayed else "APPLIED", "plan_sha256": plan.sha256,
+               "exception_sha256": record.sha256, "exception_comment_id": record.value["exception_comment_id"],
+               "owner_comment_id": record.value["owner_approval_comment_id"], "path": str(path),
+               "review_assurance": "UNAVAILABLE", "risk": "INDEPENDENT_REVIEW_NOT_PERFORMED",
+               "disclosure": "This record does not claim that an Independent Review occurred or passed."})
+        return 0
+    except (ADCError, PlanError, OracleTraceError, EvidenceError, GitError, ExecutionError,
+            CheckpointError, ProfileError, ReviewAssuranceError, ReviewUnavailableError,
+            GitHubError, CLIError, OSError, ValueError) as exc:
+        return _blocked_result((str(exc),))
+
+
 def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
     blockers: list[str] = []
     published_refs: list[str] = []
+    exception_path = getattr(args, "review_unavailable_exception", None)
+    independent_review_path = getattr(args, "independent_review", None)
+    if (exception_path is None) == (independent_review_path is None):
+        return _blocked_result(("provide exactly one of Independent Review or --review-unavailable-exception",))
     verified_adc = None
     try:
         _issue, verified_adc = _approved_issue_adc(github, args.issue, repository)
@@ -1833,30 +2021,31 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
         except (AuditError, ReviewAssuranceError, CLIError, OSError) as exc:
             blockers.append(f"self-audit readback/evidence validation failed: {exc}")
             self_audit = None
-        try:
-            artifact = _read_independent_review_artifact(args.independent_review, root)
-            if isinstance(artifact, IndependentReviewV2):
-                independent_review_v2 = artifact
-                _validate_v2_review_history(root, args.issue, artifact,
-                                             expected_path=args.independent_review)
-                if subject is None or artifact.subject != subject:
-                    blockers.append("Independent Review V2 is stale or does not match the current exact subject")
-                if binding is None or artifact.execution_identity_context_id != f"execution-binding:{binding_digest(binding)}":
-                    blockers.append("Independent Review V2 implementation identity does not match the current work binding")
-                _read_audit_references(root, artifact)
-            else:
-                independent_review = artifact
-                independent_review.validate()
-                blockers.append("V1-only Independent Review evidence does not satisfy the V2 assurance policy")
-                if subject is None or independent_review.subject != subject:
-                    blockers.append("independent review is stale or does not match the current exact subject")
-                if binding is not None and independent_review.implementation_context_id != f"execution-binding:{binding_digest(binding)}":
-                    blockers.append("independent-review implementation context does not match the current work binding")
-                _read_audit_references(root, independent_review)
-        except (AuditError, CLIError, OSError) as exc:
-            blockers.append(f"independent-review readback/evidence validation failed: {exc}")
-            independent_review = None
-            independent_review_v2 = None
+        if exception_path is None:
+            try:
+                artifact = _read_independent_review_artifact(independent_review_path, root)
+                if isinstance(artifact, IndependentReviewV2):
+                    independent_review_v2 = artifact
+                    _validate_v2_review_history(root, args.issue, artifact,
+                                                 expected_path=independent_review_path)
+                    if subject is None or artifact.subject != subject:
+                        blockers.append("Independent Review V2 is stale or does not match the current exact subject")
+                    if binding is None or artifact.execution_identity_context_id != f"execution-binding:{binding_digest(binding)}":
+                        blockers.append("Independent Review V2 implementation identity does not match the current work binding")
+                    _read_audit_references(root, artifact)
+                else:
+                    independent_review = artifact
+                    independent_review.validate()
+                    blockers.append("V1-only Independent Review evidence does not satisfy the V2 assurance policy")
+                    if subject is None or independent_review.subject != subject:
+                        blockers.append("independent review is stale or does not match the current exact subject")
+                    if binding is not None and independent_review.implementation_context_id != f"execution-binding:{binding_digest(binding)}":
+                        blockers.append("independent-review implementation context does not match the current work binding")
+                    _read_audit_references(root, independent_review)
+            except (AuditError, CLIError, OSError) as exc:
+                blockers.append(f"independent-review readback/evidence validation failed: {exc}")
+                independent_review = None
+                independent_review_v2 = None
 
     dependency_reasons: tuple[str, ...] = ()
     if verified_adc is not None:
@@ -1872,6 +2061,24 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
             blockers.append("current Required Check policy has no matching trusted #29 Verification")
     except (ProfileError, VerificationError) as exc:
         blockers.append(f"Required Check policy cannot be trusted: {exc}")
+
+    exception_record: ReviewUnavailableException | None = None
+    exception_eligibility = None
+    if exception_path is not None and subject is not None:
+        try:
+            exception_profile, exception_record, exception_eligibility = _validate_review_unavailable_exception(
+                github, repository, root, args.issue, args.pr, args.head, args.plan, exception_path,
+            )
+            if current_profile != exception_profile:
+                blockers.append("committed profile changed during exception readback")
+            published_refs.extend((
+                f"issue-comment:{exception_record.value['owner_approval_comment_id']}",
+                f"issue-comment:{exception_record.value['exception_comment_id']}",
+            ))
+        except (ADCError, PlanError, OracleTraceError, EvidenceError, GitError, ExecutionError,
+                CheckpointError, ProfileError, ReviewAssuranceError, ReviewUnavailableError,
+                GitHubError, CLIError, OSError, ValueError) as exc:
+            blockers.append(f"Owner exception readback/revalidation failed: {exc}")
 
     if subject is not None and verified_adc is not None:
         try:
@@ -1953,6 +2160,18 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
                 _read_audit_references(root, final_review)
             except (AuditError, CLIError, OSError) as exc:
                 blockers.append(f"independent-review final readback failed before Readiness persistence: {exc}")
+        if exception_path is not None and exception_record is not None:
+            try:
+                final_profile, final_exception, final_eligibility = _validate_review_unavailable_exception(
+                    github, repository, root, args.issue, args.pr, args.head, args.plan, exception_path,
+                )
+                if (final_profile != current_profile or final_exception != exception_record
+                        or final_eligibility != exception_eligibility):
+                    blockers.append("Owner exception, capability observation, or profile changed before Readiness persistence")
+            except (ADCError, PlanError, OracleTraceError, EvidenceError, GitError, ExecutionError,
+                    CheckpointError, ProfileError, ReviewAssuranceError, ReviewUnavailableError,
+                    GitHubError, CLIError, OSError, ValueError) as exc:
+                blockers.append(f"Owner exception final readback failed before Readiness persistence: {exc}")
         if current_profile is not None:
             try:
                 if load_profile(root) != current_profile:
@@ -1966,18 +2185,32 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
         return 2
 
     # A complete evaluator result is still emitted when external inputs are missing.
-    result = evaluate_readiness(
-        subject=subject, pr=pr_readback, pr_binding=pr_binding, work_context=work_context,
-        verification=verification, acceptance=acceptance, self_audit=self_audit,
-        required_item_ids=required_item_ids, independent_review=independent_review,
-        required_checks_sha256=check_sha, blocker_reasons=blockers,
-        independent_review_v2=independent_review_v2,
-        review_minimum_assurance=(None if current_profile is None
-                                  else current_profile.independent_review_minimum_assurance),
-        current_profile_sha256=(None if current_profile is None else current_profile.profile_sha256),
-        execution_identity_context_id=(None if binding is None
-                                       else f"execution-binding:{binding_digest(binding)}"),
-    )
+    if exception_path is not None:
+        if current_profile is None or exception_eligibility is None:
+            return _blocked_result(blockers or ("current exception policy and host observation are unavailable",), subject)
+        core = evaluate_readiness_core(
+            subject=subject, pr=pr_readback, pr_binding=pr_binding, work_context=work_context,
+            verification=verification, acceptance=acceptance, self_audit=self_audit,
+            required_item_ids=required_item_ids, required_checks_sha256=check_sha,
+            blocker_reasons=blockers,
+        )
+        result = evaluate_readiness_with_exception(
+            core=core, profile_sha256=current_profile.profile_sha256,
+            eligibility=exception_eligibility, exception=exception_record,
+        )
+    else:
+        result = evaluate_readiness(
+            subject=subject, pr=pr_readback, pr_binding=pr_binding, work_context=work_context,
+            verification=verification, acceptance=acceptance, self_audit=self_audit,
+            required_item_ids=required_item_ids, independent_review=independent_review,
+            required_checks_sha256=check_sha, blocker_reasons=blockers,
+            independent_review_v2=independent_review_v2,
+            review_minimum_assurance=(None if current_profile is None
+                                      else current_profile.independent_review_minimum_assurance),
+            current_profile_sha256=(None if current_profile is None else current_profile.profile_sha256),
+            execution_identity_context_id=(None if binding is None
+                                           else f"execution-binding:{binding_digest(binding)}"),
+        )
     path = readiness_path(root, result)
     write_readiness(path, result)
     _json({"status": result.status, "subject": result.subject.as_dict(),
@@ -1985,10 +2218,10 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
            "ready_for_user_review": result.ready_for_user_review, "path": str(path),
            "reasons": list(result.reasons),
            "evidence_refs": [str(path), str(args.plan), str(args.verification), str(args.acceptance),
-                             str(args.self_audit), str(args.independent_review),
+                             str(args.self_audit), str(independent_review_path or exception_path),
                              str(execution_binding_path(root, args.issue)),
                              str(pr_binding_path(root, args.issue)), *published_refs]})
-    return 0 if result.status == "PASS" else 2
+    return 0 if result.status in {"PASS", "READY_WITH_EXCEPTION"} else 2
 
 
 def _review_payload_from_github(github: GitHub, subject: UserReviewSubject,
@@ -2098,8 +2331,29 @@ def _review_phase_transition(github: GitHub, issue_number: int, kind: IssueKind,
 
 def _require_readiness_review_assurance(root: Path, issue_number: int,
                                         readiness: Any, subject: VerificationSubject,
-                                        binding: Any) -> tuple[Any, IndependentReviewV2]:
+                                        binding: Any, *, github: GitHub, repository: str,
+                                        verification_plan_path: Path,
+                                        exception_path: Path | None) -> tuple[Any, Any]:
     profile = load_profile(root)
+    if isinstance(readiness, ReadinessResultV2):
+        if exception_path is None or readiness.status != "READY_WITH_EXCEPTION":
+            raise CLIError("User Review requires the exact current Owner exception for Readiness V2")
+        current_profile, exception, _eligibility = _validate_review_unavailable_exception(
+            github, repository, root, issue_number, subject.pr_number,
+            subject.pr_head_sha40, verification_plan_path, exception_path,
+        )
+        if (current_profile != profile or exception.snapshot["profile_sha256"] != profile.profile_sha256
+                or exception.sha256 != readiness.exception_record_sha256
+                or exception.value["exception_comment_id"] != readiness.exception_comment_id
+                or exception.value["exception_comment_sha256"] != readiness.exception_comment_sha256
+                or exception.value["owner_approval_comment_id"] != readiness.owner_comment_id
+                or exception.value["owner_approval_sha256"] != readiness.owner_comment_sha256
+                or exception.sha256 not in readiness.evidence_sha256s
+                or profile.profile_sha256 not in readiness.evidence_sha256s):
+            raise CLIError("Readiness V2 does not bind the exact current exception and committed profile")
+        return profile, exception
+    if exception_path is not None:
+        raise CLIError("V1 Readiness cannot consume the unavailable-review exception path")
     folder = root / ".p_ases" / "audits" / str(issue_number) / subject.sha256
     if path_has_symlink(folder) or not folder.is_dir():
         raise CLIError("User Review requires a unique current Independent Review V2 history")
@@ -2145,11 +2399,13 @@ def _user_review_run(args: argparse.Namespace, repository: str, root: Path, gith
         subject = _subject(repository, args.issue, args.pr, args.head, verified_adc, plan)
         pr_identity = _readback_current_pr(github, subject)
         readiness = read_readiness(args.readiness)
-        if (readiness.status != "PASS" or readiness.subject != subject):
-            raise CLIError("User Review cannot start without current exact-subject Review Readiness PASS")
+        if (not readiness.ready_for_user_review or readiness.subject != subject):
+            raise CLIError("User Review cannot start without current exact-subject V1 PASS or V2 READY_WITH_EXCEPTION")
         binding = read_binding(execution_binding_path(root, args.issue))
         assurance_profile, assurance_review = _require_readiness_review_assurance(
-            root, args.issue, readiness, subject, binding,
+            root, args.issue, readiness, subject, binding, github=github, repository=repository,
+            verification_plan_path=args.plan,
+            exception_path=getattr(args, "review_unavailable_exception", None),
         )
         user_review_subject = UserReviewSubject(subject, readiness.sha256).validate()
         session_started_at = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
@@ -2190,6 +2446,8 @@ def _user_review_run(args: argparse.Namespace, repository: str, root: Path, gith
             raise CLIError("Issue, ADC, PR, Readiness, identity, or feedback changed during User Review readback")
         final_profile, final_review = _require_readiness_review_assurance(
             root, args.issue, current_readiness, subject, read_binding(execution_binding_path(root, args.issue)),
+            github=github, repository=repository, verification_plan_path=args.plan,
+            exception_path=getattr(args, "review_unavailable_exception", None),
         )
         if final_profile != assurance_profile or final_review != assurance_review:
             raise CLIError("Independent Review V2 or committed profile changed during User Review")
@@ -2243,7 +2501,8 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
         readiness_args = argparse.Namespace(
             issue=args.issue, pr=args.pr, head=args.head, plan=args.plan,
             verification=args.verification, acceptance=args.acceptance,
-            self_audit=args.self_audit, independent_review=args.independent_review,
+            self_audit=args.self_audit, independent_review=getattr(args, "independent_review", None),
+            review_unavailable_exception=getattr(args, "review_unavailable_exception", None),
         )
         readiness_output = io.StringIO()
         with contextlib.redirect_stdout(readiness_output):
@@ -2255,10 +2514,10 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
         readiness = read_readiness(Path(readiness_path_value))
         if readiness != saved_readiness:
             blockers.append("saved Review Readiness differs from the current full-gate re-evaluation")
-        if readiness.subject != subject or readiness.status != "PASS":
-            blockers.append("Review Readiness is not PASS for the exact current subject")
+        if readiness.subject != subject or not readiness.ready_for_user_review:
+            blockers.append("Review Readiness is not V1 PASS or V2 READY_WITH_EXCEPTION for the exact subject")
         user_subject, saved_review, snapshot_sha = _read_review_record(args.user_review_record)
-        if (user_subject.verification_subject != subject or readiness.status != "PASS"
+        if (user_subject.verification_subject != subject or not readiness.ready_for_user_review
                 or user_subject.readiness_sha256 != readiness.sha256):
             blockers.append("saved User Review record belongs to a stale or different exact subject")
         session_path = review_session_path(root, user_subject)
@@ -2296,7 +2555,7 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
         protection = github.branch_protection(pr["base_ref"])
         profile = load_profile(root)
         required_names = tuple(name for name, _app_id in profile.required_checks)
-        result = evaluate_final_delivery(
+        ordinary_result = evaluate_final_delivery(
             subject=subject, user_review=current_review, verification=verification,
             current_pr_head_sha40=aggregate.get("headRefOid"), current_pr_state=pr["state"],
             current_pr_draft=raw_pr.get("draft"), github_review_decision=aggregate.get("reviewDecision"),
@@ -2328,17 +2587,32 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
         if final_verification != verification:
             blockers.append("#29 Verification/Required Check Runs changed during Final Delivery")
         if blockers:
-            result = FinalDeliveryResult("BLOCKED", subject, result.user_review_sha256,
-                                         result.required_check_result_sha256,
-                                         result.branch_protection_sha256,
-                                         tuple((*result.reasons, *blockers))).validate()
+            ordinary_result = FinalDeliveryResult("BLOCKED", subject, ordinary_result.user_review_sha256,
+                                                  ordinary_result.required_check_result_sha256,
+                                                  ordinary_result.branch_protection_sha256,
+                                                  tuple((*ordinary_result.reasons, *blockers))).validate()
+        if isinstance(readiness, ReadinessResultV2):
+            _profile, final_exception, _eligibility = _validate_review_unavailable_exception(
+                github, repository, root, args.issue, args.pr, args.head, args.plan,
+                args.review_unavailable_exception,
+            )
+            if final_exception.sha256 != readiness.exception_record_sha256:
+                raise CLIError("Final Delivery exception changed after Readiness recomputation")
+            result: FinalDeliveryResult | FinalDeliveryResultV2 = evaluate_final_delivery_with_exception(
+                ordinary=ordinary_result, readiness=readiness)
+        else:
+            result = ordinary_result
         path = root / ".p_ases" / "final-delivery" / str(args.issue) / f"{result.sha256}.json"
         _write_immutable(path, _canonical(result.as_dict()) + b"\n", root=root)
-        _json({**result.as_dict(), "subject_sha256": subject.sha256, "path": str(path),
+        result_payload = result.as_dict()
+        _json({**result_payload, "subject_sha256": subject.sha256, "path": str(path),
                "merge_authorized": False,
                "evidence_refs": [str(session_path), str(args.readiness), str(args.user_review_record), str(args.verification),
-                                 str(args.acceptance), str(args.self_audit), str(args.independent_review), str(path)]})
-        return 0 if result.status == "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION" else 2
+                                 str(args.acceptance), str(args.self_audit),
+                                 str(getattr(args, "independent_review", None)
+                                     or args.review_unavailable_exception), str(path)]})
+        return 0 if result.status in {"READY_FOR_EXPLICIT_MERGE_AUTHORIZATION",
+                                      "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION_WITH_EXCEPTION"} else 2
     except (ADCError, PlanError, OracleTraceError, EvidenceError, ReadinessError, VerificationError,
             UserReviewError, ProfileError, GitHubError, CLIError, OSError, ValueError) as exc:
         return _blocked_result((str(exc),))
@@ -3119,9 +3393,31 @@ def _parser() -> argparse.ArgumentParser:
     readiness.add_argument("verification", type=Path)
     readiness.add_argument("acceptance", type=Path)
     readiness.add_argument("self_audit", type=Path)
-    readiness.add_argument("independent_review", type=Path)
+    readiness.add_argument("independent_review", type=Path, nargs="?")
+    readiness.add_argument("--review-unavailable-exception", type=Path,
+                            help="exact current Owner-authorized capture-unavailable exception record")
     readiness.add_argument("--repo", help="repository owner/name; defaults to origin")
     readiness.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
+    unavailable_plan = delivery_commands.add_parser(
+        "review-unavailable-plan", help="create a read-only exact-subject Owner exception plan")
+    unavailable_plan.add_argument("issue", type=_positive_number)
+    unavailable_plan.add_argument("pr", type=_positive_number)
+    unavailable_plan.add_argument("head", help="exact current PR HEAD SHA-40")
+    unavailable_plan.add_argument("verification_plan", type=Path)
+    unavailable_plan.add_argument("--host-surface", required=True, choices=tuple(sorted(HOST_SURFACES)))
+    unavailable_plan.add_argument("--output", required=True, type=Path)
+    unavailable_plan.add_argument("--repo", help="repository owner/name; defaults to origin")
+    unavailable_plan.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
+    unavailable_apply = delivery_commands.add_parser(
+        "review-unavailable-apply", help="publish one Owner-authorized exact-subject exception receipt")
+    unavailable_apply.add_argument("issue", type=_positive_number)
+    unavailable_apply.add_argument("pr", type=_positive_number)
+    unavailable_apply.add_argument("head", help="exact current PR HEAD SHA-40")
+    unavailable_apply.add_argument("verification_plan", type=Path)
+    unavailable_apply.add_argument("--plan", required=True, type=Path)
+    unavailable_apply.add_argument("--approval-comment-id", required=True, type=_positive_number)
+    unavailable_apply.add_argument("--repo", help="repository owner/name; defaults to origin")
+    unavailable_apply.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
     gate_policy = delivery_commands.add_parser("gate-policy", help="pin or read the versioned gate for an Issue")
     gate_policy.add_argument("issue", type=_positive_number)
     gate_policy.add_argument("--repo", help="repository owner/name; defaults to origin")
@@ -3180,9 +3476,11 @@ def _parser() -> argparse.ArgumentParser:
     final.add_argument("verification", type=Path)
     final.add_argument("acceptance", type=Path)
     final.add_argument("self_audit", type=Path)
-    final.add_argument("independent_review", type=Path)
+    final.add_argument("independent_review", type=Path, nargs="?")
     final.add_argument("readiness", type=Path)
     final.add_argument("user_review_record", type=Path)
+    final.add_argument("--review-unavailable-exception", type=Path,
+                       help="exact current Owner-authorized capture-unavailable exception record")
     final.add_argument("--repo", help="repository owner/name; defaults to origin")
     final.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
     finalize = delivery_commands.add_parser("finalize", help="read back an already merged PR and closed Issue")
@@ -3223,6 +3521,8 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("head", help="exact current PR HEAD SHA-40")
         command.add_argument("plan", type=Path)
         command.add_argument("readiness", type=Path)
+        command.add_argument("--review-unavailable-exception", type=Path,
+                             help="exact current Owner-authorized capture-unavailable exception record")
         command.add_argument("--kind", choices=tuple(kind.value for kind in IssueKind), default="child")
         if verb == "sync":
             command.add_argument("--new-scope", action="store_true",
@@ -3308,6 +3608,10 @@ def main(argv: list[str] | None = None) -> int:
                     return _blocked_result((str(exc),))
             if args.verb == "bootstrap-check":
                 return _delivery_bootstrap_check(args, repository, root, github)
+            if args.verb == "review-unavailable-plan":
+                return _delivery_review_unavailable_plan(args, repository, root, github)
+            if args.verb == "review-unavailable-apply":
+                return _delivery_review_unavailable_apply(args, repository, root, github)
             if args.verb == "readiness":
                 return _delivery_readiness(args, repository, root, github)
             if args.verb == "final":

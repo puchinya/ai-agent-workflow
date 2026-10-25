@@ -34,6 +34,7 @@ class ProjectProfile:
     required_checks: tuple[tuple[str, int | None], ...]
     activation_issue_number: int | None = None
     independent_review_minimum_assurance: str = "host_verified"
+    independent_review_unavailable_handling: str = "block"
     profile_sha256: str = ""
 
     def required_check_policy(self) -> RequiredCheckPolicy:
@@ -100,11 +101,20 @@ def load_profile(repository_root: Path) -> ProjectProfile:
             raise ProfileError("activation configuration must contain only a positive issue_number")
         activation_issue_number = activation["issue_number"]
     minimum_assurance = "host_verified"
+    unavailable_handling = "block"
     if "independent_review" in value:
         review_policy = value["independent_review"]
-        if (not isinstance(review_policy, dict) or set(review_policy) != {"minimum_assurance"}
-                or review_policy.get("minimum_assurance") not in {"host_verified", "independent_attested"}):
+        minimum_value = review_policy.get("minimum_assurance") if isinstance(review_policy, dict) else None
+        if (not isinstance(review_policy, dict)
+                or set(review_policy) not in ({"minimum_assurance"},
+                                              {"minimum_assurance", "unavailable_handling"})
+                or not isinstance(minimum_value, str)
+                or minimum_value not in {"host_verified", "independent_attested"}):
             raise ProfileError("independent_review must configure a supported minimum_assurance")
-        minimum_assurance = review_policy["minimum_assurance"]
+        minimum_assurance = minimum_value
+        unavailable_handling = review_policy.get("unavailable_handling", "block")
+        if (not isinstance(unavailable_handling, str)
+                or unavailable_handling not in {"block", "owner_exception"}):
+            raise ProfileError("independent_review.unavailable_handling is unsupported")
     return ProjectProfile(root, project_name.strip(), prefix, tuple(checks), activation_issue_number,
-                          minimum_assurance, hashlib.sha256(raw).hexdigest())
+                          minimum_assurance, unavailable_handling, hashlib.sha256(raw).hexdigest())

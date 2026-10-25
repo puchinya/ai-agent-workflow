@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from .delivery import ReadinessResult
+from .delivery import ReadinessResult, ReadinessResultV2
 from .evidence_store import VerificationSubject
 from .path_safety import path_has_symlink
 
@@ -355,7 +355,7 @@ class UserReviewResult:
 
 def evaluate_user_review(
     subject: UserReviewSubject,
-    readiness: ReadinessResult,
+    readiness: ReadinessResult | ReadinessResultV2,
     current_pr_head_sha40: str,
     events: Iterable[FeedbackEvent],
     *,
@@ -377,13 +377,16 @@ def evaluate_user_review(
     unresolved = tuple(sorted(set(unresolved_thread_ids)))
     if any(not isinstance(value, str) or not value for value in unresolved):
         raise UserReviewError("unresolved review thread IDs must be non-empty strings")
-    if not isinstance(readiness, ReadinessResult):
+    if not isinstance(readiness, (ReadinessResult, ReadinessResultV2)):
         reasons.append("Review Readiness is missing")
     else:
         readiness.validate()
-        if (readiness.status != "PASS" or readiness.subject != subject.verification_subject
+        permitted_status = (readiness.status == "PASS" if isinstance(readiness, ReadinessResult)
+                            else readiness.status == "READY_WITH_EXCEPTION"
+                            and readiness.review_assurance == "UNAVAILABLE")
+        if (not permitted_status or readiness.subject != subject.verification_subject
                 or readiness.sha256 != subject.readiness_sha256):
-            reasons.append("current exact-subject Review Readiness PASS is missing or stale")
+            reasons.append("current exact-subject Review Readiness is missing, blocked, or stale")
     if not isinstance(current_pr_head_sha40, str) or not SHA40.fullmatch(current_pr_head_sha40):
         reasons.append("current PR HEAD is invalid")
     elif current_pr_head_sha40 != subject.verification_subject.pr_head_sha40:

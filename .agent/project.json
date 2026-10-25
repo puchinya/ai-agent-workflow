@@ -3,7 +3,8 @@
     "issue_number": 57
   },
   "independent_review": {
-    "minimum_assurance": "independent_attested"
+    "minimum_assurance": "independent_attested",
+    "unavailable_handling": "owner_exception"
   },
   "branch": {
     "cleanup_on_switch": [],
