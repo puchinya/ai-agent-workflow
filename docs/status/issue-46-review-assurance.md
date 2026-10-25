@@ -7,6 +7,7 @@
 - [1 Current repository observations](#1-current-repository-observations)
 - [2 Surface and OS status](#2-surface-and-os-status)
 - [3 Acceptance boundary](#3-acceptance-boundary)
+- [4 Ready receipt ancestry and recovery](#4-ready-receipt-ancestry-and-recovery)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -42,3 +43,11 @@
 ## 3 Acceptance boundary
 
 No runtime or OS adapter integration is reported as verified by unit tests. The direct Codex Cloud collaboration call demonstrated that this parent conversation can receive a real child response, but no supported transport passes the host-owned request/terminal event into the Python runtime. The current package therefore has no verifiable host-capture boundary; locally supplied, self-consistent request/terminal/output JSON is not accepted as evidence that a child actually ran. The public attestation factory refuses to issue an `INDEPENDENT_ATTESTED` record from such bytes; if a claim is constructed outside that factory, evaluation downgrades it to effective `UNAVAILABLE` and blocks Readiness. A future runtime capture integration and trusted host verifier must be independently implemented and tested before any surface can issue `HOST_VERIFIED`.
+
+<a id="ready-receipt-ancestry-and-recovery"></a>
+## 4 Ready receipt ancestry and recovery
+
+- A `PASES_PHASE_DECISION_V1` Ready receipt remains bound to its exact branch HEAD. A descendant commit does not silently satisfy `ready → execution`, even when all ADC-declared specification, design, and test-oracle bytes have the same hashes.
+- Issue #46 has a narrowly scoped `PASES_READY_REBASELINE_V1` recovery checkpoint. Its plan binds the exact approved ADC, ExecutionBinding, prior Ready receipt, current PR/HEAD, current candidate Ready decision, and changed paths. Changed Ready artifacts must retain the ADC-declared path/role set and pass the repository document and traceability validation.
+- The Owner must post the exact generated approval comment on Issue #46. Applying it appends one Intent and one Applied record and does not edit old receipts or change the Phase label. Only the exact Applied comment ID may authorize the normal `ready → execution` command to use that checkpoint.
+- Every descendant, including one with unchanged Ready artifact hashes, requires a fresh exact-subject checkpoint approval. Stale plans, a second checkpoint attempt, missing or edited approval, changed HEAD/Binding/ADC/PR, and incomplete writes fail closed.

@@ -503,7 +503,8 @@ def _verify_predecessor_receipt(github: GitHub, root: Path, issue_number: int,
                                 declared_paths: Mapping[str, tuple[str, ...]],
                                 adc_reasons: Mapping[str, str],
                                 documents_by_path: Mapping[str, Mapping[str, str]],
-                                previous_sha: str | None) -> tuple[PhaseDecision, str]:
+                                previous_sha: str | None, *,
+                                allow_artifact_drift: bool = False) -> tuple[PhaseDecision, str]:
     source, target = edge
     _comment_id, prior = _find_receipt(
         github, issue_number, source=source, target=target,
@@ -542,7 +543,7 @@ def _verify_predecessor_receipt(github: GitHub, root: Path, issue_number: int,
     for path, role in expected_paths.items():
         current = documents_by_path.get(path)
         if (current is None or current["role"] != role
-                or current["sha256"] != rows[path]["sha256"]):
+                or (not allow_artifact_drift and current["sha256"] != rows[path]["sha256"])):
             raise PhaseEvidenceError(
                 "a previously completed specification/design artifact changed; "
                 "return to requirements and reapprove the ADC",
@@ -551,10 +552,17 @@ def _verify_predecessor_receipt(github: GitHub, root: Path, issue_number: int,
 
 
 def _collect_payload(github: GitHub, root: Path, issue_number: int, source: Phase, target: Phase,
-                     skips: Mapping[str, str], *, check_source_phase: bool = True
+                     skips: Mapping[str, str], *, check_source_phase: bool = True,
+                     allow_predecessor_artifact_drift: bool = False,
                      ) -> tuple[PhaseDecision, dict[str, Any], VerifiedADC, str, str]:
     if type(issue_number) is not int or issue_number < 1:
         raise PhaseEvidenceError("Issue number must be a positive integer")
+    if (allow_predecessor_artifact_drift
+            and (github.repo.casefold() != "puchinya/ai-agent-workflow".casefold()
+                 or issue_number != 46 or target is not Phase.READY
+                 or source not in {Phase.REQUIREMENTS, Phase.SPECIFICATION, Phase.DESIGN}
+                 or check_source_phase)):
+        raise PhaseEvidenceError("artifact drift is permitted only for Issue #46 Ready checkpoint planning")
     issue, verified, kind, branch_ref, local_sha = verify_ordinary_issue_context(
         github, root, issue_number, require_binding=True,
     )
@@ -624,6 +632,7 @@ def _collect_payload(github: GitHub, root: Path, issue_number: int, source: Phas
         _prior, previous_sha = _verify_predecessor_receipt(
             github, Path(root), issue_number, edge, verified, kind, branch_ref, local_sha,
             declared_paths, adc_reasons, documents_by_path, previous_sha,
+            allow_artifact_drift=allow_predecessor_artifact_drift,
         )
 
     documents = sorted(documents_by_path.values(), key=lambda row: row["path"])

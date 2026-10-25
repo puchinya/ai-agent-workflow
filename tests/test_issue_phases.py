@@ -966,6 +966,77 @@ class PhaseEvidenceCollectionTests(unittest.TestCase):
                 with self.assertRaisesRegex(PhaseEvidenceError, "previously completed.*changed"):
                     _collect_payload(github, root, 40, Phase.SPECIFICATION, Phase.DESIGN, {})
 
+    def test_ready_receipt_stays_strict_for_unchanged_descendant_on_ordinary_issue(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repository, verified = self.make_repository(root)
+            github = self.fake_github(root, repository)
+            with patch("p_ases.phase_evidence._check_activation"), \
+                    patch("p_ases.phase_evidence.verify_adc", return_value=verified):
+                specification, *_ = _collect_payload(
+                    github, root, 40, Phase.REQUIREMENTS, Phase.SPECIFICATION, {},
+                )
+                github.create_issue_comment(40, specification.body())
+                github.phase = Phase.SPECIFICATION
+                design, *_ = _collect_payload(github, root, 40, Phase.SPECIFICATION, Phase.DESIGN, {})
+                github.create_issue_comment(40, design.body())
+                github.phase = Phase.DESIGN
+                ready, *_ = _collect_payload(github, root, 40, Phase.DESIGN, Phase.READY, {})
+                github.create_issue_comment(40, ready.body())
+                github.phase = Phase.READY
+                old_head = ready.payload["commit_sha40"]
+                supplementary = root / "workflow/skills/independent-review/SKILL.md"
+                supplementary.parent.mkdir(parents=True)
+                supplementary.write_text("Supplementary guidance.\n", encoding="utf-8")
+                subprocess.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
+                subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                                "commit", "-m", "supplementary docs after ready"],
+                               cwd=root, check=True, capture_output=True)
+                current_head = subprocess.run(
+                    ["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True,
+                ).stdout.strip()
+                self.assertNotEqual(old_head, current_head)
+                with self.assertRaisesRegex(PhaseEvidenceError, "stale.*current Issue branch HEAD"):
+                    verify_ready_preparation(github, root, 40, IssueKind.SINGLE)
+                with self.assertRaisesRegex(PhaseEvidenceError, "only for Issue #46 Ready checkpoint planning"):
+                    _collect_payload(
+                        github, root, 40, Phase.DESIGN, Phase.READY, {}, check_source_phase=False,
+                        allow_predecessor_artifact_drift=True,
+                    )
+
+    def test_changed_ready_documents_remain_blocked_on_ordinary_issue(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repository, verified = self.make_repository(root)
+            github = self.fake_github(root, repository)
+            with patch("p_ases.phase_evidence._check_activation"), \
+                    patch("p_ases.phase_evidence.verify_adc", return_value=verified):
+                specification, *_ = _collect_payload(
+                    github, root, 40, Phase.REQUIREMENTS, Phase.SPECIFICATION, {},
+                )
+                github.create_issue_comment(40, specification.body())
+                github.phase = Phase.SPECIFICATION
+                design, *_ = _collect_payload(github, root, 40, Phase.SPECIFICATION, Phase.DESIGN, {})
+                github.create_issue_comment(40, design.body())
+                github.phase = Phase.DESIGN
+                ready, *_ = _collect_payload(github, root, 40, Phase.DESIGN, Phase.READY, {})
+                github.create_issue_comment(40, ready.body())
+                github.phase = Phase.READY
+                specification_path = root / "docs/specs/product.md"
+                design_path = root / "docs/design/system.md"
+                specification_path.write_bytes(b'<a id="req-01"></a>\n# Updated specification\n')
+                design_path.write_bytes(b'<a id="des-wf-001"></a>\n# Updated design\n')
+                self.commit(root, "update normative documents after ready")
+                with self.assertRaisesRegex(PhaseEvidenceError, "previously completed.*changed"):
+                    verify_ready_preparation(github, root, 40, IssueKind.SINGLE)
+                with self.assertRaisesRegex(PhaseEvidenceError, "previously completed.*changed"):
+                    _collect_payload(github, root, 40, Phase.DESIGN, Phase.READY, {}, check_source_phase=False)
+                with self.assertRaisesRegex(PhaseEvidenceError, "only for Issue #46 Ready checkpoint planning"):
+                    _collect_payload(
+                        github, root, 40, Phase.DESIGN, Phase.READY, {}, check_source_phase=False,
+                        allow_predecessor_artifact_drift=True,
+                    )
+
     def test_new_approved_adc_generation_can_reenter_the_same_phase_transition(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

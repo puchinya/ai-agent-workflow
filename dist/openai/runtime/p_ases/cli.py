@@ -87,6 +87,12 @@ from .phase_evidence import (
     verify_ready_preparation,
     verify_phase_evidence,
 )
+from .ready_rebaseline import (
+    ReadyRebaselineError, apply_plan as apply_ready_rebaseline_plan,
+    build_plan as build_ready_rebaseline_plan, owner_approval_comment as ready_rebaseline_owner_comment,
+    read_plan as read_ready_rebaseline_plan, verify_checkpoint as verify_ready_rebaseline_checkpoint,
+    write_plan as write_ready_rebaseline_plan,
+)
 from .oracle_trace import (
     OracleDefinition, OracleTraceError, TestDefinition, validate_plan_oracles,
     validate_plan_tests,
@@ -2962,6 +2968,24 @@ def _parser() -> argparse.ArgumentParser:
                                help="repository root; required for ordinary Issue phase transitions")
     advance_issue.add_argument("--phase-evidence-comment-id", type=_positive_number,
                                help="exact PASES_PHASE_DECISION_V1 comment ID for specification/design/ready")
+    advance_issue.add_argument("--ready-rebaseline-comment-id", type=_positive_number,
+                               help="exact Owner-authorized Issue #46 checkpoint ID; required for any descendant HEAD")
+    ready_rebaseline_plan = issue_commands.add_parser(
+        "ready-rebaseline-plan", help="plan an exact Owner-authorized forward Ready checkpoint for Issue #46")
+    ready_rebaseline_plan.add_argument("issue", type=_positive_number)
+    ready_rebaseline_plan.add_argument("--repo", help="repository owner/name; defaults to origin")
+    ready_rebaseline_plan.add_argument("--root", type=Path, required=True,
+                                       help="repository root containing the exact bound branch HEAD")
+    ready_rebaseline_plan.add_argument("--output", type=Path, required=True,
+                                       help="new path for canonical immutable plan JSON")
+    ready_rebaseline_apply = issue_commands.add_parser(
+        "ready-rebaseline-apply", help="append the approved Ready rebaseline checkpoint")
+    ready_rebaseline_apply.add_argument("issue", type=_positive_number)
+    ready_rebaseline_apply.add_argument("--repo", help="repository owner/name; defaults to origin")
+    ready_rebaseline_apply.add_argument("--root", type=Path, required=True,
+                                        help="repository root containing the exact bound branch HEAD")
+    ready_rebaseline_apply.add_argument("--plan", type=Path, required=True)
+    ready_rebaseline_apply.add_argument("--approval-comment-id", type=_positive_number, required=True)
     phase_evidence = issue_commands.add_parser(
         "phase-evidence", help="publish an ADC- and commit-bound specification/design/ready receipt"
     )
@@ -3387,6 +3411,29 @@ def main(argv: list[str] | None = None) -> int:
                    "documents": decision.payload["documents"]})
             return 0
 
+        if args.verb == "ready-rebaseline-plan":
+            if args.issue != 46:
+                raise CLIError("ready rebaseline planning is limited to Issue #46")
+            github = GitHub(repository)
+            root = _repo_root(str(args.root)).resolve()
+            plan = build_ready_rebaseline_plan(github, root)
+            write_ready_rebaseline_plan(args.output, plan)
+            _json({"status": "PLAN_READY", "issue": args.issue,
+                   "plan_sha256": plan.sha256, "plan": plan.value,
+                   "owner_approval_comment": ready_rebaseline_owner_comment(plan),
+                   "approval_instructions": "The Owner must post this exact comment on Issue #46; the implementation agent does not post it."})
+            return 0
+
+        if args.verb == "ready-rebaseline-apply":
+            if args.issue != 46:
+                raise CLIError("ready rebaseline application is limited to Issue #46")
+            github = GitHub(repository)
+            root = _repo_root(str(args.root)).resolve()
+            plan = read_ready_rebaseline_plan(args.plan)
+            result = apply_ready_rebaseline_plan(github, root, plan, args.approval_comment_id)
+            _json({"issue": args.issue, **result})
+            return 0
+
         if args.verb == "advance":
             github = GitHub(repository)
             issue = github.issue(args.issue)
@@ -3410,6 +3457,12 @@ def main(argv: list[str] | None = None) -> int:
             if bootstrap and kind_labels and (len(kind_labels) != 1 or kind_labels[0] != kind.value):
                 raise CLIError("Bootstrap Issue kind label conflicts with --kind")
             target = Phase(args.target)
+            if args.ready_rebaseline_comment_id is not None and target is not Phase.EXECUTION:
+                raise CLIError("--ready-rebaseline-comment-id is only valid for ready -> execution")
+            if (args.ready_rebaseline_comment_id is not None
+                    and (repository.casefold() != "puchinya/ai-agent-workflow".casefold()
+                         or args.issue != 46 or kind is not IssueKind.SINGLE)):
+                raise CLIError("Ready rebaseline checkpoints are limited to puchinya/ai-agent-workflow Issue #46")
             evidence_required = (not bootstrap and kind in {IssueKind.SINGLE, IssueKind.CHILD}
                                  and target in {Phase.SPECIFICATION, Phase.DESIGN, Phase.READY})
             ordinary_issue = (not bootstrap and kind in {IssueKind.SINGLE, IssueKind.CHILD})
@@ -3424,7 +3477,12 @@ def main(argv: list[str] | None = None) -> int:
                     require_binding=target in {Phase.EXECUTION, Phase.VERIFICATION},
                 )
                 if target is Phase.EXECUTION:
-                    verify_ready_preparation(github, root, args.issue, kind)
+                    if args.ready_rebaseline_comment_id is None:
+                        verify_ready_preparation(github, root, args.issue, kind)
+                    else:
+                        verify_ready_rebaseline_checkpoint(
+                            github, root, args.ready_rebaseline_comment_id,
+                        )
             if evidence_required:
                 if args.phase_evidence_comment_id is None:
                     raise CLIError("specification, design, and ready transitions require --phase-evidence-comment-id")
@@ -3448,7 +3506,12 @@ def main(argv: list[str] | None = None) -> int:
                         or latest_adc.contract.sha256 != approved_adc.contract.sha256):
                     raise CLIError("approved ADC pointer or generation changed before the phase label write")
                 if target is Phase.EXECUTION:
-                    verify_ready_preparation(github, root, args.issue, kind)
+                    if args.ready_rebaseline_comment_id is None:
+                        verify_ready_preparation(github, root, args.issue, kind)
+                    else:
+                        verify_ready_rebaseline_checkpoint(
+                            github, root, args.ready_rebaseline_comment_id,
+                        )
             if evidence_required and root is not None:
                 verify_phase_evidence(github, root, args.issue, args.phase_evidence_comment_id,
                                       phase, target, skip_reasons)
@@ -3519,7 +3582,7 @@ def main(argv: list[str] | None = None) -> int:
     except (ADCError, AcceptanceError, AuditError, CheckpointError, ExecutionError,
             DocumentError, DocumentFormatError, EvidenceError, GitError, GitHubError,
             IntegrationError, IssueGraphError, OracleTraceError, PhaseError, PlanError, ProfileError,
-            PhaseEvidenceError, ReadinessError, UserReviewError, VerificationError,
+            PhaseEvidenceError, ReadyRebaselineError, ReadinessError, UserReviewError, VerificationError,
             WorkError, CLIError, OSError, UnicodeError, ValueError) as exc:
         if args.namespace in {"verification", "acceptance", "work", "pr", "audit", "delivery", "user-review"}:
             return _blocked_result((str(exc),))

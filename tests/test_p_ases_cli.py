@@ -76,6 +76,26 @@ class PasesCLITests(unittest.TestCase):
         ])
         self.assertEqual((advance.phase_evidence_comment_id, advance.root), (99, ROOT))
 
+    def test_issue_46_ready_rebaseline_requires_plan_approval_and_applied_comment_ids(self):
+        plan = _parser().parse_args([
+            "issue", "ready-rebaseline-plan", "46", "--repo", "puchinya/ai-agent-workflow",
+            "--root", str(ROOT), "--output", str(ROOT / "ready-plan.json"),
+        ])
+        apply = _parser().parse_args([
+            "issue", "ready-rebaseline-apply", "46", "--repo", "puchinya/ai-agent-workflow",
+            "--root", str(ROOT), "--plan", str(ROOT / "ready-plan.json"),
+            "--approval-comment-id", "900",
+        ])
+        advance = _parser().parse_args([
+            "issue", "advance", "46", "execution", "--kind", "single",
+            "--root", str(ROOT), "--repo", "puchinya/ai-agent-workflow",
+            "--ready-rebaseline-comment-id", "901",
+        ])
+        self.assertEqual((plan.verb, plan.issue, plan.output),
+                         ("ready-rebaseline-plan", 46, ROOT / "ready-plan.json"))
+        self.assertEqual((apply.verb, apply.approval_comment_id), ("ready-rebaseline-apply", 900))
+        self.assertEqual(advance.ready_rebaseline_comment_id, 901)
+
     def test_legacy_adoption_and_reset_routes_require_exact_plan_and_comment_ids(self):
         adoption_plan = _parser().parse_args([
             "delivery", "legacy-adoption-plan", "46", "--repo", "octo/repo", "--root", str(ROOT),
