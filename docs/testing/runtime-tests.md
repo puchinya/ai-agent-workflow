@@ -43,6 +43,8 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
     - [2.15.1 ORA-RT-015 Fail-closed result](#2151-ora-rt-015-fail-closed-result)
   - [2.16 TST-RT-016 Legacy Adoption CLI and plan file](#216-tst-rt-016-legacy-adoption-cli-and-plan-file)
     - [2.16.1 ORA-RT-016 Expected result](#2161-ora-rt-016-expected-result)
+  - [2.17 TST-RT-017 UNAVAILABLE review exception CLI](#217-tst-rt-017-unavailable-review-exception-cli)
+    - [2.17.1 ORA-RT-017 Expected result](#2171-ora-rt-017-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -79,6 +81,8 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
 - [ORA-RT-015](#ora-rt-015) — 2.15.1 ORA-RT-015 Fail-closed result
 - [TST-RT-016](#tst-rt-016) — 2.16 TST-RT-016 Legacy Adoption CLI and plan file
 - [ORA-RT-016](#ora-rt-016) — 2.16.1 ORA-RT-016 Expected result
+- [TST-RT-017](#tst-rt-017) — 2.17 TST-RT-017 UNAVAILABLE review exception CLI
+- [ORA-RT-017](#ora-rt-017) — 2.17.1 ORA-RT-017 Expected result
 <!-- heading-map:end -->
 
 
@@ -283,3 +287,15 @@ Every invalid boundary returns a nonzero bounded error before an unrelated local
 #### 2.16.1 ORA-RT-016 Expected result
 
 CLI plan output is deterministic, labels risk acknowledgement `AWAITING_OWNER_APPROVAL`, and exposes the exact Owner-authored comment template, both risk IDs, and the single-writer condition. Apply requires the exact canonical V2 plan file, Owner-authored comment, and current authenticated Owner User; success reports `KNOWN_RISK_ACCEPTED_BY_OWNER` separately from technical `ADOPTED` or `NOOP`. Missing, changed, non-Owner, or overwritten plan data blocks; CLI does not generate or publish an Owner approval or claim atomicity/history immutability.
+
+<a id="tst-rt-017"></a>
+<a id="tst-rt-017-unavailable-review-exception-cli"></a>
+### 2.17 TST-RT-017 UNAVAILABLE review exception CLI
+
+**Setup and action:** Parse `delivery review-unavailable-plan ISSUE PR HEAD VERIFICATION_PLAN --host-surface SURFACE --output PLAN_FILE` and `delivery review-unavailable-apply ISSUE PR HEAD VERIFICATION_PLAN --plan PLAN_FILE --approval-comment-id ID`. Exercise every supported host surface and unknown value, missing Verification Plan, changed plan bytes, stale current subject, wrong Owner comment, and exact current plan/approval. Run Readiness and Final Delivery with the ordinary Independent Review input, the exception path, both inputs, and neither input.
+
+<a id="ora-rt-017"></a>
+<a id="ora-rt-017-expected-result"></a>
+#### 2.17.1 ORA-RT-017 Expected result
+
+Plan generation is read-only and requires the frozen Verification Plan and exact current subject. Apply alone writes the separately versioned exception record after exact Owner comment verification. The host surface is limited to `codex_cloud`, `codex_local_cli`, `codex_desktop`, or `claude_code`. Readiness and Final Delivery accept exactly one valid source; both or neither are rejected. Invalid, stale, or missing evidence blocks before unrelated local or GitHub mutations.

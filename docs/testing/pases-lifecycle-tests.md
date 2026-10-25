@@ -63,6 +63,14 @@
     - [2.26.1 ORA-F06-008 Expected result](#2261-ora-f06-008-expected-result)
   - [2.27 TST-F06-009 Issue #63 / PR #64 isolation](#227-tst-f06-009-issue-63-pr-64-isolation)
     - [2.27.1 ORA-F06-009 Expected result](#2271-ora-f06-009-expected-result)
+  - [2.28 TST-F06-010 Explicit opt-in and typed capture-unavailability eligibility](#228-tst-f06-010-explicit-opt-in-and-typed-capture-unavailability-eligibility)
+    - [2.28.1 ORA-F06-010 Expected result](#2281-ora-f06-010-expected-result)
+  - [2.29 TST-F06-011 Exact exception plan, Owner grant, and append-only record](#229-tst-f06-011-exact-exception-plan-owner-grant-and-append-only-record)
+    - [2.29.1 ORA-F06-011 Expected result](#2291-ora-f06-011-expected-result)
+  - [2.30 TST-F06-012 Versioned Readiness and Final Delivery compatibility](#230-tst-f06-012-versioned-readiness-and-final-delivery-compatibility)
+    - [2.30.1 ORA-F06-012 Expected result](#2301-ora-f06-012-expected-result)
+  - [2.31 TST-F06-013 User Review and downstream exact-subject revalidation](#231-tst-f06-013-user-review-and-downstream-exact-subject-revalidation)
+    - [2.31.1 ORA-F06-013 Expected result](#2311-ora-f06-013-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -121,6 +129,14 @@
 - [ORA-F06-008](#ora-f06-008) — 2.26.1 ORA-F06-008 Expected result
 - [TST-F06-009](#tst-f06-009) — 2.27 TST-F06-009 Issue #63 / PR #64 isolation
 - [ORA-F06-009](#ora-f06-009) — 2.27.1 ORA-F06-009 Expected result
+- [TST-F06-010](#tst-f06-010) — 2.28 TST-F06-010 Explicit opt-in and typed capture-unavailability eligibility
+- [ORA-F06-010](#ora-f06-010) — 2.28.1 ORA-F06-010 Expected result
+- [TST-F06-011](#tst-f06-011) — 2.29 TST-F06-011 Exact exception plan, Owner grant, and append-only record
+- [ORA-F06-011](#ora-f06-011) — 2.29.1 ORA-F06-011 Expected result
+- [TST-F06-012](#tst-f06-012) — 2.30 TST-F06-012 Versioned Readiness and Final Delivery compatibility
+- [ORA-F06-012](#ora-f06-012) — 2.30.1 ORA-F06-012 Expected result
+- [TST-F06-013](#tst-f06-013) — 2.31 TST-F06-013 User Review and downstream exact-subject revalidation
+- [ORA-F06-013](#ora-f06-013) — 2.31.1 ORA-F06-013 Expected result
 <!-- heading-map:end -->
 
 
@@ -411,12 +427,12 @@ Absent setting defaults to `host_verified`. Attested evidence passes only the ex
 <a id="tst-f06-006"></a>
 ### 2.24 TST-F06-006 Readiness and downstream enforcement
 
-**Setup and action:** Attempt review ingestion, Readiness, Final Delivery, and phase transitions with V1-only, stale, unresolved, SELF_REVIEW, UNAVAILABLE, policy-drifted, and valid V2 records.
+**Setup and action:** Exercise ordinary V1 PASS and current eligible native V2 results, then Readiness and Final Delivery with V1-only, stale, unresolved, SELF_REVIEW, UNAVAILABLE, policy-drifted, and exact Owner-exception inputs. Include a valid positively observed capture-unavailable case with all non-review gates passing, plus actual FAIL/BLOCKED/CONCERNS reviews, unresolved A/B/C findings, missing Verification Plan, and each failing non-review gate.
 
 <a id="ora-f06-006"></a>
 #### 2.24.1 ORA-F06-006 Expected result
 
-Only current positive V2 evidence meeting the committed minimum proceeds. A blocked review creates no User Review session and causes zero phase mutations.
+Ordinary review eligibility and V1 bytes remain unchanged. Only positive current native evidence meeting the committed minimum uses the ordinary path. A current exact Owner exception may yield distinct Readiness V2 `READY_WITH_EXCEPTION` only for `HOST_NATIVE_CAPTURE_UNAVAILABLE`, with `review_assurance=UNAVAILABLE` and every other gate passing. Actual review failures, unresolved A/B/C findings, stale/invalid evidence, or any non-review failure remain blocked with zero User Review starts and zero phase mutations.
 
 <a id="tst-f06-007"></a>
 ### 2.25 TST-F06-007 Host-specific adapters
@@ -447,3 +463,51 @@ Each host/OS smoke status is PASS only after direct observation; inaccessible su
 #### 2.27.1 ORA-F06-009 Expected result
 
 All #63/#64 workflow and evidence snapshots remain byte-for-byte unchanged. Any attempt to issue #63 review, User Review, policy, Activation, merge, or closure evidence is rejected.
+
+<a id="tst-f06-010"></a>
+<a id="tst-f06-010-explicit-opt-in-and-typed-capture-unavailability-eligibility"></a>
+### 2.28 TST-F06-010 Explicit opt-in and typed capture-unavailability eligibility
+
+**Setup and action:** Evaluate a default profile with capture unavailable, each permitted `unavailable_handling` value, unknown values, and the Issue #46 repository/Issue/PR identity tuple and nearby mismatches. Compare positive host-to-runtime capture absence with an actual failed review, unresolved A/B/C finding, malformed or stale evidence, missing Verification Plan, and failed CI/Verification/Acceptance/Self-Audit.
+
+<a id="ora-f06-010"></a>
+<a id="ora-f06-010-expected-result"></a>
+#### 2.28.1 ORA-F06-010 Expected result
+
+Omission and `block` remain blocking. Only an explicit committed `owner_exception` for repository ID `1401910271`, Issue #46 / stable ID `5846549384`, and PR #67 plus typed `HOST_NATIVE_CAPTURE_UNAVAILABLE` is eligible to plan an exception. `REVIEW_FAILED`, `INVALID_EVIDENCE`, unknown values, other subjects, and normal native-review success never take the exception path.
+
+<a id="tst-f06-011"></a>
+<a id="tst-f06-011-exact-exception-plan-owner-grant-and-append-only-record"></a>
+### 2.29 TST-F06-011 Exact exception plan, Owner grant, and append-only record
+
+**Setup and action:** Vary every canonical plan field and digest, Owner ID, Issue/repository/PR identity, base/HEAD, ADC, frozen Verification Plan, ExecutionBinding, PRBinding, profile, host surface, reason, observation digest, and risk. Add missing, edited, deleted, duplicate, conflicting, wrong-Owner, wrong-URL, timestamp-edited, and changed-between-direct/list/direct approval comments. Exercise exact apply, response loss, exact replay, and partial/conflicting local or Issue history.
+
+<a id="ora-f06-011"></a>
+<a id="ora-f06-011-expected-result"></a>
+#### 2.29.1 ORA-F06-011 Expected result
+
+Only the one canonical current plan and exact Owner-authored approval comment can produce the separate implementation-authored exception record. Every identity and URL is exact, timestamps are unedited, and direct/list/direct reads match. Stale or invalid input writes nothing; exact replay is read-only; uncertain or conflicting state is not retried or replaced. No agent-generated approval is accepted.
+
+<a id="tst-f06-012"></a>
+<a id="tst-f06-012-versioned-readiness-and-final-delivery-compatibility"></a>
+### 2.30 TST-F06-012 Versioned Readiness and Final Delivery compatibility
+
+**Setup and action:** Compare fixed V1 Readiness, Final Delivery, and User Review bytes before and after adding V2. Evaluate valid and invalid exception cases, all non-review gates, risk fields, status values, and `merge_authorized` behavior.
+
+<a id="ora-f06-012"></a>
+<a id="ora-f06-012-expected-result"></a>
+#### 2.30.1 ORA-F06-012 Expected result
+
+All V1 bytes and behavior remain identical. The exception path emits only Readiness V2 `READY_WITH_EXCEPTION` or `BLOCKED`, and Final Delivery V2 `READY_FOR_EXPLICIT_MERGE_AUTHORIZATION_WITH_EXCEPTION` or blocked, always disclosing `review_assurance=UNAVAILABLE`; the ready V2 result has `merge_authorized=false` and cannot merge.
+
+<a id="tst-f06-013"></a>
+<a id="tst-f06-013-user-review-and-downstream-exact-subject-revalidation"></a>
+### 2.31 TST-F06-013 User Review and downstream exact-subject revalidation
+
+**Setup and action:** Start and submit User Review from ordinary Readiness V1 PASS and current Readiness V2 READY_WITH_EXCEPTION. Between every Readiness recomputation, session start/submit, and Final Delivery read, mutate PR/HEAD, ADC, Verification Plan, ExecutionBinding, PRBinding, profile, exception record, Owner comment, Required CI, dependency, Verification, Acceptance, Self-Audit, and review-failure state; include a draft PR and dirty worktree.
+
+<a id="ora-f06-013"></a>
+<a id="ora-f06-013-expected-result"></a>
+#### 2.31.1 ORA-F06-013 Expected result
+
+Only the exact still-current V1 or V2 source can start the separate human User Review. Any changed bound input blocks before session or phase writes. User Review remains independent, and explicit `PR_MERGE`, merge, and Issue closure are never authorized by the exception.
