@@ -289,6 +289,66 @@ def _record_body(plan: ReviewUnavailablePlan, owner_comment_id: int,
     return f"<!-- {RECORD_SCHEMA}\n{_canonical(payload).decode('utf-8')}\n-->"
 
 
+def _record_from_history_comment(row: Any) -> ReviewUnavailableException:
+    """Parse one canonical exception marker from the complete Issue history."""
+    if not isinstance(row, dict) or not isinstance(row.get("body"), str):
+        raise ReviewUnavailableError("exception receipt history contains a malformed marker")
+    body = row["body"]
+    prefix = f"<!-- {RECORD_SCHEMA}\n"
+    if not body.startswith(prefix) or not body.endswith("\n-->"):
+        raise ReviewUnavailableError("exception receipt history contains malformed marker framing")
+    encoded = body[len(prefix):-len("\n-->")]
+    try:
+        payload = json.loads(encoded)
+    except json.JSONDecodeError as exc:
+        raise ReviewUnavailableError("exception receipt history contains malformed marker JSON") from exc
+    expected = {"owner_approval_comment_id", "owner_approval_sha256", "plan_sha256", "plan",
+                "publisher_user_id", "schema"}
+    if (not isinstance(payload, dict) or set(payload) != expected
+            or payload.get("schema") != RECORD_SCHEMA or _canonical(payload).decode("utf-8") != encoded):
+        raise ReviewUnavailableError("exception receipt history contains noncanonical marker data")
+    comment_id = row.get("id")
+    _positive_int(comment_id, "exception receipt Comment ID")
+    return ReviewUnavailableException({
+        "exception_comment_id": comment_id,
+        "exception_comment_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+        **payload,
+    }).validate()
+
+
+def _exception_history_for_head(github: GitHub, head_sha40: str) -> list[tuple[ReviewUnavailableException, dict[str, Any]]]:
+    """Validate every exception marker, then return exact direct/list/direct readbacks for one HEAD."""
+    if not isinstance(head_sha40, str) or not SHA40.fullmatch(head_sha40):
+        raise ReviewUnavailableError("exception history HEAD is invalid")
+    try:
+        comments = github.issue_comments(ISSUE_NUMBER)
+    except GitHubError as exc:
+        raise ReviewUnavailableError("exception receipt history readback failed") from exc
+    marker = f"<!-- {RECORD_SCHEMA}"
+    records: list[tuple[ReviewUnavailableException, dict[str, Any]]] = []
+    for row in comments:
+        body = row.get("body") if isinstance(row, dict) else None
+        if not isinstance(body, str) or marker not in body:
+            continue
+        record = _record_from_history_comment(row)
+        if record.snapshot["head_sha40"] != head_sha40:
+            continue
+        _verify_repository_scope(github)
+        verify_record_approval(github, record)
+        exact = _read_comment_direct_list_direct(
+            github, issue_number=ISSUE_NUMBER, comment_id=record.value["exception_comment_id"],
+            body=_record_body(ReviewUnavailablePlan(record.value["plan"]),
+                              record.value["owner_approval_comment_id"],
+                              record.value["owner_approval_sha256"],
+                              record.value["publisher_user_id"]),
+            author_id=record.value["publisher_user_id"], label="exception receipt",
+        )
+        records.append((record, exact))
+    if len(records) > 1:
+        raise ReviewUnavailableError("exception receipt history has duplicate or conflicting records for this PR HEAD")
+    return records
+
+
 @dataclass(frozen=True)
 class ReviewUnavailableException:
     value: dict[str, Any]
@@ -401,18 +461,15 @@ def write_exception(path: Path, record: ReviewUnavailableException) -> None:
 
 def read_exception_comment(github: GitHub, record: ReviewUnavailableException) -> dict[str, Any]:
     record.validate()
-    verify_record_approval(github, record)
-    body = _record_body(
-        ReviewUnavailablePlan(record.value["plan"]), record.value["owner_approval_comment_id"],
-        record.value["owner_approval_sha256"],
-        record.value["publisher_user_id"],
-    )
+    history = _exception_history_for_head(github, record.snapshot["head_sha40"])
+    if len(history) != 1 or history[0][0] != record:
+        raise ReviewUnavailableError("exception receipt is missing, duplicated, or conflicts with same-HEAD history")
+    body = _record_body(ReviewUnavailablePlan(record.value["plan"]),
+                        record.value["owner_approval_comment_id"],
+                        record.value["owner_approval_sha256"], record.value["publisher_user_id"])
     if hashlib.sha256(body.encode("utf-8")).hexdigest() != record.value["exception_comment_sha256"]:
         raise ReviewUnavailableError("exception receipt body digest differs from its immutable record")
-    return _read_comment_direct_list_direct(
-        github, issue_number=ISSUE_NUMBER, comment_id=record.value["exception_comment_id"],
-        body=body, author_id=record.value["publisher_user_id"], label="exception receipt",
-    )
+    return history[0][1]
 
 
 def apply_exception(github: GitHub, plan: ReviewUnavailablePlan, owner_comment_id: int,
@@ -427,33 +484,22 @@ def apply_exception(github: GitHub, plan: ReviewUnavailablePlan, owner_comment_i
     publisher_id = principal.get("id")
     _positive_int(publisher_id, "authenticated publisher User ID")
     expected_body = _record_body(plan, owner_comment_id, owner_sha, publisher_id)
-    comments = github.issue_comments(ISSUE_NUMBER)
-    marker_prefix = f"<!-- {RECORD_SCHEMA}\n"
-    for item in comments:
-        body = item.get("body")
-        if not isinstance(body, str) or not body.startswith(marker_prefix):
-            continue
-        try:
-            payload = json.loads(body[len(marker_prefix):].split("\n-->", 1)[0])
-        except (json.JSONDecodeError, IndexError):
-            raise ReviewUnavailableError("exception receipt history contains malformed marker data")
-        nested_plan = payload.get("plan") if isinstance(payload, dict) else None
-        snapshot = nested_plan.get("snapshot") if isinstance(nested_plan, dict) else None
-        if isinstance(snapshot, dict) and snapshot.get("head_sha40") == plan.snapshot["head_sha40"]:
-            if body != expected_body:
-                raise ReviewUnavailableError("conflicting exception receipt already exists for this PR HEAD")
-            matches = [row for row in comments if row.get("body") == expected_body]
-            if len(matches) != 1:
-                raise ReviewUnavailableError("exception receipt is duplicated")
-            comment_id = item.get("id")
-            row = _read_comment_direct_list_direct(github, issue_number=ISSUE_NUMBER,
-                                                   comment_id=comment_id, body=expected_body,
-                                                   author_id=publisher_id, label="exception receipt")
-            record = _make_record(plan, owner_comment_id, owner_sha, publisher_id,
-                                  row["id"], expected_body)
-            path = exception_record_path(local_root, record)
-            write_exception(path, record)
-            return record, path, True
+    existing = _exception_history_for_head(github, plan.snapshot["head_sha40"])
+    if existing:
+        prior, row = existing[0]
+        if (prior.value["plan_sha256"] != plan.sha256
+                or prior.value["owner_approval_comment_id"] != owner_comment_id
+                or prior.value["owner_approval_sha256"] != owner_sha
+                or prior.value["publisher_user_id"] != publisher_id
+                or _record_body(ReviewUnavailablePlan(prior.value["plan"]), owner_comment_id,
+                                owner_sha, publisher_id) != expected_body):
+            raise ReviewUnavailableError("conflicting exception receipt already exists for this PR HEAD")
+        record = _make_record(plan, owner_comment_id, owner_sha, publisher_id, row["id"], expected_body)
+        if prior != record:
+            raise ReviewUnavailableError("existing exception receipt conflicts with the exact requested record")
+        path = exception_record_path(local_root, record)
+        write_exception(path, record)
+        return record, path, True
     try:
         created = github.create_issue_comment(ISSUE_NUMBER, expected_body)
         comment_id = created.get("id") if isinstance(created, dict) else None

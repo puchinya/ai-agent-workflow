@@ -10,12 +10,14 @@ Owner: runtime/p_ases/user_review.py. Inputs are an open PR, current HEAD, appro
 
 ## Workflow
 
-1. Start a review session bound to the exact Issue, PR, HEAD, and plan.
-2. Synchronize conversation comments, formal reviews, inline comments, and review threads with pagination and edit/deletion readback.
-3. Treat changed HEAD as stale and restart only from current state.
-4. Record direct-chat decisions only through a trusted host verifier. Raw caller JSON is not identity authority.
-5. Route newly requested scope to requirements; do not silently absorb it into the current contract.
-6. When a valid Readiness V2 exception is selected, retain the visible `review_assurance=UNAVAILABLE` and `INDEPENDENT_REVIEW_NOT_PERFORMED` risk. It does not count as an independent review or replace the separate human User Review decision.
+1. Before every start, sync, or status evaluation, recompute the saved Readiness from current Verification/Required Checks, Acceptance observations, Self-Audit evidence, dependencies, PR/work bindings, profile, review evidence, and any Owner exception. This read-only recomputation must match the saved V1/V2 result; repeat it before any session, snapshot, result, or phase write.
+2. Read the Issue's unique live `kind:*`, `phase:*`, and `attention:*` labels. The actual kind label is authoritative; reject a conflicting `--kind`, `phase:execution` or any other invalid source phase, and active attention before creating User Review files. Read the same Issue identity/labels again before a phase update.
+3. Start a review session bound to the exact Issue, PR, HEAD, and plan.
+4. Synchronize conversation comments, formal reviews, inline comments, and review threads with pagination and edit/deletion readback.
+5. Treat changed HEAD as stale and restart only from current state.
+6. Record direct-chat decisions only through a trusted host verifier. Raw caller JSON is not identity authority.
+7. Route newly requested scope to requirements; do not silently absorb it into the current contract.
+8. When a valid Readiness V2 exception is selected, retain the visible `review_assurance=UNAVAILABLE` and `INDEPENDENT_REVIEW_NOT_PERFORMED` risk. Reject malformed, duplicate, or conflicting exception receipts for the same HEAD on every read. The exception does not count as an independent review or replace the separate human User Review decision.
 
 ## CLI
 
@@ -29,6 +31,6 @@ python -m p_ases user-review record 32 42 path/to/host-event.json --repo OWNER/R
 
 ## Failure handling and output
 
-Edited/deleted feedback history, unresolved threads, stale HEAD, missing user decision, invalid host identity, or incomplete Acceptance blocks approval. The current CLI intentionally fails closed for untrusted direct-chat payloads. Output subject, synchronized feedback, decision, and blockers. User Review is not merge authorization.
+Edited/deleted feedback history, unresolved threads, stale HEAD, changed non-review gates, invalid Issue phase/kind/attention, conflicting exception history, missing user decision, invalid host identity, or incomplete Acceptance blocks approval before relevant persistence. The current CLI intentionally fails closed for untrusted direct-chat payloads. Output subject, synchronized feedback, decision, and blockers. User Review is not merge authorization.
 
 Next owners: integration-validation handles parent feedback; delivery-control keeps merge permission separate. See the [User Review specification](../../../docs/specs/workflow-spec.md).

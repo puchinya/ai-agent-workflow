@@ -778,7 +778,9 @@ def _unaccepted_dependencies(github: GitHub, contract: Any) -> tuple[str, ...]:
 
 
 def _calculate_acceptance(args: argparse.Namespace, repository: str, root: Path, github: GitHub,
-                          template: dict[str, Any]) -> tuple[AcceptanceResult, list[str]]:
+                          template: dict[str, Any], *,
+                          verification_override: VerificationResult | None = None,
+                          ) -> tuple[AcceptanceResult, list[str]]:
     verified_adc = verify_adc(github, args.issue)
     plan, required, oracles, _tests = _load_plan(root, repository, args.issue, args.plan, verified_adc)
     subject = _subject(repository, args.issue, args.pr, args.head, verified_adc, plan)
@@ -811,10 +813,16 @@ def _calculate_acceptance(args: argparse.Namespace, repository: str, root: Path,
                 or record.evidence_type != observation.kind or record.outcome != observation.outcome
                 or record.evidence_sha256 not in evidence_by_digest or absolute_reference not in evidence_paths):
             raise CLIError("Acceptance observation does not match read-back exact-subject Evidence")
-    verification = read_verification_result(args.verification)
-    current_verification, _ = _calculate_verification(args, repository, root, github)
-    if verification != current_verification:
-        raise CLIError("Verification result is stale relative to current source, Evidence, Check policy, or Check Runs")
+    if verification_override is None:
+        verification = read_verification_result(args.verification)
+        current_verification, _ = _calculate_verification(args, repository, root, github)
+        if verification != current_verification:
+            raise CLIError("Verification result is stale relative to current source, Evidence, Check policy, or Check Runs")
+    else:
+        verification = verification_override.validate()
+        if verification.subject != subject:
+            raise CLIError("read-only Acceptance recomputation received Verification for a different subject")
+        current_verification = verification
     verification_gate = GateResult(verification.status, verification.reasons, verification.subject).validate()
     try:
         validate_plan_oracles(plan, required, {item.oracle_id: item for item in oracles})
@@ -2286,47 +2294,114 @@ def _read_review_record(path: Path) -> tuple[UserReviewSubject, UserReviewResult
     return result.subject, result, value["snapshot_sha256"]
 
 
-def _review_phase_transition(github: GitHub, issue_number: int, kind: IssueKind,
-                             result: UserReviewResult, operation: str) -> None:
-    issue = github.issue(issue_number)
-    if issue.get("number") != issue_number or issue.get("state") != "open" or issue.get("pull_request") is not None:
-        raise CLIError("User Review phase update requires the same open Issue")
+def _validate_user_review_issue(issue: Any, issue_number: int, requested_kind: str | None,
+                                operation: str, result: UserReviewResult | None = None) -> tuple[IssueKind, list[str]]:
+    if (not isinstance(issue, dict) or issue.get("number") != issue_number or issue.get("state") != "open"
+            or issue.get("pull_request") is not None):
+        raise CLIError("User Review requires the same open Issue")
     label_rows = issue.get("labels")
     if not isinstance(label_rows, list) or any(not isinstance(row, dict) for row in label_rows):
         raise CLIError("Issue phase label readback is invalid")
     labels = [row.get("name") for row in label_rows]
     if any(not isinstance(label, str) for label in labels):
         raise CLIError("Issue phase label readback contains a malformed label")
-    phase, attention = parse_phase_labels(labels), parse_attention_labels(labels)
+    kind_labels = [label.removeprefix("kind:") for label in labels if label.startswith("kind:")]
+    if len(kind_labels) != 1:
+        raise CLIError("User Review requires exactly one verified kind:* Issue label")
+    try:
+        kind = IssueKind(kind_labels[0])
+    except ValueError as exc:
+        raise CLIError("User Review Issue kind label is unknown") from exc
+    if kind is IssueKind.PARENT:
+        raise CLIError("parent Issues must use the parent Integration/User Review workflow")
+    if requested_kind is not None and requested_kind != kind.value:
+        raise CLIError("--kind does not match the Issue's verified kind:* label")
+    try:
+        phase, attention = parse_phase_labels(labels), parse_attention_labels(labels)
+    except PhaseError as exc:
+        raise CLIError(f"User Review Issue phase labels are invalid: {exc}") from exc
+    if attention:
+        raise CLIError("User Review cannot proceed while the Issue has an attention:* label")
     if operation == "start":
-        if phase is Phase.USER_REVIEW:
-            return
-        target = Phase.USER_REVIEW
-        next_state = advance(PhaseState(issue_number, kind, phase, attention), target,
+        if phase not in {Phase.VERIFICATION, Phase.USER_REVIEW}:
+            raise CLIError(f"User Review start is invalid from phase:{phase.value}")
+        if phase is Phase.VERIFICATION:
+            advance(PhaseState(issue_number, kind, phase, attention), Phase.USER_REVIEW,
+                    readiness_passed=True)
+    elif operation in {"sync", "status"}:
+        if phase is not Phase.USER_REVIEW:
+            raise CLIError(f"User Review {operation} requires phase:user-review, found phase:{phase.value}")
+    if operation == "sync" and result is not None and result.next_phase == "execution" and phase is Phase.USER_REVIEW:
+        advance(PhaseState(issue_number, kind, phase, attention), Phase.EXECUTION,
+                changes_requested=True)
+    elif operation == "sync" and result is not None and result.next_phase == "requirements" and phase is Phase.USER_REVIEW:
+        advance(PhaseState(issue_number, kind, phase, attention), Phase.REQUIREMENTS,
+                new_requirements=True)
+    return kind, labels
+
+
+def _readback_user_review_issue(github: GitHub, issue_number: int, requested_kind: str | None,
+                                operation: str, result: UserReviewResult | None = None
+                                ) -> tuple[IssueKind, list[str]]:
+    first = github.issue(issue_number)
+    kind, labels = _validate_user_review_issue(first, issue_number, requested_kind, operation, result)
+    second = github.issue(issue_number)
+    second_kind, second_labels = _validate_user_review_issue(second, issue_number, requested_kind, operation, result)
+    if kind is not second_kind or labels != second_labels:
+        raise CLIError("Issue kind, phase, or attention labels changed during User Review readback")
+    return kind, labels
+
+
+def _review_phase_transition(github: GitHub, issue_number: int, kind: IssueKind,
+                             result: UserReviewResult, operation: str) -> None:
+    verified_kind, labels = _readback_user_review_issue(github, issue_number, kind.value, operation, result)
+    if verified_kind is not kind:
+        raise CLIError("User Review phase transition kind differs from the Issue label")
+    phase, attention = parse_phase_labels(labels), parse_attention_labels(labels)
+    next_state = None
+    if operation == "start" and phase is Phase.VERIFICATION:
+        next_state = advance(PhaseState(issue_number, kind, phase, attention), Phase.USER_REVIEW,
                              readiness_passed=True)
-    elif result.next_phase == "execution" and phase is Phase.USER_REVIEW:
+    elif operation == "sync" and result.next_phase == "execution":
         next_state = advance(PhaseState(issue_number, kind, phase, attention), Phase.EXECUTION,
                              changes_requested=True)
-    elif result.next_phase == "requirements" and phase is Phase.USER_REVIEW:
+    elif operation == "sync" and result.next_phase == "requirements":
         next_state = advance(PhaseState(issue_number, kind, phase, attention), Phase.REQUIREMENTS,
                              new_requirements=True)
-    else:
-        return
     current = github.issue(issue_number)
-    current_labels = current.get("labels") if isinstance(current, dict) else None
-    if (current.get("state") != "open" or current.get("number") != issue_number
-            or not isinstance(current_labels, list)
-            or [row.get("name") for row in current_labels if isinstance(row, dict)] != labels):
+    current_kind, current_labels = _validate_user_review_issue(
+        current, issue_number, kind.value, operation, result,
+    )
+    if current_kind is not kind or current_labels != labels:
         raise CLIError("Issue phase/labels changed during User Review; refusing a stale update")
+    if next_state is None and operation == "start" and phase is Phase.USER_REVIEW:
+        return
+    if next_state is None and operation in {"sync", "status"}:
+        return
     kept = [label for label in labels if not label.startswith(("phase:", "attention:"))]
     kept.append(f"phase:{next_state.phase.value}")
     kept.extend(f"attention:{item.value}" for item in sorted(next_state.attention, key=lambda x: x.value))
-    github.replace_issue_labels(issue_number, kept)
+    try:
+        github.replace_issue_labels(issue_number, kept)
+    except GitHubError as exc:
+        try:
+            readback = github.issue(issue_number)
+        except GitHubError as read_error:
+            raise CLIError("User Review phase write outcome is ambiguous; readback failed and no retry was sent") from read_error
+        rows = readback.get("labels") if isinstance(readback, dict) else None
+        names = [row.get("name") for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+        if (isinstance(readback, dict) and readback.get("number") == issue_number and readback.get("state") == "open"
+                and readback.get("pull_request") is None and len(names) == len(kept)
+                and set(names) == set(kept)):
+            return
+        raise CLIError("User Review phase write outcome is ambiguous; exact target was not read back and no retry was sent") from exc
     readback = github.issue(issue_number)
     rows = readback.get("labels") if isinstance(readback, dict) else None
     names = [row.get("name") for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
-    if readback.get("state") != "open" or f"phase:{next_state.phase.value}" not in names:
-        raise CLIError("GitHub did not confirm the requested User Review phase transition")
+    if (not isinstance(readback, dict) or readback.get("number") != issue_number
+            or readback.get("state") != "open" or readback.get("pull_request") is not None
+            or len(names) != len(kept) or set(names) != set(kept)):
+        raise CLIError("GitHub did not confirm the exact requested User Review Issue/label state")
 
 
 def _require_readiness_review_assurance(root: Path, issue_number: int,
@@ -2381,14 +2456,186 @@ def _require_readiness_review_assurance(root: Path, issue_number: int,
     return profile, review
 
 
+def _readiness_bound_artifact(root: Path, *, subject: VerificationSubject, readiness: Any,
+                              directory: str, pattern: str, label: str, reader: Any,
+                              digest_prefix: str = "") -> Any:
+    """Read the unique immutable artifact of a requested type bound by Readiness."""
+    folder = root / ".p_ases" / directory / str(subject.issue_number) / subject.sha256
+    if path_has_symlink(folder):
+        raise CLIError(f"{label} history traverses a symbolic link")
+    if not folder.is_dir():
+        raise CLIError(f"{label} history is missing")
+    digests = set(readiness.evidence_sha256s)
+    matches: list[Any] = []
+    for path in sorted(folder.glob(pattern)):
+        if path.is_symlink() or not path.is_file():
+            raise CLIError(f"{label} history contains a non-regular record")
+        artifact = reader(path)
+        digest = artifact.sha256
+        if artifact.subject != subject or digest not in digests:
+            continue
+        if path.name != f"{digest_prefix}{digest}.json":
+            raise CLIError(f"{label} history filename does not match its digest")
+        matches.append(artifact)
+    if len(matches) != 1:
+        raise CLIError(f"Readiness must bind exactly one current {label} record; found {len(matches)}")
+    return matches[0]
+
+
+def _recompute_acceptance_readonly(args: argparse.Namespace, repository: str, root: Path,
+                                   github: GitHub, saved: AcceptanceResult,
+                                   verification: VerificationResult) -> AcceptanceResult:
+    """Re-evaluate saved Acceptance observations without writing a temporary Verification file."""
+    if saved.subject.repository != repository or saved.subject.issue_number != args.issue:
+        raise CLIError("Acceptance result belongs to a different repository or Issue")
+    plan_path = _plans_root(root, args.issue) / f"{saved.subject.plan_sha256}.json"
+    verified_adc = verify_adc(github, args.issue)
+    plan, _required, _oracles, _tests = _load_plan(root, repository, args.issue, plan_path, verified_adc)
+    subject = _subject(repository, args.issue, saved.subject.pr_number,
+                       saved.subject.pr_head_sha40, verified_adc, plan)
+    if subject != saved.subject or verification.subject != subject:
+        raise CLIError("Acceptance or Verification subject changed during read-only recomputation")
+    template = _acceptance_template_value(
+        saved.artifact_type, subject, [row.as_dict() for row in saved.observations], saved.baseline_sha40,
+    )
+    recompute_args = argparse.Namespace(
+        issue=args.issue, pr=subject.pr_number, head=subject.pr_head_sha40, plan=plan_path,
+        artifact_type=saved.artifact_type, verification=None,
+    )
+    current, _refs = _calculate_acceptance(
+        recompute_args, repository, root, github, template, verification_override=verification,
+    )
+    if current != saved:
+        raise CLIError("Acceptance changed relative to current Verification, Evidence, dependency, or policy state")
+    return current
+
+
+def _recompute_user_review_readiness(args: argparse.Namespace, repository: str, root: Path,
+                                     github: GitHub, saved_readiness: Any) -> Any:
+    """Recompute every non-review gate and review assurance without persistence or publication."""
+    issue, verified_adc = _approved_issue_adc(github, args.issue, repository)
+    plan, _reqs, _oracles, _tests = _load_plan(root, repository, args.issue, args.plan, verified_adc)
+    subject = _subject(repository, args.issue, args.pr, args.head, verified_adc, plan)
+    if saved_readiness.subject != subject:
+        raise CLIError("saved Readiness belongs to a stale or different exact subject")
+    pr = _readback_readiness_pr(github, repository, args.issue, args.pr)
+    binding = read_binding(execution_binding_path(root, args.issue))
+    pr_binding = read_pr_binding(pr_binding_path(root, args.issue))
+    work_context = WorkContext(
+        binding, head_sha40(root), current_branch(root), worktree_clean(root), binding_digest(binding),
+    ).validate()
+
+    verification_args = argparse.Namespace(issue=args.issue, pr=args.pr, head=args.head, plan=args.plan)
+    verification, _verification_refs = _calculate_verification(verification_args, repository, root, github)
+    if verification.status != "PASS" or verification.sha256 not in saved_readiness.evidence_sha256s:
+        raise CLIError("current Verification or Required Checks are not the exact published Readiness evidence")
+    verification_comment = _exact_published(
+        github, args.issue, _result_comment("verification", verification.as_json()),
+    )
+    if verification_comment is None:
+        raise CLIError("exact current Verification result comment is not published on the Issue")
+
+    acceptance = _readiness_bound_artifact(
+        root, subject=subject, readiness=saved_readiness, directory="acceptance", pattern="*.json",
+        label="Acceptance", reader=read_acceptance_result,
+    )
+    acceptance = _recompute_acceptance_readonly(args, repository, root, github, acceptance, verification)
+    if acceptance.status != "PASS":
+        raise CLIError("current Acceptance is not PASS")
+    acceptance_comment = _exact_published(
+        github, args.issue, _result_comment("acceptance", acceptance.as_json()),
+    )
+    if acceptance_comment is None:
+        raise CLIError("exact current Acceptance result comment is not published on the Issue")
+
+    checklist_text = verified_adc.contract.section("reviewer_checklist")
+    checklist_rows = [match.group(1) for line in checklist_text.splitlines()
+                      if line.strip() and (match := CHECKLIST_LINE.fullmatch(line))]
+    required_item_ids = tuple(sorted((*verified_adc.contract.requirement_ids,
+                                      *(f"checklist:{index:02d}" for index in range(1, len(checklist_rows) + 1)))))
+    self_audit = _readiness_bound_artifact(
+        root, subject=subject, readiness=saved_readiness, directory="audits", pattern="self-*.json",
+        label="Self-Audit", reader=read_self_audit, digest_prefix="self-",
+    )
+    self_audit.validate(required_item_ids)
+    if self_audit.status != "PASS":
+        raise CLIError("current Self-Audit is not PASS")
+    _read_audit_references(root, self_audit)
+
+    dependency_reasons = _unaccepted_dependencies(github, verified_adc.contract)
+    profile = load_profile(root)
+    required_check_policy = profile.required_check_policy()
+    blockers: list[str] = list(dependency_reasons)
+    if verification.required_check_policy_sha256 != required_check_policy.sha256:
+        blockers.append("current Required Check policy differs from Verification")
+
+    exception_path = getattr(args, "review_unavailable_exception", None)
+    if isinstance(saved_readiness, ReadinessResultV2):
+        if exception_path is None:
+            raise CLIError("Readiness V2 requires its exact Owner exception record during User Review")
+        current_profile, exception, eligibility = _validate_review_unavailable_exception(
+            github, repository, root, args.issue, args.pr, args.head, args.plan, exception_path,
+        )
+        if current_profile != profile:
+            raise CLIError("committed profile changed during User Review Readiness recomputation")
+        core = evaluate_readiness_core(
+            subject=subject, pr=pr, pr_binding=pr_binding, work_context=work_context,
+            verification=verification, acceptance=acceptance, self_audit=self_audit,
+            required_item_ids=required_item_ids,
+            required_checks_sha256=verification.check_result_sha256, blocker_reasons=blockers,
+        )
+        current = evaluate_readiness_with_exception(
+            core=core, profile_sha256=profile.profile_sha256,
+            eligibility=eligibility, exception=exception,
+        )
+    else:
+        if exception_path is not None:
+            raise CLIError("V1 Readiness cannot consume a review-unavailable exception")
+        rows = _current_review_v2_records(root, subject)
+        if len(rows) != 1 or rows[0].sha256 not in saved_readiness.evidence_sha256s:
+            raise CLIError("Readiness must bind exactly one current Independent Review V2 record")
+        review = rows[0]
+        if review.execution_identity_context_id != f"execution-binding:{binding_digest(binding)}":
+            raise CLIError("Independent Review V2 is bound to another ExecutionBinding")
+        _read_audit_references(root, review)
+        current = evaluate_readiness(
+            subject=subject, pr=pr, pr_binding=pr_binding, work_context=work_context,
+            verification=verification, acceptance=acceptance, self_audit=self_audit,
+            required_item_ids=required_item_ids, independent_review=None,
+            required_checks_sha256=verification.check_result_sha256,
+            blocker_reasons=blockers, independent_review_v2=review,
+            review_minimum_assurance=profile.independent_review_minimum_assurance,
+            current_profile_sha256=profile.profile_sha256,
+            execution_identity_context_id=f"execution-binding:{binding_digest(binding)}",
+        )
+    if current != saved_readiness:
+        raise CLIError("current Acceptance, Self-Audit, dependencies, CI policy, or other Readiness gate changed")
+    final_issue = github.issue(args.issue)
+    final_adc = verify_adc(github, args.issue)
+    final_pr = _readback_readiness_pr(github, repository, args.issue, args.pr)
+    final_work_context = WorkContext(
+        binding, head_sha40(root), current_branch(root), worktree_clean(root), binding_digest(binding),
+    ).validate()
+    if (final_issue.get("number") != args.issue or final_issue.get("state") != "open"
+            or final_issue.get("pull_request") is not None
+            or final_adc.pointer != verified_adc.pointer or final_pr != pr
+            or final_work_context != work_context
+            or read_binding(execution_binding_path(root, args.issue)) != binding
+            or read_pr_binding(pr_binding_path(root, args.issue)) != pr_binding
+            or load_profile(root) != profile):
+        raise CLIError("Issue, ADC, PR, Binding, or profile changed during User Review Readiness recomputation")
+    return current
+
+
 def _user_review_run(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
     blockers: list[str] = []
     result: UserReviewResult | None = None
     snapshot: FeedbackSnapshot | None = None
     try:
         issue_row = github.issue(args.issue)
-        if issue_row.get("number") != args.issue or issue_row.get("state") != "open" or issue_row.get("pull_request") is not None:
-            raise CLIError("User Review requires the same open Issue")
+        issue_kind, _phase_labels = _validate_user_review_issue(
+            issue_row, args.issue, getattr(args, "kind", None), args.verb,
+        )
         _issue, verified_adc = _approved_issue_adc(github, args.issue, repository)
         plan, _reqs, _oracles, _tests = _load_plan(root, repository, args.issue, args.plan, verified_adc)
         pr = github.pull_request(args.pr)
@@ -2401,6 +2648,7 @@ def _user_review_run(args: argparse.Namespace, repository: str, root: Path, gith
         readiness = read_readiness(args.readiness)
         if (not readiness.ready_for_user_review or readiness.subject != subject):
             raise CLIError("User Review cannot start without current exact-subject V1 PASS or V2 READY_WITH_EXCEPTION")
+        _recompute_user_review_readiness(args, repository, root, github, readiness)
         binding = read_binding(execution_binding_path(root, args.issue))
         assurance_profile, assurance_review = _require_readiness_review_assurance(
             root, args.issue, readiness, subject, binding, github=github, repository=repository,
@@ -2430,7 +2678,6 @@ def _user_review_run(args: argparse.Namespace, repository: str, root: Path, gith
             new_scope_requested=bool(getattr(args, "new_scope", False)),
             unresolved_thread_ids=snapshot.unresolved_thread_ids,
         )
-        current_issue = github.issue(args.issue)
         current_adc = verify_adc(github, args.issue)
         current_pr_identity = _readback_current_pr(github, subject)
         current_readiness = read_readiness(args.readiness)
@@ -2438,7 +2685,7 @@ def _user_review_run(args: argparse.Namespace, repository: str, root: Path, gith
         second_observed = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
         second = _review_payload_from_github(github, user_review_subject, observed_at=second_observed)
         second = merge_feedback_history(previous, second)
-        if (current_issue.get("state") != "open" or current_adc.pointer != verified_adc.pointer
+        if (current_adc.pointer != verified_adc.pointer
                 or current_pr_identity != pr_identity or current_readiness != readiness
                 or current_identity.get("id") != identity.get("id")
                 or feedback_digest(second.events) != feedback_digest(snapshot.events)
@@ -2451,7 +2698,11 @@ def _user_review_run(args: argparse.Namespace, repository: str, root: Path, gith
         )
         if final_profile != assurance_profile or final_review != assurance_review:
             raise CLIError("Independent Review V2 or committed profile changed during User Review")
+        _recompute_user_review_readiness(args, repository, root, github, current_readiness)
         if args.verb != "status":
+            issue_kind, _verified_labels = _readback_user_review_issue(
+                github, args.issue, getattr(args, "kind", None), args.verb, result,
+            )
             if args.verb == "start":
                 session = write_review_session(session_path, session)
             snapshot_path = feedback_snapshot_path(root, snapshot)
@@ -2462,7 +2713,7 @@ def _user_review_run(args: argparse.Namespace, repository: str, root: Path, gith
             record_path = _review_record_path(root, args.issue, user_review_subject, result, snapshot.sha256)
             _write_immutable(record_path, _canonical(record) + b"\n", root=root)
             if args.verb in {"start", "sync"}:
-                _review_phase_transition(github, args.issue, IssueKind(args.kind), result, args.verb)
+                _review_phase_transition(github, args.issue, issue_kind, result, args.verb)
         else:
             snapshot_path = feedback_snapshot_path(root, snapshot)
             record_path = _review_record_path(root, args.issue, user_review_subject, result, snapshot.sha256)
@@ -2476,7 +2727,8 @@ def _user_review_run(args: argparse.Namespace, repository: str, root: Path, gith
                                  f"pull/{args.pr}", f"issue/{args.issue}"]})
         return 0 if result.status in {"APPROVED", "CHANGES_REQUESTED"} else 2
     except (ADCError, PlanError, OracleTraceError, EvidenceError, ReadinessError, UserReviewError,
-            PhaseError, GitHubError, CLIError, OSError, ValueError) as exc:
+            PhaseError, GitError, ExecutionError, CheckpointError, ProfileError,
+            ReviewAssuranceError, ReviewUnavailableError, GitHubError, CLIError, OSError, ValueError) as exc:
         blockers.append(str(exc))
         return _blocked_result(blockers)
 
@@ -2614,7 +2866,8 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
         return 0 if result.status in {"READY_FOR_EXPLICIT_MERGE_AUTHORIZATION",
                                       "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION_WITH_EXCEPTION"} else 2
     except (ADCError, PlanError, OracleTraceError, EvidenceError, ReadinessError, VerificationError,
-            UserReviewError, ProfileError, GitHubError, CLIError, OSError, ValueError) as exc:
+            UserReviewError, ProfileError, GitError, ExecutionError, CheckpointError,
+            ReviewAssuranceError, ReviewUnavailableError, GitHubError, CLIError, OSError, ValueError) as exc:
         return _blocked_result((str(exc),))
 
 
@@ -3523,7 +3776,8 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("readiness", type=Path)
         command.add_argument("--review-unavailable-exception", type=Path,
                              help="exact current Owner-authorized capture-unavailable exception record")
-        command.add_argument("--kind", choices=tuple(kind.value for kind in IssueKind), default="child")
+        command.add_argument("--kind", choices=tuple(kind.value for kind in IssueKind),
+                             help="optional expected Issue kind; the live kind:* label is authoritative")
         if verb == "sync":
             command.add_argument("--new-scope", action="store_true",
                                  help="route explicitly triaged new scope back to requirements")

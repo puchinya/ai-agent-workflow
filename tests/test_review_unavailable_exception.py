@@ -23,6 +23,7 @@ from p_ases.review_unavailable_exception import (
     approval_comment, apply_exception, read_exception, read_exception_comment,
     verify_owner_approval,
 )
+from p_ases import review_unavailable_exception as exception_module
 from p_ases.user_review import UserReviewSubject, evaluate_user_review
 
 
@@ -140,6 +141,30 @@ class ReviewUnavailableExceptionTests(unittest.TestCase):
                 apply_exception(github, plan, 1201, local_root=Path(temporary))
             self.assertEqual(github.posts, 1)
 
+    def test_exception_readers_reject_conflicting_or_malformed_same_head_history(self):
+        plan_a = ReviewUnavailablePlan.create(snapshot(), generated_at="2026-10-25T03:00:00.000000Z")
+        github = FakeGitHub(approval_comment(plan_a))
+        with tempfile.TemporaryDirectory() as temporary:
+            record_a, _path, _ = apply_exception(github, plan_a, 1201, local_root=Path(temporary))
+            plan_b = ReviewUnavailablePlan.create(
+                {**snapshot(), "host_surface": "claude_code"},
+                generated_at="2026-10-25T03:01:00.000000Z",
+            )
+            approval_b = approval_comment(plan_b)
+            github.comments.append(comment(1203, approval_b))
+            approval_b_sha = hashlib.sha256(approval_b.encode("utf-8")).hexdigest()
+            body_b = exception_module._record_body(plan_b, 1203, approval_b_sha, OWNER_USER_ID)
+            github.comments.append(comment(1204, body_b))
+            with self.assertRaisesRegex(ReviewUnavailableError, "duplicate or conflicting"):
+                read_exception_comment(github, record_a)
+
+        malformed = FakeGitHub(approval_comment(plan_a))
+        with tempfile.TemporaryDirectory() as temporary:
+            record, _path, _ = apply_exception(malformed, plan_a, 1201, local_root=Path(temporary))
+            malformed.comments.append(comment(1205, f"<!-- {RECORD_SCHEMA}\nnot-json\n-->"))
+            with self.assertRaisesRegex(ReviewUnavailableError, "malformed"):
+                read_exception_comment(malformed, record)
+
     def test_wrong_repository_and_forged_receipt_digest_fail_before_reuse(self):
         plan = ReviewUnavailablePlan.create(snapshot(), generated_at="2026-10-25T03:00:00.000000Z")
         github = FakeGitHub(approval_comment(plan))
@@ -156,7 +181,7 @@ class ReviewUnavailableExceptionTests(unittest.TestCase):
                 **record.value,
                 "exception_comment_sha256": "f" * 64,
             }).validate()
-            with self.assertRaisesRegex(ReviewUnavailableError, "body digest"):
+            with self.assertRaisesRegex(ReviewUnavailableError, "body digest|missing|duplicated|conflicts"):
                 read_exception_comment(github, forged)
 
     def test_readiness_v2_user_review_and_final_v2_disclose_exception_without_merge_authority(self):
