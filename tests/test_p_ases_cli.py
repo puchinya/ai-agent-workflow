@@ -119,6 +119,21 @@ class PasesCLITests(unittest.TestCase):
         self.assertEqual((reset_apply.verb, reset_apply.approval_comment_id),
                          ("legacy-reset-apply", 901))
 
+    def test_issue_46_requirements_rebaseline_routes_require_exact_plan_and_comment_ids(self):
+        plan = _parser().parse_args([
+            "delivery", "requirements-rebaseline-plan", "46", "--repo", "puchinya/ai-agent-workflow",
+            "--root", str(ROOT), "--output", str(ROOT / "requirements-plan.json"),
+        ])
+        apply = _parser().parse_args([
+            "delivery", "requirements-rebaseline-apply", "46", "--repo", "puchinya/ai-agent-workflow",
+            "--root", str(ROOT), "--plan", str(ROOT / "requirements-plan.json"),
+            "--approval-comment-id", "902",
+        ])
+        self.assertEqual((plan.verb, plan.issue, plan.output),
+                         ("requirements-rebaseline-plan", 46, ROOT / "requirements-plan.json"))
+        self.assertEqual((apply.verb, apply.issue, apply.approval_comment_id),
+                         ("requirements-rebaseline-apply", 46, 902))
+
     def test_pr_ensure_rejects_execution_binding_for_stale_adc_before_pr_operations(self):
         binding = ExecutionBinding(
             repository="octo/repo", issue_number=30, adc_comment_id=123, adc_sha256="a" * 64,
