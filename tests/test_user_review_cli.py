@@ -342,26 +342,30 @@ class UserReviewCliRegressionTests(unittest.TestCase):
                                    kind="child", new_scope=False,
                                    review_unavailable_exception=root / "exception.json")
             output = io.StringIO()
-            with patch("p_ases.cli._approved_issue_adc", return_value=({}, verified_adc)), \
-                    patch("p_ases.cli._load_plan", return_value=(object(), (), (), ())), \
-                    patch("p_ases.cli._subject", return_value=VERIFICATION_SUBJECT), \
-                    patch("p_ases.cli._readback_current_pr", return_value={"head_sha": HEAD}), \
-                    patch("p_ases.cli.read_readiness", return_value=readiness), \
-                    patch("p_ases.cli._readback_readiness_pr", return_value=object()), \
-                    patch("p_ases.cli.read_binding", return_value=binding), \
-                    patch("p_ases.cli.read_pr_binding", return_value=pr_binding), \
-                    patch("p_ases.cli.WorkContext", return_value=SimpleNamespace(validate=lambda: object())), \
-                    patch("p_ases.cli.head_sha40", return_value=HEAD), \
-                    patch("p_ases.cli.current_branch", return_value="feature/review"), \
-                    patch("p_ases.cli.worktree_clean", return_value=True), \
-                    patch("p_ases.cli.binding_digest", return_value="5" * 64), \
-                    patch("p_ases.cli._calculate_verification", return_value=(verification, [])), \
-                    patch("p_ases.cli._exact_published", return_value=9876), \
-                    patch("p_ases.cli._readiness_bound_artifact", return_value=acceptance_saved), \
-                    patch("p_ases.cli._recompute_acceptance_readonly", return_value=acceptance_failed), \
-                    patch("p_ases.cli._review_payload_from_github", side_effect=AssertionError("feedback read must follow gate")), \
-                    patch("p_ases.cli._review_phase_transition") as phase_transition, \
-                    contextlib.redirect_stdout(output):
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(patch("p_ases.cli._approved_issue_adc", return_value=({}, verified_adc)))
+                stack.enter_context(patch("p_ases.cli._load_plan", return_value=(object(), (), (), ())))
+                stack.enter_context(patch("p_ases.cli._subject", return_value=VERIFICATION_SUBJECT))
+                stack.enter_context(patch("p_ases.cli._readback_current_pr", return_value={"head_sha": HEAD}))
+                stack.enter_context(patch("p_ases.cli.read_readiness", return_value=readiness))
+                stack.enter_context(patch("p_ases.cli._readback_readiness_pr", return_value=object()))
+                stack.enter_context(patch("p_ases.cli.read_binding", return_value=binding))
+                stack.enter_context(patch("p_ases.cli.read_pr_binding", return_value=pr_binding))
+                stack.enter_context(patch(
+                    "p_ases.cli.WorkContext", return_value=SimpleNamespace(validate=lambda: object())))
+                stack.enter_context(patch("p_ases.cli.head_sha40", return_value=HEAD))
+                stack.enter_context(patch("p_ases.cli.current_branch", return_value="feature/review"))
+                stack.enter_context(patch("p_ases.cli.worktree_clean", return_value=True))
+                stack.enter_context(patch("p_ases.cli.binding_digest", return_value="5" * 64))
+                stack.enter_context(patch("p_ases.cli._calculate_verification", return_value=(verification, [])))
+                stack.enter_context(patch("p_ases.cli._exact_published", return_value=9876))
+                stack.enter_context(patch("p_ases.cli._readiness_bound_artifact", return_value=acceptance_saved))
+                stack.enter_context(patch("p_ases.cli._recompute_acceptance_readonly", return_value=acceptance_failed))
+                stack.enter_context(patch(
+                    "p_ases.cli._review_payload_from_github",
+                    side_effect=AssertionError("feedback read must follow gate")))
+                phase_transition = stack.enter_context(patch("p_ases.cli._review_phase_transition"))
+                stack.enter_context(contextlib.redirect_stdout(output))
                 status = _user_review_run(args, "octo/repo", root, FakeGitHub())
             result = json.loads(output.getvalue())
             self.assertEqual(status, 2)
