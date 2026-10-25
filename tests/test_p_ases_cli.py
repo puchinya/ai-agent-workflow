@@ -13,7 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases.adc import publish_adc
-from p_ases.cli import CLI_ADVANCE_TARGETS, _parser, main
+from p_ases.cli import CLI_ADVANCE_TARGETS, CLIError, _parser, _pr_ensure, main
+from p_ases.execution import ExecutionBinding
 from p_ases.github import GitHubError
 from p_ases.phase_evidence import PhaseEvidenceError
 from test_adc_intake import FakeGitHub, adc_bytes
@@ -117,6 +118,23 @@ class PasesCLITests(unittest.TestCase):
         self.assertEqual(reset_plan.verb, "legacy-reset-plan")
         self.assertEqual((reset_apply.verb, reset_apply.approval_comment_id),
                          ("legacy-reset-apply", 901))
+
+    def test_pr_ensure_rejects_execution_binding_for_stale_adc_before_pr_operations(self):
+        binding = ExecutionBinding(
+            repository="octo/repo", issue_number=30, adc_comment_id=123, adc_sha256="a" * 64,
+            base_ref="main", base_sha="b" * 40, branch_ref="pases/issue-30",
+            work_directory=str(ROOT), initial_head_sha="b" * 40,
+        ).validate()
+        verified = SimpleNamespace(pointer=SimpleNamespace(comment_id=124, sha256="c" * 64))
+        args = SimpleNamespace(issue=30, branch_ref="pases/issue-30", base_ref="main",
+                               body_file=ROOT / "does-not-need-to-be-read.md", title="Issue #30")
+        with patch("p_ases.cli._approved_issue_adc", return_value=({}, verified)), \
+                patch("p_ases.cli.read_binding", return_value=binding), \
+                patch("p_ases.cli.read_binding_history", return_value=(binding,)), \
+                patch("p_ases.cli.verify_adc_generation", side_effect=AssertionError("stale binding must stop first")), \
+                patch("p_ases.cli.ensure_pull_request", side_effect=AssertionError("must stop before PR operations")):
+            with self.assertRaisesRegex(CLIError, "latest ExecutionBinding does not match the current approved ADC"):
+                _pr_ensure(args, "octo/repo", ROOT, object())
 
     def test_advance_refuses_caller_kind_mismatch_without_label_write(self):
         class GitHub:

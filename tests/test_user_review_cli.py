@@ -15,7 +15,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
 
-from p_ases.delivery import ReadinessResult
+from p_ases.delivery import ReadinessResult, ReadinessResultV2
 from p_ases.evidence_store import VerificationSubject
 from p_ases.execution import ExecutionBinding, binding_digest, write_binding
 from p_ases.git import GitError
@@ -321,21 +321,44 @@ class UserReviewCliRegressionTests(unittest.TestCase):
                 return {"number": 37, "head": {"sha": HEAD}}
 
         verified_adc = SimpleNamespace(pointer=SimpleNamespace(state="approved", comment_id=5, sha256="f" * 64))
-        readiness = SimpleNamespace(ready_for_user_review=True, subject=VERIFICATION_SUBJECT,
-                                    sha256="e" * 64)
+        verification = VerificationResult(
+            "PASS", VERIFICATION_SUBJECT, (), "1" * 64, "2" * 64, ("3" * 64,), (),
+        ).validate()
+        readiness = ReadinessResultV2(
+            "READY_WITH_EXCEPTION", VERIFICATION_SUBJECT, "UNAVAILABLE", "d" * 64,
+            "e" * 64, 71, "f" * 64, 72, "a" * 64,
+            ("INDEPENDENT_REVIEW_NOT_PERFORMED",), (),
+            tuple(sorted(("d" * 64, "e" * 64, "f" * 64, "a" * 64,
+                          "b" * 64, verification.sha256))),
+            "b" * 64,
+        ).validate()
+        acceptance_saved = SimpleNamespace(subject=VERIFICATION_SUBJECT, sha256="4" * 64)
+        acceptance_failed = SimpleNamespace(status="FAIL")
+        binding, pr_binding = object(), object()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             args = SimpleNamespace(verb="start", issue=31, pr=37, head=HEAD,
                                    plan=root / "plan.json", readiness=root / "readiness.json",
-                                   kind="child", new_scope=False)
+                                   kind="child", new_scope=False,
+                                   review_unavailable_exception=root / "exception.json")
             output = io.StringIO()
             with patch("p_ases.cli._approved_issue_adc", return_value=({}, verified_adc)), \
                     patch("p_ases.cli._load_plan", return_value=(object(), (), (), ())), \
                     patch("p_ases.cli._subject", return_value=VERIFICATION_SUBJECT), \
                     patch("p_ases.cli._readback_current_pr", return_value={"head_sha": HEAD}), \
                     patch("p_ases.cli.read_readiness", return_value=readiness), \
-                    patch("p_ases.cli._recompute_user_review_readiness",
-                          side_effect=CLIError("current Acceptance is no longer PASS")) as recompute, \
+                    patch("p_ases.cli._readback_readiness_pr", return_value=object()), \
+                    patch("p_ases.cli.read_binding", return_value=binding), \
+                    patch("p_ases.cli.read_pr_binding", return_value=pr_binding), \
+                    patch("p_ases.cli.WorkContext", return_value=SimpleNamespace(validate=lambda: object())), \
+                    patch("p_ases.cli.head_sha40", return_value=HEAD), \
+                    patch("p_ases.cli.current_branch", return_value="feature/review"), \
+                    patch("p_ases.cli.worktree_clean", return_value=True), \
+                    patch("p_ases.cli.binding_digest", return_value="5" * 64), \
+                    patch("p_ases.cli._calculate_verification", return_value=(verification, [])), \
+                    patch("p_ases.cli._exact_published", return_value=9876), \
+                    patch("p_ases.cli._readiness_bound_artifact", return_value=acceptance_saved), \
+                    patch("p_ases.cli._recompute_acceptance_readonly", return_value=acceptance_failed), \
                     patch("p_ases.cli._review_payload_from_github", side_effect=AssertionError("feedback read must follow gate")), \
                     patch("p_ases.cli._review_phase_transition") as phase_transition, \
                     contextlib.redirect_stdout(output):
@@ -343,8 +366,7 @@ class UserReviewCliRegressionTests(unittest.TestCase):
             result = json.loads(output.getvalue())
             self.assertEqual(status, 2)
             self.assertEqual(result["status"], "BLOCKED")
-            self.assertIn("current Acceptance is no longer PASS", result["reasons"])
-            recompute.assert_called_once()
+            self.assertIn("current Acceptance is not PASS", result["reasons"])
             phase_transition.assert_not_called()
             self.assertFalse((root / ".p_ases").exists())
 

@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
-from .adc import ADCError, parse_adc, publish_adc, restore_adc, verify_adc
+from .adc import ADCError, parse_adc, publish_adc, restore_adc, verify_adc, verify_adc_generation
 from .consumer_activation import (
     ConsumerActivationError, setup_consumer_activation, verify_and_record_activation,
 )
@@ -25,7 +25,7 @@ from .git import GitError, current_branch, discover_repository, head_sha40, remo
 from .document_format import DocumentFormatError, format_tree
 from .documents import DocumentError, validate_documents
 from .github import GitHub, GitHubError
-from .execution import ExecutionError, binding_digest, read_binding
+from .execution import ExecutionError, binding_digest, read_binding, read_binding_history
 from .checkpoint import CheckpointError, PRBinding, read_pr_binding
 from .context import WorkContext
 from .profile import ProfileError, load_profile
@@ -47,7 +47,7 @@ from .legacy_adoption import (
 )
 from .work import (
     WorkError, bind_work, ensure_branch, ensure_pull_request, execution_binding_path,
-    pr_binding_path, recover_work,
+    pr_binding_path, read_pr_binding_history, recover_work,
 )
 from .audits import (
     AuditError, AuditItem, IndependentReview, ReviewFinding, SelfAudit,
@@ -1113,6 +1113,27 @@ def _pr_ensure(args: argparse.Namespace, repository: str, root: Path, github: Gi
     _issue, verified = _approved_issue_adc(github, args.issue, repository)
     binding_path = execution_binding_path(root, args.issue)
     binding = read_binding(binding_path)
+    binding_history = read_binding_history(binding_path)
+    if (not binding_history or binding_history[-1] != binding
+            or binding.repository != repository or binding.issue_number != args.issue
+            or binding.adc_comment_id != verified.pointer.comment_id
+            or binding.adc_sha256 != verified.pointer.sha256):
+        raise CLIError("latest ExecutionBinding does not match the current approved ADC")
+    for historical_binding in binding_history:
+        try:
+            historical_adc = verify_adc_generation(
+                github, args.issue, historical_binding.adc_comment_id,
+                historical_binding.adc_sha256, state="approved")
+        except ADCError as exc:
+            raise CLIError(f"ExecutionBinding references an unverified approved ADC generation: {exc}") from exc
+        if (historical_adc.pointer.comment_id != historical_binding.adc_comment_id
+                or historical_adc.pointer.sha256 != historical_binding.adc_sha256):
+            raise CLIError("ExecutionBinding ADC history differs from the approved Issue pointer journal")
+    for _path, historical_pr_binding in read_pr_binding_history(root, args.issue):
+        if not any(item.adc_comment_id == historical_pr_binding.adc_comment_id
+                   and item.adc_sha256 == historical_pr_binding.adc_sha256
+                   for item in binding_history):
+            raise CLIError("PRBinding references an ADC absent from immutable ExecutionBinding history")
     body = _safe_file_bytes(args.body_file, "PR body file", root=root).decode("utf-8", errors="strict")
     result = ensure_pull_request(
         root, github, repository=repository, issue_number=args.issue, binding=binding,

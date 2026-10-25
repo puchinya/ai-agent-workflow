@@ -170,13 +170,13 @@ A binding is created only for the validated clean workspace and exact base; exis
 <a id="tst-rt-007-review-pr-retryreadback"></a>
 ### 2.7 TST-RT-007 Review PR retry/readback
 
-**Setup and action:** Simulate no candidate, one matching open PR, an ambiguous result, and a lost create response.
+**Setup and action:** Simulate no candidate, one matching open PR, an ambiguous result, and a lost create response. Starting from an immutable PRBinding, append a forward approved ADC generation in the ExecutionBinding history and rerun PR ensure without changing the PR, base, branch, or worktree. Also supply a stale ExecutionBinding, a PRBinding ADC rollback, and mismatched PR/base/branch lineage.
 
 <a id="ora-rt-007"></a>
 <a id="ora-rt-007-expected-result"></a>
 #### 2.7.1 ORA-RT-007 Expected result
 
-Creation is followed by exact API readback; retries reuse one matching PR and ambiguity never creates duplicates.
+Creation is followed by exact API readback; retries reuse one matching PR and ambiguity never creates duplicates. A current approved ADC successor appends a new PRBinding generation while preserving every prior PRBinding byte. Each PRBinding ADC must map to the immutable ExecutionBinding history in nondecreasing order; stale ExecutionBinding inputs, ADC rollback, and changed PR/base/branch lineage block before PR search or mutation. A changed HEAD remains an append-only descendant of the prior PRBinding HEAD.
 
 <a id="tst-rt-008"></a>
 <a id="tst-rt-008-contract-byte-identity"></a>
