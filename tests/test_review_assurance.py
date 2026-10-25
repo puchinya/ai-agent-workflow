@@ -10,9 +10,9 @@ sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases.evidence_store import VerificationSubject
 from p_ases.review_assurance import (
-    AttestedNativeDelegationEvidenceV1, IndependentReviewV2, ReviewAssuranceError,
+    AttestedNativeDelegationEvidenceV1, IndependentReviewOccurrenceV1, IndependentReviewV2, ReviewAssuranceError,
     capture_unavailability_observation, evaluate_capture_unavailability,
-    evaluate_review_assurance,
+    evaluate_review_assurance, report_separate_context_review,
 )
 from p_ases.review_host_adapters import (
     ClaudeCodeReviewAdapter, CodexCloudReviewAdapter, CodexDesktopReviewAdapter,
@@ -174,13 +174,81 @@ class ReviewAssuranceTests(unittest.TestCase):
                 self.assertFalse(capabilities.native_request_return_capture)
                 self.assertFalse(capabilities.trusted_host_event_verification)
 
-    def test_capture_unavailability_is_typed_and_does_not_override_a_failed_native_review(self):
+    def test_capture_unavailability_requires_an_independent_occurrence_report_and_does_not_override_failure(self):
         capabilities = CodexCloudReviewAdapter.capabilities().as_dict()
         observation, digest = capture_unavailability_observation("codex_cloud", capabilities)
-        eligible = evaluate_capture_unavailability(
+        missing = evaluate_capture_unavailability(
             host_surface="codex_cloud", observation=observation, observation_sha256=digest,
         )
+        self.assertEqual(missing.status, "INVALID_EVIDENCE")
+        self.assertTrue(any("occurrence" in reason for reason in missing.reasons))
+        with self.assertRaisesRegex(ReviewAssuranceError, "formal Independent Review PASS"):
+            IndependentReviewV2(
+                subject=SUBJECT, assurance="UNAVAILABLE", reviewer_context_id="separate-reviewer-7",
+                execution_identity_context_id=EXECUTION, verdict="PASS", findings=(),
+                profile_sha256=PROFILE_SHA, evidence_origin="operator_reported_separate_context_review",
+            ).validate()
+        reported_review = report_separate_context_review(
+            subject=SUBJECT, execution_identity_context_id=EXECUTION,
+            reviewer_context_id="native-review-child-7", verdict="PASS", findings=(),
+            profile_sha256=PROFILE_SHA,
+        )
+        raw_output = native_capture()[2]
+        occurrence = IndependentReviewOccurrenceV1.from_captured_output(
+            subject=SUBJECT, execution_identity_context_id=EXECUTION,
+            execution_binding_sha256="e" * 64, pr_binding_sha256="f" * 64,
+            profile_sha256=PROFILE_SHA, independent_review_v2_sha256=reported_review.sha256,
+            raw_output=raw_output,
+        )
+        eligible = evaluate_capture_unavailability(
+            host_surface="codex_cloud", observation=observation, observation_sha256=digest,
+            current_reviews=(reported_review,), current_occurrences=(occurrence,),
+        )
         self.assertEqual(eligible.status, "HOST_NATIVE_CAPTURE_UNAVAILABLE")
+        recorded = report_separate_context_review(
+            subject=SUBJECT, execution_identity_context_id=EXECUTION,
+            reviewer_context_id="native-review-child-7", verdict="PASS", findings=(),
+            profile_sha256=PROFILE_SHA,
+        )
+        self.assertEqual(recorded.assurance, "UNAVAILABLE")
+        self.assertEqual(recorded.verdict, "BLOCKED")
+        self.assertEqual(recorded.evidence_origin, "operator_reported_separate_context_review")
+        self.assertEqual(IndependentReviewV2.from_bytes(recorded.to_bytes()), recorded)
+        with self.assertRaisesRegex(ReviewAssuranceError, "distinct independent reviewer context"):
+            report_separate_context_review(
+                subject=SUBJECT, execution_identity_context_id=EXECUTION,
+                reviewer_context_id=EXECUTION, verdict="PASS", findings=(),
+                profile_sha256=PROFILE_SHA,
+            )
+
+    def test_occurrence_record_preserves_exact_output_and_separates_outcome_from_provenance(self):
+        capabilities = CodexCloudReviewAdapter.capabilities().as_dict()
+        observation, digest = capture_unavailability_observation("codex_cloud", capabilities)
+        _request, _terminal, raw_output = native_capture()
+        review = report_separate_context_review(
+            subject=SUBJECT, execution_identity_context_id=EXECUTION,
+            reviewer_context_id="native-review-child-7", verdict="PASS", findings=(),
+            profile_sha256=PROFILE_SHA,
+        )
+        occurrence = IndependentReviewOccurrenceV1.from_captured_output(
+            subject=SUBJECT, execution_identity_context_id=EXECUTION,
+            execution_binding_sha256="e" * 64, pr_binding_sha256="f" * 64,
+            profile_sha256=PROFILE_SHA, independent_review_v2_sha256=review.sha256,
+            raw_output=raw_output,
+        )
+        restored = IndependentReviewOccurrenceV1.from_bytes(occurrence.to_bytes())
+        self.assertEqual(restored, occurrence)
+        self.assertEqual(restored.review_occurrence, "COMPLETED")
+        self.assertEqual(restored.review_outcome, "PASS")
+        self.assertEqual(restored.provenance_assurance, "UNAVAILABLE")
+        self.assertEqual(restored.reviewer_output.validate("test output"), raw_output)
+        with self.assertRaisesRegex(ReviewAssuranceError, "separate context"):
+            IndependentReviewOccurrenceV1.from_captured_output(
+                subject=SUBJECT, execution_identity_context_id=EXECUTION,
+                execution_binding_sha256="e" * 64, pr_binding_sha256="f" * 64,
+                profile_sha256=PROFILE_SHA, independent_review_v2_sha256=review.sha256,
+                raw_output=raw_output.replace(b"native-review-child-7", EXECUTION.encode()),
+            )
         failed_output = canonical({
             "findings": [], "reviewer_context_id": "native-review-child-7",
             "schema": "PASES_CHILD_REVIEW_OUTPUT_V1", "subject": SUBJECT.as_dict(), "verdict": "FAIL",
@@ -210,6 +278,23 @@ class ReviewAssuranceTests(unittest.TestCase):
             current_reviews=(failed_review,),
         )
         self.assertEqual(failed.status, "REVIEW_FAILED")
+        unavailable_failed = report_separate_context_review(
+            subject=SUBJECT, execution_identity_context_id=EXECUTION,
+            reviewer_context_id="native-review-child-7", verdict="FAIL", findings=(),
+            profile_sha256=PROFILE_SHA,
+        )
+        fail_output = native_capture(verdict="FAIL")[2]
+        fail_occurrence = IndependentReviewOccurrenceV1.from_captured_output(
+            subject=SUBJECT, execution_identity_context_id=EXECUTION,
+            execution_binding_sha256="e" * 64, pr_binding_sha256="f" * 64,
+            profile_sha256=PROFILE_SHA, independent_review_v2_sha256=unavailable_failed.sha256,
+            raw_output=fail_output,
+        )
+        unavailable_result = evaluate_capture_unavailability(
+            host_surface="codex_cloud", observation=observation, observation_sha256=digest,
+            current_reviews=(unavailable_failed,), current_occurrences=(fail_occurrence,),
+        )
+        self.assertEqual(unavailable_result.status, "REVIEW_FAILED")
         fabricated_pass = fabricated_review()
         ineligible = evaluate_capture_unavailability(
             host_surface="codex_cloud", observation=observation, observation_sha256=digest,

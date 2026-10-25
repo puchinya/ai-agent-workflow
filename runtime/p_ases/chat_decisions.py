@@ -370,13 +370,15 @@ def record_chat_decision(github: GitHub, *, operation: str, subject_sha256: str,
                          scope: dict[str, Any], question_item_id: str, answer: str,
                          pr_number: int = PR_NUMBER) -> OperatorReportedChatDecision | None:
     """Append a V2 technical record after the host orchestrator receives a direct chat answer."""
-    if answer != "承認する":
+    if answer not in {"承認する", "承認しない"}:
+        raise ChatDecisionError("chat decision answer must match the active approval UI choice")
+    _validate_question_item(question_item_id)
+    if answer == "承認しない":
         return None
     if operation not in OPERATIONS or not isinstance(subject_sha256, str) or not SHA256.fullmatch(subject_sha256):
         raise ChatDecisionError("chat decision operation or exact subject is invalid")
     if not isinstance(scope, dict) or not scope or pr_number != PR_NUMBER:
         raise ChatDecisionError("chat decision scope or PR identity is invalid")
-    _validate_question_item(question_item_id)
     try:
         issue = github.issue(ISSUE_NUMBER)
         repo = github.repository_metadata()

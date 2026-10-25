@@ -11,12 +11,15 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Iterable
 
 from .audits import AuditError, IndependentReview, ReviewFinding
 from .evidence_store import VerificationSubject
+from .path_safety import path_has_symlink
 
 
 class ReviewAssuranceError(ValueError):
@@ -327,8 +330,10 @@ class IndependentReviewV2:
                 raise ReviewAssuranceError("SELF_REVIEW and UNAVAILABLE cannot carry independent native evidence")
             if self.assurance == "SELF_REVIEW" and reviewer != execution:
                 raise ReviewAssuranceError("SELF_REVIEW must identify the implementation context")
+            if self.assurance == "UNAVAILABLE" and reviewer == execution:
+                raise ReviewAssuranceError("UNAVAILABLE provenance requires a distinct independent reviewer context")
             if self.assurance == "UNAVAILABLE" and self.verdict == "PASS":
-                raise ReviewAssuranceError("UNAVAILABLE review cannot PASS")
+                raise ReviewAssuranceError("UNAVAILABLE V2 cannot claim a formal Independent Review PASS")
         return self
 
     @property
@@ -395,6 +400,167 @@ class IndependentReviewV2:
         return result
 
 
+@dataclass(frozen=True)
+class IndependentReviewOccurrenceV1:
+    """Explicit occurrence record retaining the exact reviewer output bytes.
+
+    The record establishes which bytes the operator captured and keeps review
+    occurrence, outcome, findings, and provenance assurance as separate data.
+    It is not a signature from the host that ran the reviewer.
+    """
+
+    subject: VerificationSubject
+    reviewer_context_id: str
+    execution_identity_context_id: str
+    execution_binding_sha256: str
+    pr_binding_sha256: str
+    profile_sha256: str
+    independent_review_v2_sha256: str
+    review_outcome: str
+    findings: tuple[ReviewFinding, ...]
+    reviewer_output: CapturedBytes
+    provenance_assurance: str = "UNAVAILABLE"
+    review_occurrence: str = "COMPLETED"
+    evidence_origin: str = "operator_reported_separate_context_review"
+
+    def validate(self) -> "IndependentReviewOccurrenceV1":
+        self.subject.validate()
+        reviewer = _text(self.reviewer_context_id, "reviewer context ID")
+        execution = _text(self.execution_identity_context_id, "execution identity context ID")
+        if reviewer == execution:
+            raise ReviewAssuranceError("Independent Review occurrence must come from a separate context")
+        for name, value in (("ExecutionBinding", self.execution_binding_sha256),
+                            ("PRBinding", self.pr_binding_sha256), ("profile", self.profile_sha256),
+                            ("Independent Review V2", self.independent_review_v2_sha256)):
+            if not isinstance(value, str) or not SHA256.fullmatch(value):
+                raise ReviewAssuranceError(f"review occurrence {name} digest is invalid")
+        if (self.review_occurrence != "COMPLETED" or self.provenance_assurance != "UNAVAILABLE"
+                or self.evidence_origin != "operator_reported_separate_context_review"):
+            raise ReviewAssuranceError("operator-reported occurrence has invalid status or provenance label")
+        self.reviewer_output.validate("exact captured reviewer output")
+        output = _strict_json(self.reviewer_output.validate("exact captured reviewer output"),
+                              "exact captured reviewer output")
+        expected = {"findings", "reviewer_context_id", "schema", "subject", "verdict"}
+        if (set(output) != expected or output.get("schema") != "PASES_CHILD_REVIEW_OUTPUT_V1"
+                or output.get("subject") != self.subject.as_dict()
+                or output.get("reviewer_context_id") != reviewer
+                or output.get("verdict") != self.review_outcome):
+            raise ReviewAssuranceError("captured reviewer output does not match the exact occurrence record")
+        parsed = _validate_review_result(output.get("findings"), output.get("verdict"))
+        if parsed != self.findings:
+            raise ReviewAssuranceError("captured reviewer output findings differ from the occurrence record")
+        return self
+
+    def payload(self) -> dict[str, Any]:
+        self.validate()
+        return {
+            "evidence_origin": self.evidence_origin,
+            "execution_binding_sha256": self.execution_binding_sha256,
+            "execution_identity_context_id": self.execution_identity_context_id,
+            "findings": [{"description": row.description, "evidence_ref": row.evidence_ref,
+                          "finding_id": row.finding_id, "resolved": row.resolved,
+                          "severity": row.severity} for row in self.findings],
+            "pr_binding_sha256": self.pr_binding_sha256,
+            "profile_sha256": self.profile_sha256,
+            "independent_review_v2_sha256": self.independent_review_v2_sha256,
+            "provenance_assurance": self.provenance_assurance,
+            "review_occurrence": self.review_occurrence,
+            "review_outcome": self.review_outcome,
+            "reviewer_context_id": self.reviewer_context_id,
+            "reviewer_output": self.reviewer_output.as_dict(),
+            "schema": "PASES_INDEPENDENT_REVIEW_OCCURRENCE_V1",
+            "subject": self.subject.as_dict(),
+        }
+
+    @property
+    def sha256(self) -> str:
+        return hashlib.sha256(_canonical(self.payload())).hexdigest()
+
+    def to_bytes(self) -> bytes:
+        return _canonical({**self.payload(), "occurrence_sha256": self.sha256}) + b"\n"
+
+    @classmethod
+    def from_captured_output(cls, *, subject: VerificationSubject,
+                             execution_identity_context_id: str,
+                             execution_binding_sha256: str, pr_binding_sha256: str,
+                             profile_sha256: str, independent_review_v2_sha256: str,
+                             raw_output: bytes) -> "IndependentReviewOccurrenceV1":
+        value = _strict_json(raw_output, "exact captured reviewer output")
+        findings = _validate_review_result(value.get("findings"), value.get("verdict"))
+        result = cls(
+            subject=subject, reviewer_context_id=value.get("reviewer_context_id"),
+            execution_identity_context_id=execution_identity_context_id,
+            execution_binding_sha256=execution_binding_sha256,
+            pr_binding_sha256=pr_binding_sha256, profile_sha256=profile_sha256,
+            independent_review_v2_sha256=independent_review_v2_sha256,
+            review_outcome=value.get("verdict"), findings=findings,
+            reviewer_output=CapturedBytes.capture(raw_output),
+        )
+        return result.validate()
+
+    @classmethod
+    def from_bytes(cls, raw: bytes) -> "IndependentReviewOccurrenceV1":
+        value = _strict_json(raw, "Independent Review occurrence")
+        expected = {"evidence_origin", "execution_binding_sha256", "execution_identity_context_id",
+                    "findings", "occurrence_sha256", "pr_binding_sha256", "profile_sha256",
+                    "independent_review_v2_sha256", "provenance_assurance", "review_occurrence", "review_outcome",
+                    "reviewer_context_id", "reviewer_output", "schema", "subject"}
+        if set(value) != expected or value.get("schema") != "PASES_INDEPENDENT_REVIEW_OCCURRENCE_V1":
+            raise ReviewAssuranceError("Independent Review occurrence has unknown or missing fields")
+        try:
+            findings = tuple(ReviewFinding(
+                row["finding_id"], row["severity"], row["resolved"], row["description"], row["evidence_ref"],
+            ).validate() for row in value["findings"])
+            record = cls(
+                subject=VerificationSubject.from_dict(value["subject"]),
+                reviewer_context_id=value["reviewer_context_id"],
+                execution_identity_context_id=value["execution_identity_context_id"],
+                execution_binding_sha256=value["execution_binding_sha256"],
+                pr_binding_sha256=value["pr_binding_sha256"], profile_sha256=value["profile_sha256"],
+                independent_review_v2_sha256=value["independent_review_v2_sha256"],
+                review_outcome=value["review_outcome"], findings=findings,
+                reviewer_output=CapturedBytes.from_dict(value["reviewer_output"], "reviewer output"),
+                provenance_assurance=value["provenance_assurance"],
+                review_occurrence=value["review_occurrence"], evidence_origin=value["evidence_origin"],
+            ).validate()
+        except (KeyError, TypeError) as exc:
+            raise ReviewAssuranceError("Independent Review occurrence is malformed") from exc
+        if value["occurrence_sha256"] != record.sha256 or record.to_bytes() != raw:
+            raise ReviewAssuranceError("Independent Review occurrence digest or canonical bytes do not match")
+        return record
+
+
+def read_independent_review_occurrence_v1(path: Path) -> IndependentReviewOccurrenceV1:
+    if path_has_symlink(path) or not path.is_file():
+        raise ReviewAssuranceError("Independent Review occurrence must be a regular non-symlink file")
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise ReviewAssuranceError("Independent Review occurrence file cannot be read") from exc
+    return IndependentReviewOccurrenceV1.from_bytes(raw)
+
+
+def write_independent_review_occurrence_v1(path: Path,
+                                           record: IndependentReviewOccurrenceV1) -> str:
+    raw = record.to_bytes()
+    if path_has_symlink(path) or path.exists():
+        raise ReviewAssuranceError("Independent Review occurrence output already exists")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path_has_symlink(path):
+        raise ReviewAssuranceError("Independent Review occurrence path traverses a symbolic link")
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except FileExistsError as exc:
+        raise ReviewAssuranceError("Independent Review occurrence output was concurrently created") from exc
+    if path.read_bytes() != raw:
+        raise ReviewAssuranceError("Independent Review occurrence readback differs from written bytes")
+    return record.sha256
+
+
 def attest_native_review(*, subject: VerificationSubject, execution_identity_context_id: str,
                          request: bytes, terminal_return: bytes, child_output: bytes,
                          profile_sha256: str, host_spawn_id: str | None = None,
@@ -420,6 +586,34 @@ def attest_native_review(*, subject: VerificationSubject, execution_identity_con
         native_evidence=evidence, profile_sha256=profile_sha256,
         evidence_origin=EVIDENCE_ORIGIN,
     ).validate()
+
+
+def report_separate_context_review(*, subject: VerificationSubject,
+                                   execution_identity_context_id: str,
+                                   reviewer_context_id: str, verdict: str,
+                                   findings: tuple[ReviewFinding, ...],
+                                   profile_sha256: str) -> IndependentReviewV2:
+    """Record unavailable formal assurance for a separately completed review.
+
+    Preserve the V2 meaning: a result with unavailable provenance cannot claim
+    a formal review PASS. The linked occurrence V1 carries the actual review
+    outcome and findings without changing historical V2 semantics.
+    """
+    if verdict not in {"PASS", "FAIL", "BLOCKED", "CONCERNS"}:
+        raise ReviewAssuranceError("separate-context review outcome is invalid")
+    _validate_review_result([{
+        "description": row.description, "evidence_ref": row.evidence_ref,
+        "finding_id": row.finding_id, "resolved": row.resolved, "severity": row.severity,
+    } for row in findings], verdict)
+    result = IndependentReviewV2(
+        subject=subject, assurance="UNAVAILABLE", reviewer_context_id=reviewer_context_id,
+        execution_identity_context_id=execution_identity_context_id, verdict="BLOCKED",
+        findings=findings, profile_sha256=profile_sha256,
+        evidence_origin="operator_reported_separate_context_review",
+    ).validate()
+    if reviewer_context_id == execution_identity_context_id:
+        raise ReviewAssuranceError("Independent Review must be performed in a separate context")
+    return result
 
 
 @dataclass(frozen=True)
@@ -539,11 +733,20 @@ def capture_unavailability_observation(host_surface: str, capabilities: dict[str
 
 def evaluate_capture_unavailability(*, host_surface: str, observation: dict[str, Any],
                                     observation_sha256: str,
-                                    current_reviews: Iterable[IndependentReviewV2] = ()
+                                    current_reviews: Iterable[IndependentReviewV2] = (),
+                                    current_occurrences: Iterable[IndependentReviewOccurrenceV1] = ()
                                     ) -> ReviewCaptureEligibility:
-    """Permit only observed missing native capture, never a completed failed review."""
+    """Permit a provenance exception only for a completed current independent review."""
     reasons: list[str] = []
     digest_tuple: tuple[str, ...] = ()
+    reviews = tuple(current_reviews)
+    occurrences = tuple(current_occurrences)
+    if not reviews or not occurrences:
+        reasons.append("no current independent review occurrence record and outcome were recorded")
+    if len(reviews) > 1:
+        reasons.append("multiple current Independent Review results are conflicting")
+    if len(occurrences) > 1:
+        reasons.append("multiple current Independent Review occurrence records are conflicting")
     if host_surface not in {"codex_cloud", "codex_local_cli", "codex_desktop", "claude_code"}:
         reasons.append("host surface is unknown")
     if (not isinstance(observation_sha256, str) or not SHA256.fullmatch(observation_sha256)
@@ -561,7 +764,7 @@ def evaluate_capture_unavailability(*, host_surface: str, observation: dict[str,
                 or capabilities.get("surface") != host_surface
                 or capabilities.get("native_request_return_capture") is not False):
             reasons.append("host-to-runtime native request/return capture is not positively observed unavailable")
-    for review in tuple(current_reviews):
+    for review in reviews:
         if not isinstance(review, IndependentReviewV2):
             reasons.append("current review evidence has an unsupported type")
             continue
@@ -572,6 +775,42 @@ def evaluate_capture_unavailability(*, host_surface: str, observation: dict[str,
             continue
         has_unresolved_abc = any(f.severity in {"A", "B", "C"} and not f.resolved
                                  for f in review.findings)
+        if review.reviewer_context_id == review.execution_identity_context_id:
+            reasons.append("current review was not performed in a distinct reviewer context")
+            continue
+        if review.assurance == "UNAVAILABLE" and review.evidence_origin != "operator_reported_separate_context_review":
+            reasons.append("current unavailable review lacks an explicit separate-context occurrence report")
+            continue
+        if review.assurance == "UNAVAILABLE":
+            if review.verdict != "BLOCKED":
+                reasons.append("UNAVAILABLE V2 evidence must preserve its historical non-PASS meaning")
+                continue
+            if len(occurrences) != 1 or not isinstance(occurrences[0], IndependentReviewOccurrenceV1):
+                reasons.append("current unavailable V2 result has no unique typed occurrence record")
+                continue
+            occurrence = occurrences[0]
+            try:
+                occurrence.validate()
+            except (ReviewAssuranceError, ValueError):
+                reasons.append("current separate-context occurrence record is malformed")
+                continue
+            if (occurrence.subject != review.subject
+                    or occurrence.independent_review_v2_sha256 != review.sha256
+                    or occurrence.reviewer_context_id != review.reviewer_context_id
+                    or occurrence.execution_identity_context_id != review.execution_identity_context_id
+                    or occurrence.profile_sha256 != review.profile_sha256
+                    or occurrence.findings != review.findings):
+                reasons.append("current occurrence report does not match its V2 provenance record")
+                continue
+            occurrence_has_unresolved_abc = any(
+                f.severity in {"A", "B", "C"} and not f.resolved for f in occurrence.findings
+            )
+            if occurrence.review_outcome != "PASS" or occurrence_has_unresolved_abc:
+                return ReviewCaptureEligibility(
+                    "REVIEW_FAILED", host_surface, digest_tuple,
+                    ("current completed separate-context review did not PASS or has unresolved A/B/C findings",),
+                ).validate()
+            continue
         if review.assurance in {"HOST_VERIFIED", "INDEPENDENT_ATTESTED"}:
             if review.verdict in {"FAIL", "BLOCKED", "CONCERNS"} or has_unresolved_abc:
                 return ReviewCaptureEligibility(
@@ -581,11 +820,6 @@ def evaluate_capture_unavailability(*, host_surface: str, observation: dict[str,
             reasons.append("a current native review exists; use its ordinary assurance path")
         elif review.assurance == "SELF_REVIEW":
             reasons.append("self-review cannot establish host capture unavailability")
-        elif review.assurance == "UNAVAILABLE" and (review.verdict in {"FAIL", "CONCERNS"} or has_unresolved_abc):
-            return ReviewCaptureEligibility(
-                "REVIEW_FAILED", host_surface, digest_tuple,
-                ("current review evidence contains a failed verdict or unresolved A/B/C finding",),
-            ).validate()
     if reasons:
         return ReviewCaptureEligibility("INVALID_EVIDENCE", host_surface, digest_tuple,
                                         tuple(dict.fromkeys(reasons))).validate()

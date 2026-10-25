@@ -39,6 +39,12 @@
   - [12.11 DES-F06-011 Exact exception plan and Owner record](#1211-des-f06-011-exact-exception-plan-and-owner-record)
   - [12.12 DES-F06-012 Versioned Readiness and Final Delivery](#1212-des-f06-012-versioned-readiness-and-final-delivery)
   - [12.13 DES-F06-013 Downstream consumption and exact-subject revalidation](#1213-des-f06-013-downstream-consumption-and-exact-subject-revalidation)
+  - [12.14 DES-F06-014 Review occurrence is mandatory](#1214-des-f06-014-review-occurrence-is-mandatory)
+  - [12.15 DES-F06-015 One-time ADC-authorized Phase rebaseline](#1215-des-f06-015-one-time-adc-authorized-phase-rebaseline)
+  - [12.16 DES-F06-016 Active-chat approval scope](#1216-des-f06-016-active-chat-approval-scope)
+  - [12.17 DES-F06-017 No Owner-authored approval comment](#1217-des-f06-017-no-owner-authored-approval-comment)
+  - [12.18 DES-F06-018 Chat provenance label](#1218-des-f06-018-chat-provenance-label)
+  - [12.19 DES-F06-019 Append-only history](#1219-des-f06-019-append-only-history)
 - [13 12 DES-WF-006 Human review and final delivery](#13-12-des-wf-006-human-review-and-final-delivery)
 <!-- contents:end -->
 
@@ -68,6 +74,12 @@
 - [DES-F06-011](#des-f06-011) — 12.11 DES-F06-011 Exact exception plan and Owner record
 - [DES-F06-012](#des-f06-012) — 12.12 DES-F06-012 Versioned Readiness and Final Delivery
 - [DES-F06-013](#des-f06-013) — 12.13 DES-F06-013 Downstream consumption and exact-subject revalidation
+- [DES-F06-014](#des-f06-014) — 12.14 DES-F06-014 Review occurrence is mandatory
+- [DES-F06-015](#des-f06-015) — 12.15 DES-F06-015 One-time ADC-authorized Phase rebaseline
+- [DES-F06-016](#des-f06-016) — 12.16 DES-F06-016 Active-chat approval scope
+- [DES-F06-017](#des-f06-017) — 12.17 DES-F06-017 No Owner-authored approval comment
+- [DES-F06-018](#des-f06-018) — 12.18 DES-F06-018 Chat provenance label
+- [DES-F06-019](#des-f06-019) — 12.19 DES-F06-019 Append-only history
 - [DES-WF-006](#des-wf-006) — 13 12 DES-WF-006 Human review and final delivery
 <!-- heading-map:end -->
 
@@ -272,7 +284,7 @@ When the Bootstrap evaluator lives on a downstream stacked PR, run its CLI from 
 <a id="des-f06-001-v1-compatibility"></a>
 ### 12.1 DES-F06-001 V2 record and V1 compatibility
 
-`review_assurance.py` owns the strict canonical V2 record and assurance evaluator. The existing V1 model and serializer remain unchanged for historical reads. A V1-only artifact is diagnostic and does not satisfy current Readiness.
+`review_assurance.py` owns the strict canonical V2 record and assurance evaluator. The existing V1 model and serializer remain unchanged for historical reads. V2 carries occurrence outcome/findings separately from provenance; `UNAVAILABLE` still requires a distinct reviewer context and a real report. A V1-only artifact is diagnostic and does not satisfy current Readiness.
 
 <a id="des-f06-002"></a>
 <a id="des-f06-002-host-verified-evidence"></a>
@@ -302,7 +314,7 @@ Profile Schema 2 defaults to `independent_review.minimum_assurance=host_verified
 <a id="des-f06-006-readiness-enforcement"></a>
 ### 12.6 DES-F06-006 Readiness enforcement
 
-The `audit independent` native-capture path writes the existing review V2 only after validating exact subject, Binding, profile, request/return/output linkage, finding references, and unique subject history. Ordinary Readiness consumes that review through the configured minimum and preserves its V1 result bytes. A separate exception evaluator may produce `READY_WITH_EXCEPTION` only for positively observed `HOST_NATIVE_CAPTURE_UNAVAILABLE` and a current exact-subject Owner exception, with every non-review Readiness gate passing. It preserves `review_assurance=UNAVAILABLE`; it does not create an Independent Review PASS. Actual review failures, invalid or stale evidence, and every other gate failure remain blocked. Final Delivery re-reads the same exact subject and emits the distinct exception result with `merge_authorized=false`.
+The `audit independent` native-capture path writes review V2 only after validating exact subject, Binding, profile, request/return/output linkage, finding references, and unique subject history. Ordinary Readiness consumes that review through the configured minimum and preserves its V1 result bytes. When capture is unavailable, a separate-context reviewer still performs the review and records the actual verdict/findings in V2 with `assurance=UNAVAILABLE`. The exception evaluator requires that current report and positively observed `HOST_NATIVE_CAPTURE_UNAVAILABLE`; a missing report or failed review remains blocked. The exception path records `INDEPENDENT_REVIEW_PROVENANCE_UNAVAILABLE`, not `INDEPENDENT_REVIEW_NOT_PERFORMED`, and never claims host attestation. Readiness V3 and Final Delivery V3 preserve the report digest and visible provenance limitation.
 
 <a id="des-f06-007"></a>
 <a id="des-f06-007-host-adapters"></a>
@@ -328,31 +340,67 @@ Issue #46 adapters never alter Issue #63 / PR #64 evidence or workflow state. Th
 
 `ProjectProfile` owns the optional Schema 2 `independent_review.unavailable_handling` field. Absence resolves to `block`; the accepted values are only `block` and `owner_exception`. `minimum_assurance` retains its existing value and evaluation. Repository, Issue, and PR identity checks constrain the opt-in to repository ID `1401910271`, Issue #46 / stable ID `5846549384`, and PR #67. No host auto-detection, environment variable, or CLI flag changes the committed profile policy.
 
-`review_assurance.py` keeps ordinary assurance evaluation unchanged and reports a typed exception eligibility outcome: `HOST_NATIVE_CAPTURE_UNAVAILABLE`, `REVIEW_FAILED`, or `INVALID_EVIDENCE`. Only the first can enter the exception route. A completed failing review, unresolved blocking finding, malformed or stale evidence, missing Verification Plan, or failed non-review gate is not capture unavailability. A normal eligible review continues through the existing Readiness V1 path.
+`review_assurance.py` keeps native provenance evaluation unchanged and reports a typed exception eligibility outcome: `HOST_NATIVE_CAPTURE_UNAVAILABLE`, `REVIEW_FAILED`, or `INVALID_EVIDENCE`. Only the first can enter the exception route, and only with exactly one current `PASES_INDEPENDENT_REVIEW_V2` and matching `PASES_INDEPENDENT_REVIEW_OCCURRENCE_V1`. The legacy V2 record retains its formal `BLOCKED` meaning when assurance is unavailable; the occurrence record carries the actual outcome/findings and retains exact reviewer-output bytes, exact subject, ExecutionBinding, PRBinding, and profile. A completed failing review, unresolved A/B/C finding, missing report/occurrence, malformed or stale evidence, missing Verification Plan, or failed non-review gate is not capture unavailability. A normal eligible `HOST_VERIFIED` or `INDEPENDENT_ATTESTED` review continues through the existing Readiness V1 path.
 
 <a id="des-f06-011"></a>
 <a id="des-f06-011-exact-exception-plan-and-owner-record"></a>
 ### 12.11 DES-F06-011 Exact exception plan and Owner record
 
-The read-only plan binds repository/Owner/Issue/PR identities, current base and exact HEAD, approved ADC generation, frozen Verification Plan, ExecutionBinding, PRBinding, committed profile bytes, actual host surface, capability-observation digests, the typed reason, and the accepted `INDEPENDENT_REVIEW_NOT_PERFORMED` risk. Its canonical digest freezes the approval subject. The Owner personally posts the exact generated `PASES_REVIEW_UNAVAILABLE_APPROVAL_V1` comment; the implementation agent never creates or edits that comment. Validation checks the stable Owner ID, complete literal payload, timestamp, repository/Issue/comment URLs, uniqueness, and direct/list/direct consistency.
+The forward plan binds repository/Owner/Issue/PR identities, current base and exact HEAD, approved ADC, frozen Verification Plan, ExecutionBinding, PRBinding, committed profile, actual host surface, capability-observation digests, and the exact `IndependentReviewV2.sha256`. Its risk is `INDEPENDENT_REVIEW_PROVENANCE_UNAVAILABLE`. The Owner approves its exact operation and scope in the active chat selection UI; the runtime records the answer as `PASES_OPERATOR_REPORTED_CHAT_DECISION_V2`, then the apply operation verifies that technical record by direct/list/direct readback. No Owner-authored approval comment is requested. The chat answer is operator-reported and is not a host signature.
 
-The apply operation is the sole writer of an implementation-authored append-only `PASES_REVIEW_UNAVAILABLE_EXCEPTION_V1` record and its local evidence. The approval comment and exception record remain distinct. Apply revalidates the plan and every bound subject immediately before the write, then performs exact readback. Exact replay is read-only; stale, duplicate, edited, conflicting, or ambiguous state blocks without retry or replacement. A missing frozen Verification Plan prevents plan generation; a Legacy Adoption plan cannot substitute.
+The apply operation is the sole writer of the forward append-only exception receipt and its local evidence. The chat decision and implementation-authored exception receipt remain distinct. Apply revalidates the report, plan, profile and every bound subject immediately before the write, then performs exact readback. Exact replay is read-only; stale, duplicate, conflicting, or ambiguous state blocks without retry or replacement. A missing frozen Verification Plan or review report prevents plan generation; a Legacy Adoption plan cannot substitute.
 
 <a id="des-f06-012"></a>
 <a id="des-f06-012-versioned-readiness-and-final-delivery"></a>
 ### 12.12 DES-F06-012 Versioned Readiness and Final Delivery
 
-`delivery.py` preserves the existing `PASES_REVIEW_READINESS_V1` and V1 Final Delivery serializers, readers, and behavior. It adds `PASES_REVIEW_READINESS_V2` with only `READY_WITH_EXCEPTION` or `BLOCKED`, visible `review_assurance=UNAVAILABLE`, current subject/profile digests, Owner approval and exception references, and the accepted risk. The ready outcome is possible only when every non-review gate passes and the exact grant is current.
+`delivery.py` preserves V1 and V2 Readiness/Final Delivery serializers, readers, and behavior. `PASES_REVIEW_READINESS_V3` binds the current review occurrence, chat decision, exception receipt, exact subject/profile, `review_assurance=UNAVAILABLE`, and the `INDEPENDENT_REVIEW_PROVENANCE_UNAVAILABLE` risk. It can be ready only with one current independent review report plus its matching occurrence record, whose actual outcome is PASS and has no unresolved A/B/C finding, a current exact chat grant, and every other gate passing. The linked V2 provenance result remains formally `BLOCKED`.
 
-The exception route writes a distinct `PASES_FINAL_DELIVERY_V2` with status `READY_FOR_EXPLICIT_MERGE_AUTHORIZATION_WITH_EXCEPTION`, `review_assurance=UNAVAILABLE`, the exact exception digest, and `merge_authorized=false`. It never manufactures a V1 PASS and never authorizes or performs merge.
+The exception route writes a distinct `PASES_FINAL_DELIVERY_V3` with status `READY_FOR_EXPLICIT_MERGE_AUTHORIZATION_WITH_EXCEPTION`, a disclosure that review occurred, `review_assurance=UNAVAILABLE`, exact review/exception/chat-decision digests, and `merge_authorized=false`. It never manufactures a V1 PASS and never authorizes or performs merge.
 
 <a id="des-f06-013"></a>
 <a id="des-f06-013-downstream-consumption-and-exact-subject-revalidation"></a>
 ### 12.13 DES-F06-013 Downstream consumption and exact-subject revalidation
 
-`user_review.py` accepts either ordinary current Readiness V1 `PASS` or exact current Readiness V2 `READY_WITH_EXCEPTION`. User Review remains a separate explicit human decision and retains its existing V1 serialized bytes. Readiness recomputation, User Review start/submit, and Final Delivery re-read PR/HEAD, ADC, frozen Verification Plan, ExecutionBinding, PRBinding, committed profile, Owner grant and exception receipt, Required CI, dependencies, Verification, Acceptance, and Self-Audit against the same subject.
+`user_review.py` accepts ordinary Readiness V1 `PASS` or the current exact-subject provenance-exception Readiness V3. Existing V1/V2 User Review and Readiness bytes remain readable. A chat User Review decision is a separate `PASES_OPERATOR_REPORTED_CHAT_DECISION_V2` bound to the exact session, readiness, HEAD and complete feedback digest. Final Delivery re-reads that decision and all prior exception/review evidence.
 
 Any changed bound input invalidates the exception before side effects. The exception does not bypass a draft PR, failed check, dirty worktree, unmet dependency, actual current review failure, explicit `PR_MERGE`, merge, or closure gate. The Codex Cloud, local Codex CLI/Desktop, and Claude Code surfaces use identical fallback semantics and report only capabilities they actually expose. Agent-writable Claude Hooks do not establish host verification.
+
+<a id="des-f06-014"></a>
+<a id="des-f06-014-review-occurrence-is-mandatory"></a>
+### 12.14 DES-F06-014 Review occurrence is mandatory
+
+Every provenance-exception run starts with a fresh separate-context review of the exact current PR HEAD. The occurrence V1 records reviewer context, implementation context, actual outcome, and findings; the linked V2 provenance result preserves its `UNAVAILABLE`/`BLOCKED` meaning. `UNAVAILABLE` describes only the inability to verify host provenance. No report, same-context review, stale report, non-PASS outcome, or unresolved A/B/C finding is eligible for the exception.
+
+<a id="des-f06-015"></a>
+<a id="des-f06-015-one-time-adc-authorized-phase-rebaseline"></a>
+### 12.15 DES-F06-015 One-time ADC-authorized Phase rebaseline
+
+The approved successor ADC authorizes one `phase:user-review` to `phase:requirements` transition after a read-only plan binds the current ADC, ExecutionBinding, PR/base/HEAD, full Issue labels and completed Legacy Reset V1 receipt. The plan has no second approval. Intent, one label write and Applied are append-only and exact-readback verified.
+
+<a id="des-f06-016"></a>
+<a id="des-f06-016-active-chat-approval-scope"></a>
+### 12.16 DES-F06-016 Active-chat approval scope
+
+Each lifecycle approval request presents its current operation, subject and consequences, then uses a selection UI with `承認する` and `承認しない`. Approval binds only to that active request and exact subject.
+
+<a id="des-f06-017"></a>
+<a id="des-f06-017-no-owner-authored-approval-comment"></a>
+### 12.17 DES-F06-017 No Owner-authored approval comment
+
+No workflow asks the Owner to post an approval comment. A direct chat selection may cause the existing technical decision carrier to be appended by the runtime. Its `operator_reported_chat` channel and authenticated GitHub recorder are separate fields.
+
+<a id="des-f06-018"></a>
+<a id="des-f06-018-chat-provenance-label"></a>
+### 12.18 DES-F06-018 Chat provenance label
+
+The chat answer is operator-reported and requires no cryptographic host or device signature. Digests bind subject bytes; they do not prove chat origin.
+
+<a id="des-f06-019"></a>
+<a id="des-f06-019-append-only-history"></a>
+### 12.19 DES-F06-019 Append-only history
+
+All previous V1/V2 records remain immutable. New chat decisions use V2 records with exact scope and monotonic predecessor links; Issue #46 technical records keep their existing Issue comment carriers and direct/list/direct verification.
 
 <a id="des-wf-006"></a>
 <a id="10-des-wf-006-human-review-and-final-delivery"></a>

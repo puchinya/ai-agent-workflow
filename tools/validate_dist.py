@@ -32,6 +32,7 @@ CLI_ROUTES = {
     "pr": {"ensure"}, "verification": {"plan", "collect", "validate", "final", "published"},
     "acceptance": {"prepare", "validate", "publish", "verify"},
     "audit": {"self", "independent"},
+    "chat-decision": {"record"},
     "user-review": {"start", "sync", "record", "status"},
     "delivery": {"readiness", "gate-policy", "bootstrap-check", "final", "finalize", "parent",
                  "parent-evidence", "parent-migrate-labels", "consumer-activation-setup",

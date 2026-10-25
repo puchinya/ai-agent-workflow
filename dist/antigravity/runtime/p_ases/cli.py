@@ -54,16 +54,29 @@ from .audits import (
     read_independent_review, read_self_audit, write_independent_review, write_self_audit,
 )
 from .review_assurance import (
-    CapturedBytes, IndependentReviewV2, NATIVE_CAPTURE_BOUNDARY_CONFIGURED,
+    CapturedBytes, IndependentReviewOccurrenceV1, IndependentReviewV2, NATIVE_CAPTURE_BOUNDARY_CONFIGURED,
     ReviewAssuranceError, attest_native_review, capture_unavailability_observation,
     evaluate_capture_unavailability, evaluate_review_assurance,
-    read_independent_review_v2, write_independent_review_v2,
+    report_separate_context_review, read_independent_review_occurrence_v1,
+    read_independent_review_v2, write_independent_review_occurrence_v1, write_independent_review_v2,
 )
 from .delivery import (
-    FinalDeliveryResult, FinalDeliveryResultV2, PRReadback, ReadinessCore, ReadinessError,
-    ReadinessResult, ReadinessResultV2, evaluate_final_delivery, evaluate_final_delivery_with_exception,
+    FinalDeliveryResult, FinalDeliveryResultV2, FinalDeliveryResultV3, PRReadback, ReadinessCore, ReadinessError,
+    ReadinessResult, ReadinessResultV2, ReadinessResultV3, evaluate_final_delivery,
+    evaluate_final_delivery_with_exception, evaluate_final_delivery_with_provenance_exception,
     evaluate_readiness, evaluate_readiness_core, evaluate_readiness_with_exception,
+    evaluate_readiness_with_provenance_exception,
     read_readiness, readiness_path, write_readiness,
+)
+from .chat_decisions import ChatDecisionError, read_chat_decision, record_chat_decision
+from .review_unavailable_chat import (
+    ChatExceptionError, ChatReviewUnavailableException, ChatReviewUnavailablePlan,
+    apply_exception as apply_chat_review_unavailable_exception,
+    exception_path as chat_review_unavailable_exception_path,
+    read_exception as read_chat_review_unavailable_exception,
+    read_plan as read_chat_review_unavailable_plan,
+    verify_exception as verify_chat_review_unavailable_exception,
+    write_plan as write_chat_review_unavailable_plan,
 )
 from .review_unavailable_exception import (
     HOST_SURFACES, OWNER_USER_ID as REVIEW_EXCEPTION_OWNER_ID,
@@ -105,12 +118,12 @@ from .ready_rebaseline import (
     read_plan as read_ready_rebaseline_plan, verify_checkpoint as verify_ready_rebaseline_checkpoint,
     write_plan as write_ready_rebaseline_plan,
 )
-from .requirements_rebaseline import (
-    RequirementsRebaselineError, apply_plan as apply_requirements_rebaseline_plan,
-    build_plan as build_requirements_rebaseline_plan,
-    owner_approval_comment as requirements_rebaseline_owner_comment,
-    read_plan as read_requirements_rebaseline_plan,
-    write_plan as write_requirements_rebaseline_plan,
+from .requirements_rebaseline import RequirementsRebaselineError
+from .requirements_rebaseline_chat import (
+    apply_plan as apply_chat_requirements_rebaseline_plan,
+    build_plan as build_chat_requirements_rebaseline_plan,
+    read_plan as read_chat_requirements_rebaseline_plan,
+    write_plan as write_chat_requirements_rebaseline_plan,
 )
 from .oracle_trace import (
     OracleDefinition, OracleTraceError, TestDefinition, validate_plan_oracles,
@@ -165,12 +178,13 @@ from .verification_plan import (
 from .path_safety import path_has_symlink
 from .user_review import (
     FeedbackSnapshot, ParentFeedbackSnapshot, ParentReviewSubject,
-    ParentUserReviewSession, UserReviewError, UserReviewResult, UserReviewSession, UserReviewSubject,
+    ParentUserReviewSession, UserReviewError, UserReviewResult, UserReviewResultV2, UserReviewSession, UserReviewSubject,
     capture_authenticated_chat_event, evaluate_parent_user_review, feedback_digest,
     feedback_snapshot_path, merge_feedback_history, merge_parent_feedback_history,
     normalize_github_feedback, parent_feedback_snapshot_path, parent_review_session_path,
     read_feedback_snapshot, read_parent_feedback_snapshot, read_parent_review_session,
     read_review_session, reject_unattested_chat_event, evaluate_user_review,
+    evaluate_user_review_chat,
     review_session_path, write_feedback_snapshot, write_parent_feedback_snapshot,
     write_parent_review_session, write_review_session,
 )
@@ -1240,6 +1254,88 @@ def _audit_self(args: argparse.Namespace, repository: str, root: Path, github: G
 def _audit_independent(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
     _verified, subject, _required, _checklist_labels = _audit_subject(args, repository, root, github)
     value = _read_json(args.input, "independent-review context artifact", root=root)
+    if isinstance(value, dict) and value.get("schema") == "PASES_CHILD_REVIEW_OUTPUT_V1":
+        expected = {"findings", "reviewer_context_id", "schema", "subject", "verdict"}
+        if (set(value) != expected or VerificationSubject.from_dict(value.get("subject")) != subject
+                or not isinstance(value.get("reviewer_context_id"), str)
+                or not value["reviewer_context_id"].strip()):
+            raise CLIError("separate-context Independent Review output is stale or has unknown/missing fields")
+        binding = read_binding(execution_binding_path(root, args.issue))
+        execution_identity = f"execution-binding:{binding_digest(binding)}"
+        profile = load_profile(root)
+        findings: list[ReviewFinding] = []
+        raw_findings = value.get("findings")
+        if not isinstance(raw_findings, list):
+            raise CLIError("separate-context Independent Review findings must be a list")
+        for row in raw_findings:
+            if not isinstance(row, dict) or set(row) != {
+                "description", "evidence_ref", "finding_id", "resolved", "severity"
+            }:
+                raise CLIError("separate-context Independent Review finding has unknown/missing fields")
+            evidence_ref, _digest = _verified_file_evidence(root, row["evidence_ref"])
+            findings.append(ReviewFinding(
+                row["finding_id"], row["severity"], row["resolved"],
+                row["description"], evidence_ref,
+            ).validate())
+        review_v2 = report_separate_context_review(
+            subject=subject, execution_identity_context_id=execution_identity,
+            reviewer_context_id=value["reviewer_context_id"], verdict=value.get("verdict"),
+            findings=tuple(findings), profile_sha256=profile.profile_sha256,
+        )
+        pr_binding = read_pr_binding(pr_binding_path(root, args.issue))
+        occurrence = IndependentReviewOccurrenceV1.from_captured_output(
+            subject=subject, execution_identity_context_id=execution_identity,
+            execution_binding_sha256=binding_digest(binding), pr_binding_sha256=pr_binding.sha256,
+            profile_sha256=profile.profile_sha256,
+            independent_review_v2_sha256=review_v2.sha256,
+            raw_output=_safe_file_bytes(args.input, "separate-context Independent Review output", root=root),
+        )
+        _read_audit_references(root, review_v2)
+        raw = _safe_file_bytes(args.input, "separate-context Independent Review output", root=root)
+        output_path = (root / ".p_ases" / "audits" / str(args.issue) / subject.sha256
+                       / f"separate-context-report-{hashlib.sha256(raw).hexdigest()}.json")
+        _write_immutable(output_path, raw, root=root)
+        if (load_profile(root) != profile
+                or read_binding(execution_binding_path(root, args.issue)) != binding):
+            raise CLIError("profile or ExecutionBinding changed while recording separate-context review")
+        _fresh_verified, fresh_subject, _fresh_required, _fresh_checklist = _audit_subject(
+            args, repository, root, github,
+        )
+        if fresh_subject != subject:
+            raise CLIError("ADC, PR, plan, or HEAD changed while recording separate-context review")
+        path = (root / ".p_ases" / "audits" / str(args.issue) / subject.sha256
+                / f"independent-v2-{review_v2.sha256}.json")
+        occurrence_path = (root / ".p_ases" / "audits" / str(args.issue) / subject.sha256
+                           / f"review-occurrence-v1-{occurrence.sha256}.json")
+        _validate_v2_review_history(root, args.issue, review_v2, reject_any_existing=True)
+        write_independent_review_v2(path, review_v2)
+        write_independent_review_occurrence_v1(occurrence_path, occurrence)
+        _validate_v2_review_history(root, args.issue, review_v2, expected_path=path)
+        if read_independent_review_occurrence_v1(occurrence_path) != occurrence:
+            raise CLIError("Independent Review occurrence changed during write/readback")
+        _json({"status": "REVIEW_RECORDED", "assurance": "UNAVAILABLE",
+               "evidence_origin": "operator_reported_separate_context_review",
+               "verdict": occurrence.review_outcome,
+               "formal_assurance_status": review_v2.verdict,
+               "findings": [{"description": row.description, "evidence_ref": row.evidence_ref,
+                             "finding_id": row.finding_id, "resolved": row.resolved,
+                             "severity": row.severity} for row in review_v2.findings],
+               "review_occurrence": occurrence.review_occurrence,
+               "review_outcome": occurrence.review_outcome,
+               "provenance_assurance": occurrence.provenance_assurance,
+               "review_occurrence_sha256": occurrence.sha256,
+               "subject": subject.as_dict(), "subject_sha256": subject.sha256,
+               "review_sha256": review_v2.sha256, "profile_sha256": profile.profile_sha256,
+               "path": str(path), "occurrence_path": str(occurrence_path), "report_path": str(output_path),
+               "reasons": ([] if occurrence.review_outcome == "PASS" and not any(
+                   finding.severity in {"A", "B", "C"} and not finding.resolved
+                   for finding in occurrence.findings
+               ) else ["independent review did not PASS or has unresolved A/B/C findings"]),
+               "evidence_refs": [str(path), str(occurrence_path), str(output_path)]})
+        return 0 if occurrence.review_outcome == "PASS" and not any(
+            finding.severity in {"A", "B", "C"} and not finding.resolved
+            for finding in occurrence.findings
+        ) else 2
     if isinstance(value, dict) and value.get("schema") == "PASES_NATIVE_REVIEW_CAPTURE_INPUT_V1":
         expected = {"child_output", "execution_identity_context_id", "host_child_id", "host_join_id",
                     "host_spawn_id", "profile_sha256", "request", "schema", "subject", "terminal_return"}
@@ -1566,15 +1662,12 @@ def _delivery_legacy_reset_apply(args: argparse.Namespace, repository: str,
 def _delivery_requirements_rebaseline_plan(args: argparse.Namespace, repository: str,
                                            root: Path, github: GitHub) -> int:
     try:
-        plan = build_requirements_rebaseline_plan(github, root, args.issue)
-        write_requirements_rebaseline_plan(args.output, plan)
+        plan = build_chat_requirements_rebaseline_plan(github, root, args.issue)
+        write_chat_requirements_rebaseline_plan(args.output, plan)
         _json({"status": "PLAN_READY", "repository": repository, "issue": args.issue,
                "plan_sha256": plan.sha256, "plan": plan.value, "plan_file": str(args.output),
-               "owner_approval_comment": requirements_rebaseline_owner_comment(plan),
-               "approval_instructions": (
-                   "The repository Owner must personally post this exact comment on Issue #46. "
-                   "The implementation agent does not post the approval."
-               )})
+               "authorization": "The approved successor ADC grants this one rebaseline; the plan is read-only evidence.",
+               "additional_approval_required": False})
         return 0
     except (RequirementsRebaselineError, GitHubError, OSError, ValueError) as exc:
         return _blocked_result((str(exc),))
@@ -1583,12 +1676,12 @@ def _delivery_requirements_rebaseline_plan(args: argparse.Namespace, repository:
 def _delivery_requirements_rebaseline_apply(args: argparse.Namespace, repository: str,
                                             root: Path, github: GitHub) -> int:
     try:
-        plan = read_requirements_rebaseline_plan(args.plan)
+        plan = read_chat_requirements_rebaseline_plan(args.plan)
         snapshot = plan.value["snapshot"]
         if (snapshot["issue_number"] != args.issue
                 or snapshot["repository"].casefold() != repository.casefold()):
             raise RequirementsRebaselineError("plan repository/Issue differs from the command subject")
-        result = apply_requirements_rebaseline_plan(github, root, plan, args.approval_comment_id)
+        result = apply_chat_requirements_rebaseline_plan(github, root, plan)
         _json({"repository": repository, "issue": args.issue, **result})
         return 0
     except (RequirementsRebaselineError, GitHubError, OSError, ValueError) as exc:
@@ -1834,6 +1927,32 @@ def _current_review_v2_records(root: Path, subject: VerificationSubject) -> tupl
     return tuple(records)
 
 
+def _current_review_occurrence_records(
+    root: Path, subject: VerificationSubject,
+) -> tuple[IndependentReviewOccurrenceV1, ...]:
+    folder = root / ".p_ases" / "audits" / str(subject.issue_number) / subject.sha256
+    if path_has_symlink(folder):
+        raise CLIError("current Independent Review occurrence history traverses a symbolic link")
+    if not folder.exists():
+        return ()
+    if not folder.is_dir():
+        raise CLIError("current Independent Review occurrence history is not a directory")
+    records: list[IndependentReviewOccurrenceV1] = []
+    for path in sorted(folder.iterdir()):
+        if not path.name.startswith("review-occurrence-v1-"):
+            continue
+        if path.is_symlink() or not path.is_file():
+            raise CLIError("current Independent Review occurrence history contains a non-regular record")
+        record = read_independent_review_occurrence_v1(path)
+        if (path.name != f"review-occurrence-v1-{record.sha256}.json"
+                or record.subject != subject):
+            raise CLIError("current Independent Review occurrence has a stale or mismatched record")
+        records.append(record)
+    if len(records) > 1:
+        raise CLIError("current Independent Review occurrence history is duplicate or conflicting")
+    return tuple(records)
+
+
 def _review_unavailable_current_context(
     github: GitHub, repository: str, root: Path, issue_number: int, pr_number: int,
     head: str, verification_plan_path: Path, host_surface: str,
@@ -1881,11 +2000,27 @@ def _review_unavailable_current_context(
         raise CLIError("PRBinding does not match the current approved ADC and PR identity")
     observation, observation_sha = capture_unavailability_observation(
         host_surface, _review_adapter_capabilities(host_surface))
+    current_reviews = _current_review_v2_records(root, subject)
+    current_occurrences = _current_review_occurrence_records(root, subject)
     eligibility = evaluate_capture_unavailability(
         host_surface=host_surface, observation=observation, observation_sha256=observation_sha,
-        current_reviews=_current_review_v2_records(root, subject))
+        current_reviews=current_reviews, current_occurrences=current_occurrences)
     if eligibility.status != "HOST_NATIVE_CAPTURE_UNAVAILABLE":
         raise CLIError("review exception is not eligible: " + "; ".join(eligibility.reasons))
+    if len(current_reviews) != 1 or len(current_occurrences) != 1:
+        raise CLIError("provenance exception requires exactly one current Independent Review occurrence and result")
+    current_review = current_reviews[0]
+    current_occurrence = current_occurrences[0]
+    if (current_occurrence.subject != subject
+            or current_occurrence.independent_review_v2_sha256 != current_review.sha256
+            or current_review.verdict != "BLOCKED"
+            or current_occurrence.findings != current_review.findings
+            or current_occurrence.reviewer_context_id != current_review.reviewer_context_id
+            or current_occurrence.execution_identity_context_id != current_review.execution_identity_context_id
+            or current_occurrence.execution_binding_sha256 != binding_digest(binding)
+            or current_occurrence.pr_binding_sha256 != pr_binding.sha256
+            or current_occurrence.profile_sha256 != profile.profile_sha256):
+        raise CLIError("Independent Review occurrence, V2 result, or current bindings/profile do not agree")
     snapshot = {
         "adc_comment_id": verified_adc.pointer.comment_id,
         "adc_sha256": verified_adc.pointer.sha256,
@@ -1893,12 +2028,14 @@ def _review_unavailable_current_context(
         "branch_ref": pr["head_ref"],
         "capability_observation_sha256s": list(eligibility.observation_sha256s),
         "execution_binding_sha256": binding_digest(binding), "head_sha40": head,
-        "host_surface": host_surface, "issue_id": issue["id"], "issue_number": issue_number,
+        "host_surface": host_surface, "independent_review_sha256": current_review.sha256,
+        "review_occurrence_sha256": current_occurrence.sha256,
+        "issue_id": issue["id"], "issue_number": issue_number,
         "owner_user_id": REVIEW_EXCEPTION_OWNER_ID,
         "pr_binding_sha256": pr_binding.sha256, "pr_number": pr_number,
         "profile_sha256": profile.profile_sha256,
         "reason": "HOST_NATIVE_CAPTURE_UNAVAILABLE", "repository": repository,
-        "repository_id": metadata["id"], "risk": "INDEPENDENT_REVIEW_NOT_PERFORMED",
+        "repository_id": metadata["id"], "risk": "INDEPENDENT_REVIEW_PROVENANCE_UNAVAILABLE",
         "verification_plan_sha256": plan.sha256,
     }
     return snapshot, eligibility
@@ -1907,16 +2044,16 @@ def _review_unavailable_current_context(
 def _validate_review_unavailable_exception(
     github: GitHub, repository: str, root: Path, issue_number: int, pr_number: int,
     head: str, verification_plan_path: Path, exception_path: Path,
-) -> tuple[Any, ReviewUnavailableException, Any]:
-    record = read_review_unavailable_exception(exception_path)
+) -> tuple[Any, ChatReviewUnavailableException, Any]:
+    record = read_chat_review_unavailable_exception(exception_path)
     current, eligibility = _review_unavailable_current_context(
         github, repository, root, issue_number, pr_number, head,
         verification_plan_path, record.snapshot["host_surface"])
     if record.snapshot != current:
         changed = sorted(key for key in set(record.snapshot) | set(current)
                          if record.snapshot.get(key) != current.get(key))
-        raise CLIError("Owner exception is stale against current inputs: " + ", ".join(changed))
-    read_exception_comment(github, record)
+        raise CLIError("chat exception is stale against current inputs: " + ", ".join(changed))
+    verify_chat_review_unavailable_exception(github, record)
     return load_profile(root), record, eligibility
 
 
@@ -1926,14 +2063,16 @@ def _delivery_review_unavailable_plan(args: argparse.Namespace, repository: str,
         snapshot, _eligibility = _review_unavailable_current_context(
             github, repository, root, args.issue, args.pr, args.head,
             args.verification_plan, args.host_surface)
-        plan = ReviewUnavailablePlan.create(snapshot)
-        write_review_unavailable_plan(args.output, plan)
+        plan = ChatReviewUnavailablePlan.create(snapshot)
+        write_chat_review_unavailable_plan(args.output, plan)
         _json({"status": "PLAN_READY", "plan_sha256": plan.sha256, "plan": plan.value,
-               "path": str(args.output), "approval_comment": review_unavailable_approval_comment(plan),
-               "disclosure": "Independent Review was not performed; code defects may go undetected."})
+               "path": str(args.output), "chat_operation": "REVIEW_UNAVAILABLE_EXCEPTION",
+               "chat_scope": plan.approval_scope,
+               "approval_scope_sha256": plan.approval_scope_sha256,
+               "disclosure": "Independent Review occurred; host provenance could not be verified."})
         return 0
     except (ADCError, PlanError, OracleTraceError, EvidenceError, GitError, ExecutionError,
-            CheckpointError, ProfileError, ReviewAssuranceError, ReviewUnavailableError,
+            CheckpointError, ProfileError, ReviewAssuranceError, ReviewUnavailableError, ChatExceptionError,
             GitHubError, CLIError, OSError, ValueError) as exc:
         return _blocked_result((str(exc),))
 
@@ -1941,7 +2080,7 @@ def _delivery_review_unavailable_plan(args: argparse.Namespace, repository: str,
 def _delivery_review_unavailable_apply(args: argparse.Namespace, repository: str,
                                        root: Path, github: GitHub) -> int:
     try:
-        plan = read_review_unavailable_plan(args.plan)
+        plan = read_chat_review_unavailable_plan(args.plan)
         if args.issue != 46 or args.pr != 67 or args.head != plan.snapshot["head_sha40"]:
             raise CLIError("apply arguments do not match the exact exception plan subject")
         snapshot, eligibility = _review_unavailable_current_context(
@@ -1949,22 +2088,29 @@ def _delivery_review_unavailable_apply(args: argparse.Namespace, repository: str
             args.verification_plan, plan.snapshot["host_surface"])
         if snapshot != plan.snapshot or list(eligibility.observation_sha256s) != plan.snapshot["capability_observation_sha256s"]:
             raise CLIError("exception plan is stale against the exact current subject or capability observation")
-        verify_owner_approval(github, plan, args.approval_comment_id)
+        decision_comment_id = args.chat_decision_comment_id
+        from .chat_decisions import read_chat_decision
+        decision = read_chat_decision(
+            github, decision_comment_id, operation="REVIEW_UNAVAILABLE_EXCEPTION",
+            subject_sha256=plan.sha256, scope_sha256=plan.approval_scope_sha256,
+        )
+        if decision.payload["scope"] != plan.approval_scope:
+            raise CLIError("chat decision scope differs from the displayed exception plan")
         final_snapshot, final_eligibility = _review_unavailable_current_context(
             github, repository, root, args.issue, args.pr, args.head,
             args.verification_plan, plan.snapshot["host_surface"])
         if final_snapshot != plan.snapshot or final_eligibility != eligibility:
             raise CLIError("exception plan inputs changed immediately before publication")
-        record, path, replayed = apply_review_unavailable_exception(
-            github, plan, args.approval_comment_id, local_root=root)
+        record, path, replayed = apply_chat_review_unavailable_exception(
+            github, plan, decision_comment_id, local_root=root)
         _json({"status": "NOOP" if replayed else "APPLIED", "plan_sha256": plan.sha256,
                "exception_sha256": record.sha256, "exception_comment_id": record.value["exception_comment_id"],
-               "owner_comment_id": record.value["owner_approval_comment_id"], "path": str(path),
-               "review_assurance": "UNAVAILABLE", "risk": "INDEPENDENT_REVIEW_NOT_PERFORMED",
-               "disclosure": "This record does not claim that an Independent Review occurred or passed."})
+               "chat_decision_comment_id": record.value["chat_decision_comment_id"], "path": str(path),
+               "review_assurance": "UNAVAILABLE", "risk": "INDEPENDENT_REVIEW_PROVENANCE_UNAVAILABLE",
+               "disclosure": "Independent Review occurred; host provenance could not be verified."})
         return 0
     except (ADCError, PlanError, OracleTraceError, EvidenceError, GitError, ExecutionError,
-            CheckpointError, ProfileError, ReviewAssuranceError, ReviewUnavailableError,
+            CheckpointError, ProfileError, ReviewAssuranceError, ReviewUnavailableError, ChatExceptionError,
             GitHubError, CLIError, OSError, ValueError) as exc:
         return _blocked_result((str(exc),))
 
@@ -2131,7 +2277,7 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
     except (ProfileError, VerificationError) as exc:
         blockers.append(f"Required Check policy cannot be trusted: {exc}")
 
-    exception_record: ReviewUnavailableException | None = None
+    exception_record: ChatReviewUnavailableException | None = None
     exception_eligibility = None
     if exception_path is not None and subject is not None:
         try:
@@ -2141,11 +2287,11 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
             if current_profile != exception_profile:
                 blockers.append("committed profile changed during exception readback")
             published_refs.extend((
-                f"issue-comment:{exception_record.value['owner_approval_comment_id']}",
+                f"issue-comment:{exception_record.value['chat_decision_comment_id']}",
                 f"issue-comment:{exception_record.value['exception_comment_id']}",
             ))
         except (ADCError, PlanError, OracleTraceError, EvidenceError, GitError, ExecutionError,
-                CheckpointError, ProfileError, ReviewAssuranceError, ReviewUnavailableError,
+                CheckpointError, ProfileError, ReviewAssuranceError, ReviewUnavailableError, ChatExceptionError,
                 GitHubError, CLIError, OSError, ValueError) as exc:
             blockers.append(f"Owner exception readback/revalidation failed: {exc}")
 
@@ -2236,11 +2382,11 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
                 )
                 if (final_profile != current_profile or final_exception != exception_record
                         or final_eligibility != exception_eligibility):
-                    blockers.append("Owner exception, capability observation, or profile changed before Readiness persistence")
+                    blockers.append("chat exception, review report, capability observation, or profile changed before Readiness persistence")
             except (ADCError, PlanError, OracleTraceError, EvidenceError, GitError, ExecutionError,
-                    CheckpointError, ProfileError, ReviewAssuranceError, ReviewUnavailableError,
+                    CheckpointError, ProfileError, ReviewAssuranceError, ReviewUnavailableError, ChatExceptionError,
                     GitHubError, CLIError, OSError, ValueError) as exc:
-                blockers.append(f"Owner exception final readback failed before Readiness persistence: {exc}")
+                blockers.append(f"chat exception final readback failed before Readiness persistence: {exc}")
         if current_profile is not None:
             try:
                 if load_profile(root) != current_profile:
@@ -2263,9 +2409,14 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
             required_item_ids=required_item_ids, required_checks_sha256=check_sha,
             blocker_reasons=blockers,
         )
-        result = evaluate_readiness_with_exception(
+        current_reviews = _current_review_v2_records(root, subject)
+        current_review = current_reviews[0] if len(current_reviews) == 1 else None
+        current_occurrences = _current_review_occurrence_records(root, subject)
+        current_occurrence = current_occurrences[0] if len(current_occurrences) == 1 else None
+        result = evaluate_readiness_with_provenance_exception(
             core=core, profile_sha256=current_profile.profile_sha256,
-            eligibility=exception_eligibility, exception=exception_record,
+            eligibility=exception_eligibility, review=current_review,
+            occurrence=current_occurrence, exception=exception_record,
         )
     else:
         result = evaluate_readiness(
@@ -2282,6 +2433,17 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
         )
     path = readiness_path(root, result)
     write_readiness(path, result)
+    review_details = ({
+        "review_assurance": result.review_assurance,
+        "review_disclosure": result.payload()["disclosure"],
+        "review_findings": [{"description": row.description, "evidence_ref": row.evidence_ref,
+                             "finding_id": row.finding_id, "resolved": row.resolved,
+                             "severity": row.severity} for row in result.review_findings],
+        "review_occurrence": result.review_occurrence,
+        "review_occurrence_sha256": result.review_occurrence_sha256,
+        "review_outcome": result.review_outcome,
+        "review_sha256": result.review_sha256,
+    } if isinstance(result, ReadinessResultV3) else {})
     _json({"status": result.status, "subject": result.subject.as_dict(),
            "subject_sha256": result.subject.sha256, "readiness_sha256": result.sha256,
            "ready_for_user_review": result.ready_for_user_review, "path": str(path),
@@ -2289,7 +2451,8 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
            "evidence_refs": [str(path), str(args.plan), str(args.verification), str(args.acceptance),
                              str(args.self_audit), str(independent_review_path or exception_path),
                              str(execution_binding_path(root, args.issue)),
-                             str(pr_binding_path(root, args.issue)), *published_refs]})
+                             str(pr_binding_path(root, args.issue)), *published_refs],
+           **review_details})
     return 0 if result.status in {"PASS", "READY_WITH_EXCEPTION"} else 2
 
 
@@ -2337,17 +2500,22 @@ def _latest_review_snapshot(root: Path, subject: UserReviewSubject) -> FeedbackS
 
 
 def _review_record_path(root: Path, issue_number: int, subject: UserReviewSubject,
-                        result: UserReviewResult, snapshot_sha256: str) -> Path:
+                        result: UserReviewResult | UserReviewResultV2, snapshot_sha256: str) -> Path:
     return (Path(root).absolute() / ".p_ases" / "user-review" / str(issue_number)
             / subject.sha256 / f"{result.sha256}-{snapshot_sha256}.result.json")
 
 
-def _read_review_record(path: Path) -> tuple[UserReviewSubject, UserReviewResult, str]:
+def _read_review_record(path: Path) -> tuple[UserReviewSubject, UserReviewResult | UserReviewResultV2, str]:
     value = _read_json(path, "User Review result")
     expected = {"result", "result_sha256", "schema", "snapshot_sha256", "subject"}
-    if not isinstance(value, dict) or set(value) != expected or value.get("schema") != "PASES_USER_REVIEW_RESULT_V1":
+    if not isinstance(value, dict) or set(value) != expected:
         raise UserReviewError("User Review result record has unknown or missing fields")
-    result = UserReviewResult.from_dict(value["result"])
+    if value.get("schema") == "PASES_USER_REVIEW_RESULT_V1":
+        result = UserReviewResult.from_dict(value["result"])
+    elif value.get("schema") == "PASES_USER_REVIEW_RESULT_V2":
+        result = UserReviewResultV2.from_dict(value["result"])
+    else:
+        raise UserReviewError("User Review result record schema is unsupported")
     if value["subject"] != result.subject.as_dict() or value["result_sha256"] != result.sha256:
         raise UserReviewError("User Review result record subject/digest does not match")
     if not isinstance(value["snapshot_sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", value["snapshot_sha256"]):
@@ -2356,7 +2524,8 @@ def _read_review_record(path: Path) -> tuple[UserReviewSubject, UserReviewResult
 
 
 def _validate_user_review_issue(issue: Any, issue_number: int, requested_kind: str | None,
-                                operation: str, result: UserReviewResult | None = None) -> tuple[IssueKind, list[str]]:
+                                operation: str,
+                                result: UserReviewResult | UserReviewResultV2 | None = None) -> tuple[IssueKind, list[str]]:
     if (not isinstance(issue, dict) or issue.get("number") != issue_number or issue.get("state") != "open"
             or issue.get("pull_request") is not None):
         raise CLIError("User Review requires the same open Issue")
@@ -2402,7 +2571,8 @@ def _validate_user_review_issue(issue: Any, issue_number: int, requested_kind: s
 
 
 def _readback_user_review_issue(github: GitHub, issue_number: int, requested_kind: str | None,
-                                operation: str, result: UserReviewResult | None = None
+                                operation: str,
+                                result: UserReviewResult | UserReviewResultV2 | None = None
                                 ) -> tuple[IssueKind, list[str]]:
     first = github.issue(issue_number)
     kind, labels = _validate_user_review_issue(first, issue_number, requested_kind, operation, result)
@@ -2414,7 +2584,7 @@ def _readback_user_review_issue(github: GitHub, issue_number: int, requested_kin
 
 
 def _review_phase_transition(github: GitHub, issue_number: int, kind: IssueKind,
-                             result: UserReviewResult, operation: str) -> None:
+                             result: UserReviewResult | UserReviewResultV2, operation: str) -> None:
     verified_kind, labels = _readback_user_review_issue(github, issue_number, kind.value, operation, result)
     if verified_kind is not kind:
         raise CLIError("User Review phase transition kind differs from the Issue label")
@@ -2471,6 +2641,37 @@ def _require_readiness_review_assurance(root: Path, issue_number: int,
                                         verification_plan_path: Path,
                                         exception_path: Path | None) -> tuple[Any, Any]:
     profile = load_profile(root)
+    if isinstance(readiness, ReadinessResultV3):
+        if exception_path is None or readiness.status != "READY_WITH_EXCEPTION":
+            raise CLIError("User Review requires the exact current chat-approved exception for Readiness V3")
+        current_profile, exception, eligibility = _validate_review_unavailable_exception(
+            github, repository, root, issue_number, subject.pr_number,
+            subject.pr_head_sha40, verification_plan_path, exception_path,
+        )
+        reports = _current_review_v2_records(root, subject)
+        if (len(reports) != 1 or reports[0].sha256 != readiness.review_sha256
+                or reports[0].verdict != "BLOCKED" or reports[0].assurance != "UNAVAILABLE"
+                or reports[0].evidence_origin != "operator_reported_separate_context_review"):
+            raise CLIError("Readiness V3 does not bind the exact current UNAVAILABLE V2 provenance record")
+        occurrences = _current_review_occurrence_records(root, subject)
+        if (len(occurrences) != 1 or occurrences[0].sha256 != readiness.review_occurrence_sha256
+                or occurrences[0].review_occurrence != "COMPLETED"
+                or occurrences[0].review_outcome != readiness.review_outcome
+                or occurrences[0].findings != readiness.review_findings
+                or occurrences[0].independent_review_v2_sha256 != readiness.review_sha256):
+            raise CLIError("Readiness V3 does not bind the exact completed occurrence and findings")
+        if (current_profile != profile or exception.snapshot["profile_sha256"] != profile.profile_sha256
+                or exception.sha256 != readiness.exception_record_sha256
+                or exception.value["exception_comment_id"] != readiness.exception_comment_id
+                or exception.value["exception_comment_sha256"] != readiness.exception_comment_sha256
+                or exception.value["chat_decision_comment_id"] != readiness.chat_decision_comment_id
+                or exception.value["chat_decision_sha256"] != readiness.chat_decision_sha256
+                or exception.snapshot["independent_review_sha256"] != readiness.review_sha256
+                or exception.snapshot["review_occurrence_sha256"] != readiness.review_occurrence_sha256
+                or exception.sha256 not in readiness.evidence_sha256s
+                or profile.profile_sha256 not in readiness.evidence_sha256s):
+            raise CLIError("Readiness V3 does not bind the exact current chat decision, exception, review, and profile")
+        return profile, exception
     if isinstance(readiness, ReadinessResultV2):
         if exception_path is None or readiness.status != "READY_WITH_EXCEPTION":
             raise CLIError("User Review requires the exact current Owner exception for Readiness V2")
@@ -2631,24 +2832,35 @@ def _recompute_user_review_readiness(args: argparse.Namespace, repository: str, 
         blockers.append("current Required Check policy differs from Verification")
 
     exception_path = getattr(args, "review_unavailable_exception", None)
-    if isinstance(saved_readiness, ReadinessResultV2):
+    if isinstance(saved_readiness, ReadinessResultV3):
         if exception_path is None:
-            raise CLIError("Readiness V2 requires its exact Owner exception record during User Review")
+            raise CLIError("Readiness V3 requires its exact chat exception record during User Review")
         current_profile, exception, eligibility = _validate_review_unavailable_exception(
             github, repository, root, args.issue, args.pr, args.head, args.plan, exception_path,
         )
         if current_profile != profile:
             raise CLIError("committed profile changed during User Review Readiness recomputation")
+        review_rows = _current_review_v2_records(root, subject)
+        if len(review_rows) != 1 or review_rows[0].sha256 != saved_readiness.review_sha256:
+            raise CLIError("Readiness V3 requires its exact current Independent Review occurrence report")
+        review = review_rows[0]
+        occurrence_rows = _current_review_occurrence_records(root, subject)
+        if (len(occurrence_rows) != 1
+                or occurrence_rows[0].sha256 != saved_readiness.review_occurrence_sha256
+                or occurrence_rows[0].independent_review_v2_sha256 != review.sha256):
+            raise CLIError("Readiness V3 requires its exact current reviewer output occurrence record")
         core = evaluate_readiness_core(
             subject=subject, pr=pr, pr_binding=pr_binding, work_context=work_context,
             verification=verification, acceptance=acceptance, self_audit=self_audit,
             required_item_ids=required_item_ids,
             required_checks_sha256=verification.check_result_sha256, blocker_reasons=blockers,
         )
-        current = evaluate_readiness_with_exception(
+        current = evaluate_readiness_with_provenance_exception(
             core=core, profile_sha256=profile.profile_sha256,
-            eligibility=eligibility, exception=exception,
+            eligibility=eligibility, review=review, occurrence=occurrence_rows[0], exception=exception,
         )
+    elif isinstance(saved_readiness, ReadinessResultV2):
+        raise CLIError("legacy Readiness V2 cannot be used for a new Issue #46 chat-approved exception")
     else:
         if exception_path is not None:
             raise CLIError("V1 Readiness cannot consume a review-unavailable exception")
@@ -2690,7 +2902,7 @@ def _recompute_user_review_readiness(args: argparse.Namespace, repository: str, 
 
 def _user_review_run(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
     blockers: list[str] = []
-    result: UserReviewResult | None = None
+    result: UserReviewResult | UserReviewResultV2 | None = None
     snapshot: FeedbackSnapshot | None = None
     try:
         issue_row = github.issue(args.issue)
@@ -2739,13 +2951,49 @@ def _user_review_run(args: argparse.Namespace, repository: str, root: Path, gith
         previous = _latest_review_snapshot(root, user_review_subject)
         snapshot = merge_feedback_history(previous, current)
         identity = github.authenticated_user()
-        result = evaluate_user_review(
-            user_review_subject, readiness, pr_identity["head_sha"], snapshot.events,
-            allowed_human_user_ids=(identity["id"],), all_feedback_surfaces_read=True,
-            required_after=session.started_at,
-            new_scope_requested=bool(getattr(args, "new_scope", False)),
-            unresolved_thread_ids=snapshot.unresolved_thread_ids,
-        )
+        chat_scope = None
+        chat_scope_sha256 = None
+        chat_subject_sha256 = None
+        chat_decision = None
+        new_scope = bool(getattr(args, "new_scope", False))
+        if args.issue == 46 and not new_scope:
+            chat_scope = {
+                "feedback_sha256": feedback_digest(snapshot.events),
+                "head_sha40": subject.pr_head_sha40,
+                "issue_number": args.issue,
+                "operation": "USER_REVIEW",
+                "pr_number": args.pr,
+                "readiness_sha256": readiness.sha256,
+                "schema": "PASES_USER_REVIEW_APPROVAL_SCOPE_V1",
+                "session_started_at": session.started_at,
+                "user_review_subject_sha256": user_review_subject.sha256,
+            }
+            chat_scope_sha256 = hashlib.sha256(_canonical(chat_scope)).hexdigest()
+            chat_subject_sha256 = user_review_subject.sha256
+            chat_decision_id = getattr(args, "chat_decision_comment_id", None)
+            if chat_decision_id is not None:
+                chat_decision = read_chat_decision(
+                    github, chat_decision_id, operation="USER_REVIEW",
+                    subject_sha256=chat_subject_sha256, scope_sha256=chat_scope_sha256,
+                )
+                if chat_decision.payload["scope"] != chat_scope:
+                    raise CLIError("User Review chat decision does not match the exact current session/feedback scope")
+            result = evaluate_user_review_chat(
+                user_review_subject, readiness, pr_identity["head_sha"], snapshot.events,
+                chat_decision_comment_id=(None if chat_decision is None else chat_decision.comment_id),
+                chat_decision_sha256=(None if chat_decision is None else chat_decision.body_sha256),
+                all_feedback_surfaces_read=True,
+                unresolved_thread_ids=snapshot.unresolved_thread_ids,
+            )
+        else:
+            if getattr(args, "chat_decision_comment_id", None) is not None:
+                raise CLIError("Issue #46 chat decision records cannot be used for this other User Review scope")
+            result = evaluate_user_review(
+                user_review_subject, readiness, pr_identity["head_sha"], snapshot.events,
+                allowed_human_user_ids=(identity["id"],), all_feedback_surfaces_read=True,
+                required_after=session.started_at, new_scope_requested=new_scope,
+                unresolved_thread_ids=snapshot.unresolved_thread_ids,
+            )
         current_adc = verify_adc(github, args.issue)
         current_pr_identity = _readback_current_pr(github, subject)
         current_readiness = read_readiness(args.readiness)
@@ -2753,6 +3001,15 @@ def _user_review_run(args: argparse.Namespace, repository: str, root: Path, gith
         second_observed = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
         second = _review_payload_from_github(github, user_review_subject, observed_at=second_observed)
         second = merge_feedback_history(previous, second)
+        if chat_scope is not None and feedback_digest(second.events) != chat_scope["feedback_sha256"]:
+            raise CLIError("GitHub feedback changed after the displayed active-chat User Review scope")
+        if chat_decision is not None:
+            final_decision = read_chat_decision(
+                github, chat_decision.comment_id, operation="USER_REVIEW",
+                subject_sha256=chat_subject_sha256, scope_sha256=chat_scope_sha256,
+            )
+            if final_decision != chat_decision or final_decision.payload["scope"] != chat_scope:
+                raise CLIError("User Review chat decision changed during exact-subject readback")
         if (current_adc.pointer != verified_adc.pointer
                 or current_pr_identity != pr_identity or current_readiness != readiness
                 or current_identity.get("id") != identity.get("id")
@@ -2795,7 +3052,9 @@ def _user_review_run(args: argparse.Namespace, repository: str, root: Path, gith
             snapshot_path = feedback_snapshot_path(root, snapshot)
             write_feedback_snapshot(snapshot_path, snapshot)
             record = {"result": result.as_dict(), "result_sha256": result.sha256,
-                      "schema": "PASES_USER_REVIEW_RESULT_V1", "snapshot_sha256": snapshot.sha256,
+                      "schema": ("PASES_USER_REVIEW_RESULT_V2" if isinstance(result, UserReviewResultV2)
+                                 else "PASES_USER_REVIEW_RESULT_V1"),
+                      "snapshot_sha256": snapshot.sha256,
                       "subject": user_review_subject.as_dict()}
             record_path = _review_record_path(root, args.issue, user_review_subject, result, snapshot.sha256)
             _write_immutable(record_path, _canonical(record) + b"\n", root=root)
@@ -2810,6 +3069,18 @@ def _user_review_run(args: argparse.Namespace, repository: str, root: Path, gith
                "subject_sha256": user_review_subject.sha256, "result_sha256": result.sha256,
                "feedback_sha256": result.feedback_sha256, "next_phase": result.next_phase,
                "selected_approval_event": result.selected_approval_event,
+               "review_occurrence": ("COMPLETED" if isinstance(readiness, ReadinessResultV3)
+                                     and readiness.review_occurrence == "COMPLETED" else None),
+               "review_outcome": (readiness.review_outcome if isinstance(readiness, ReadinessResultV3) else None),
+               "provenance_assurance": (readiness.review_assurance
+                                        if isinstance(readiness, ReadinessResultV3) else None),
+               "review_findings": ([{"description": row.description, "evidence_ref": row.evidence_ref,
+                                     "finding_id": row.finding_id, "resolved": row.resolved,
+                                     "severity": row.severity} for row in readiness.review_findings]
+                                   if isinstance(readiness, ReadinessResultV3) else None),
+               "chat_approval_scope": chat_scope,
+               "chat_approval_scope_sha256": chat_scope_sha256,
+               "chat_subject_sha256": chat_subject_sha256,
                "unresolved_thread_ids": list(result.unresolved_thread_ids),
                "reasons": list(result.reasons),
                "evidence_refs": [str(session_path), str(snapshot_path), str(record_path),
@@ -2817,7 +3088,7 @@ def _user_review_run(args: argparse.Namespace, repository: str, root: Path, gith
         return 0 if result.status in {"APPROVED", "CHANGES_REQUESTED"} else 2
     except (ADCError, PlanError, OracleTraceError, EvidenceError, ReadinessError, UserReviewError,
             PhaseError, GitError, ExecutionError, CheckpointError, ProfileError,
-            ReviewAssuranceError, ReviewUnavailableError, GitHubError, CLIError, OSError, ValueError) as exc:
+            ReviewAssuranceError, ReviewUnavailableError, ChatExceptionError, GitHubError, CLIError, OSError, ValueError) as exc:
         blockers.append(str(exc))
         return _blocked_result(blockers)
 
@@ -2829,6 +3100,33 @@ def _user_review_record(args: argparse.Namespace) -> int:
     except UserReviewError as exc:
         return _blocked_result((str(exc),))
     return 2
+
+
+def _chat_decision_record(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
+    try:
+        if args.issue != 46 or args.pr != 67 or repository.casefold() != "puchinya/ai-agent-workflow":
+            raise CLIError("operator-reported chat decision recording is limited to Issue #46 / PR #67")
+        scope = _read_json(args.scope_file, "active chat approval scope", root=root)
+        if not isinstance(scope, dict):
+            raise CLIError("active chat approval scope must be a JSON object")
+        decision = record_chat_decision(
+            github, operation=args.operation, subject_sha256=args.subject_sha256,
+            scope=scope, question_item_id=args.question_item_id, answer=args.answer,
+            pr_number=args.pr,
+        )
+        if decision is None:
+            _json({"status": "DECLINED", "operation": args.operation,
+                   "subject_sha256": args.subject_sha256, "evidence_written": False})
+            return 0
+        _json({"status": "RECORDED", "operation": decision.operation,
+               "subject_sha256": decision.subject_sha256, "scope_sha256": decision.scope_sha256,
+               "comment_id": decision.comment_id, "comment_sha256": decision.body_sha256,
+               "evidence_channel": "operator_reported_chat",
+               "github_recorder": decision.payload["github_recorder"],
+               "message": "The GitHub actor is the technical recorder, not proof of who selected the chat answer."})
+        return 0
+    except (ChatDecisionError, GitHubError, CLIError, OSError, ValueError) as exc:
+        return _blocked_result((str(exc),))
 
 
 def _delivery_final(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
@@ -2932,14 +3230,26 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
                                                   ordinary_result.required_check_result_sha256,
                                                   ordinary_result.branch_protection_sha256,
                                                   tuple((*ordinary_result.reasons, *blockers))).validate()
-        if isinstance(readiness, ReadinessResultV2):
+        if isinstance(readiness, ReadinessResultV3):
+            _profile, final_exception, _eligibility = _validate_review_unavailable_exception(
+                github, repository, root, args.issue, args.pr, args.head, args.plan,
+                args.review_unavailable_exception,
+            )
+            if (final_exception.sha256 != readiness.exception_record_sha256
+                    or final_exception.value["chat_decision_sha256"] != readiness.chat_decision_sha256
+                    or final_exception.snapshot["independent_review_sha256"] != readiness.review_sha256
+                    or final_exception.snapshot["review_occurrence_sha256"] != readiness.review_occurrence_sha256):
+                raise CLIError("Final Delivery exception, chat decision, or review report changed after Readiness")
+            result: FinalDeliveryResult | FinalDeliveryResultV2 | FinalDeliveryResultV3 = evaluate_final_delivery_with_provenance_exception(
+                ordinary=ordinary_result, readiness=readiness)
+        elif isinstance(readiness, ReadinessResultV2):
             _profile, final_exception, _eligibility = _validate_review_unavailable_exception(
                 github, repository, root, args.issue, args.pr, args.head, args.plan,
                 args.review_unavailable_exception,
             )
             if final_exception.sha256 != readiness.exception_record_sha256:
                 raise CLIError("Final Delivery exception changed after Readiness recomputation")
-            result: FinalDeliveryResult | FinalDeliveryResultV2 = evaluate_final_delivery_with_exception(
+            result = evaluate_final_delivery_with_exception(
                 ordinary=ordinary_result, readiness=readiness)
         else:
             result = ordinary_result
@@ -2956,7 +3266,7 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
                                       "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION_WITH_EXCEPTION"} else 2
     except (ADCError, PlanError, OracleTraceError, EvidenceError, ReadinessError, VerificationError,
             UserReviewError, ProfileError, GitError, ExecutionError, CheckpointError,
-            ReviewAssuranceError, ReviewUnavailableError, GitHubError, CLIError, OSError, ValueError) as exc:
+            ReviewAssuranceError, ReviewUnavailableError, ChatExceptionError, GitHubError, CLIError, OSError, ValueError) as exc:
         return _blocked_result((str(exc),))
 
 
@@ -3737,11 +4047,11 @@ def _parser() -> argparse.ArgumentParser:
     readiness.add_argument("self_audit", type=Path)
     readiness.add_argument("independent_review", type=Path, nargs="?")
     readiness.add_argument("--review-unavailable-exception", type=Path,
-                            help="exact current Owner-authorized capture-unavailable exception record")
+                            help="exact current chat-authorized capture-unavailable exception record")
     readiness.add_argument("--repo", help="repository owner/name; defaults to origin")
     readiness.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
     unavailable_plan = delivery_commands.add_parser(
-        "review-unavailable-plan", help="create a read-only exact-subject Owner exception plan")
+        "review-unavailable-plan", help="create a read-only exact-subject chat-approval plan")
     unavailable_plan.add_argument("issue", type=_positive_number)
     unavailable_plan.add_argument("pr", type=_positive_number)
     unavailable_plan.add_argument("head", help="exact current PR HEAD SHA-40")
@@ -3751,13 +4061,13 @@ def _parser() -> argparse.ArgumentParser:
     unavailable_plan.add_argument("--repo", help="repository owner/name; defaults to origin")
     unavailable_plan.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
     unavailable_apply = delivery_commands.add_parser(
-        "review-unavailable-apply", help="publish one Owner-authorized exact-subject exception receipt")
+        "review-unavailable-apply", help="publish one chat-authorized exact-subject exception receipt")
     unavailable_apply.add_argument("issue", type=_positive_number)
     unavailable_apply.add_argument("pr", type=_positive_number)
     unavailable_apply.add_argument("head", help="exact current PR HEAD SHA-40")
     unavailable_apply.add_argument("verification_plan", type=Path)
     unavailable_apply.add_argument("--plan", required=True, type=Path)
-    unavailable_apply.add_argument("--approval-comment-id", required=True, type=_positive_number)
+    unavailable_apply.add_argument("--chat-decision-comment-id", required=True, type=_positive_number)
     unavailable_apply.add_argument("--repo", help="repository owner/name; defaults to origin")
     unavailable_apply.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
     gate_policy = delivery_commands.add_parser("gate-policy", help="pin or read the versioned gate for an Issue")
@@ -3792,7 +4102,7 @@ def _parser() -> argparse.ArgumentParser:
     legacy_reset_apply.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
     requirements_rebaseline_plan = delivery_commands.add_parser(
         "requirements-rebaseline-plan",
-        help="plan the exact Owner-authorized Issue #46 return to requirements")
+        help="create read-only evidence for the ADC-authorized Issue #46 return to requirements")
     requirements_rebaseline_plan.add_argument("issue", type=_positive_number)
     requirements_rebaseline_plan.add_argument("--output", type=Path, required=True,
                                               help="new path for canonical immutable plan JSON")
@@ -3801,10 +4111,9 @@ def _parser() -> argparse.ArgumentParser:
                                               help="repository root; defaults to the current checkout")
     requirements_rebaseline_apply = delivery_commands.add_parser(
         "requirements-rebaseline-apply",
-        help="apply the exact Owner-approved Issue #46 return to requirements once")
+        help="apply the one ADC-authorized Issue #46 return to requirements after precondition checks")
     requirements_rebaseline_apply.add_argument("issue", type=_positive_number)
     requirements_rebaseline_apply.add_argument("--plan", type=Path, required=True)
-    requirements_rebaseline_apply.add_argument("--approval-comment-id", type=_positive_number, required=True)
     requirements_rebaseline_apply.add_argument("--repo", help="repository owner/name; defaults to origin")
     requirements_rebaseline_apply.add_argument("--root", type=Path,
                                                 help="repository root; defaults to the current checkout")
@@ -3840,7 +4149,7 @@ def _parser() -> argparse.ArgumentParser:
     final.add_argument("readiness", type=Path)
     final.add_argument("user_review_record", type=Path)
     final.add_argument("--review-unavailable-exception", type=Path,
-                       help="exact current Owner-authorized capture-unavailable exception record")
+                       help="exact current chat-authorized capture-unavailable exception record")
     final.add_argument("--repo", help="repository owner/name; defaults to origin")
     final.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
     finalize = delivery_commands.add_parser("finalize", help="read back an already merged PR and closed Issue")
@@ -3882,7 +4191,9 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("plan", type=Path)
         command.add_argument("readiness", type=Path)
         command.add_argument("--review-unavailable-exception", type=Path,
-                             help="exact current Owner-authorized capture-unavailable exception record")
+                             help="exact current chat-authorized capture-unavailable exception record")
+        command.add_argument("--chat-decision-comment-id", type=_positive_number,
+                             help="exact operator-reported active-chat USER_REVIEW decision Comment ID")
         command.add_argument("--kind", choices=tuple(kind.value for kind in IssueKind),
                              help="optional expected Issue kind; the live kind:* label is authoritative")
         if verb == "sync":
@@ -3897,6 +4208,22 @@ def _parser() -> argparse.ArgumentParser:
                              help="host payload is not trusted by the CLI; use a verified host adapter")
     record_chat.add_argument("--repo", help="repository owner/name; defaults to origin")
     record_chat.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
+
+    chat_decision = namespaces.add_parser(
+        "chat-decision", help="record an active-chat selection as operator-reported Issue #46 evidence")
+    chat_decision_commands = chat_decision.add_subparsers(dest="verb", required=True)
+    chat_decision_record = chat_decision_commands.add_parser(
+        "record", help="append a technical record after the active chat selection")
+    chat_decision_record.add_argument("issue", type=_positive_number)
+    chat_decision_record.add_argument("pr", type=_positive_number)
+    chat_decision_record.add_argument("operation", choices=(
+        "ADC_SUPERSEDE", "REVIEW_UNAVAILABLE_EXCEPTION", "USER_REVIEW", "PR_MERGE"))
+    chat_decision_record.add_argument("subject_sha256", help="exact operation subject SHA-256")
+    chat_decision_record.add_argument("scope_file", type=Path, help="exact scope JSON presented in chat")
+    chat_decision_record.add_argument("question_item_id", help="active selection UI question item ID")
+    chat_decision_record.add_argument("answer", choices=("承認する", "承認しない"))
+    chat_decision_record.add_argument("--repo", help="repository owner/name; defaults to origin")
+    chat_decision_record.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
 
     docs = namespaces.add_parser("docs", help="validate and deterministically format canonical Markdown docs")
     docs_commands = docs.add_subparsers(dest="verb", required=True)
@@ -3920,7 +4247,7 @@ def main(argv: list[str] | None = None) -> int:
             repository = args.repo or discover_repository(root)
             return _context_show(args.issue, repository, root, GitHub(repository))
 
-        if args.namespace in {"work", "pr", "audit", "delivery", "user-review"}:
+        if args.namespace in {"work", "pr", "audit", "delivery", "user-review", "chat-decision"}:
             root = _runtime_root(args)
             repository = args.repo or discover_repository(root)
             github = GitHub(repository)
@@ -3938,6 +4265,8 @@ def main(argv: list[str] | None = None) -> int:
                 if args.verb == "record":
                     return _user_review_record(args)
                 return _user_review_run(args, repository, root, github)
+            if args.namespace == "chat-decision":
+                return _chat_decision_record(args, repository, root, github)
             if args.verb == "gate-policy":
                 return _delivery_gate_policy(args, repository, root, github)
             if args.verb == "legacy-adoption-plan":

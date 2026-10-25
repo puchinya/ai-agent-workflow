@@ -50,6 +50,12 @@
     - [11.1.11 REQ-F06-011 Exact plan, Owner authorization, and append-only exception record](#11111-req-f06-011-exact-plan-owner-authorization-and-append-only-exception-record)
     - [11.1.12 REQ-F06-012 Versioned Readiness and delivery results](#11112-req-f06-012-versioned-readiness-and-delivery-results)
     - [11.1.13 REQ-F06-013 Downstream consumption and exact-subject revalidation](#11113-req-f06-013-downstream-consumption-and-exact-subject-revalidation)
+    - [11.1.14 REQ-F06-014 Independent Review occurrence when provenance is unavailable](#11114-req-f06-014-independent-review-occurrence-when-provenance-is-unavailable)
+    - [11.1.15 REQ-F06-015 ADC-authorized one-time Phase rebaseline](#11115-req-f06-015-adc-authorized-one-time-phase-rebaseline)
+    - [11.1.16 REQ-F06-016 Chat approval for Issue #46 / PR #67 lifecycle actions](#11116-req-f06-016-chat-approval-for-issue-46-pr-67-lifecycle-actions)
+    - [11.1.17 REQ-F06-017 No Owner-authored approval comments](#11117-req-f06-017-no-owner-authored-approval-comments)
+    - [11.1.18 REQ-F06-018 Operator-reported chat provenance](#11118-req-f06-018-operator-reported-chat-provenance)
+    - [11.1.19 REQ-F06-019 Append-only decision and evidence history](#11119-req-f06-019-append-only-decision-and-evidence-history)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -87,6 +93,12 @@
 - [REQ-F06-011](#req-f06-011) — 11.1.11 REQ-F06-011 Exact plan, Owner authorization, and append-only exception record
 - [REQ-F06-012](#req-f06-012) — 11.1.12 REQ-F06-012 Versioned Readiness and delivery results
 - [REQ-F06-013](#req-f06-013) — 11.1.13 REQ-F06-013 Downstream consumption and exact-subject revalidation
+- [REQ-F06-014](#req-f06-014) — 11.1.14 REQ-F06-014 Independent Review occurrence when provenance is unavailable
+- [REQ-F06-015](#req-f06-015) — 11.1.15 REQ-F06-015 ADC-authorized one-time Phase rebaseline
+- [REQ-F06-016](#req-f06-016) — 11.1.16 REQ-F06-016 Chat approval for Issue #46 / PR #67 lifecycle actions
+- [REQ-F06-017](#req-f06-017) — 11.1.17 REQ-F06-017 No Owner-authored approval comments
+- [REQ-F06-018](#req-f06-018) — 11.1.18 REQ-F06-018 Operator-reported chat provenance
+- [REQ-F06-019](#req-f06-019) — 11.1.19 REQ-F06-019 Append-only decision and evidence history
 <!-- heading-map:end -->
 
 
@@ -398,14 +410,14 @@ Policy or locator changes require a new setup PR and merge, append a successor A
 <a id="10-multi-host-independent-review-assurance"></a>
 ## 11 10 Multi-host Independent Review assurance
 
-This section defines how an independent review's occurrence is distinguished from the assurance that a host authenticated its provenance. It applies across Codex Cloud, local Codex CLI, Codex Desktop, and Claude Code. A host surface that does not expose sufficient evidence remains unavailable at the corresponding assurance level; other delivery gates remain required.
+This section treats review occurrence and host provenance as separate facts. `UNAVAILABLE` means the runtime cannot verify the host-to-runtime capture path; it does not mean no Independent Review occurred. Issue #46 / PR #67 still requires a separate-context review report with its actual verdict and findings before the provenance exception can be used.
 
 <a id="req-f06-001"></a>
 <a id="req-f06-001-independent-review-v2-and-v1-compatibility"></a>
 <a id="1011-req-f06-001-independent-review-v2-and-v1-compatibility"></a>
 #### 11.1.1 10.1.1 REQ-F06-001 Independent Review V2 and V1 compatibility
 
-The runtime MUST add `PASES_INDEPENDENT_REVIEW_V2` and preserve existing `PASES_INDEPENDENT_REVIEW_V1` bytes, digests, reader, and semantics exactly. V2 MUST record exactly one of `HOST_VERIFIED`, `INDEPENDENT_ATTESTED`, `SELF_REVIEW`, or `UNAVAILABLE`, distinguishing review occurrence from provenance assurance.
+The runtime MUST add `PASES_INDEPENDENT_REVIEW_V2` and preserve existing `PASES_INDEPENDENT_REVIEW_V1` bytes, digests, reader, and semantics exactly. V2 MUST record exactly one of `HOST_VERIFIED`, `INDEPENDENT_ATTESTED`, `SELF_REVIEW`, or `UNAVAILABLE`, distinguishing review occurrence and its verdict/findings from provenance assurance. A current `UNAVAILABLE` report MUST still name a reviewer context distinct from the implementation context and carry the review's actual verdict and findings. `UNAVAILABLE` MUST NOT be used to represent a review that was not performed.
 
 <a id="req-f06-002"></a>
 <a id="req-f06-002-host-verified-provenance"></a>
@@ -440,11 +452,11 @@ Profile Schema 2 MUST support `independent_review.minimum_assurance` with values
 <a id="1016-req-f06-006-readiness-and-downstream-gates"></a>
 #### 11.1.6 10.1.6 REQ-F06-006 Readiness and downstream gates
 
-Independent-review ingestion, ordinary Readiness, and ordinary Final Delivery MUST require a positive current review eligible under the committed profile. Existing V1 `PASS` behavior and every V1 byte MUST remain unchanged. A separate V2 Readiness result MAY be `READY_WITH_EXCEPTION` only when a valid exact-subject Owner exception satisfies REQ-F06-010 through REQ-F06-013 and every other Readiness gate passes.
+Independent-review ingestion, ordinary Readiness, and ordinary Final Delivery MUST require a positive current review eligible under the committed profile. Existing V1 `PASS` behavior and every V1 byte MUST remain unchanged. Issue #46 / PR #67 MAY use a separate provenance exception only after a current exact-subject independent review has been performed and its outcome/findings have been recorded. The exception addresses unavailable host provenance; it does not waive review occurrence or outcome.
 
-The exception MAY replace only the missing-review condition caused by positively observed `HOST_NATIVE_CAPTURE_UNAVAILABLE`. It MUST preserve `review_assurance=UNAVAILABLE` and MUST NOT create an Independent Review PASS record or label. `SELF_REVIEW`, stale or malformed evidence, a missing Verification Plan, wrong subject, failed or incomplete Required CI, failed Verification/Acceptance/Self-Audit, unresolved dependency, or any other unavailable cause MUST remain BLOCKED.
+The exception MAY replace only the configured provenance-assurance blocker caused by positively observed `HOST_NATIVE_CAPTURE_UNAVAILABLE` after the current independent review report has verdict `PASS` and no unresolved A/B/C findings. It MUST preserve `review_assurance=UNAVAILABLE` and MUST NOT create a `HOST_VERIFIED` or `INDEPENDENT_ATTESTED` claim. A missing review report, `SELF_REVIEW`, stale or malformed evidence, a missing Verification Plan, wrong subject, failed or incomplete Required CI, failed Verification/Acceptance/Self-Audit, unresolved dependency, or any other unavailable cause MUST remain BLOCKED.
 
-A current completed native review with verdict `FAIL`, `BLOCKED`, or `CONCERNS`, or any unresolved A/B/C finding, is not eligible for the exception. A stale historical diagnostic is not a current review result and MUST NOT be converted into one. A blocked review or invalid exception MUST cause zero User Review session starts and zero Phase mutations.
+A current review report with verdict `FAIL`, `BLOCKED`, or `CONCERNS`, or any unresolved A/B/C finding, is not eligible for the exception. A stale historical diagnostic is not a current review result and MUST NOT be converted into one. A blocked review or invalid exception MUST cause zero User Review session starts and zero Phase mutations.
 
 <a id="req-f06-007"></a>
 <a id="req-f06-007-host-specific-evidence-adapters"></a>
@@ -473,38 +485,66 @@ Issue #46 implementation MUST keep Issue #63 / PR #64 evidence and workflow stat
 
 Profile Schema 2 MAY add `independent_review.unavailable_handling` with exactly `block` or `owner_exception`; omission MUST default to `block` for every project. `minimum_assurance` MUST remain unchanged. Only `puchinya/ai-agent-workflow` may commit `owner_exception`, and that opt-in MUST be limited to repository ID `1401910271`, Issue #46 / stable ID `5846549384`, and PR #67. The opt-in MUST be committed only after successor ADC approval and the required Phase/document rebaseline. Host detection, CLI flags, environment variables, and Issue identity MUST NOT enable the exception.
 
-The runtime MUST produce a typed eligibility decision distinguishing `HOST_NATIVE_CAPTURE_UNAVAILABLE`, `REVIEW_FAILED`, and `INVALID_EVIDENCE`. Only positively observed absence of host-to-runtime native capture qualifies. Missing plan/evidence, stale subject, malformed input, failed CI, and genuine failed review MUST NOT qualify. A genuine eligible native review MUST take the existing ordinary V1 Readiness path and MUST NOT be shadowed by the exception.
+The runtime MUST produce a typed eligibility decision distinguishing `HOST_NATIVE_CAPTURE_UNAVAILABLE`, `REVIEW_FAILED`, and `INVALID_EVIDENCE`. Only positively observed absence of host-to-runtime native capture qualifies after a current exact-subject separate-context review report is present. Missing review, missing plan/evidence, stale subject, malformed input, failed CI, and a genuine failed review MUST NOT qualify. A genuine eligible `HOST_VERIFIED` or `INDEPENDENT_ATTESTED` review MUST take the ordinary V1 Readiness path and MUST NOT be shadowed by the exception.
 
 <a id="req-f06-011"></a>
 <a id="req-f06-011-exact-plan-owner-authorization-and-append-only-exception-record"></a>
 #### 11.1.11 REQ-F06-011 Exact plan, Owner authorization, and append-only exception record
 
-The runtime MUST provide read-only canonical `PASES_REVIEW_UNAVAILABLE_EXCEPTION_PLAN_V1` and immutable `PASES_REVIEW_UNAVAILABLE_EXCEPTION_V1` records. The plan MUST bind repository name and ID; Owner user ID `3744776`; Issue number and stable ID; PR number, base ref, base SHA, branch, and exact HEAD; current approved ADC comment ID and SHA; frozen Verification Plan SHA; current ExecutionBinding and PRBinding SHA; committed profile SHA; observed host surface; reason `HOST_NATIVE_CAPTURE_UNAVAILABLE`; capability-observation digests; risk `INDEPENDENT_REVIEW_NOT_PERFORMED`; and its own SHA-256. The plan and result MUST disclose that code defects may go undetected because no independent review result was available; neither may imply review completion or acceptance of an actual finding.
+The runtime MUST provide read-only canonical successor plans and append-only exception receipts. A forward chat-confirmed plan MUST bind repository name and ID; Owner, Issue, and PR identities; base and exact HEAD; approved ADC; frozen Verification Plan; ExecutionBinding and PRBinding; committed profile; actual host surface; capability-observation digests; the exact current Independent Review occurrence/outcome digest; reason `HOST_NATIVE_CAPTURE_UNAVAILABLE`; and risk `INDEPENDENT_REVIEW_PROVENANCE_UNAVAILABLE`. It MUST also bind the exact operation-scoped chat decision. The report and result MUST state that an independent review was performed and record its verdict/findings, while making clear that host provenance could not be verified. They MUST NOT imply host attestation.
 
-The plan command MUST emit exact approval text. The Owner (stable GitHub user ID `3744776`) MUST personally post that exact text as an Issue #46 comment. The implementation agent MUST NOT create or edit the Owner approval comment. The marker and canonical payload shape are:
-
-```text
-<!-- PASES_REVIEW_UNAVAILABLE_APPROVAL_V1
-{"approved":true,"issue_number":46,"plan_sha256":"<64-digit digest from the actual plan>","pr_number":67,"repository":"puchinya/ai-agent-workflow","schema":"PASES_REVIEW_UNAVAILABLE_APPROVAL_V1"}
--->
-```
-
-The verifier MUST compare the complete literal comment with its canonical formatter; authenticate stable Owner ID; verify repository, Issue, comment API URL, Issue URL, HTML URL, exact unedited content and timestamp; and perform direct/list/direct readback. Missing, edited, duplicate, conflicting, wrong-Owner, stale, or mismatched approval MUST block before writes. This is Owner-account operational provenance, not cryptographic or physical-device proof.
-
-Apply MUST be the sole writer of a distinct append-only Issue receipt `PASES_REVIEW_UNAVAILABLE_EXCEPTION_V1` and immutable local evidence after verifying the Owner comment. The receipt MUST record plan SHA, Owner comment ID/digest, all bound subject/profile identities, typed unavailable reason, and risk. The Owner approval and implementation-authored receipt MUST remain separate; the latter MUST NOT represent Owner approval. Apply MUST recheck inputs immediately before writing and read the receipt direct/list/direct. Exact replay MUST be read-only NOOP. Ambiguous outcome, duplicate/conflicting history, stale plan, or partial readback MUST block without blind retry or replacement. Missing frozen Verification Plan MUST block plan generation; a Legacy Adoption plan MUST NOT substitute.
+Every approval is requested and answered in the active chat session with the exact current scope visible first. For this lifecycle, the user chooses `承認する` or `承認しない`; no Owner-authored approval comment is requested or required. After affirmative chat selection, the workflow may append the existing typed technical decision/evidence record to Issue #46, labeling the channel `operator_reported_chat` and identifying the authenticated GitHub actor only as recorder. This is not a cryptographic chat signature. Apply MUST verify the exact operation, plan SHA, scope, and decision record by direct/list/direct readback, then append a distinct exception receipt and immutable local evidence. Exact replay MUST be read-only NOOP. Ambiguous outcome, duplicate/conflicting history, stale plan, or partial readback MUST block without blind retry or replacement. Missing frozen Verification Plan or current review report MUST block plan generation; a Legacy Adoption plan MUST NOT substitute.
 
 <a id="req-f06-012"></a>
 <a id="req-f06-012-versioned-readiness-and-delivery-results"></a>
 #### 11.1.12 REQ-F06-012 Versioned Readiness and delivery results
 
-All `PASES_REVIEW_READINESS_V1` serializers, readers, bytes, and behavior MUST be preserved. The runtime MUST add `PASES_REVIEW_READINESS_V2` with statuses `READY_WITH_EXCEPTION` or `BLOCKED`, `review_assurance=UNAVAILABLE`, exact Verification subject and profile digests, exception record and Owner comment IDs/digests, and enumerated risk. `READY_WITH_EXCEPTION` MUST require every non-review gate to pass and the exact Owner exception to remain current.
+All `PASES_REVIEW_READINESS_V1` and V2 serializers, readers, bytes, and behavior MUST be preserved. The runtime MUST add `PASES_REVIEW_READINESS_V3` for chat-confirmed provenance exceptions. It MUST include the current Independent Review occurrence digest and actual verdict/findings reference, `review_assurance=UNAVAILABLE`, current subject/profile digests, exception and chat decision identities/digests, and risk `INDEPENDENT_REVIEW_PROVENANCE_UNAVAILABLE`. `READY_WITH_EXCEPTION` MUST require the exact current review report, every other gate to pass, and the exact chat grant to remain current.
 
-All V1 Final Delivery bytes and behavior MUST be preserved. The runtime MUST add `PASES_FINAL_DELIVERY_V2` for the exception route. Its ready status MUST be `READY_FOR_EXPLICIT_MERGE_AUTHORIZATION_WITH_EXCEPTION`; it MUST disclose `review_assurance=UNAVAILABLE`, bind the exception digest, and set `merge_authorized=false`. It MUST NOT authorize or perform a merge.
+All V1 and V2 Final Delivery bytes and behavior MUST be preserved. The runtime MUST add `PASES_FINAL_DELIVERY_V3` for the chat-confirmed provenance exception route. Its ready status MUST be `READY_FOR_EXPLICIT_MERGE_AUTHORIZATION_WITH_EXCEPTION`; it MUST disclose that review occurred, `review_assurance=UNAVAILABLE`, the review/exception/chat-decision digests, and `merge_authorized=false`. It MUST NOT authorize or perform a merge.
 
 <a id="req-f06-013"></a>
 <a id="req-f06-013-downstream-consumption-and-exact-subject-revalidation"></a>
 #### 11.1.13 REQ-F06-013 Downstream consumption and exact-subject revalidation
 
-User Review MAY start from ordinary `PASES_REVIEW_READINESS_V1 PASS` or exact current `PASES_REVIEW_READINESS_V2 READY_WITH_EXCEPTION`. It MUST remain a separate explicit human decision, and V1 User Review bytes MUST be preserved. On every Readiness recomputation, User Review start/submit, and Final Delivery evaluation, the runtime MUST reread and validate exact PR/HEAD, ADC, Verification Plan, ExecutionBinding, PRBinding, profile, exception record, Owner comment, Required CI, dependencies, Verification, Acceptance, and Self-Audit.
+User Review MAY start from ordinary `PASES_REVIEW_READINESS_V1 PASS` or the current exact-subject exception Readiness V3. Legacy V2 readers remain unchanged. User Review MUST remain a separate explicit human decision, and V1 User Review bytes MUST be preserved. Each human decision is requested through chat and recorded as an operation-scoped `PASES_OPERATOR_REPORTED_CHAT_DECISION_V2`; the technical GitHub comment is not represented as Owner-authored. On every Readiness recomputation, User Review start/submit, and Final Delivery evaluation, the runtime MUST reread and validate exact PR/HEAD, ADC, Verification Plan, ExecutionBinding, PRBinding, profile, Independent Review report, exception record, chat decision, Required CI, dependencies, Verification, Acceptance, and Self-Audit.
 
 A change in any bound input MUST invalidate the exception before side effects. The exception MUST NOT bypass a draft PR, failed check, dirty checkout, unmet dependency, actual current review failure, or explicit `PR_MERGE` authorization. Identical semantics MUST apply on Codex Cloud, local Codex CLI/Desktop, and Claude Code; adapters MUST report actual capabilities truthfully. Agent-writable Claude Hook records MUST NOT establish `HOST_VERIFIED`.
+
+<a id="req-f06-014"></a>
+<a id="req-f06-014-independent-review-occurrence-when-provenance-is-unavailable"></a>
+#### 11.1.14 REQ-F06-014 Independent Review occurrence when provenance is unavailable
+
+Before an Issue #46 / PR #67 provenance exception is planned, an independent reviewer in a distinct context MUST inspect the exact current PR HEAD. The workflow MUST retain the legacy V2 provenance result with `assurance=UNAVAILABLE` and its existing formal `BLOCKED` meaning, plus a matching occurrence V1 containing the actual review outcome and findings. A missing report MUST block. `UNAVAILABLE` MUST describe provenance only; it MUST NOT erase the fact that the review occurred or its result. A failing outcome or unresolved A/B/C finding MUST remain blocking.
+
+The runtime MUST also persist `PASES_INDEPENDENT_REVIEW_OCCURRENCE_V1` linked to that V2 result. It MUST retain the exact captured reviewer-output bytes and digest, `review_occurrence=COMPLETED`, actual outcome and findings, and the exact VerificationSubject, ExecutionBinding, PRBinding, and profile digests. The result and occurrence MUST identify different reviewer and implementation contexts. This is operator-reported occurrence evidence, not a host signature. Readiness MUST remain blocked unless exactly one current result and matching occurrence record exist for the exact HEAD.
+
+<a id="req-f06-015"></a>
+<a id="req-f06-015-adc-authorized-one-time-phase-rebaseline"></a>
+#### 11.1.15 REQ-F06-015 ADC-authorized one-time Phase rebaseline
+
+The Owner's chat approval of the exact Issue #46 successor ADC authorizes at most one `phase:user-review` to `phase:requirements` rebaseline when its approved bootstrap implementation generates a current read-only plan and verifies every bound precondition. The plan binds the current ADC pointer, ExecutionBinding, PR/base/HEAD, complete Issue labels, and completed predecessor Legacy Reset V1 receipt. The plan is evidence, not a second approval request. Any drift blocks without a label write.
+
+<a id="req-f06-016"></a>
+<a id="req-f06-016-chat-approval-for-issue-46-pr-67-lifecycle-actions"></a>
+#### 11.1.16 REQ-F06-016 Chat approval for Issue #46 / PR #67 lifecycle actions
+
+Every explicit human approval in this lifecycle MUST be requested and answered in the active chat session with the full exact subject and consequences visible before the selection UI. The choices are exactly `承認する` and `承認しない`. A chat approval is valid only for that active request, operation, and exact subject SHA.
+
+<a id="req-f06-017"></a>
+<a id="req-f06-017-no-owner-authored-approval-comments"></a>
+#### 11.1.17 REQ-F06-017 No Owner-authored approval comments
+
+The workflow MUST NOT ask or require the Owner to post an approval comment to Issue #46 or PR #67. After a direct affirmative chat answer, the workflow MAY write an existing typed technical decision record through the established GitHub adapter. The record MUST distinguish `operator_reported_chat` from the authenticated GitHub recorder.
+
+<a id="req-f06-018"></a>
+<a id="req-f06-018-operator-reported-chat-provenance"></a>
+#### 11.1.18 REQ-F06-018 Operator-reported chat provenance
+
+Chat origin is operator-reported evidence from the active conversation. Cryptographic host signatures, device signatures, or independent proof of the chat transport are not required and MUST NOT be claimed. The typed record binds the exact operation and scope digest; changed bytes or scope require a new request.
+
+<a id="req-f06-019"></a>
+<a id="req-f06-019-append-only-decision-and-evidence-history"></a>
+#### 11.1.19 REQ-F06-019 Append-only decision and evidence history
+
+All Issue #46 decision and technical evidence records MUST remain append-only and use their existing Issue #46 carriers and direct/list/direct readback. Prior V1/V2 records and approved ADC history MUST remain byte-for-byte unchanged. New chat decisions use `PASES_OPERATOR_REPORTED_CHAT_DECISION_V2` with a monotonic predecessor decision reference.

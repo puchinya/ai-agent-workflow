@@ -32,11 +32,11 @@ def ordinary_context(github, adc=None):
 
 
 class PasesCLITests(unittest.TestCase):
-    def test_cli_exposes_exactly_twelve_namespaces_and_adds_project_context(self):
+    def test_cli_exposes_thirteen_namespaces_including_chat_decisions(self):
         namespaces = _parser()._subparsers._group_actions[0].choices
         self.assertEqual(set(namespaces), {
             "project", "context", "adc", "issue", "docs", "work", "pr",
-            "verification", "acceptance", "audit", "user-review", "delivery",
+            "verification", "acceptance", "audit", "user-review", "delivery", "chat-decision",
         })
         self.assertEqual(_parser().parse_args(["project", "status", "--root", str(ROOT)]).verb, "status")
         context = _parser().parse_args(["context", "show", "32", "--root", str(ROOT),
@@ -495,10 +495,16 @@ class PasesCLITests(unittest.TestCase):
         self.assertEqual((plan.verb, plan.host_surface), ("review-unavailable-plan", "codex_cloud"))
         apply = _parser().parse_args([
             "delivery", "review-unavailable-apply", "46", "67", "a" * 40, "frozen-plan.json",
-            "--plan", "exception-plan.json", "--approval-comment-id", "123",
+            "--plan", "exception-plan.json", "--chat-decision-comment-id", "123",
             "--repo", "puchinya/ai-agent-workflow", "--root", str(ROOT),
         ])
-        self.assertEqual((apply.verb, apply.approval_comment_id), ("review-unavailable-apply", 123))
+        self.assertEqual((apply.verb, apply.chat_decision_comment_id), ("review-unavailable-apply", 123))
+        decision = _parser().parse_args([
+            "chat-decision", "record", "46", "67", "USER_REVIEW", "a" * 64,
+            "scope.json", "question-item-1", "承認する", "--repo", "puchinya/ai-agent-workflow",
+        ])
+        self.assertEqual((decision.namespace, decision.operation, decision.answer),
+                         ("chat-decision", "USER_REVIEW", "承認する"))
         readiness = _parser().parse_args([
             "delivery", "readiness", "46", "67", "a" * 40, "plan.json", "verification.json",
             "acceptance.json", "self.json", "--review-unavailable-exception", "exception.json",

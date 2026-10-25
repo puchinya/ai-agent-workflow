@@ -14,9 +14,14 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases import cli
-from p_ases.checkpoint import PRBinding, write_pr_binding
+from p_ases.checkpoint import PRBinding, read_pr_binding, write_pr_binding
 from p_ases.evidence_store import VerificationSubject
-from p_ases.execution import ExecutionBinding, write_binding
+from p_ases.execution import ExecutionBinding, binding_digest, read_binding, write_binding
+from p_ases.profile import load_profile
+from p_ases.review_assurance import (
+    IndependentReviewOccurrenceV1, report_separate_context_review,
+    write_independent_review_occurrence_v1, write_independent_review_v2,
+)
 from p_ases.verification import VerificationResult
 from p_ases.verification_plan import PlanEntry, create_plan
 from p_ases.work import execution_binding_path, pr_binding_path
@@ -141,7 +146,7 @@ def _patch_context(stack, github, root, plan, verified_adc, current_verification
 
 
 class ReviewUnavailableCliTests(unittest.TestCase):
-    def test_flat_pr_readback_drives_context_and_plan_without_github_writes(self):
+    def test_missing_independent_review_report_blocks_exception_plan(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             github = FakeGitHub()
@@ -166,25 +171,62 @@ class ReviewUnavailableCliTests(unittest.TestCase):
                 self.assertNotIn("base", normalized)
                 self.assertNotIn("head", normalized)
 
-                snapshot, eligibility = cli._review_unavailable_current_context(
-                    github, REPOSITORY, root, ISSUE, PR, HEAD, args.verification_plan, args.host_surface,
-                )
-                self.assertEqual(eligibility.status, "HOST_NATIVE_CAPTURE_UNAVAILABLE")
-                self.assertEqual(snapshot["base_ref"], "main")
-                self.assertEqual(snapshot["base_sha40"], BASE_SHA)
-                self.assertEqual(snapshot["branch_ref"], BRANCH_REF)
+                with contextlib.redirect_stdout(output):
+                    status = cli._delivery_review_unavailable_plan(args, REPOSITORY, root, github)
 
+            result = json.loads(output.getvalue())
+            self.assertEqual(status, 2)
+            self.assertEqual(result["status"], "BLOCKED")
+            self.assertTrue(any("independent review occurrence" in reason for reason in result["reasons"]))
+            self.assertFalse(output_plan.exists())
+            self.assertEqual(github.posts, 0)
+
+    def test_plan_binds_one_completed_review_occurrence_and_raw_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            github = FakeGitHub()
+            plan, verified_adc, args, current_verification = _run_setup(github, root)
+            args.verification_plan = args.plan
+            args.host_surface = "codex_cloud"
+            args.output = root / "exception-plan.json"
+            subject = cli._subject(REPOSITORY, ISSUE, PR, HEAD, verified_adc, plan)
+            binding = read_binding(execution_binding_path(root, ISSUE))
+            pr_binding = read_pr_binding(pr_binding_path(root, ISSUE))
+            profile = load_profile(root)
+            reviewer_context = "separate-reviewer-context"
+            review = report_separate_context_review(
+                subject=subject, execution_identity_context_id=f"execution-binding:{binding_digest(binding)}",
+                reviewer_context_id=reviewer_context, verdict="PASS", findings=(),
+                profile_sha256=profile.profile_sha256,
+            )
+            raw_output = json.dumps({
+                "findings": [], "reviewer_context_id": reviewer_context,
+                "schema": "PASES_CHILD_REVIEW_OUTPUT_V1", "subject": subject.as_dict(), "verdict": "PASS",
+            }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+            occurrence = IndependentReviewOccurrenceV1.from_captured_output(
+                subject=subject, execution_identity_context_id=review.execution_identity_context_id,
+                execution_binding_sha256=binding_digest(binding), pr_binding_sha256=pr_binding.sha256,
+                profile_sha256=profile.profile_sha256, independent_review_v2_sha256=review.sha256,
+                raw_output=raw_output,
+            )
+            review_folder = root / ".p_ases" / "audits" / str(ISSUE) / subject.sha256
+            write_independent_review_v2(review_folder / f"independent-v2-{review.sha256}.json", review)
+            write_independent_review_occurrence_v1(
+                review_folder / f"review-occurrence-v1-{occurrence.sha256}.json", occurrence,
+            )
+
+            output = io.StringIO()
+            with contextlib.ExitStack() as stack:
+                _patch_context(stack, github, root, plan, verified_adc, current_verification)
                 with contextlib.redirect_stdout(output):
                     status = cli._delivery_review_unavailable_plan(args, REPOSITORY, root, github)
 
             result = json.loads(output.getvalue())
             self.assertEqual(status, 0)
             self.assertEqual(result["status"], "PLAN_READY")
-            self.assertEqual(result["plan"]["snapshot"]["base_ref"], "main")
-            self.assertEqual(result["plan"]["snapshot"]["base_sha40"], BASE_SHA)
-            self.assertEqual(result["plan"]["snapshot"]["branch_ref"], BRANCH_REF)
-            self.assertEqual(result["plan"]["snapshot"]["head_sha40"], HEAD)
-            self.assertTrue(output_plan.is_file())
+            self.assertEqual(result["plan"]["snapshot"]["review_occurrence_sha256"], occurrence.sha256)
+            self.assertEqual(result["plan"]["snapshot"]["independent_review_sha256"], review.sha256)
+            self.assertTrue(args.output.is_file())
             self.assertEqual(github.posts, 0)
 
     def test_plan_cli_returns_structured_blocked_for_stale_pr_or_binding_identity(self):

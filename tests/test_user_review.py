@@ -17,6 +17,7 @@ from p_ases.user_review import (
     UserReviewError, UserReviewSession, UserReviewSubject, add_authenticated_chat_event,
     capture_authenticated_chat_event,
     evaluate_parent_user_review, evaluate_user_review, feedback_digest, merge_feedback_history,
+    evaluate_user_review_chat, UserReviewResultV2,
     merge_parent_feedback_history, normalize_github_feedback,
     parent_feedback_snapshot_path, parent_review_session_path, read_parent_feedback_snapshot,
     read_parent_review_session, read_review_session, reject_unattested_chat_event,
@@ -112,6 +113,29 @@ class UserReviewTests(unittest.TestCase):
         self.assertIn("pr-review:", result.selected_approval_event)
         # The result only carries review evidence; no merge / branch-protection pass flag exists.
         self.assertFalse(hasattr(result, "merge_authorized"))
+
+    def test_issue_46_chat_approval_is_separate_from_github_feedback_and_exactly_bound(self):
+        events = rows(reviews=(github_review(),))
+        blocked = evaluate_user_review_chat(
+            USER_SUBJECT, READINESS, HEAD, events,
+            chat_decision_comment_id=None, chat_decision_sha256=None,
+        )
+        self.assertEqual(blocked.status, "BLOCKED")
+        self.assertTrue(any("active-chat" in reason for reason in blocked.reasons))
+        approved = evaluate_user_review_chat(
+            USER_SUBJECT, READINESS, HEAD, events,
+            chat_decision_comment_id=6400000001, chat_decision_sha256="f" * 64,
+        )
+        self.assertEqual(approved.status, "APPROVED")
+        self.assertEqual(approved.selected_approval_event, "chat:6400000001")
+        self.assertEqual(approved.evidence_channel, "operator_reported_chat")
+        self.assertEqual(UserReviewResultV2.from_dict(approved.as_dict()), approved)
+        unresolved = evaluate_user_review_chat(
+            USER_SUBJECT, READINESS, HEAD, events,
+            chat_decision_comment_id=6400000001, chat_decision_sha256="f" * 64,
+            unresolved_thread_ids=("thread-1",),
+        )
+        self.assertEqual(unresolved.status, "BLOCKED")
 
     def test_u05_bot_stale_head_and_changed_feedback_never_approve(self):
         self.assertNotEqual(evaluate(rows(reviews=(github_review(actor_type="Bot"),))).status,

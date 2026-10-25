@@ -12,13 +12,14 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .acceptance import AcceptanceResult
-from .audits import AuditError, IndependentReview, SelfAudit
+from .audits import AuditError, IndependentReview, ReviewFinding, SelfAudit
 from .checkpoint import CheckpointError, PRBinding
 from .context import WorkContext, WorkContextError
 from .evidence_store import VerificationSubject
 from .path_safety import path_has_symlink
 from .review_assurance import (
-    IndependentReviewV2, ReviewAssuranceError, ReviewCaptureEligibility, evaluate_review_assurance,
+    IndependentReviewOccurrenceV1, IndependentReviewV2, ReviewAssuranceError,
+    ReviewCaptureEligibility, evaluate_review_assurance,
 )
 from .review_unavailable_exception import ReviewUnavailableException
 from .verification import VerificationResult, VERDICTS
@@ -277,6 +278,168 @@ class ReadinessResultV2:
     @property
     def ready_for_user_review(self) -> bool:
         return self.status == "READY_WITH_EXCEPTION"
+
+
+@dataclass(frozen=True)
+class ReadinessResultV3:
+    """Forward chat-approved result that records review occurrence and weak provenance separately."""
+
+    status: str
+    subject: VerificationSubject
+    review_occurrence: str
+    review_occurrence_sha256: str | None
+    review_sha256: str
+    review_outcome: str
+    review_assurance: str
+    review_findings: tuple[ReviewFinding, ...]
+    profile_sha256: str
+    exception_record_sha256: str | None
+    exception_comment_id: int | None
+    exception_comment_sha256: str | None
+    chat_decision_comment_id: int | None
+    chat_decision_sha256: str | None
+    accepted_risks: tuple[str, ...]
+    reasons: tuple[str, ...]
+    evidence_sha256s: tuple[str, ...]
+    required_check_policy_sha256: str | None
+
+    def validate(self) -> "ReadinessResultV3":
+        self.subject.validate()
+        if (self.status not in {"READY_WITH_EXCEPTION", "BLOCKED"}
+                or self.review_occurrence not in {"NOT_STARTED", "COMPLETED"}
+                or self.review_outcome not in {"PASS", "FAIL", "BLOCKED", "CONCERNS"}
+                or self.review_assurance != "UNAVAILABLE"):
+            raise ReadinessError("Readiness V3 status or review occurrence/provenance is invalid")
+        if (type(self.review_findings) is not tuple
+                or any(not isinstance(row, ReviewFinding) for row in self.review_findings)
+                or tuple(row.finding_id for row in self.review_findings)
+                != tuple(sorted(row.finding_id for row in self.review_findings))):
+            raise ReadinessError("Readiness V3 review findings are invalid or unsorted")
+        if self.review_occurrence == "COMPLETED":
+            if not isinstance(self.review_occurrence_sha256, str) or not SHA256.fullmatch(self.review_occurrence_sha256):
+                raise ReadinessError("Readiness V3 completed occurrence requires an exact report digest")
+        elif self.review_occurrence_sha256 is not None or self.review_findings:
+            raise ReadinessError("Readiness V3 NOT_STARTED occurrence cannot carry a report or findings")
+        if self.status == "READY_WITH_EXCEPTION" and self.review_outcome != "PASS":
+            raise ReadinessError("Readiness V3 cannot be ready without a passing Independent Review")
+        if self.status == "READY_WITH_EXCEPTION" and self.review_occurrence != "COMPLETED":
+            raise ReadinessError("Readiness V3 cannot be ready without a completed Independent Review")
+        for name, value in (("review", self.review_sha256), ("profile", self.profile_sha256)):
+            if not isinstance(value, str) or not SHA256.fullmatch(value):
+                raise ReadinessError(f"Readiness V3 {name} digest is invalid")
+        for name, value in (("exception", self.exception_record_sha256),
+                            ("exception comment", self.exception_comment_sha256),
+                            ("chat decision", self.chat_decision_sha256),
+                            ("Required Check policy", self.required_check_policy_sha256)):
+            if value is not None and (not isinstance(value, str) or not SHA256.fullmatch(value)):
+                raise ReadinessError(f"Readiness V3 {name} digest is invalid")
+        for name, value in (("exception comment", self.exception_comment_id),
+                            ("chat decision", self.chat_decision_comment_id)):
+            if value is not None and (type(value) is not int or value < 1):
+                raise ReadinessError(f"Readiness V3 {name} ID is invalid")
+        if (self.accepted_risks != ("INDEPENDENT_REVIEW_PROVENANCE_UNAVAILABLE",)
+                or type(self.reasons) is not tuple
+                or any(not isinstance(item, str) or not item for item in self.reasons)):
+            raise ReadinessError("Readiness V3 risk or reasons are invalid")
+        if ((self.status == "READY_WITH_EXCEPTION") != (not self.reasons)
+                or self.status == "READY_WITH_EXCEPTION"
+                and any(value is None for value in (self.exception_record_sha256,
+                    self.exception_comment_id, self.exception_comment_sha256,
+                    self.chat_decision_comment_id, self.chat_decision_sha256,
+                    self.required_check_policy_sha256))):
+            raise ReadinessError("Readiness V3 status and exact exception evidence disagree")
+        if (type(self.evidence_sha256s) is not tuple
+                or any(not isinstance(item, str) or not SHA256.fullmatch(item) for item in self.evidence_sha256s)
+                or self.evidence_sha256s != tuple(sorted(set(self.evidence_sha256s)))):
+            raise ReadinessError("Readiness V3 evidence digests are invalid")
+        if self.status == "READY_WITH_EXCEPTION" and not {
+                self.review_sha256, self.review_occurrence_sha256, self.profile_sha256, self.exception_record_sha256,
+                self.exception_comment_sha256, self.chat_decision_sha256,
+                self.required_check_policy_sha256}.issubset(set(self.evidence_sha256s)):
+            raise ReadinessError("Readiness V3 omits a required review, chat, exception, or policy digest")
+        return self
+
+    def payload(self) -> dict[str, Any]:
+        self.validate()
+        disclosure = (f"Independent Review was performed; outcome={self.review_outcome}; "
+                      "host provenance could not be verified."
+                      if self.review_occurrence == "COMPLETED"
+                      else "No current Independent Review occurrence is recorded; provenance assurance is UNAVAILABLE.")
+        return {"accepted_risks": list(self.accepted_risks),
+                "chat_decision_comment_id": self.chat_decision_comment_id,
+                "chat_decision_sha256": self.chat_decision_sha256,
+                "disclosure": disclosure,
+                "evidence_sha256s": list(self.evidence_sha256s),
+                "exception_comment_id": self.exception_comment_id,
+                "exception_comment_sha256": self.exception_comment_sha256,
+                "exception_record_sha256": self.exception_record_sha256,
+                "policy_version": "PASES_REVIEW_READINESS_V3",
+                "profile_sha256": self.profile_sha256,
+                "reasons": list(self.reasons),
+                "required_check_policy_sha256": self.required_check_policy_sha256,
+                "review_assurance": self.review_assurance,
+                "review_findings": [{"description": row.description, "evidence_ref": row.evidence_ref,
+                                     "finding_id": row.finding_id, "resolved": row.resolved,
+                                     "severity": row.severity} for row in self.review_findings],
+                "review_occurrence": self.review_occurrence,
+                "review_occurrence_sha256": self.review_occurrence_sha256,
+                "review_sha256": self.review_sha256,
+                "review_outcome": self.review_outcome,
+                "schema": "PASES_REVIEW_READINESS_V3", "status": self.status,
+                "subject": self.subject.as_dict()}
+
+    @property
+    def sha256(self) -> str:
+        return hashlib.sha256(_canonical(self.payload())).hexdigest()
+
+    @property
+    def ready_for_user_review(self) -> bool:
+        return self.status == "READY_WITH_EXCEPTION"
+
+    def to_bytes(self) -> bytes:
+        return _canonical({**self.payload(), "readiness_sha256": self.sha256}) + b"\n"
+
+    @classmethod
+    def from_bytes(cls, raw: bytes) -> "ReadinessResultV3":
+        try:
+            value = json.loads(raw.decode("utf-8", errors="strict"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ReadinessError("Readiness V3 is not valid UTF-8 JSON") from exc
+        expected = {"accepted_risks", "chat_decision_comment_id", "chat_decision_sha256", "disclosure",
+                    "evidence_sha256s", "exception_comment_id", "exception_comment_sha256",
+                    "exception_record_sha256", "policy_version", "profile_sha256", "reasons",
+                    "readiness_sha256", "required_check_policy_sha256", "review_assurance", "review_findings",
+                    "review_occurrence", "review_occurrence_sha256", "review_sha256", "review_outcome",
+                    "schema", "status", "subject"}
+        if not isinstance(value, dict) or set(value) != expected:
+            raise ReadinessError("Readiness V3 has unknown or missing fields")
+        disclosure = (f"Independent Review was performed; outcome={value.get('review_outcome')}; "
+                      "host provenance could not be verified."
+                      if value.get("review_occurrence") == "COMPLETED"
+                      else "No current Independent Review occurrence is recorded; provenance assurance is UNAVAILABLE.")
+        if (value.get("schema") != "PASES_REVIEW_READINESS_V3"
+                or value.get("policy_version") != "PASES_REVIEW_READINESS_V3"
+                or value.get("disclosure") != disclosure
+                or not all(isinstance(value.get(key), list) for key in (
+                    "accepted_risks", "evidence_sha256s", "reasons", "review_findings"))):
+            raise ReadinessError("Readiness V3 has unknown or missing fields")
+        try:
+            findings = tuple(ReviewFinding(
+                row["finding_id"], row["severity"], row["resolved"], row["description"], row["evidence_ref"],
+            ).validate() for row in value["review_findings"])
+        except (KeyError, TypeError) as exc:
+            raise ReadinessError("Readiness V3 review findings are malformed") from exc
+        result = cls(value["status"], VerificationSubject.from_dict(value["subject"]),
+                     value["review_occurrence"], value["review_occurrence_sha256"],
+                     value["review_sha256"], value["review_outcome"], value["review_assurance"], findings,
+                     value["profile_sha256"], value["exception_record_sha256"],
+                     value["exception_comment_id"], value["exception_comment_sha256"],
+                     value["chat_decision_comment_id"], value["chat_decision_sha256"],
+                     tuple(value["accepted_risks"]), tuple(value["reasons"]),
+                     tuple(value["evidence_sha256s"]), value["required_check_policy_sha256"]).validate()
+        if value["readiness_sha256"] != result.sha256 or result.to_bytes() != raw:
+            raise ReadinessError("Readiness V3 digest or canonical bytes do not match")
+        return result
 
 
 @dataclass(frozen=True)
@@ -715,6 +878,129 @@ def evaluate_readiness_with_exception(*, core: ReadinessCore, profile_sha256: st
     ).validate()
 
 
+def evaluate_readiness_with_provenance_exception(*, core: ReadinessCore, profile_sha256: str,
+                                                 eligibility: ReviewCaptureEligibility,
+                                                 review: IndependentReviewV2 | None,
+                                                 occurrence: IndependentReviewOccurrenceV1 | None,
+                                                 exception: Any | None) -> ReadinessResultV3:
+    """Evaluate the forward exception while retaining the real review outcome."""
+    core.validate()
+    eligibility.validate()
+    reasons = list(core.reasons)
+    if not isinstance(profile_sha256, str) or not SHA256.fullmatch(profile_sha256):
+        raise ReadinessError("Readiness V3 requires the current committed profile digest")
+    if eligibility.status != "HOST_NATIVE_CAPTURE_UNAVAILABLE":
+        reasons.extend(eligibility.reasons or (f"review exception eligibility is {eligibility.status}",))
+    if not isinstance(review, IndependentReviewV2):
+        reasons.append("current independent review occurrence report is missing")
+        review_sha = "0" * 64
+        review_outcome = "BLOCKED"
+        review_findings: tuple[ReviewFinding, ...] = ()
+    else:
+        try:
+            review.validate()
+            review_sha = review.sha256
+            review_findings = review.findings
+        except (ValueError, TypeError) as exc:
+            reasons.append(f"current independent review report is invalid: {exc}")
+            review_sha = "0" * 64
+            review_findings = ()
+        if (review.subject != core.subject or review.assurance != "UNAVAILABLE"
+                or review.verdict != "BLOCKED"
+                or review.reviewer_context_id == review.execution_identity_context_id
+                or review.evidence_origin != "operator_reported_separate_context_review"
+                or any(f.severity in {"A", "B", "C"} and not f.resolved for f in review.findings)):
+            reasons.append("current V2 result must retain its unavailable-provenance BLOCKED meaning")
+    occurrence_sha: str | None = None
+    occurrence_status = "NOT_STARTED"
+    review_outcome = "BLOCKED"
+    if not isinstance(occurrence, IndependentReviewOccurrenceV1):
+        reasons.append("current Independent Review occurrence record is missing")
+    else:
+        try:
+            occurrence.validate()
+            occurrence_sha = occurrence.sha256
+            occurrence_status = occurrence.review_occurrence
+            review_outcome = occurrence.review_outcome
+            review_findings = occurrence.findings
+            if (not isinstance(review, IndependentReviewV2)
+                    or occurrence.subject != core.subject
+                    or occurrence.independent_review_v2_sha256 != review_sha
+                    or occurrence.reviewer_context_id != review.reviewer_context_id
+                    or occurrence.execution_identity_context_id != review.execution_identity_context_id
+                    or occurrence.findings != review.findings
+                    or occurrence.profile_sha256 != profile_sha256
+                    or occurrence.execution_binding_sha256 != core.execution_binding_sha256
+                    or occurrence.pr_binding_sha256 != core.pr_binding_sha256):
+                reasons.append("Independent Review occurrence is stale or disagrees with the result/bindings")
+            if (occurrence.review_outcome != "PASS"
+                    or any(f.severity in {"A", "B", "C"} and not f.resolved
+                           for f in occurrence.findings)):
+                reasons.append("current completed separate-context review must PASS with no unresolved A/B/C finding")
+        except (ValueError, TypeError) as exc:
+            reasons.append(f"current Independent Review occurrence record is invalid: {exc}")
+            occurrence_sha = None
+            occurrence_status = "NOT_STARTED"
+            review_findings = ()
+    exception_sha: str | None = None
+    exception_comment_id: int | None = None
+    exception_comment_sha: str | None = None
+    chat_decision_id: int | None = None
+    chat_decision_sha: str | None = None
+    evidence = set(core.evidence_sha256s)
+    evidence.update((profile_sha256, review_sha))
+    if occurrence_sha is not None:
+        evidence.add(occurrence_sha)
+    if core.required_check_policy_sha256 is not None:
+        evidence.add(core.required_check_policy_sha256)
+    if exception is None:
+        reasons.append("exact chat-authorized provenance exception receipt is missing")
+    else:
+        try:
+            exception.validate()
+            snapshot = exception.snapshot
+            expected = {
+                "repository": core.subject.repository, "issue_number": core.subject.issue_number,
+                "pr_number": core.subject.pr_number, "adc_comment_id": core.subject.adc_comment_id,
+                "adc_sha256": core.subject.adc_sha256,
+                "verification_plan_sha256": core.subject.plan_sha256,
+                "head_sha40": core.subject.pr_head_sha40, "profile_sha256": profile_sha256,
+                "base_ref": core.base_ref, "base_sha40": core.base_sha40,
+                "branch_ref": core.branch_ref,
+                "execution_binding_sha256": core.execution_binding_sha256,
+                "pr_binding_sha256": core.pr_binding_sha256,
+                "host_surface": eligibility.host_surface,
+                "capability_observation_sha256s": list(eligibility.observation_sha256s),
+                "independent_review_sha256": review_sha,
+                "review_occurrence_sha256": occurrence_sha,
+                "risk": "INDEPENDENT_REVIEW_PROVENANCE_UNAVAILABLE",
+            }
+            mismatches = sorted(name for name, current in expected.items()
+                                if snapshot.get(name) != current)
+            if mismatches:
+                reasons.append("chat exception is stale or mismatched: " + ", ".join(mismatches))
+            value = exception.value
+            exception_sha = exception.sha256
+            exception_comment_id = value["exception_comment_id"]
+            exception_comment_sha = value["exception_comment_sha256"]
+            chat_decision_id = value["chat_decision_comment_id"]
+            chat_decision_sha = value["chat_decision_sha256"]
+            evidence.update((exception_sha, exception_comment_sha, chat_decision_sha,
+                             exception.plan_sha256))
+        except (ValueError, TypeError, AttributeError, KeyError) as exc:
+            reasons.append(f"chat provenance exception receipt is invalid: {exc}")
+    normalized = tuple(dict.fromkeys(reasons))
+    return ReadinessResultV3(
+        "BLOCKED" if normalized else "READY_WITH_EXCEPTION", core.subject,
+        occurrence_status, occurrence_sha, review_sha, review_outcome, "UNAVAILABLE", review_findings,
+        profile_sha256, exception_sha, exception_comment_id, exception_comment_sha,
+        chat_decision_id, chat_decision_sha,
+        ("INDEPENDENT_REVIEW_PROVENANCE_UNAVAILABLE",), normalized,
+        tuple(sorted(item for item in evidence if isinstance(item, str) and SHA256.fullmatch(item))),
+        core.required_check_policy_sha256,
+    ).validate()
+
+
 @dataclass(frozen=True)
 class FinalDeliveryResultV2:
     status: str
@@ -798,12 +1084,119 @@ def evaluate_final_delivery_with_exception(*, ordinary: FinalDeliveryResult,
     ).validate()
 
 
-def readiness_path(root: Path, result: ReadinessResult | ReadinessResultV2) -> Path:
+@dataclass(frozen=True)
+class FinalDeliveryResultV3:
+    status: str
+    subject: VerificationSubject
+    review_occurrence: str
+    review_occurrence_sha256: str | None
+    review_outcome: str
+    review_findings: tuple[ReviewFinding, ...]
+    review_sha256: str
+    review_assurance: str
+    exception_record_sha256: str | None
+    chat_decision_sha256: str | None
+    user_review_sha256: str | None
+    required_check_result_sha256: str | None
+    branch_protection_sha256: str | None
+    accepted_risks: tuple[str, ...]
+    reasons: tuple[str, ...]
+    merge_authorized: bool = False
+
+    def validate(self) -> "FinalDeliveryResultV3":
+        self.subject.validate()
+        if (self.status not in {"READY_FOR_EXPLICIT_MERGE_AUTHORIZATION_WITH_EXCEPTION", "BLOCKED"}
+                or self.review_assurance != "UNAVAILABLE" or self.merge_authorized is not False
+                or self.accepted_risks != ("INDEPENDENT_REVIEW_PROVENANCE_UNAVAILABLE",)):
+            raise ReadinessError("Final Delivery V3 status, provenance, or risk is invalid")
+        if (self.review_occurrence not in {"NOT_STARTED", "COMPLETED"}
+                or self.review_outcome not in {"PASS", "FAIL", "BLOCKED", "CONCERNS"}
+                or type(self.review_findings) is not tuple
+                or any(not isinstance(row, ReviewFinding) for row in self.review_findings)
+                or tuple(row.finding_id for row in self.review_findings)
+                != tuple(sorted(row.finding_id for row in self.review_findings))):
+            raise ReadinessError("Final Delivery V3 review occurrence/outcome/findings are invalid")
+        if self.review_occurrence == "COMPLETED":
+            if not isinstance(self.review_occurrence_sha256, str) or not SHA256.fullmatch(self.review_occurrence_sha256):
+                raise ReadinessError("Final Delivery V3 completed review needs its exact report digest")
+        elif self.review_occurrence_sha256 is not None or self.review_findings:
+            raise ReadinessError("Final Delivery V3 NOT_STARTED review cannot include report details")
+        if self.status == "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION_WITH_EXCEPTION" and (
+                self.review_occurrence != "COMPLETED" or self.review_outcome != "PASS"):
+            raise ReadinessError("Final Delivery V3 cannot be ready without a completed passing Independent Review")
+        for name, value in (("review", self.review_sha256), ("exception", self.exception_record_sha256),
+                            ("chat decision", self.chat_decision_sha256), ("User Review", self.user_review_sha256),
+                            ("Required Checks", self.required_check_result_sha256),
+                            ("branch protection", self.branch_protection_sha256)):
+            if value is not None and (not isinstance(value, str) or not SHA256.fullmatch(value)):
+                raise ReadinessError(f"Final Delivery V3 {name} digest is invalid")
+        if not isinstance(self.review_sha256, str) or not SHA256.fullmatch(self.review_sha256):
+            raise ReadinessError("Final Delivery V3 must bind the actual Independent Review result")
+        if type(self.reasons) is not tuple or any(not isinstance(item, str) or not item for item in self.reasons):
+            raise ReadinessError("Final Delivery V3 reasons are invalid")
+        if ((self.status == "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION_WITH_EXCEPTION") != (not self.reasons)
+                or self.status == "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION_WITH_EXCEPTION"
+                and any(value is None for value in (self.review_occurrence_sha256,
+                    self.exception_record_sha256, self.chat_decision_sha256,
+                    self.user_review_sha256, self.required_check_result_sha256,
+                    self.branch_protection_sha256))):
+            raise ReadinessError("Final Delivery V3 status and exact evidence disagree")
+        return self
+
+    @property
+    def sha256(self) -> str:
+        return hashlib.sha256(_canonical(self.as_dict(include_digest=False))).hexdigest()
+
+    def as_dict(self, *, include_digest: bool = True) -> dict[str, Any]:
+        self.validate()
+        value = {"accepted_risks": list(self.accepted_risks),
+                 "branch_protection_sha256": self.branch_protection_sha256,
+                 "chat_decision_sha256": self.chat_decision_sha256,
+                 "disclosure": (f"Independent Review was performed; outcome={self.review_outcome}; "
+                                "host provenance could not be verified."
+                                if self.review_occurrence == "COMPLETED"
+                                else "No current Independent Review occurrence is recorded; provenance assurance is UNAVAILABLE."),
+                 "exception_record_sha256": self.exception_record_sha256,
+                 "merge_authorized": False, "required_check_result_sha256": self.required_check_result_sha256,
+                 "reasons": list(self.reasons), "review_assurance": self.review_assurance,
+                 "review_findings": [{"description": row.description, "evidence_ref": row.evidence_ref,
+                                      "finding_id": row.finding_id, "resolved": row.resolved,
+                                      "severity": row.severity} for row in self.review_findings],
+                 "review_occurrence": self.review_occurrence,
+                 "review_occurrence_sha256": self.review_occurrence_sha256,
+                 "review_outcome": self.review_outcome,
+                 "review_sha256": self.review_sha256, "schema": "PASES_FINAL_DELIVERY_V3",
+                 "status": self.status, "subject": self.subject.as_dict(),
+                 "user_review_sha256": self.user_review_sha256}
+        if include_digest:
+            value["final_delivery_sha256"] = self.sha256
+        return value
+
+
+def evaluate_final_delivery_with_provenance_exception(*, ordinary: FinalDeliveryResult,
+                                                       readiness: ReadinessResultV3) -> FinalDeliveryResultV3:
+    ordinary.validate()
+    readiness.validate()
+    reasons = list(ordinary.reasons)
+    if readiness.status != "READY_WITH_EXCEPTION" or readiness.subject != ordinary.subject:
+        reasons.append("Readiness V3 is not READY_WITH_EXCEPTION for the exact Final Delivery subject")
+    return FinalDeliveryResultV3(
+        "BLOCKED" if reasons else "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION_WITH_EXCEPTION",
+        ordinary.subject, readiness.review_occurrence, readiness.review_occurrence_sha256,
+        readiness.review_outcome, readiness.review_findings, readiness.review_sha256,
+        "UNAVAILABLE", readiness.exception_record_sha256,
+        readiness.chat_decision_sha256, ordinary.user_review_sha256,
+        ordinary.required_check_result_sha256, ordinary.branch_protection_sha256,
+        ("INDEPENDENT_REVIEW_PROVENANCE_UNAVAILABLE",), tuple(dict.fromkeys(reasons)), False,
+    ).validate()
+
+
+def readiness_path(root: Path, result: ReadinessResult | ReadinessResultV2 | ReadinessResultV3) -> Path:
     result.validate()
     return Path(root).absolute() / ".p_ases" / "readiness" / str(result.subject.issue_number) / result.subject.sha256 / f"{result.sha256}.json"
 
 
-def read_readiness(path: Path) -> ReadinessResult | ReadinessResultV2:
+def read_readiness(path: Path) -> ReadinessResult | ReadinessResultV2 | ReadinessResultV3:
     location = Path(path)
     if path_has_symlink(location):
         raise ReadinessError("Readiness path must not traverse a symbolic link")
@@ -813,6 +1206,8 @@ def read_readiness(path: Path) -> ReadinessResult | ReadinessResultV2:
             value = json.loads(raw.decode("utf-8", errors="strict"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ReadinessError("Readiness result is not valid UTF-8 JSON") from exc
+        if isinstance(value, dict) and value.get("schema") == "PASES_REVIEW_READINESS_V3":
+            return ReadinessResultV3.from_bytes(raw)
         if isinstance(value, dict) and value.get("schema") == "PASES_REVIEW_READINESS_V2":
             return ReadinessResultV2.from_bytes(raw)
         return ReadinessResult.from_bytes(raw)
@@ -820,7 +1215,7 @@ def read_readiness(path: Path) -> ReadinessResult | ReadinessResultV2:
         raise ReadinessError("Readiness result is missing or unreadable") from exc
 
 
-def write_readiness(path: Path, result: ReadinessResult | ReadinessResultV2) -> str:
+def write_readiness(path: Path, result: ReadinessResult | ReadinessResultV2 | ReadinessResultV3) -> str:
     result.validate()
     destination = Path(path)
     if path_has_symlink(destination):

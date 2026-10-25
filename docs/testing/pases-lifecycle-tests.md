@@ -71,6 +71,14 @@
     - [2.30.1 ORA-F06-012 Expected result](#2301-ora-f06-012-expected-result)
   - [2.31 TST-F06-013 User Review and downstream exact-subject revalidation](#231-tst-f06-013-user-review-and-downstream-exact-subject-revalidation)
     - [2.31.1 ORA-F06-013 Expected result](#2311-ora-f06-013-expected-result)
+  - [2.32 TST-F06-014 Review occurrence with unavailable host provenance](#232-tst-f06-014-review-occurrence-with-unavailable-host-provenance)
+    - [2.32.1 ORA-F06-014 Expected result](#2321-ora-f06-014-expected-result)
+  - [2.33 TST-F06-015 ADC-authorized one-time Requirements Rebaseline](#233-tst-f06-015-adc-authorized-one-time-requirements-rebaseline)
+    - [2.33.1 ORA-F06-015 Expected result](#2331-ora-f06-015-expected-result)
+  - [2.34 TST-F06-016 Active-chat approval and technical evidence](#234-tst-f06-016-active-chat-approval-and-technical-evidence)
+    - [2.34.1 ORA-F06-016 Expected result](#2341-ora-f06-016-expected-result)
+  - [2.35 TST-F06-017 Operator-reported provenance and history](#235-tst-f06-017-operator-reported-provenance-and-history)
+    - [2.35.1 ORA-F06-017 Expected result](#2351-ora-f06-017-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -137,6 +145,14 @@
 - [ORA-F06-012](#ora-f06-012) — 2.30.1 ORA-F06-012 Expected result
 - [TST-F06-013](#tst-f06-013) — 2.31 TST-F06-013 User Review and downstream exact-subject revalidation
 - [ORA-F06-013](#ora-f06-013) — 2.31.1 ORA-F06-013 Expected result
+- [TST-F06-014](#tst-f06-014) — 2.32 TST-F06-014 Review occurrence with unavailable host provenance
+- [ORA-F06-014](#ora-f06-014) — 2.32.1 ORA-F06-014 Expected result
+- [TST-F06-015](#tst-f06-015) — 2.33 TST-F06-015 ADC-authorized one-time Requirements Rebaseline
+- [ORA-F06-015](#ora-f06-015) — 2.33.1 ORA-F06-015 Expected result
+- [TST-F06-016](#tst-f06-016) — 2.34 TST-F06-016 Active-chat approval and technical evidence
+- [ORA-F06-016](#ora-f06-016) — 2.34.1 ORA-F06-016 Expected result
+- [TST-F06-017](#tst-f06-017) — 2.35 TST-F06-017 Operator-reported provenance and history
+- [ORA-F06-017](#ora-f06-017) — 2.35.1 ORA-F06-017 Expected result
 <!-- heading-map:end -->
 
 
@@ -427,12 +443,12 @@ Absent setting defaults to `host_verified`. Attested evidence passes only the ex
 <a id="tst-f06-006"></a>
 ### 2.24 TST-F06-006 Readiness and downstream enforcement
 
-**Setup and action:** Exercise ordinary V1 PASS and current eligible native V2 results, then Readiness and Final Delivery with V1-only, stale, unresolved, SELF_REVIEW, UNAVAILABLE, policy-drifted, and exact Owner-exception inputs. Include a valid positively observed capture-unavailable case with all non-review gates passing, plus actual FAIL/BLOCKED/CONCERNS reviews, unresolved A/B/C findings, missing Verification Plan, and each failing non-review gate.
+**Setup and action:** Exercise ordinary V1 PASS and current eligible native V2 results, then Readiness and Final Delivery with V1-only, stale, unresolved, SELF_REVIEW, UNAVAILABLE, policy-drifted, and exact chat-exception inputs. For UNAVAILABLE, vary no review report, a current separate-context PASS report, same-context report, stale/wrong-subject report, FAIL/BLOCKED/CONCERNS, unresolved A/B/C findings, and missing report references. Include positive capture-unavailability with all non-review gates passing, missing Verification Plan, and each failing non-review gate.
 
 <a id="ora-f06-006"></a>
 #### 2.24.1 ORA-F06-006 Expected result
 
-Ordinary review eligibility and V1 bytes remain unchanged. Only positive current native evidence meeting the committed minimum uses the ordinary path. A current exact Owner exception may yield distinct Readiness V2 `READY_WITH_EXCEPTION` only for `HOST_NATIVE_CAPTURE_UNAVAILABLE`, with `review_assurance=UNAVAILABLE` and every other gate passing. Actual review failures, unresolved A/B/C findings, stale/invalid evidence, or any non-review failure remain blocked with zero User Review starts and zero phase mutations.
+Ordinary review eligibility and V1 bytes remain unchanged. Only positive current native evidence meeting the committed minimum uses the ordinary path. A provenance exception may yield distinct Readiness only for `HOST_NATIVE_CAPTURE_UNAVAILABLE` after one exact-current separate-context review report has verdict PASS and no unresolved A/B/C findings. The result records that review occurred and discloses `review_assurance=UNAVAILABLE` plus `INDEPENDENT_REVIEW_PROVENANCE_UNAVAILABLE`. No review report, same-context report, stale/wrong-subject evidence, actual review failure, unresolved A/B/C finding, or any non-review failure remains blocked with zero User Review starts and zero phase mutations.
 
 <a id="tst-f06-007"></a>
 ### 2.25 TST-F06-007 Host-specific adapters
@@ -486,7 +502,7 @@ Omission and `block` remain blocking. Only an explicit committed `owner_exceptio
 <a id="ora-f06-011-expected-result"></a>
 #### 2.29.1 ORA-F06-011 Expected result
 
-Only the one canonical current plan and exact Owner-authored approval comment can produce the separate implementation-authored exception record. Every identity and URL is exact, timestamps are unedited, and direct/list/direct reads match. Stale or invalid input writes nothing; exact replay is read-only; uncertain or conflicting state is not retried or replaced. No agent-generated approval is accepted.
+Only the one canonical current plan and exact operation-scoped active-chat decision record can produce the separate implementation-authored exception record. The Owner does not post an approval comment. Every identity and subject binding is exact, and direct/list/direct reads match. Stale or invalid input writes nothing; exact replay is read-only; uncertain or conflicting state is not retried or replaced. The record says `operator_reported_chat`; it does not claim cryptographic chat origin.
 
 <a id="tst-f06-012"></a>
 <a id="tst-f06-012-versioned-readiness-and-final-delivery-compatibility"></a>
@@ -498,7 +514,7 @@ Only the one canonical current plan and exact Owner-authored approval comment ca
 <a id="ora-f06-012-expected-result"></a>
 #### 2.30.1 ORA-F06-012 Expected result
 
-All V1 bytes and behavior remain identical. The exception path emits only Readiness V2 `READY_WITH_EXCEPTION` or `BLOCKED`, and Final Delivery V2 `READY_FOR_EXPLICIT_MERGE_AUTHORIZATION_WITH_EXCEPTION` or blocked, always disclosing `review_assurance=UNAVAILABLE`; the ready V2 result has `merge_authorized=false` and cannot merge.
+All V1/V2 bytes and behavior remain identical. The forward chat-exception path emits Readiness V3 `READY_WITH_EXCEPTION` or `BLOCKED`, and Final Delivery V3 `READY_FOR_EXPLICIT_MERGE_AUTHORIZATION_WITH_EXCEPTION` or blocked. Both disclose that an independent review occurred, bind its actual outcome/findings digest, state `review_assurance=UNAVAILABLE` and `INDEPENDENT_REVIEW_PROVENANCE_UNAVAILABLE`, and preserve `merge_authorized=false`.
 
 <a id="tst-f06-013"></a>
 <a id="tst-f06-013-user-review-and-downstream-exact-subject-revalidation"></a>
@@ -511,3 +527,43 @@ All V1 bytes and behavior remain identical. The exception path emits only Readin
 #### 2.31.1 ORA-F06-013 Expected result
 
 Only the exact still-current V1 or V2 source can start the separate human User Review. Any changed non-review gate or bound input blocks before session, feedback snapshot, result, or phase writes. A current same-HEAD conflicting/malformed exception marker blocks every consumer. The unique live `kind:*` label is authoritative; wrong phase, kind, or attention blocks before persistence. Phase mutation uses another current identity/label readback. User Review remains independent, and explicit `PR_MERGE`, merge, and Issue closure are never authorized by the exception.
+
+<a id="tst-f06-014"></a>
+### 2.32 TST-F06-014 Review occurrence with unavailable host provenance
+
+**Setup and action:** For the exact current Issue #46 / PR #67 subject, provide no review report, a separate-context occurrence with actual PASS and no findings linked to an UNAVAILABLE/BLOCKED V2 provenance result, a same-context report, wrong/stale subject, malformed report, FAIL/BLOCKED/CONCERNS, and a PASS with unresolved A/B/C findings. Verify the `PASES_INDEPENDENT_REVIEW_OCCURRENCE_V1` exact-output bytes and digest, matching V2 result, distinct context IDs, exact subject, Binding/profile digests, occurrence/outcome/findings fields, and direct file readback. Evaluate the exception plan and Readiness path for each case.
+
+<a id="ora-f06-014"></a>
+#### 2.32.1 ORA-F06-014 Expected result
+
+`UNAVAILABLE` is accepted only as a host-provenance limitation attached to one actual current separate-context review. The legacy V2 result remains formally `BLOCKED`; the matching occurrence V1 carries actual PASS/FAIL and findings. No report or occurrence record, same-context, stale, malformed, non-PASS outcome, or unresolved blocking finding prevents exception planning and Readiness. The occurrence record retains the exact reviewer output bytes, actual outcome, findings, and matching V2/subject/binding/profile digests. A valid PASS occurrence labels only the residual risk `INDEPENDENT_REVIEW_PROVENANCE_UNAVAILABLE`; it never claims the review was skipped or cryptographically host-verified.
+
+<a id="tst-f06-015"></a>
+### 2.33 TST-F06-015 ADC-authorized one-time Requirements Rebaseline
+
+**Setup and action:** After the exact successor ADC approval, vary ADC pointer, predecessor receipt, ExecutionBinding, PR/base/HEAD, complete Issue labels, and plan digest. Run the fresh read-only plan and apply to the exact current `phase:user-review` Issue.
+
+<a id="ora-f06-015"></a>
+#### 2.33.1 ORA-F06-015 Expected result
+
+The ADC approval authorizes only one `phase:user-review` to `phase:requirements` transition under its stated preconditions. No second plan approval is requested. Drift or replay causes zero additional label writes; the first successful application records append-only Intent/Applied evidence and one label PUT.
+
+<a id="tst-f06-016"></a>
+### 2.34 TST-F06-016 Active-chat approval and technical evidence
+
+**Setup and action:** Exercise exact affirmative and negative UI choices, stale or unrelated responses, wrong operation/scope/subject SHA, duplicate/conflicting records, and technical-record post/readback failure for ADC, exception, User Review, and PR merge scopes.
+
+<a id="ora-f06-016"></a>
+#### 2.34.1 ORA-F06-016 Expected result
+
+Only `承認する` returned for the current active request grants the exact named operation. `承認しない`, cancellation, no response, stale text, or a different scope performs zero protected writes. The workflow may append its technical evidence record after approval; the user is never asked to post an approval comment.
+
+<a id="tst-f06-017"></a>
+### 2.35 TST-F06-017 Operator-reported provenance and history
+
+**Setup and action:** Inspect newly written chat decisions and their Issue technical comment carriers across direct/list/direct reads. Vary recorder actor, predecessor ordering, comment location metadata, timestamps, edits, deletion, and duplicate operation/subject pairs.
+
+<a id="ora-f06-017"></a>
+#### 2.35.1 ORA-F06-017 Expected result
+
+Records identify `operator_reported_chat` and separately identify the authenticated GitHub recorder. They do not claim a cryptographic chat signature or that the recorder authored the chat response. Technical records remain append-only; invalid location, changed body, duplicate or non-monotonic history blocks.
