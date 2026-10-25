@@ -6,7 +6,7 @@ description: Capture, synchronize, and evaluate human feedback for the exact cur
 
 ## Owner and inputs
 
-Owner: runtime/p_ases/user_review.py. Inputs are an open PR, current HEAD, approved ADC, final Verification, completed Acceptance, readiness record, and GitHub feedback surfaces or a trusted host-attested direct-chat event.
+Owner: runtime/p_ases/user_review.py. Inputs are an open PR, current HEAD, approved ADC, final Verification, completed Acceptance, current Readiness V1 `PASS` or exact-subject Readiness V2 `READY_WITH_EXCEPTION`, and GitHub feedback surfaces or a trusted host-attested direct-chat event.
 
 ## Workflow
 
@@ -15,6 +15,7 @@ Owner: runtime/p_ases/user_review.py. Inputs are an open PR, current HEAD, appro
 3. Treat changed HEAD as stale and restart only from current state.
 4. Record direct-chat decisions only through a trusted host verifier. Raw caller JSON is not identity authority.
 5. Route newly requested scope to requirements; do not silently absorb it into the current contract.
+6. When a valid Readiness V2 exception is selected, retain the visible `review_assurance=UNAVAILABLE` and `INDEPENDENT_REVIEW_NOT_PERFORMED` risk. It does not count as an independent review or replace the separate human User Review decision.
 
 ## CLI
 

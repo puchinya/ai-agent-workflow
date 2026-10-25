@@ -22,6 +22,8 @@ V2 separates review occurrence from provenance assurance. `HOST_VERIFIED` requir
 
 The project profile sets `independent_review.minimum_assurance`. Omission means `host_verified`. Select `independent_attested` only in committed project configuration when that assurance is accepted; do not use a host, issue, comment, or one-run override. Current adapters validate captured bytes but are not connected to live host delegate APIs, and no trusted host-event verifier is configured. The current host/OS status is recorded in `docs/status/issue-46-review-assurance.md`.
 
+For Issue #46 / PR #67 only, the approved successor ADC defines a separate, opt-in path when host-to-runtime native capture is positively observed as unavailable. That path records `review_assurance=UNAVAILABLE` and `INDEPENDENT_REVIEW_NOT_PERFORMED`; it never creates a review PASS. Use its exact-subject exception plan and separate Owner-posted approval only after the required phase/document rebaseline. A genuine failed review, unresolved A/B/C finding, stale evidence, missing Verification Plan, or failed non-review gate remains blocking. The exception is not reusable for other repositories or Issues.
+
 ## CLI
 
 ~~~sh

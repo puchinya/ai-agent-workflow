@@ -35,6 +35,10 @@
   - [12.7 DES-F06-007 Host adapters](#127-des-f06-007-host-adapters)
   - [12.8 DES-F06-008 Docs and distributions](#128-des-f06-008-docs-and-distributions)
   - [12.9 DES-F06-009 Issue #63 isolation](#129-des-f06-009-issue-63-isolation)
+  - [12.10 DES-F06-010 Opt-in and capture-unavailability eligibility](#1210-des-f06-010-opt-in-and-capture-unavailability-eligibility)
+  - [12.11 DES-F06-011 Exact exception plan and Owner record](#1211-des-f06-011-exact-exception-plan-and-owner-record)
+  - [12.12 DES-F06-012 Versioned Readiness and Final Delivery](#1212-des-f06-012-versioned-readiness-and-final-delivery)
+  - [12.13 DES-F06-013 Downstream consumption and exact-subject revalidation](#1213-des-f06-013-downstream-consumption-and-exact-subject-revalidation)
 - [13 12 DES-WF-006 Human review and final delivery](#13-12-des-wf-006-human-review-and-final-delivery)
 <!-- contents:end -->
 
@@ -60,6 +64,10 @@
 - [DES-F06-007](#des-f06-007) — 12.7 DES-F06-007 Host adapters
 - [DES-F06-008](#des-f06-008) — 12.8 DES-F06-008 Docs and distributions
 - [DES-F06-009](#des-f06-009) — 12.9 DES-F06-009 Issue #63 isolation
+- [DES-F06-010](#des-f06-010) — 12.10 DES-F06-010 Opt-in and capture-unavailability eligibility
+- [DES-F06-011](#des-f06-011) — 12.11 DES-F06-011 Exact exception plan and Owner record
+- [DES-F06-012](#des-f06-012) — 12.12 DES-F06-012 Versioned Readiness and Final Delivery
+- [DES-F06-013](#des-f06-013) — 12.13 DES-F06-013 Downstream consumption and exact-subject revalidation
 - [DES-WF-006](#des-wf-006) — 13 12 DES-WF-006 Human review and final delivery
 <!-- heading-map:end -->
 
@@ -294,7 +302,7 @@ Profile Schema 2 defaults to `independent_review.minimum_assurance=host_verified
 <a id="des-f06-006-readiness-enforcement"></a>
 ### 12.6 DES-F06-006 Readiness enforcement
 
-The `audit independent` native-capture path writes V2 only after validating exact subject, Binding, profile, request/return/output linkage, finding references, and a unique subject history. Readiness consumes V2 through the configured minimum and includes both review and profile digests. V1-only, SELF_REVIEW, UNAVAILABLE, stale, duplicate, or policy-ineligible evidence blocks before User Review or phase mutation. Final Delivery re-runs Readiness and re-reads the same current profile and V2 artifact.
+The `audit independent` native-capture path writes the existing review V2 only after validating exact subject, Binding, profile, request/return/output linkage, finding references, and unique subject history. Ordinary Readiness consumes that review through the configured minimum and preserves its V1 result bytes. A separate exception evaluator may produce `READY_WITH_EXCEPTION` only for positively observed `HOST_NATIVE_CAPTURE_UNAVAILABLE` and a current exact-subject Owner exception, with every non-review Readiness gate passing. It preserves `review_assurance=UNAVAILABLE`; it does not create an Independent Review PASS. Actual review failures, invalid or stale evidence, and every other gate failure remain blocked. Final Delivery re-reads the same exact subject and emits the distinct exception result with `merge_authorized=false`.
 
 <a id="des-f06-007"></a>
 <a id="des-f06-007-host-adapters"></a>
@@ -313,6 +321,38 @@ Per-surface observations and smoke-test results live in `docs/status/issue-46-re
 ### 12.9 DES-F06-009 Issue #63 isolation
 
 Issue #46 adapters never alter Issue #63 / PR #64 evidence or workflow state. The V2 profile feature does not edit the committed profile or create any #63 readiness, review, User Review, Ruleset, Activation, merge, or close evidence.
+
+<a id="des-f06-010"></a>
+<a id="des-f06-010-opt-in-and-capture-unavailability-eligibility"></a>
+### 12.10 DES-F06-010 Opt-in and capture-unavailability eligibility
+
+`ProjectProfile` owns the optional Schema 2 `independent_review.unavailable_handling` field. Absence resolves to `block`; the accepted values are only `block` and `owner_exception`. `minimum_assurance` retains its existing value and evaluation. Repository, Issue, and PR identity checks constrain the opt-in to repository ID `1401910271`, Issue #46 / stable ID `5846549384`, and PR #67. No host auto-detection, environment variable, or CLI flag changes the committed profile policy.
+
+`review_assurance.py` keeps ordinary assurance evaluation unchanged and reports a typed exception eligibility outcome: `HOST_NATIVE_CAPTURE_UNAVAILABLE`, `REVIEW_FAILED`, or `INVALID_EVIDENCE`. Only the first can enter the exception route. A completed failing review, unresolved blocking finding, malformed or stale evidence, missing Verification Plan, or failed non-review gate is not capture unavailability. A normal eligible review continues through the existing Readiness V1 path.
+
+<a id="des-f06-011"></a>
+<a id="des-f06-011-exact-exception-plan-and-owner-record"></a>
+### 12.11 DES-F06-011 Exact exception plan and Owner record
+
+The read-only plan binds repository/Owner/Issue/PR identities, current base and exact HEAD, approved ADC generation, frozen Verification Plan, ExecutionBinding, PRBinding, committed profile bytes, actual host surface, capability-observation digests, the typed reason, and the accepted `INDEPENDENT_REVIEW_NOT_PERFORMED` risk. Its canonical digest freezes the approval subject. The Owner personally posts the exact generated `PASES_REVIEW_UNAVAILABLE_APPROVAL_V1` comment; the implementation agent never creates or edits that comment. Validation checks the stable Owner ID, complete literal payload, timestamp, repository/Issue/comment URLs, uniqueness, and direct/list/direct consistency.
+
+The apply operation is the sole writer of an implementation-authored append-only `PASES_REVIEW_UNAVAILABLE_EXCEPTION_V1` record and its local evidence. The approval comment and exception record remain distinct. Apply revalidates the plan and every bound subject immediately before the write, then performs exact readback. Exact replay is read-only; stale, duplicate, edited, conflicting, or ambiguous state blocks without retry or replacement. A missing frozen Verification Plan prevents plan generation; a Legacy Adoption plan cannot substitute.
+
+<a id="des-f06-012"></a>
+<a id="des-f06-012-versioned-readiness-and-final-delivery"></a>
+### 12.12 DES-F06-012 Versioned Readiness and Final Delivery
+
+`delivery.py` preserves the existing `PASES_REVIEW_READINESS_V1` and V1 Final Delivery serializers, readers, and behavior. It adds `PASES_REVIEW_READINESS_V2` with only `READY_WITH_EXCEPTION` or `BLOCKED`, visible `review_assurance=UNAVAILABLE`, current subject/profile digests, Owner approval and exception references, and the accepted risk. The ready outcome is possible only when every non-review gate passes and the exact grant is current.
+
+The exception route writes a distinct `PASES_FINAL_DELIVERY_V2` with status `READY_FOR_EXPLICIT_MERGE_AUTHORIZATION_WITH_EXCEPTION`, `review_assurance=UNAVAILABLE`, the exact exception digest, and `merge_authorized=false`. It never manufactures a V1 PASS and never authorizes or performs merge.
+
+<a id="des-f06-013"></a>
+<a id="des-f06-013-downstream-consumption-and-exact-subject-revalidation"></a>
+### 12.13 DES-F06-013 Downstream consumption and exact-subject revalidation
+
+`user_review.py` accepts either ordinary current Readiness V1 `PASS` or exact current Readiness V2 `READY_WITH_EXCEPTION`. User Review remains a separate explicit human decision and retains its existing V1 serialized bytes. Readiness recomputation, User Review start/submit, and Final Delivery re-read PR/HEAD, ADC, frozen Verification Plan, ExecutionBinding, PRBinding, committed profile, Owner grant and exception receipt, Required CI, dependencies, Verification, Acceptance, and Self-Audit against the same subject.
+
+Any changed bound input invalidates the exception before side effects. The exception does not bypass a draft PR, failed check, dirty worktree, unmet dependency, actual current review failure, explicit `PR_MERGE`, merge, or closure gate. The Codex Cloud, local Codex CLI/Desktop, and Claude Code surfaces use identical fallback semantics and report only capabilities they actually expose. Agent-writable Claude Hooks do not establish host verification.
 
 <a id="des-wf-006"></a>
 <a id="10-des-wf-006-human-review-and-final-delivery"></a>

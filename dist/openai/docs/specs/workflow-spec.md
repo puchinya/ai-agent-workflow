@@ -46,6 +46,10 @@
     - [11.1.7 10.1.7 REQ-F06-007 Host-specific evidence adapters](#1117-1017-req-f06-007-host-specific-evidence-adapters)
     - [11.1.8 10.1.8 REQ-F06-008 Capability documentation and distributions](#1118-1018-req-f06-008-capability-documentation-and-distributions)
     - [11.1.9 10.1.9 REQ-F06-009 Issue #63 and PR #64 isolation](#1119-1019-req-f06-009-issue-63-and-pr-64-isolation)
+    - [11.1.10 REQ-F06-010 Explicit opt-in and typed capture-unavailability decision](#11110-req-f06-010-explicit-opt-in-and-typed-capture-unavailability-decision)
+    - [11.1.11 REQ-F06-011 Exact plan, Owner authorization, and append-only exception record](#11111-req-f06-011-exact-plan-owner-authorization-and-append-only-exception-record)
+    - [11.1.12 REQ-F06-012 Versioned Readiness and delivery results](#11112-req-f06-012-versioned-readiness-and-delivery-results)
+    - [11.1.13 REQ-F06-013 Downstream consumption and exact-subject revalidation](#11113-req-f06-013-downstream-consumption-and-exact-subject-revalidation)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -79,6 +83,10 @@
 - [REQ-F06-007](#req-f06-007) — 11.1.7 10.1.7 REQ-F06-007 Host-specific evidence adapters
 - [REQ-F06-008](#req-f06-008) — 11.1.8 10.1.8 REQ-F06-008 Capability documentation and distributions
 - [REQ-F06-009](#req-f06-009) — 11.1.9 10.1.9 REQ-F06-009 Issue #63 and PR #64 isolation
+- [REQ-F06-010](#req-f06-010) — 11.1.10 REQ-F06-010 Explicit opt-in and typed capture-unavailability decision
+- [REQ-F06-011](#req-f06-011) — 11.1.11 REQ-F06-011 Exact plan, Owner authorization, and append-only exception record
+- [REQ-F06-012](#req-f06-012) — 11.1.12 REQ-F06-012 Versioned Readiness and delivery results
+- [REQ-F06-013](#req-f06-013) — 11.1.13 REQ-F06-013 Downstream consumption and exact-subject revalidation
 <!-- heading-map:end -->
 
 
@@ -432,7 +440,11 @@ Profile Schema 2 MUST support `independent_review.minimum_assurance` with values
 <a id="1016-req-f06-006-readiness-and-downstream-gates"></a>
 #### 11.1.6 10.1.6 REQ-F06-006 Readiness and downstream gates
 
-Independent-review ingestion, Readiness, and Final Delivery MUST require a positive current review eligible under the committed profile. V1-only, `SELF_REVIEW`, `UNAVAILABLE`, stale evidence, incomplete checklist, blocking A/B/C findings, and policy drift MUST block. A blocked review MUST cause zero Phase mutations and zero User Review session starts.
+Independent-review ingestion, ordinary Readiness, and ordinary Final Delivery MUST require a positive current review eligible under the committed profile. Existing V1 `PASS` behavior and every V1 byte MUST remain unchanged. A separate V2 Readiness result MAY be `READY_WITH_EXCEPTION` only when a valid exact-subject Owner exception satisfies REQ-F06-010 through REQ-F06-013 and every other Readiness gate passes.
+
+The exception MAY replace only the missing-review condition caused by positively observed `HOST_NATIVE_CAPTURE_UNAVAILABLE`. It MUST preserve `review_assurance=UNAVAILABLE` and MUST NOT create an Independent Review PASS record or label. `SELF_REVIEW`, stale or malformed evidence, a missing Verification Plan, wrong subject, failed or incomplete Required CI, failed Verification/Acceptance/Self-Audit, unresolved dependency, or any other unavailable cause MUST remain BLOCKED.
+
+A current completed native review with verdict `FAIL`, `BLOCKED`, or `CONCERNS`, or any unresolved A/B/C finding, is not eligible for the exception. A stale historical diagnostic is not a current review result and MUST NOT be converted into one. A blocked review or invalid exception MUST cause zero User Review session starts and zero Phase mutations.
 
 <a id="req-f06-007"></a>
 <a id="req-f06-007-host-specific-evidence-adapters"></a>
@@ -454,3 +466,45 @@ The implementation MUST record per-surface capability observations and host/OS s
 #### 11.1.9 10.1.9 REQ-F06-009 Issue #63 and PR #64 isolation
 
 Issue #46 implementation MUST keep Issue #63 / PR #64 evidence and workflow state unchanged. It MUST NOT create an Independent Review PASS for #63, change its profile minimum, advance its phase, authorize User Review, Ruleset changes, Activation, merge, or closure. Any later #64 application requires a separately approved forward-generation policy and exact-subject review.
+
+<a id="req-f06-010"></a>
+<a id="req-f06-010-explicit-opt-in-and-typed-capture-unavailability-decision"></a>
+#### 11.1.10 REQ-F06-010 Explicit opt-in and typed capture-unavailability decision
+
+Profile Schema 2 MAY add `independent_review.unavailable_handling` with exactly `block` or `owner_exception`; omission MUST default to `block` for every project. `minimum_assurance` MUST remain unchanged. Only `puchinya/ai-agent-workflow` may commit `owner_exception`, and that opt-in MUST be limited to repository ID `1401910271`, Issue #46 / stable ID `5846549384`, and PR #67. The opt-in MUST be committed only after successor ADC approval and the required Phase/document rebaseline. Host detection, CLI flags, environment variables, and Issue identity MUST NOT enable the exception.
+
+The runtime MUST produce a typed eligibility decision distinguishing `HOST_NATIVE_CAPTURE_UNAVAILABLE`, `REVIEW_FAILED`, and `INVALID_EVIDENCE`. Only positively observed absence of host-to-runtime native capture qualifies. Missing plan/evidence, stale subject, malformed input, failed CI, and genuine failed review MUST NOT qualify. A genuine eligible native review MUST take the existing ordinary V1 Readiness path and MUST NOT be shadowed by the exception.
+
+<a id="req-f06-011"></a>
+<a id="req-f06-011-exact-plan-owner-authorization-and-append-only-exception-record"></a>
+#### 11.1.11 REQ-F06-011 Exact plan, Owner authorization, and append-only exception record
+
+The runtime MUST provide read-only canonical `PASES_REVIEW_UNAVAILABLE_EXCEPTION_PLAN_V1` and immutable `PASES_REVIEW_UNAVAILABLE_EXCEPTION_V1` records. The plan MUST bind repository name and ID; Owner user ID `3744776`; Issue number and stable ID; PR number, base ref, base SHA, branch, and exact HEAD; current approved ADC comment ID and SHA; frozen Verification Plan SHA; current ExecutionBinding and PRBinding SHA; committed profile SHA; observed host surface; reason `HOST_NATIVE_CAPTURE_UNAVAILABLE`; capability-observation digests; risk `INDEPENDENT_REVIEW_NOT_PERFORMED`; and its own SHA-256. The plan and result MUST disclose that code defects may go undetected because no independent review result was available; neither may imply review completion or acceptance of an actual finding.
+
+The plan command MUST emit exact approval text. The Owner (stable GitHub user ID `3744776`) MUST personally post that exact text as an Issue #46 comment. The implementation agent MUST NOT create or edit the Owner approval comment. The marker and canonical payload shape are:
+
+```text
+<!-- PASES_REVIEW_UNAVAILABLE_APPROVAL_V1
+{"approved":true,"issue_number":46,"plan_sha256":"<64-digit digest from the actual plan>","pr_number":67,"repository":"puchinya/ai-agent-workflow","schema":"PASES_REVIEW_UNAVAILABLE_APPROVAL_V1"}
+-->
+```
+
+The verifier MUST compare the complete literal comment with its canonical formatter; authenticate stable Owner ID; verify repository, Issue, comment API URL, Issue URL, HTML URL, exact unedited content and timestamp; and perform direct/list/direct readback. Missing, edited, duplicate, conflicting, wrong-Owner, stale, or mismatched approval MUST block before writes. This is Owner-account operational provenance, not cryptographic or physical-device proof.
+
+Apply MUST be the sole writer of a distinct append-only Issue receipt `PASES_REVIEW_UNAVAILABLE_EXCEPTION_V1` and immutable local evidence after verifying the Owner comment. The receipt MUST record plan SHA, Owner comment ID/digest, all bound subject/profile identities, typed unavailable reason, and risk. The Owner approval and implementation-authored receipt MUST remain separate; the latter MUST NOT represent Owner approval. Apply MUST recheck inputs immediately before writing and read the receipt direct/list/direct. Exact replay MUST be read-only NOOP. Ambiguous outcome, duplicate/conflicting history, stale plan, or partial readback MUST block without blind retry or replacement. Missing frozen Verification Plan MUST block plan generation; a Legacy Adoption plan MUST NOT substitute.
+
+<a id="req-f06-012"></a>
+<a id="req-f06-012-versioned-readiness-and-delivery-results"></a>
+#### 11.1.12 REQ-F06-012 Versioned Readiness and delivery results
+
+All `PASES_REVIEW_READINESS_V1` serializers, readers, bytes, and behavior MUST be preserved. The runtime MUST add `PASES_REVIEW_READINESS_V2` with statuses `READY_WITH_EXCEPTION` or `BLOCKED`, `review_assurance=UNAVAILABLE`, exact Verification subject and profile digests, exception record and Owner comment IDs/digests, and enumerated risk. `READY_WITH_EXCEPTION` MUST require every non-review gate to pass and the exact Owner exception to remain current.
+
+All V1 Final Delivery bytes and behavior MUST be preserved. The runtime MUST add `PASES_FINAL_DELIVERY_V2` for the exception route. Its ready status MUST be `READY_FOR_EXPLICIT_MERGE_AUTHORIZATION_WITH_EXCEPTION`; it MUST disclose `review_assurance=UNAVAILABLE`, bind the exception digest, and set `merge_authorized=false`. It MUST NOT authorize or perform a merge.
+
+<a id="req-f06-013"></a>
+<a id="req-f06-013-downstream-consumption-and-exact-subject-revalidation"></a>
+#### 11.1.13 REQ-F06-013 Downstream consumption and exact-subject revalidation
+
+User Review MAY start from ordinary `PASES_REVIEW_READINESS_V1 PASS` or exact current `PASES_REVIEW_READINESS_V2 READY_WITH_EXCEPTION`. It MUST remain a separate explicit human decision, and V1 User Review bytes MUST be preserved. On every Readiness recomputation, User Review start/submit, and Final Delivery evaluation, the runtime MUST reread and validate exact PR/HEAD, ADC, Verification Plan, ExecutionBinding, PRBinding, profile, exception record, Owner comment, Required CI, dependencies, Verification, Acceptance, and Self-Audit.
+
+A change in any bound input MUST invalidate the exception before side effects. The exception MUST NOT bypass a draft PR, failed check, dirty checkout, unmet dependency, actual current review failure, or explicit `PR_MERGE` authorization. Identical semantics MUST apply on Codex Cloud, local Codex CLI/Desktop, and Claude Code; adapters MUST report actual capabilities truthfully. Agent-writable Claude Hook records MUST NOT establish `HOST_VERIFIED`.
