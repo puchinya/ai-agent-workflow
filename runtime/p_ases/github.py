@@ -227,13 +227,13 @@ class GitHub:
         thread_query = """query($owner:String!,$name:String!,$number:Int!,$cursor:String){
           repository(owner:$owner,name:$name){pullRequest(number:$number){
             reviewThreads(first:100,after:$cursor){nodes{id isResolved isOutdated
-              comments(first:100){nodes{databaseId body createdAt updatedAt path author{databaseId login __typename} commit{oid}}
+              comments(first:100){nodes{databaseId body createdAt updatedAt path author{login __typename ... on User {databaseId} ... on Bot {databaseId}} commit{oid}}
                 pageInfo{hasNextPage endCursor}}
             } pageInfo{hasNextPage endCursor}
           }}}
         }"""
         comment_query = """query($threadId:ID!,$cursor:String){node(id:$threadId){... on PullRequestReviewThread{
-          comments(first:100,after:$cursor){nodes{databaseId body createdAt updatedAt path author{databaseId login __typename} commit{oid}}
+          comments(first:100,after:$cursor){nodes{databaseId body createdAt updatedAt path author{login __typename ... on User {databaseId} ... on Bot {databaseId}} commit{oid}}
             pageInfo{hasNextPage endCursor}}}}}"""
         threads: list[dict[str, Any]] = []
         cursor: str | None = None
