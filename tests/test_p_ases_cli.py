@@ -13,7 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases.adc import publish_adc
-from p_ases.cli import CLI_ADVANCE_TARGETS, _parser, main
+from p_ases.cli import CLI_ADVANCE_TARGETS, CLIError, _parser, _pr_ensure, main
+from p_ases.execution import ExecutionBinding
 from p_ases.github import GitHubError
 from p_ases.phase_evidence import PhaseEvidenceError
 from test_adc_intake import FakeGitHub, adc_bytes
@@ -31,11 +32,11 @@ def ordinary_context(github, adc=None):
 
 
 class PasesCLITests(unittest.TestCase):
-    def test_cli_exposes_exactly_twelve_namespaces_and_adds_project_context(self):
+    def test_cli_exposes_thirteen_namespaces_including_chat_decisions(self):
         namespaces = _parser()._subparsers._group_actions[0].choices
         self.assertEqual(set(namespaces), {
             "project", "context", "adc", "issue", "docs", "work", "pr",
-            "verification", "acceptance", "audit", "user-review", "delivery",
+            "verification", "acceptance", "audit", "user-review", "delivery", "chat-decision",
         })
         self.assertEqual(_parser().parse_args(["project", "status", "--root", str(ROOT)]).verb, "status")
         context = _parser().parse_args(["context", "show", "32", "--root", str(ROOT),
@@ -75,6 +76,87 @@ class PasesCLITests(unittest.TestCase):
             "--phase-evidence-comment-id", "99", "--root", str(ROOT), "--repo", "octo/repo",
         ])
         self.assertEqual((advance.phase_evidence_comment_id, advance.root), (99, ROOT))
+
+    def test_issue_46_ready_rebaseline_requires_plan_approval_and_applied_comment_ids(self):
+        plan = _parser().parse_args([
+            "issue", "ready-rebaseline-plan", "46", "--repo", "puchinya/ai-agent-workflow",
+            "--root", str(ROOT), "--output", str(ROOT / "ready-plan.json"),
+        ])
+        apply = _parser().parse_args([
+            "issue", "ready-rebaseline-apply", "46", "--repo", "puchinya/ai-agent-workflow",
+            "--root", str(ROOT), "--plan", str(ROOT / "ready-plan.json"),
+            "--approval-comment-id", "900",
+        ])
+        advance = _parser().parse_args([
+            "issue", "advance", "46", "execution", "--kind", "single",
+            "--root", str(ROOT), "--repo", "puchinya/ai-agent-workflow",
+            "--ready-rebaseline-comment-id", "901",
+        ])
+        self.assertEqual((plan.verb, plan.issue, plan.output),
+                         ("ready-rebaseline-plan", 46, ROOT / "ready-plan.json"))
+        self.assertEqual((apply.verb, apply.approval_comment_id), ("ready-rebaseline-apply", 900))
+        self.assertEqual(advance.ready_rebaseline_comment_id, 901)
+
+    def test_legacy_adoption_and_reset_routes_require_exact_plan_and_comment_ids(self):
+        adoption_plan = _parser().parse_args([
+            "delivery", "legacy-adoption-plan", "46", "--repo", "octo/repo", "--root", str(ROOT),
+        ])
+        adoption_apply = _parser().parse_args([
+            "delivery", "legacy-adoption-apply", "46", "--plan", "plan.json",
+            "--approval-comment-id", "900", "--repo", "octo/repo", "--root", str(ROOT),
+        ])
+        reset_plan = _parser().parse_args([
+            "delivery", "legacy-reset-plan", "46", "--repo", "octo/repo", "--root", str(ROOT),
+        ])
+        reset_apply = _parser().parse_args([
+            "delivery", "legacy-reset-apply", "46", "--plan", "reset.json",
+            "--approval-comment-id", "901", "--repo", "octo/repo", "--root", str(ROOT),
+        ])
+        self.assertEqual(adoption_plan.verb, "legacy-adoption-plan")
+        self.assertEqual((adoption_apply.verb, adoption_apply.approval_comment_id),
+                         ("legacy-adoption-apply", 900))
+        self.assertEqual(reset_plan.verb, "legacy-reset-plan")
+        self.assertEqual((reset_apply.verb, reset_apply.approval_comment_id),
+                         ("legacy-reset-apply", 901))
+
+    def test_issue_46_requirements_rebaseline_uses_adc_grant_without_second_comment_approval(self):
+        plan = _parser().parse_args([
+            "delivery", "requirements-rebaseline-plan", "46", "--repo", "puchinya/ai-agent-workflow",
+            "--root", str(ROOT), "--output", str(ROOT / "requirements-plan.json"),
+        ])
+        apply = _parser().parse_args([
+            "delivery", "requirements-rebaseline-apply", "46", "--repo", "puchinya/ai-agent-workflow",
+            "--root", str(ROOT), "--plan", str(ROOT / "requirements-plan.json"),
+        ])
+        self.assertEqual((plan.verb, plan.issue, plan.output),
+                         ("requirements-rebaseline-plan", 46, ROOT / "requirements-plan.json"))
+        self.assertEqual((apply.verb, apply.issue, apply.plan),
+                         ("requirements-rebaseline-apply", 46, ROOT / "requirements-plan.json"))
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit) as raised:
+            _parser().parse_args([
+                "delivery", "requirements-rebaseline-apply", "46", "--plan",
+                str(ROOT / "requirements-plan.json"), "--approval-comment-id", "902",
+            ])
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("unrecognized arguments", stderr.getvalue())
+
+    def test_pr_ensure_rejects_execution_binding_for_stale_adc_before_pr_operations(self):
+        binding = ExecutionBinding(
+            repository="octo/repo", issue_number=30, adc_comment_id=123, adc_sha256="a" * 64,
+            base_ref="main", base_sha="b" * 40, branch_ref="pases/issue-30",
+            work_directory=str(ROOT), initial_head_sha="b" * 40,
+        ).validate()
+        verified = SimpleNamespace(pointer=SimpleNamespace(comment_id=124, sha256="c" * 64))
+        args = SimpleNamespace(issue=30, branch_ref="pases/issue-30", base_ref="main",
+                               body_file=ROOT / "does-not-need-to-be-read.md", title="Issue #30")
+        with patch("p_ases.cli._approved_issue_adc", return_value=({}, verified)), \
+                patch("p_ases.cli.read_binding", return_value=binding), \
+                patch("p_ases.cli.read_binding_history", return_value=(binding,)), \
+                patch("p_ases.cli.verify_adc_generation", side_effect=AssertionError("stale binding must stop first")), \
+                patch("p_ases.cli.ensure_pull_request", side_effect=AssertionError("must stop before PR operations")):
+            with self.assertRaisesRegex(CLIError, "latest ExecutionBinding does not match the current approved ADC"):
+                _pr_ensure(args, "octo/repo", ROOT, object())
 
     def test_advance_refuses_caller_kind_mismatch_without_label_write(self):
         class GitHub:
@@ -403,6 +485,43 @@ class PasesCLITests(unittest.TestCase):
             "--repo", "octo/repo", "--root", str(ROOT),
         ])
         self.assertEqual((args.namespace, args.verb), ("delivery", "final"))
+
+    def test_unavailable_review_cli_uses_explicit_plan_apply_and_union_inputs(self):
+        plan = _parser().parse_args([
+            "delivery", "review-unavailable-plan", "46", "67", "a" * 40, "frozen-plan.json",
+            "--host-surface", "codex_cloud", "--output", "exception-plan.json",
+            "--repo", "puchinya/ai-agent-workflow", "--root", str(ROOT),
+        ])
+        self.assertEqual((plan.verb, plan.host_surface), ("review-unavailable-plan", "codex_cloud"))
+        apply = _parser().parse_args([
+            "delivery", "review-unavailable-apply", "46", "67", "a" * 40, "frozen-plan.json",
+            "--plan", "exception-plan.json", "--chat-decision-comment-id", "123",
+            "--repo", "puchinya/ai-agent-workflow", "--root", str(ROOT),
+        ])
+        self.assertEqual((apply.verb, apply.chat_decision_comment_id), ("review-unavailable-apply", 123))
+        decision = _parser().parse_args([
+            "chat-decision", "record", "46", "67", "USER_REVIEW", "a" * 64,
+            "scope.json", "question-item-1", "承認する", "--repo", "puchinya/ai-agent-workflow",
+        ])
+        self.assertEqual((decision.namespace, decision.operation, decision.answer),
+                         ("chat-decision", "USER_REVIEW", "承認する"))
+        readiness = _parser().parse_args([
+            "delivery", "readiness", "46", "67", "a" * 40, "plan.json", "verification.json",
+            "acceptance.json", "self.json", "--review-unavailable-exception", "exception.json",
+        ])
+        self.assertIsNone(readiness.independent_review)
+        self.assertEqual(readiness.review_unavailable_exception.name, "exception.json")
+        final = _parser().parse_args([
+            "delivery", "final", "46", "67", "a" * 40, "plan.json", "verification.json",
+            "acceptance.json", "self.json", "readiness.json", "review.json",
+            "--review-unavailable-exception", "exception.json",
+        ])
+        self.assertIsNone(final.independent_review)
+        review = _parser().parse_args([
+            "user-review", "start", "46", "67", "a" * 40, "plan.json", "readiness.json",
+            "--review-unavailable-exception", "exception.json",
+        ])
+        self.assertEqual(review.review_unavailable_exception.name, "exception.json")
 
 
 if __name__ == "__main__":

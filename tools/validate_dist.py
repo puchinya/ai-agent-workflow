@@ -32,10 +32,11 @@ CLI_ROUTES = {
     "pr": {"ensure"}, "verification": {"plan", "collect", "validate", "final", "published"},
     "acceptance": {"prepare", "validate", "publish", "verify"},
     "audit": {"self", "independent"},
+    "chat-decision": {"record"},
     "user-review": {"start", "sync", "record", "status"},
     "delivery": {"readiness", "gate-policy", "bootstrap-check", "final", "finalize", "parent",
                  "parent-evidence", "parent-migrate-labels", "consumer-activation-setup",
-                 "consumer-activation-verify"},
+                 "consumer-activation-verify", "review-unavailable-plan", "review-unavailable-apply"},
 }
 OLD_COMMAND = re.compile(
     r"(?i)\b(?:init-project|agent-context|validate-docs|run-hook|ensure-milestone|"

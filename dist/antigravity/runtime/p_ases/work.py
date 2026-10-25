@@ -12,7 +12,9 @@ from .checkpoint import (
     read_pr_binding, validate_ref, write_checkpoint, write_pr_binding,
 )
 from .context import WorkContext
-from .execution import ExecutionBinding, ExecutionError, binding_digest, read_binding, write_binding
+from .execution import (
+    ExecutionBinding, ExecutionError, binding_digest, read_binding, read_binding_history, write_binding,
+)
 from .git import (
     GitError, branch_exists, create_branch, current_branch, head_sha40, is_ancestor,
     remote_branch_sha, switch_branch, worktree_clean,
@@ -100,6 +102,12 @@ def ensure_pull_request(repository_root: Path, github: GitHub, *, repository: st
             or binding.base_ref != base_ref or binding.branch_ref != branch_ref
             or Path(binding.work_directory) != root):
         raise WorkError("ExecutionBinding does not match the requested PR repository, Issue, base, branch, or worktree")
+    try:
+        execution_history = read_binding_history(execution_binding_path(root, issue_number))
+    except ExecutionError as exc:
+        raise WorkError(f"ExecutionBinding history is invalid: {exc}") from exc
+    if not execution_history or execution_history[-1] != binding:
+        raise WorkError("PR ensure requires the latest immutable ExecutionBinding generation")
     if not worktree_clean(root) or current_branch(root) != branch_ref or binding.branch_ref != branch_ref:
         raise WorkError("PR ensure requires a clean worktree on the exact bound branch")
     local_head = head_sha40(root)
@@ -111,12 +119,30 @@ def ensure_pull_request(repository_root: Path, github: GitHub, *, repository: st
     if remote_base != binding.base_sha:
         raise WorkError("remote base drifted from the immutable ExecutionBinding base")
     binding_history = read_pr_binding_history(root, issue_number)
+    execution_generation_by_adc = {
+        (item.adc_comment_id, item.adc_sha256): index
+        for index, item in enumerate(execution_history)
+    }
     if binding_history:
         history_identity = binding_history[0][1]
         prior_head: str | None = None
+        prior_generation = -1
+        prior_binding: PRBinding | None = None
         for _path, item in binding_history:
-            if not _same_pr_binding_identity(history_identity, item):
-                raise WorkError("immutable PRBinding history changes PR, base, Issue, or ADC identity")
+            if not _same_pr_binding_lineage(history_identity, item):
+                raise WorkError("immutable PRBinding history changes PR, base, Issue, or branch identity")
+            generation = execution_generation_by_adc.get((item.adc_comment_id, item.adc_sha256))
+            if generation is None:
+                raise WorkError("PRBinding history contains an ADC absent from immutable ExecutionBinding history")
+            if generation < prior_generation:
+                raise WorkError("PRBinding ADC generations must be forward-only")
+            if prior_binding == item:
+                raise WorkError("immutable PRBinding history contains a duplicate generation")
+            try:
+                if not is_ancestor(root, binding.base_sha, item.pr_head_sha40):
+                    raise WorkError("immutable PRBinding HEAD does not descend from the frozen base")
+            except GitError as exc:
+                raise WorkError(f"could not verify immutable PRBinding HEAD history: {exc}") from exc
             if prior_head is not None:
                 try:
                     descends = is_ancestor(root, prior_head, item.pr_head_sha40)
@@ -125,6 +151,8 @@ def ensure_pull_request(repository_root: Path, github: GitHub, *, repository: st
                 if not descends:
                     raise WorkError("immutable PRBinding HEAD history is not a forward-only chain")
             prior_head = item.pr_head_sha40
+            prior_generation = generation
+            prior_binding = item
     stored_binding = binding_history[-1][1] if binding_history else None
     try:
         candidates = github.pull_requests_for_refs(base_ref=base_ref, head_ref=branch_ref)
@@ -180,8 +208,13 @@ def ensure_pull_request(repository_root: Path, github: GitHub, *, repository: st
     pr_binding = PRBinding(repository, issue_number, binding.adc_comment_id, binding.adc_sha256,
                            binding.base_sha, branch_ref, pr_number, local_head).validate()
     if stored_binding is not None and stored_binding != pr_binding:
-        if not _same_pr_binding_identity(stored_binding, pr_binding):
+        if not _same_pr_binding_lineage(stored_binding, pr_binding):
             raise WorkError("existing immutable PRBinding history conflicts with the current PR identity")
+        current_generation = execution_generation_by_adc.get((pr_binding.adc_comment_id, pr_binding.adc_sha256))
+        stored_generation = execution_generation_by_adc.get((stored_binding.adc_comment_id,
+                                                              stored_binding.adc_sha256))
+        if current_generation is None or stored_generation is None or current_generation < stored_generation:
+            raise WorkError("new PRBinding must use the current or a later ExecutionBinding ADC generation")
         if not is_ancestor(root, stored_binding.pr_head_sha40, local_head):
             raise WorkError("new PRBinding HEAD does not descend from the latest immutable PRBinding")
         version = len(binding_history) + 1
@@ -217,9 +250,8 @@ def _pr_binding_version_path(work_directory: Path, issue_number: int, version: i
     return execution_binding_path(work_directory, issue_number).with_name(f"pr-binding-{version:06d}.json")
 
 
-def _same_pr_binding_identity(left: PRBinding, right: PRBinding) -> bool:
+def _same_pr_binding_lineage(left: PRBinding, right: PRBinding) -> bool:
     return (left.repository == right.repository and left.issue_number == right.issue_number
-            and left.adc_comment_id == right.adc_comment_id and left.adc_sha256 == right.adc_sha256
             and left.base_sha40 == right.base_sha40 and left.branch_ref == right.branch_ref
             and left.pr_number == right.pr_number)
 

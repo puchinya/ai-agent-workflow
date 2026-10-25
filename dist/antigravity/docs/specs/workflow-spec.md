@@ -21,14 +21,41 @@
 - [5 REQ-WF-007 Error and boundary behavior](#5-req-wf-007-error-and-boundary-behavior)
 - [6 REQ-WF-008 Security and privacy](#6-req-wf-008-security-and-privacy)
 - [7 P-ASES migration Bootstrap gates](#7-p-ases-migration-bootstrap-gates)
-- [8 P-ASES human review and final delivery](#8-p-ases-human-review-and-final-delivery)
-  - [8.1 REQ-WF-009 Exact-subject User Review](#81-req-wf-009-exact-subject-user-review)
-  - [8.2 REQ-WF-010 Parent Integration and Final Delivery](#82-req-wf-010-parent-integration-and-final-delivery)
-- [9 Consumer Activation workflow contract](#9-consumer-activation-workflow-contract)
-  - [9.1 REQ-F01-001 Repository boundary](#91-req-f01-001-repository-boundary)
-  - [9.2 REQ-F01-003 Append-only approval and Activation history](#92-req-f01-003-append-only-approval-and-activation-history)
-  - [9.3 REQ-F01-005 Eligibility by Activation time](#93-req-f01-005-eligibility-by-activation-time)
-  - [9.4 REQ-F01-007 Successor Activation](#94-req-f01-007-successor-activation)
+- [8 7.1 Prospective legacy-Issue admission](#8-71-prospective-legacy-issue-admission)
+  - [8.1 REQ-F07-001 Typed legacy Gate and selector preservation](#81-req-f07-001-typed-legacy-gate-and-selector-preservation)
+  - [8.2 REQ-F07-002 Exact bootstrap authorization](#82-req-f07-002-exact-bootstrap-authorization)
+  - [8.3 REQ-F07-003 Exact per-Issue Adoption plan and Owner grant](#83-req-f07-003-exact-per-issue-adoption-plan-and-owner-grant)
+  - [8.4 REQ-F07-004 Append-only Adoption and Gate records](#84-req-f07-004-append-only-adoption-and-gate-records)
+  - [8.5 REQ-F07-005 Safe apply and recovery without phase writes](#85-req-f07-005-safe-apply-and-recovery-without-phase-writes)
+  - [8.6 REQ-F07-006 Explicit return to requirements and normal governance](#86-req-f07-006-explicit-return-to-requirements-and-normal-governance)
+- [9 8 P-ASES human review and final delivery](#9-8-p-ases-human-review-and-final-delivery)
+  - [9.1 8.1 REQ-WF-009 Exact-subject User Review](#91-81-req-wf-009-exact-subject-user-review)
+  - [9.2 8.2 REQ-WF-010 Parent Integration and Final Delivery](#92-82-req-wf-010-parent-integration-and-final-delivery)
+- [10 9 Consumer Activation workflow contract](#10-9-consumer-activation-workflow-contract)
+  - [10.1 9.1 REQ-F01-001 Repository boundary](#101-91-req-f01-001-repository-boundary)
+  - [10.2 9.2 REQ-F01-003 Append-only approval and Activation history](#102-92-req-f01-003-append-only-approval-and-activation-history)
+  - [10.3 9.3 REQ-F01-005 Eligibility by Activation time](#103-93-req-f01-005-eligibility-by-activation-time)
+  - [10.4 9.4 REQ-F01-007 Successor Activation](#104-94-req-f01-007-successor-activation)
+- [11 10 Multi-host Independent Review assurance](#11-10-multi-host-independent-review-assurance)
+    - [11.1.1 10.1.1 REQ-F06-001 Independent Review V2 and V1 compatibility](#1111-1011-req-f06-001-independent-review-v2-and-v1-compatibility)
+    - [11.1.2 10.1.2 REQ-F06-002 Host-verified provenance](#1112-1012-req-f06-002-host-verified-provenance)
+    - [11.1.3 10.1.3 REQ-F06-003 Independently attested native result](#1113-1013-req-f06-003-independently-attested-native-result)
+    - [11.1.4 10.1.4 REQ-F06-004 Canonical evidence and identity checks](#1114-1014-req-f06-004-canonical-evidence-and-identity-checks)
+    - [11.1.5 10.1.5 REQ-F06-005 Explicit project minimum assurance](#1115-1015-req-f06-005-explicit-project-minimum-assurance)
+    - [11.1.6 10.1.6 REQ-F06-006 Readiness and downstream gates](#1116-1016-req-f06-006-readiness-and-downstream-gates)
+    - [11.1.7 10.1.7 REQ-F06-007 Host-specific evidence adapters](#1117-1017-req-f06-007-host-specific-evidence-adapters)
+    - [11.1.8 10.1.8 REQ-F06-008 Capability documentation and distributions](#1118-1018-req-f06-008-capability-documentation-and-distributions)
+    - [11.1.9 10.1.9 REQ-F06-009 Issue #63 and PR #64 isolation](#1119-1019-req-f06-009-issue-63-and-pr-64-isolation)
+    - [11.1.10 REQ-F06-010 Explicit opt-in and typed capture-unavailability decision](#11110-req-f06-010-explicit-opt-in-and-typed-capture-unavailability-decision)
+    - [11.1.11 REQ-F06-011 Exact plan, Owner authorization, and append-only exception record](#11111-req-f06-011-exact-plan-owner-authorization-and-append-only-exception-record)
+    - [11.1.12 REQ-F06-012 Versioned Readiness and delivery results](#11112-req-f06-012-versioned-readiness-and-delivery-results)
+    - [11.1.13 REQ-F06-013 Downstream consumption and exact-subject revalidation](#11113-req-f06-013-downstream-consumption-and-exact-subject-revalidation)
+    - [11.1.14 REQ-F06-014 Independent Review occurrence when provenance is unavailable](#11114-req-f06-014-independent-review-occurrence-when-provenance-is-unavailable)
+    - [11.1.15 REQ-F06-015 ADC-authorized one-time Phase rebaseline](#11115-req-f06-015-adc-authorized-one-time-phase-rebaseline)
+    - [11.1.16 REQ-F06-016 Chat approval for Issue #46 / PR #67 lifecycle actions](#11116-req-f06-016-chat-approval-for-issue-46-pr-67-lifecycle-actions)
+    - [11.1.17 REQ-F06-017 No Owner-authored approval comments](#11117-req-f06-017-no-owner-authored-approval-comments)
+    - [11.1.18 REQ-F06-018 Operator-reported chat provenance](#11118-req-f06-018-operator-reported-chat-provenance)
+    - [11.1.19 REQ-F06-019 Append-only decision and evidence history](#11119-req-f06-019-append-only-decision-and-evidence-history)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -41,12 +68,37 @@
 - [REQ-WF-006](#req-wf-006) — 4 REQ-WF-006 Observable behavior
 - [REQ-WF-007](#req-wf-007) — 5 REQ-WF-007 Error and boundary behavior
 - [REQ-WF-008](#req-wf-008) — 6 REQ-WF-008 Security and privacy
-- [REQ-WF-009](#req-wf-009) — 8.1 REQ-WF-009 Exact-subject User Review
-- [REQ-WF-010](#req-wf-010) — 8.2 REQ-WF-010 Parent Integration and Final Delivery
-- [REQ-F01-001](#req-f01-001) — 9.1 REQ-F01-001 Repository boundary
-- [REQ-F01-003](#req-f01-003) — 9.2 REQ-F01-003 Append-only approval and Activation history
-- [REQ-F01-005](#req-f01-005) — 9.3 REQ-F01-005 Eligibility by Activation time
-- [REQ-F01-007](#req-f01-007) — 9.4 REQ-F01-007 Successor Activation
+- [REQ-F07-001](#req-f07-001) — 8.1 REQ-F07-001 Typed legacy Gate and selector preservation
+- [REQ-F07-002](#req-f07-002) — 8.2 REQ-F07-002 Exact bootstrap authorization
+- [REQ-F07-003](#req-f07-003) — 8.3 REQ-F07-003 Exact per-Issue Adoption plan and Owner grant
+- [REQ-F07-004](#req-f07-004) — 8.4 REQ-F07-004 Append-only Adoption and Gate records
+- [REQ-F07-005](#req-f07-005) — 8.5 REQ-F07-005 Safe apply and recovery without phase writes
+- [REQ-F07-006](#req-f07-006) — 8.6 REQ-F07-006 Explicit return to requirements and normal governance
+- [REQ-WF-009](#req-wf-009) — 9.1 8.1 REQ-WF-009 Exact-subject User Review
+- [REQ-WF-010](#req-wf-010) — 9.2 8.2 REQ-WF-010 Parent Integration and Final Delivery
+- [REQ-F01-001](#req-f01-001) — 10.1 9.1 REQ-F01-001 Repository boundary
+- [REQ-F01-003](#req-f01-003) — 10.2 9.2 REQ-F01-003 Append-only approval and Activation history
+- [REQ-F01-005](#req-f01-005) — 10.3 9.3 REQ-F01-005 Eligibility by Activation time
+- [REQ-F01-007](#req-f01-007) — 10.4 9.4 REQ-F01-007 Successor Activation
+- [REQ-F06-001](#req-f06-001) — 11.1.1 10.1.1 REQ-F06-001 Independent Review V2 and V1 compatibility
+- [REQ-F06-002](#req-f06-002) — 11.1.2 10.1.2 REQ-F06-002 Host-verified provenance
+- [REQ-F06-003](#req-f06-003) — 11.1.3 10.1.3 REQ-F06-003 Independently attested native result
+- [REQ-F06-004](#req-f06-004) — 11.1.4 10.1.4 REQ-F06-004 Canonical evidence and identity checks
+- [REQ-F06-005](#req-f06-005) — 11.1.5 10.1.5 REQ-F06-005 Explicit project minimum assurance
+- [REQ-F06-006](#req-f06-006) — 11.1.6 10.1.6 REQ-F06-006 Readiness and downstream gates
+- [REQ-F06-007](#req-f06-007) — 11.1.7 10.1.7 REQ-F06-007 Host-specific evidence adapters
+- [REQ-F06-008](#req-f06-008) — 11.1.8 10.1.8 REQ-F06-008 Capability documentation and distributions
+- [REQ-F06-009](#req-f06-009) — 11.1.9 10.1.9 REQ-F06-009 Issue #63 and PR #64 isolation
+- [REQ-F06-010](#req-f06-010) — 11.1.10 REQ-F06-010 Explicit opt-in and typed capture-unavailability decision
+- [REQ-F06-011](#req-f06-011) — 11.1.11 REQ-F06-011 Exact plan, Owner authorization, and append-only exception record
+- [REQ-F06-012](#req-f06-012) — 11.1.12 REQ-F06-012 Versioned Readiness and delivery results
+- [REQ-F06-013](#req-f06-013) — 11.1.13 REQ-F06-013 Downstream consumption and exact-subject revalidation
+- [REQ-F06-014](#req-f06-014) — 11.1.14 REQ-F06-014 Independent Review occurrence when provenance is unavailable
+- [REQ-F06-015](#req-f06-015) — 11.1.15 REQ-F06-015 ADC-authorized one-time Phase rebaseline
+- [REQ-F06-016](#req-f06-016) — 11.1.16 REQ-F06-016 Chat approval for Issue #46 / PR #67 lifecycle actions
+- [REQ-F06-017](#req-f06-017) — 11.1.17 REQ-F06-017 No Owner-authored approval comments
+- [REQ-F06-018](#req-f06-018) — 11.1.18 REQ-F06-018 Operator-reported chat provenance
+- [REQ-F06-019](#req-f06-019) — 11.1.19 REQ-F06-019 Append-only decision and evidence history
 <!-- heading-map:end -->
 
 
@@ -215,12 +267,58 @@ The migration from the legacy workflow to P-ASES uses two separately named gates
 
 Bootstrap reports `BOOTSTRAP_TECHNICAL_READY` or `BOOTSTRAP_BLOCKED` for the fixed migration cohort only. Technical readiness requires the current approved child ADC, exact open/non-draft same-repository PR and current HEAD, standalone `Closes #N`, a clean checkout, executed local tests/static/distribution checks, successful current-head required GitHub CI jobs with provenance, fixed gate selection and evaluator digest, and explicit unverified-environment disclosure. Self-review, independent review, review artifacts, ordinary `PASES_REVIEW_READINESS_V1: PASS`, GitHub approval, and final User Review are not Bootstrap prerequisites. Technical readiness does not claim any of those reviews occurred or passed, does not grant merge permission, and does not cause an Issue phase transition. The #27 legacy ADC approval state and the Issue dependency graph remain required technical gates; #28 acceptance remains a dependency.
 
+<a id="req-f07-legacy-issue-admission"></a>
+<a id="71-prospective-legacy-issue-admission"></a>
+## 8 7.1 Prospective legacy-Issue admission
+
+The fixed #26–#32 Bootstrap cohort and the ordinary `p-ases-v1` timestamp selector remain unchanged. A non-cohort Issue created on or before the verified consumer Activation remains `UNDETERMINED` unless an Owner separately approves an exact per-Issue `PASES_LEGACY_ADOPTION_PLAN_V1`. The new `legacy-issue-adopted-v1` Gate is a distinct typed selection; no timestamp, label, comment text, caller option, or agent decision selects it automatically.
+
+<a id="req-f07-001"></a>
+<a id="req-f07-001-typed-legacy-gate-and-selector-preservation"></a>
+### 8.1 REQ-F07-001 Typed legacy Gate and selector preservation
+
+The legacy Gate applies only to an exact open, same-repository, non-PR Issue whose creation time is not later than a verified Activation. Keep `select_gate` and `choose_gate_for_new_issue` ordinary timestamp behavior unchanged, and keep `bootstrap-legacy-v1` limited to #26–#32 in its fixed repository. `read_gate_selection` returns a typed union of the existing `PASES_GATE_SELECTION_V1` and the new `PASES_GATE_SELECTION_LEGACY_V1`; duplicate or conflicting selections block.
+
+<a id="req-f07-002"></a>
+<a id="req-f07-002-exact-bootstrap-authorization"></a>
+### 8.2 REQ-F07-002 Exact bootstrap authorization
+
+Before any Stage 1 normative or runtime edit, obtain a distinct SHA-256-bound `PASES_LEGACY_BOOTSTRAP_AUTHORIZATION_V1` decision for the exact repository/owner/Issue/ADC/Activation-prefix/Binding/branch/pre-work remote HEAD and tracked-file budget. Store its canonical record at `.p_ases/state/46/legacy-bootstrap-authorization-v1.json`. The record binds the scope SHA, repository and owner IDs, Issue number and stable ID, ADC comment ID and digest, Activation prefix digest, Binding digest, branch, pre-work HEAD, file-budget digest, `APPROVED` decision, approval channel, and decision time. It is operator-reported same-conversation user-role evidence; it does not cryptographically authenticate the chat host or map chat identity to a GitHub account. Validate exact schema, canonical bytes, all bound values, budget membership, and current pre-work branch state before the first edit. Missing, malformed, stale, mismatched, or out-of-budget authorization blocks. Bootstrap commits and verification are `BOOTSTRAP_PRE_PHASE`, never ordinary Phase PASS evidence.
+
+<a id="req-f07-003"></a>
+<a id="req-f07-003-exact-per-issue-adoption-plan-and-owner-grant"></a>
+### 8.3 REQ-F07-003 Exact per-Issue Adoption plan and Owner grant
+
+`delivery legacy-adoption-plan N` is read-only. Its canonical plan binds repository and stable GitHub IDs; Issue number, stable ID, original creation time, kind, phase and attention labels; the complete verified Activation prefix; exact approved ADC generation; frozen ExecutionBinding generation and its base/branch when present; current remote HEAD; proposed phase action; planned Gate payload and its SHA-256; and the exact plan SHA-256. The Owner approves only this exact plan through an Owner-authored GitHub Issue comment. The comment binds the repository, Issue, operation, plan SHA, and decision; its actor ID and type, Issue/API/HTML URLs, immutable timestamps, and direct/list/direct readback are verified. The implementation never posts the Owner grant. Chat text, CLI flags, arbitrary files, assistant statements, and GitHub actor identity alone are not Owner approval.
+
+<a id="req-f07-004"></a>
+<a id="req-f07-004-append-only-adoption-and-gate-records"></a>
+### 8.4 REQ-F07-004 Append-only Adoption and Gate records
+
+After exact approval, append one `PASES_LEGACY_ISSUE_ADOPTION_V1` and then one `PASES_GATE_SELECTION_LEGACY_V1`. The Adoption payload binds the exact planned Gate-selection payload digest; the Gate record references the Adoption comment ID and digest. This is a one-way link and creates no cyclic IDs. Read back the Adoption by direct/list/direct before appending the Gate, then read the complete pair back. Preserve all ADC, Gate, Activation, and Binding history bytes; require one effective Gate per Issue and block every duplicate, edited, conflicting, partial, or ambiguous history.
+
+For the single Issue #46 bootstrap admission only, the forward risk-boundary ADC addendum permits an Owner-trusted single-writer mode. A new `PASES_LEGACY_ADOPTION_PLAN_V2` binds repository ID `1401910271`, Issue stable ID `5846549384`, configured Owner User ID `3744776`, `owner_trusted_single_writer_v1`, `max_active_writers=1`, and both exact accepted risk IDs. The authenticated writer and every resulting Adoption/Gate comment must use that same Owner User ID. This mode is `KNOWN_RISK`, never a passing atomicity or immutability claim. It is unavailable for other repositories, Owners, Issues, or multiple/untrusted writers. Any duplicate, conflict, stale input, edit, or ambiguity actually observed still blocks.
+
+<a id="req-f07-005"></a>
+<a id="req-f07-005-safe-apply-and-recovery-without-phase-writes"></a>
+### 8.5 REQ-F07-005 Safe apply and recovery without phase writes
+
+`delivery legacy-adoption-apply N --plan FILE --approval-comment-id ID` is the only Adoption/Gate writer. For Issue #46, it verifies the V2 exact Owner grant and the current authenticated Owner User before each append. The plan SHA includes the single-writer condition and both accepted risks. Exact completed history is read-only `NOOP`; CLI shows `AWAITING_OWNER_APPROVAL` before the exact grant and `KNOWN_RISK_ACCEPTED_BY_OWNER` separately from technical `ADOPTED`/`NOOP`. Lost response recovery may continue only after the complete exact original record is read back; it never blindly retries. Adoption does not change Issue labels or phase. Stale plans, non-Owner writers, missing pages, API errors, Issue changes, ADC/Binding/Activation drift, observed duplicate or concurrent modification, and edited records block without phase mutation. The runtime cannot ensure that two requests do not race between reads or detect privileged deletion/marker removal after the fact; these remain explicit `KNOWN_RISK` limitations, not passing guarantees.
+
+<a id="req-f07-006"></a>
+<a id="req-f07-006-explicit-return-to-requirements-and-normal-governance"></a>
+### 8.6 REQ-F07-006 Explicit return to requirements and normal governance
+
+After a valid legacy Gate exists, a new requirements-to-specification receipt binds the then-current approved ADC, HEAD, and normative artifact digests; every ordinary downstream phase gate remains required. If another eligible legacy Issue is already beyond requirements, returning it requires a separate exact `RESET_TO_REQUIREMENTS` plan and Owner grant, immutable Intent and Applied records, dependency validation, and one verified complete-label write. Requirements is a no-op. Closed Issues, `phase:user-review`, conflicting attention labels, resolved Owner decisions, invalid parent/dependency state, stale approval, and uncertain readback block. No generic backward transition is added to the phase graph.
+
 <a id="p-ases-human-review-and-final-delivery"></a>
-## 8 P-ASES human review and final delivery
+<a id="8-p-ases-human-review-and-final-delivery"></a>
+## 9 8 P-ASES human review and final delivery
 
 <a id="req-wf-009"></a>
 <a id="req-wf-009-exact-subject-user-review"></a>
-### 8.1 REQ-WF-009 Exact-subject User Review
+<a id="81-req-wf-009-exact-subject-user-review"></a>
+### 9.1 8.1 REQ-WF-009 Exact-subject User Review
 
 Final human User Review begins only after Review Readiness is PASS for the same repository, Issue, PR, approved ADC digest, exact PR HEAD, and Readiness digest. An immutable session start time is created for that exact subject; a prior approval or change request cannot satisfy a newly started session. The runtime reads every page of Issue comments, PR conversation comments, formal PR reviews, and inline diff comments. It records numeric actor identity and type, object ID, creation/update times, body digest, formal review state, target commit, permalink, and deletion/resolution observations. Snapshot history is immutable so removed or edited feedback makes earlier approval evidence stale.
 
@@ -235,7 +333,8 @@ The authenticated current human must have authored the comment; an inline commen
 
 <a id="req-wf-010"></a>
 <a id="req-wf-010-parent-integration-and-final-delivery"></a>
-### 8.2 REQ-WF-010 Parent Integration and Final Delivery
+<a id="82-req-wf-010-parent-integration-and-final-delivery"></a>
+### 9.2 8.2 REQ-WF-010 Parent Integration and Final Delivery
 
 Parent Integration uses the declared native child Issue set and dependency DAG. It reads every child Issue, native blocker edge, merged PR, standalone child-closing line, actual merge commit, merge timestamp, and final-main ancestry from GitHub. Each dependency must have merged no later than its dependent child. The child set, dependency graph, current main SHA, parent ADC, and typed Integration Verification/Acceptance records form one immutable subject. For this migration, legacy parent Issue #26 has no ADC pointer journal; the current approved child #31 ADC is therefore the authority for the parent ADC digest and the immutable `planning/p-ases/08-migration-contract.md` source at commit `f34f166f11bbbe6c45b1555827f37f9467b1e49b`. The evaluator verifies that declaration and source availability, then double-reads the child ADC pointer and parent Issue body while collecting the Integration snapshot.
 
@@ -277,28 +376,175 @@ When migrating a legacy Issue-body ADC pointer to the append-only journal, retai
 Consumer Activation is separate from the fixed migration Activation. The consumer repository's approved Activation Issue ADC and append-only approval/record comments authorize only later-created non-PR Issues in that repository. New Gate Selections carry the exact Activation record identity; successor policy keeps prior selections pinned.
 
 <a id="consumer-activation-workflow-contract"></a>
-## 9 Consumer Activation workflow contract
+<a id="9-consumer-activation-workflow-contract"></a>
+## 10 9 Consumer Activation workflow contract
 
 <a id="req-f01-001"></a>
 <a id="req-f01-001-repository-boundary"></a>
-### 9.1 REQ-F01-001 Repository boundary
+<a id="91-req-f01-001-repository-boundary"></a>
+### 10.1 9.1 REQ-F01-001 Repository boundary
 
 Migration issue numbers, child sets, branch pairs, and parent evidence MUST NOT supply authority in another repository.
 
 <a id="req-f01-003"></a>
 <a id="req-f01-003-append-only-approval-and-activation-history"></a>
-### 9.2 REQ-F01-003 Append-only approval and Activation history
+<a id="92-req-f01-003-append-only-approval-and-activation-history"></a>
+### 10.2 9.2 REQ-F01-003 Append-only approval and Activation history
 
 Consumer approval and Activation history are append-only comments. A record identifies the exact approved ADC, canonical Activation profile digest, setup PR merge and verified `merged_at`, admin, predecessor, and the exact trusted Required Check Run IDs with their name, App ID, head SHA, status, conclusion, and timestamps. For each required check, issuance selects the latest matching run created no later than `merged_at`, ordered by `(created_at, Check Run ID)` to resolve timestamp ties deterministically. The selected run must be completed successfully with `completed_at <= merged_at`. A failed or pending latest run at merge blocks Activation even if a later rerun succeeds; only a qualifying pre-merge run ID may be pinned. Verified PR `merged_at`, rather than the later comment publication time, is the effective Activation time. Historical reads fetch each recorded Check Run by ID and compare its pinned evidence and merge-time bound; later reruns do not replace the issuance-time evidence.
 
 <a id="req-f01-005"></a>
 <a id="req-f01-005-eligibility-by-activation-time"></a>
-### 9.3 REQ-F01-005 Eligibility by Activation time
+<a id="93-req-f01-005-eligibility-by-activation-time"></a>
+### 10.3 9.3 REQ-F01-005 Eligibility by Activation time
 
 New P-ASES work is eligible only for same-repository non-PR Issues created strictly after verified setup PR `merged_at`. For a successor chain, choose the latest Activation whose verified merge time precedes the Issue creation time. Re-running gate-policy for an Issue with an existing valid Gate Selection reuses that exact historical Activation record and selection. Pre-Activation Issues remain untouched.
 
 <a id="req-f01-007"></a>
 <a id="req-f01-007-successor-activation"></a>
-### 9.4 REQ-F01-007 Successor Activation
+<a id="94-req-f01-007-successor-activation"></a>
+### 10.4 9.4 REQ-F01-007 Successor Activation
 
 Policy or locator changes require a new setup PR and merge, append a successor Activation effective at its verified `merged_at`, and preserve prior records and selections. The successor governs only Issues created after that merge time.
+
+<a id="10-multi-host-independent-review-assurance"></a>
+## 11 10 Multi-host Independent Review assurance
+
+This section treats review occurrence and host provenance as separate facts. `UNAVAILABLE` means the runtime cannot verify the host-to-runtime capture path; it does not mean no Independent Review occurred. Issue #46 / PR #67 still requires a separate-context review report with its actual verdict and findings before the provenance exception can be used.
+
+<a id="req-f06-001"></a>
+<a id="req-f06-001-independent-review-v2-and-v1-compatibility"></a>
+<a id="1011-req-f06-001-independent-review-v2-and-v1-compatibility"></a>
+#### 11.1.1 10.1.1 REQ-F06-001 Independent Review V2 and V1 compatibility
+
+The runtime MUST add `PASES_INDEPENDENT_REVIEW_V2` and preserve existing `PASES_INDEPENDENT_REVIEW_V1` bytes, digests, reader, and semantics exactly. V2 MUST record exactly one of `HOST_VERIFIED`, `INDEPENDENT_ATTESTED`, `SELF_REVIEW`, or `UNAVAILABLE`, distinguishing review occurrence and its verdict/findings from provenance assurance. A current `UNAVAILABLE` report MUST still name a reviewer context distinct from the implementation context and carry the review's actual verdict and findings. `UNAVAILABLE` MUST NOT be used to represent a review that was not performed.
+
+<a id="req-f06-002"></a>
+<a id="req-f06-002-host-verified-provenance"></a>
+<a id="1012-req-f06-002-host-verified-provenance"></a>
+#### 11.1.2 10.1.2 REQ-F06-002 Host-verified provenance
+
+`HOST_VERIFIED` MUST require a trusted host-owned, agent-nonwritable source that binds one parent, a unique native spawn, a separate child, successful terminal completion, the exact reviewed subject, and the child-authored result. Missing, ambiguous, or agent-writable host evidence MUST NOT be promoted to this assurance.
+
+<a id="req-f06-003"></a>
+<a id="req-f06-003-independently-attested-native-result"></a>
+<a id="1013-req-f06-003-independently-attested-native-result"></a>
+#### 11.1.3 10.1.3 REQ-F06-003 Independently attested native result
+
+`INDEPENDENT_ATTESTED` MUST require the exact native delegation request, successful terminal tool return/completion, and actual child-authored review output, preserved byte-for-byte and SHA-256-bound to the repository, Issue/PR, HEAD, ADC, plan, and implementation context. The record MUST declare `evidence_origin=operator_captured_native_tool_result` and explain that this proves tamper evidence after capture, not cryptographic host authentication. Task names/status, parent-authored summaries, arbitrary JSON, and same-agent prompts MUST NOT qualify.
+
+<a id="req-f06-004"></a>
+<a id="req-f06-004-canonical-evidence-and-identity-checks"></a>
+<a id="1014-req-f06-004-canonical-evidence-and-identity-checks"></a>
+#### 11.1.4 10.1.4 REQ-F06-004 Canonical evidence and identity checks
+
+The runtime MUST provide strict canonical `IndependentReviewV2`, `AttestedNativeDelegationEvidenceV1`, optional `HostProvenanceV1`, and assurance evaluation. `host_spawn_id`, `host_child_id`, and `host_join_id` MAY be null when unavailable; the runtime MUST NOT synthesize or relabel them. `execution_identity_context_id` remains mandatory. Stale subject, Binding, profile, replay, duplicate/conflicting results, incomplete completion, changed bytes, or blocking findings MUST fail closed.
+
+<a id="req-f06-005"></a>
+<a id="req-f06-005-explicit-project-minimum-assurance"></a>
+<a id="1015-req-f06-005-explicit-project-minimum-assurance"></a>
+#### 11.1.5 10.1.5 REQ-F06-005 Explicit project minimum assurance
+
+Profile Schema 2 MUST support `independent_review.minimum_assurance` with values `host_verified` and `independent_attested`; absence defaults to `host_verified`. The `host_verified` minimum accepts only `HOST_VERIFIED`; `independent_attested` accepts either `HOST_VERIFIED` or `INDEPENDENT_ATTESTED`. The exact committed profile and digest MUST be re-read when review evidence is issued and consumed. Host detection, Issue number, PR comment, CLI override, or a one-run setting MUST NOT lower the minimum.
+
+<a id="req-f06-006"></a>
+<a id="req-f06-006-readiness-and-downstream-gates"></a>
+<a id="1016-req-f06-006-readiness-and-downstream-gates"></a>
+#### 11.1.6 10.1.6 REQ-F06-006 Readiness and downstream gates
+
+Independent-review ingestion, ordinary Readiness, and ordinary Final Delivery MUST require a positive current review eligible under the committed profile. Existing V1 `PASS` behavior and every V1 byte MUST remain unchanged. Issue #46 / PR #67 MAY use a separate provenance exception only after a current exact-subject independent review has been performed and its outcome/findings have been recorded. The exception addresses unavailable host provenance; it does not waive review occurrence or outcome.
+
+The exception MAY replace only the configured provenance-assurance blocker caused by positively observed `HOST_NATIVE_CAPTURE_UNAVAILABLE` after the current independent review report has verdict `PASS` and no unresolved A/B/C findings. It MUST preserve `review_assurance=UNAVAILABLE` and MUST NOT create a `HOST_VERIFIED` or `INDEPENDENT_ATTESTED` claim. A missing review report, `SELF_REVIEW`, stale or malformed evidence, a missing Verification Plan, wrong subject, failed or incomplete Required CI, failed Verification/Acceptance/Self-Audit, unresolved dependency, or any other unavailable cause MUST remain BLOCKED.
+
+A current review report with verdict `FAIL`, `BLOCKED`, or `CONCERNS`, or any unresolved A/B/C finding, is not eligible for the exception. A stale historical diagnostic is not a current review result and MUST NOT be converted into one. A blocked review or invalid exception MUST cause zero User Review session starts and zero Phase mutations.
+
+<a id="req-f06-007"></a>
+<a id="req-f06-007-host-specific-evidence-adapters"></a>
+<a id="1017-req-f06-007-host-specific-evidence-adapters"></a>
+#### 11.1.7 10.1.7 REQ-F06-007 Host-specific evidence adapters
+
+Codex Cloud, local Codex CLI, Codex Desktop, and Claude Code MUST have distinct adapters that expose only native requests, returns, completion, and optional trusted host events actually observable on their surface. Executor CLI flags MUST NOT establish Cloud capability. Agent-writable Hook files MUST NOT establish `HOST_VERIFIED`. The P-ASES runtime MUST NOT spawn another coding-agent executable.
+
+<a id="req-f06-008"></a>
+<a id="req-f06-008-capability-documentation-and-distributions"></a>
+<a id="1018-req-f06-008-capability-documentation-and-distributions"></a>
+#### 11.1.8 10.1.8 REQ-F06-008 Capability documentation and distributions
+
+The implementation MUST record per-surface capability observations and host/OS smoke-test status in `docs/status/issue-46-review-assurance.md`. It MUST update the canonical specification, design, test oracles, traceability, Skills, adapter documentation, and generated distributions. Inaccessible host/OS tests MUST be reported as `NOT RUN` or `UNAVAILABLE`, never as passing.
+
+<a id="req-f06-009"></a>
+<a id="req-f06-009-issue-63-and-pr-64-isolation"></a>
+<a id="1019-req-f06-009-issue-63-and-pr-64-isolation"></a>
+#### 11.1.9 10.1.9 REQ-F06-009 Issue #63 and PR #64 isolation
+
+Issue #46 implementation MUST keep Issue #63 / PR #64 evidence and workflow state unchanged. It MUST NOT create an Independent Review PASS for #63, change its profile minimum, advance its phase, authorize User Review, Ruleset changes, Activation, merge, or closure. Any later #64 application requires a separately approved forward-generation policy and exact-subject review.
+
+<a id="req-f06-010"></a>
+<a id="req-f06-010-explicit-opt-in-and-typed-capture-unavailability-decision"></a>
+#### 11.1.10 REQ-F06-010 Explicit opt-in and typed capture-unavailability decision
+
+Profile Schema 2 MAY add `independent_review.unavailable_handling` with exactly `block` or `owner_exception`; omission MUST default to `block` for every project. `minimum_assurance` MUST remain unchanged. Only `puchinya/ai-agent-workflow` may commit `owner_exception`, and that opt-in MUST be limited to repository ID `1401910271`, Issue #46 / stable ID `5846549384`, and PR #67. The opt-in MUST be committed only after successor ADC approval and the required Phase/document rebaseline. Host detection, CLI flags, environment variables, and Issue identity MUST NOT enable the exception.
+
+The runtime MUST produce a typed eligibility decision distinguishing `HOST_NATIVE_CAPTURE_UNAVAILABLE`, `REVIEW_FAILED`, and `INVALID_EVIDENCE`. Only positively observed absence of host-to-runtime native capture qualifies after a current exact-subject separate-context review report is present. Missing review, missing plan/evidence, stale subject, malformed input, failed CI, and a genuine failed review MUST NOT qualify. A genuine eligible `HOST_VERIFIED` or `INDEPENDENT_ATTESTED` review MUST take the ordinary V1 Readiness path and MUST NOT be shadowed by the exception.
+
+<a id="req-f06-011"></a>
+<a id="req-f06-011-exact-plan-owner-authorization-and-append-only-exception-record"></a>
+#### 11.1.11 REQ-F06-011 Exact plan, Owner authorization, and append-only exception record
+
+The runtime MUST provide read-only canonical successor plans and append-only exception receipts. A forward chat-confirmed plan MUST bind repository name and ID; Owner, Issue, and PR identities; base and exact HEAD; approved ADC; frozen Verification Plan; ExecutionBinding and PRBinding; committed profile; actual host surface; capability-observation digests; the exact current Independent Review occurrence/outcome digest; reason `HOST_NATIVE_CAPTURE_UNAVAILABLE`; and risk `INDEPENDENT_REVIEW_PROVENANCE_UNAVAILABLE`. It MUST also bind the exact operation-scoped chat decision. The report and result MUST state that an independent review was performed and record its verdict/findings, while making clear that host provenance could not be verified. They MUST NOT imply host attestation.
+
+Every approval is requested and answered in the active chat session with the exact current scope visible first. For this lifecycle, the user chooses `承認する` or `承認しない`; no Owner-authored approval comment is requested or required. After affirmative chat selection, the workflow may append the existing typed technical decision/evidence record to Issue #46, labeling the channel `operator_reported_chat` and identifying the authenticated GitHub actor only as recorder. This is not a cryptographic chat signature. Apply MUST verify the exact operation, plan SHA, scope, and decision record by direct/list/direct readback, then append a distinct exception receipt and immutable local evidence. Exact replay MUST be read-only NOOP. Ambiguous outcome, duplicate/conflicting history, stale plan, or partial readback MUST block without blind retry or replacement. Missing frozen Verification Plan or current review report MUST block plan generation; a Legacy Adoption plan MUST NOT substitute.
+
+<a id="req-f06-012"></a>
+<a id="req-f06-012-versioned-readiness-and-delivery-results"></a>
+#### 11.1.12 REQ-F06-012 Versioned Readiness and delivery results
+
+All `PASES_REVIEW_READINESS_V1` and V2 serializers, readers, bytes, and behavior MUST be preserved. The runtime MUST add `PASES_REVIEW_READINESS_V3` for chat-confirmed provenance exceptions. It MUST include the current Independent Review occurrence digest and actual verdict/findings reference, `review_assurance=UNAVAILABLE`, current subject/profile digests, exception and chat decision identities/digests, and risk `INDEPENDENT_REVIEW_PROVENANCE_UNAVAILABLE`. `READY_WITH_EXCEPTION` MUST require the exact current review report, every other gate to pass, and the exact chat grant to remain current.
+
+All V1 and V2 Final Delivery bytes and behavior MUST be preserved. The runtime MUST add `PASES_FINAL_DELIVERY_V3` for the chat-confirmed provenance exception route. Its ready status MUST be `READY_FOR_EXPLICIT_MERGE_AUTHORIZATION_WITH_EXCEPTION`; it MUST disclose that review occurred, `review_assurance=UNAVAILABLE`, the review/exception/chat-decision digests, and `merge_authorized=false`. It MUST NOT authorize or perform a merge.
+
+<a id="req-f06-013"></a>
+<a id="req-f06-013-downstream-consumption-and-exact-subject-revalidation"></a>
+#### 11.1.13 REQ-F06-013 Downstream consumption and exact-subject revalidation
+
+User Review MAY start from ordinary `PASES_REVIEW_READINESS_V1 PASS` or the current exact-subject exception Readiness V3. Legacy V2 readers remain unchanged. User Review MUST remain a separate explicit human decision, and V1 User Review bytes MUST be preserved. Each human decision is requested through chat and recorded as an operation-scoped `PASES_OPERATOR_REPORTED_CHAT_DECISION_V2`; the technical GitHub comment is not represented as Owner-authored. On every Readiness recomputation, User Review start/submit, and Final Delivery evaluation, the runtime MUST reread and validate exact PR/HEAD, ADC, Verification Plan, ExecutionBinding, PRBinding, profile, Independent Review report, exception record, chat decision, Required CI, dependencies, Verification, Acceptance, and Self-Audit.
+
+A change in any bound input MUST invalidate the exception before side effects. The exception MUST NOT bypass a draft PR, failed check, dirty checkout, unmet dependency, actual current review failure, or explicit `PR_MERGE` authorization. Identical semantics MUST apply on Codex Cloud, local Codex CLI/Desktop, and Claude Code; adapters MUST report actual capabilities truthfully. Agent-writable Claude Hook records MUST NOT establish `HOST_VERIFIED`.
+
+<a id="req-f06-014"></a>
+<a id="req-f06-014-independent-review-occurrence-when-provenance-is-unavailable"></a>
+#### 11.1.14 REQ-F06-014 Independent Review occurrence when provenance is unavailable
+
+Before an Issue #46 / PR #67 provenance exception is planned, an independent reviewer in a distinct context MUST inspect the exact current PR HEAD. The workflow MUST retain the legacy V2 provenance result with `assurance=UNAVAILABLE` and its existing formal `BLOCKED` meaning, plus a matching occurrence V1 containing the actual review outcome and findings. A missing report MUST block. `UNAVAILABLE` MUST describe provenance only; it MUST NOT erase the fact that the review occurred or its result. A failing outcome or unresolved A/B/C finding MUST remain blocking.
+
+The runtime MUST also persist `PASES_INDEPENDENT_REVIEW_OCCURRENCE_V1` linked to that V2 result. It MUST retain the exact captured reviewer-output bytes and digest, `review_occurrence=COMPLETED`, actual outcome and findings, and the exact VerificationSubject, ExecutionBinding, PRBinding, and profile digests. The result and occurrence MUST identify different reviewer and implementation contexts. This is operator-reported occurrence evidence, not a host signature. Readiness MUST remain blocked unless exactly one current result and matching occurrence record exist for the exact HEAD.
+
+<a id="req-f06-015"></a>
+<a id="req-f06-015-adc-authorized-one-time-phase-rebaseline"></a>
+#### 11.1.15 REQ-F06-015 ADC-authorized one-time Phase rebaseline
+
+The Owner's chat approval of the exact Issue #46 successor ADC authorizes at most one `phase:user-review` to `phase:requirements` rebaseline when its approved bootstrap implementation generates a current read-only plan and verifies every bound precondition. The plan binds the current ADC pointer, ExecutionBinding, PR/base/HEAD, complete Issue labels, and completed predecessor Legacy Reset V1 receipt. The plan is evidence, not a second approval request. Any drift blocks without a label write.
+
+<a id="req-f06-016"></a>
+<a id="req-f06-016-chat-approval-for-issue-46-pr-67-lifecycle-actions"></a>
+#### 11.1.16 REQ-F06-016 Chat approval for Issue #46 / PR #67 lifecycle actions
+
+Every explicit human approval in this lifecycle MUST be requested and answered in the active chat session with the full exact subject and consequences visible before the selection UI. The choices are exactly `承認する` and `承認しない`. A chat approval is valid only for that active request, operation, and exact subject SHA.
+
+<a id="req-f06-017"></a>
+<a id="req-f06-017-no-owner-authored-approval-comments"></a>
+#### 11.1.17 REQ-F06-017 No Owner-authored approval comments
+
+The workflow MUST NOT ask or require the Owner to post an approval comment to Issue #46 or PR #67. After a direct affirmative chat answer, the workflow MAY write an existing typed technical decision record through the established GitHub adapter. The record MUST distinguish `operator_reported_chat` from the authenticated GitHub recorder.
+
+<a id="req-f06-018"></a>
+<a id="req-f06-018-operator-reported-chat-provenance"></a>
+#### 11.1.18 REQ-F06-018 Operator-reported chat provenance
+
+Chat origin is operator-reported evidence from the active conversation. Cryptographic host signatures, device signatures, or independent proof of the chat transport are not required and MUST NOT be claimed. The typed record binds the exact operation and scope digest; changed bytes or scope require a new request.
+
+<a id="req-f06-019"></a>
+<a id="req-f06-019-append-only-decision-and-evidence-history"></a>
+#### 11.1.19 REQ-F06-019 Append-only decision and evidence history
+
+All Issue #46 decision and technical evidence records MUST remain append-only and use their existing Issue #46 carriers and direct/list/direct readback. Prior V1/V2 records and approved ADC history MUST remain byte-for-byte unchanged. New chat decisions use `PASES_OPERATOR_REPORTED_CHAT_DECISION_V2` with a monotonic predecessor decision reference.

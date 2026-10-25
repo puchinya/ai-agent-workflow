@@ -12,7 +12,7 @@ from p_ases.delivery import ReadinessResult
 from p_ases.evidence_store import VerificationSubject
 from p_ases.phases import IssueKind
 from p_ases.user_review import UserReviewSubject, evaluate_user_review
-from p_ases.cli import _review_payload_from_github, _review_phase_transition
+from p_ases.cli import CLIError, _review_payload_from_github, _review_phase_transition
 
 
 class FakeGitHub(GitHub):
@@ -80,18 +80,38 @@ class UserReviewGitHubAdapterTests(unittest.TestCase):
                 self.assertEqual(result.subject.verification_subject, verification_subject)
 
         class LabelGitHub:
-            def __init__(self):
-                self.labels = ["phase:user-review"]
+            def __init__(self, *, lose_response=False, apply_before_error=True):
+                self.labels = ["kind:child", "phase:user-review"]
+                self.lose_response = lose_response
+                self.apply_before_error = apply_before_error
+                self.writes = 0
 
             def issue(self, _issue):
-                return {"number": 31, "state": "open", "labels": [{"name": row} for row in self.labels]}
+                return {"number": 31, "state": "open", "pull_request": None,
+                        "labels": [{"name": row} for row in self.labels]}
 
             def replace_issue_labels(self, _issue, labels):
+                self.writes += 1
                 self.labels = list(labels)
+                if self.lose_response:
+                    if not self.apply_before_error:
+                        self.labels = ["kind:child", "phase:user-review"]
+                    raise GitHubError("simulated lost response")
 
         github = LabelGitHub()
         _review_phase_transition(github, 31, IssueKind.CHILD, result, "sync")
         self.assertIn("phase:execution", github.labels)
+
+        applied_but_response_lost = LabelGitHub(lose_response=True)
+        _review_phase_transition(applied_but_response_lost, 31, IssueKind.CHILD, result, "sync")
+        self.assertIn("phase:execution", applied_but_response_lost.labels)
+        self.assertEqual(applied_but_response_lost.writes, 1)
+
+        not_applied = LabelGitHub(lose_response=True, apply_before_error=False)
+        with self.assertRaisesRegex(CLIError, "ambiguous.*no retry"):
+            _review_phase_transition(not_applied, 31, IssueKind.CHILD, result, "sync")
+        self.assertIn("phase:user-review", not_applied.labels)
+        self.assertEqual(not_applied.writes, 1)
 
     def test_formal_reviews_and_inline_comments_paginate_all_pages(self):
         gh = FakeGitHub((records(100), records(1, 100), records(1)))
@@ -176,6 +196,9 @@ class UserReviewGitHubAdapterTests(unittest.TestCase):
         threads = fake.pull_review_threads(37)
         self.assertEqual([row["id"] for row in threads], ["thread-1", "thread-2"])
         self.assertEqual([row["databaseId"] for row in threads[0]["comments"]], [1, 2])
+        for query, _variables in fake.calls:
+            self.assertIn("author{login __typename ... on User {databaseId} ... on Bot {databaseId}}", query)
+            self.assertNotIn("author{databaseId", query)
         self.assertEqual(fake.calls[1][1]["threadId"], "thread-1")
         self.assertEqual(fake.calls[2][1]["cursor"], "thread-cursor")
 

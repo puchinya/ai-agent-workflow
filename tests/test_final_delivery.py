@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -7,8 +8,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
 
-from p_ases.delivery import FinalDeliveryResult, ReadinessResult, evaluate_final_delivery
+from p_ases.delivery import (
+    FinalDeliveryResult, ReadinessCore, ReadinessResult, ReadinessResultV3,
+    evaluate_final_delivery, evaluate_readiness_with_provenance_exception,
+)
 from p_ases.evidence_store import VerificationSubject
+from p_ases.review_assurance import (
+    IndependentReviewOccurrenceV1, IndependentReviewV2, ReviewCaptureEligibility,
+    report_separate_context_review,
+)
+from p_ases.review_unavailable_chat import ChatReviewUnavailableException, ChatReviewUnavailablePlan, RECORD_SCHEMA
 from p_ases.user_review import UserReviewResult, UserReviewSubject
 from p_ases.verification import VerificationResult
 
@@ -72,6 +81,70 @@ class FinalDeliveryTests(unittest.TestCase):
             "CHANGES_REQUESTED", USER_SUBJECT, "f" * 64,
             ("authorized human requested in-scope changes",), "execution").validate()
         self.assertEqual(evaluate(user_review=request).status, "BLOCKED")
+
+    def test_unavailable_provenance_requires_current_separate_context_review_and_round_trips_v3(self):
+        subject = VerificationSubject("puchinya/ai-agent-workflow", 46, 67, 6399596796,
+                                      "a" * 64, "b" * 64, "c" * 40).validate()
+        profile = "d" * 64
+        execution_identity = "execution-binding:" + "4" * 64
+        review = report_separate_context_review(
+            subject=subject, execution_identity_context_id=execution_identity,
+            reviewer_context_id="separate-review-context", verdict="PASS", findings=(),
+            profile_sha256=profile,
+        )
+        observation_sha = "f" * 64
+        eligibility = ReviewCaptureEligibility(
+            "HOST_NATIVE_CAPTURE_UNAVAILABLE", "codex_cloud", (observation_sha,), (),
+        ).validate()
+        core = ReadinessCore(
+            subject=subject, reasons=(), evidence_sha256s=(), required_check_policy_sha256="1" * 64,
+            base_ref="main", base_sha40="2" * 40,
+            branch_ref="codex/issue-46-multi-host-independent-review",
+            pr_binding_sha256="3" * 64, execution_binding_sha256="4" * 64,
+        ).validate()
+        raw_output = json.dumps({
+            "findings": [], "reviewer_context_id": "separate-review-context",
+            "schema": "PASES_CHILD_REVIEW_OUTPUT_V1", "subject": subject.as_dict(), "verdict": "PASS",
+        }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        occurrence = IndependentReviewOccurrenceV1.from_captured_output(
+            subject=subject, execution_identity_context_id=execution_identity,
+            execution_binding_sha256=core.execution_binding_sha256,
+            pr_binding_sha256=core.pr_binding_sha256, profile_sha256=profile,
+            independent_review_v2_sha256=review.sha256, raw_output=raw_output,
+        )
+        plan = ChatReviewUnavailablePlan.create({
+            "adc_comment_id": subject.adc_comment_id, "adc_sha256": subject.adc_sha256,
+            "base_ref": "main", "base_sha40": "2" * 40,
+            "branch_ref": core.branch_ref,
+            "capability_observation_sha256s": [observation_sha],
+            "execution_binding_sha256": core.execution_binding_sha256,
+            "head_sha40": subject.pr_head_sha40, "host_surface": "codex_cloud",
+            "independent_review_sha256": review.sha256,
+            "review_occurrence_sha256": occurrence.sha256,
+            "issue_id": 5846549384, "issue_number": 46, "owner_user_id": 3744776,
+            "pr_binding_sha256": core.pr_binding_sha256, "pr_number": 67,
+            "profile_sha256": profile, "reason": "HOST_NATIVE_CAPTURE_UNAVAILABLE",
+            "repository": subject.repository, "repository_id": 1401910271,
+            "risk": "INDEPENDENT_REVIEW_PROVENANCE_UNAVAILABLE",
+            "verification_plan_sha256": subject.plan_sha256,
+        }, generated_at="2026-10-25T00:00:00Z")
+        exception = ChatReviewUnavailableException({
+            "chat_decision_comment_id": 6400000001, "chat_decision_sha256": "5" * 64,
+            "exception_comment_id": 6400000002, "exception_comment_sha256": "6" * 64,
+            "plan": plan.value, "plan_sha256": plan.sha256,
+            "publisher_user_id": 3744776, "schema": RECORD_SCHEMA,
+        }).validate()
+        result = evaluate_readiness_with_provenance_exception(
+            core=core, profile_sha256=profile, eligibility=eligibility, review=review,
+            occurrence=occurrence, exception=exception,
+        )
+        self.assertEqual(result.status, "READY_WITH_EXCEPTION")
+        self.assertEqual(result.review_sha256, review.sha256)
+        self.assertEqual(result.review_occurrence, "COMPLETED")
+        self.assertEqual(result.review_occurrence_sha256, occurrence.sha256)
+        self.assertEqual(result.review_outcome, "PASS")
+        self.assertEqual(result.accepted_risks, ("INDEPENDENT_REVIEW_PROVENANCE_UNAVAILABLE",))
+        self.assertEqual(ReadinessResultV3.from_bytes(result.to_bytes()), result)
 
 
 if __name__ == "__main__":

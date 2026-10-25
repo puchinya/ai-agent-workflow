@@ -85,6 +85,7 @@ BOOTSTRAP_COHORT = frozenset({BOOTSTRAP_PARENT, *BOOTSTRAP_ISSUES})
 BOOTSTRAP_REPOSITORY = "puchinya/ai-agent-workflow"
 BOOTSTRAP_POLICY = "bootstrap-legacy-v1"
 PASES_POLICY = "p-ases-v1"
+LEGACY_ADOPTED_POLICY = "legacy-issue-adopted-v1"
 RESULTS = {"BOOTSTRAP_TECHNICAL_READY", "BOOTSTRAP_REVIEW_READY", "BOOTSTRAP_BLOCKED",
            "PASES_GATE_REQUIRED", "UNDETERMINED"}
 REQUIRED_LOCAL_CHECKS = ("compileall", "unittest", "dist-build-check", "dist-validation", "diff-check")
@@ -304,6 +305,67 @@ class GateSelection:
         return cls(value["repository"], value["issue_number"], value["policy_version"],
                    value["selected_at"], value["activation_comment_id"], value["activation_sha256"],
                    value.get("activation_issue_number")).validate()
+
+
+@dataclass(frozen=True)
+class LegacyGateSelection:
+    """Typed, Owner-adopted legacy Gate. It never changes ordinary time selection."""
+
+    repository: str
+    issue_number: int
+    policy_version: str
+    selected_at: str
+    adoption_comment_id: int
+    adoption_record_sha256: str
+    selection_sha256: str
+
+    def validate(self) -> "LegacyGateSelection":
+        if not isinstance(self.repository, str) or not REPOSITORY.fullmatch(self.repository):
+            raise GatePolicyError("legacy Gate repository must be owner/name")
+        _positive(self.issue_number, "legacy Gate Issue number")
+        if self.policy_version != LEGACY_ADOPTED_POLICY:
+            raise GatePolicyError("legacy Gate policy version is invalid")
+        _parse_time(self.selected_at, "legacy Gate selection")
+        _positive(self.adoption_comment_id, "legacy Adoption comment ID")
+        _sha(self.adoption_record_sha256, "legacy Adoption record digest")
+        _sha(self.selection_sha256, "legacy Gate selection digest")
+        if self.selection_sha256 != hashlib.sha256(_canonical(self.selection_payload())).hexdigest():
+            raise GatePolicyError("legacy Gate selection digest does not match its payload")
+        return self
+
+    def selection_payload(self) -> dict[str, Any]:
+        return {
+            "issue_number": self.issue_number,
+            "policy_version": self.policy_version,
+            "repository": self.repository,
+            "schema": "PASES_GATE_SELECTION_LEGACY_V1",
+            "selected_at": self.selected_at,
+        }
+
+    def payload(self) -> dict[str, Any]:
+        self.validate()
+        return {
+            **self.selection_payload(),
+            "adoption_comment_id": self.adoption_comment_id,
+            "adoption_record_sha256": self.adoption_record_sha256,
+            "selection_sha256": self.selection_sha256,
+        }
+
+    @classmethod
+    def from_payload(cls, value: Any) -> "LegacyGateSelection":
+        expected = {
+            "adoption_comment_id", "adoption_record_sha256", "issue_number", "policy_version",
+            "repository", "schema", "selected_at", "selection_sha256",
+        }
+        if (not isinstance(value, dict) or set(value) != expected
+                or value.get("schema") != "PASES_GATE_SELECTION_LEGACY_V1"):
+            raise GatePolicyError("legacy Gate selection has unknown schema or fields")
+        return cls(value["repository"], value["issue_number"], value["policy_version"],
+                   value["selected_at"], value["adoption_comment_id"],
+                   value["adoption_record_sha256"], value["selection_sha256"]).validate()
+
+
+GateSelectionRecord = GateSelection | LegacyGateSelection
 
 
 def select_gate(repository: str, issue_number: int, *, selected_at: str,
@@ -1304,7 +1366,7 @@ def read_latest_bootstrap_evidence(github: GitHub, issue_number: int) -> tuple[i
     return comment_id, read_bootstrap_evidence(github, issue_number, comment_id)
 
 
-def read_gate_selection(github: GitHub, issue_number: int) -> tuple[int, GateSelection, str]:
+def read_gate_selection(github: GitHub, issue_number: int) -> tuple[int, GateSelectionRecord, str]:
     """Read the unique immutable gate selection without creating or repairing it."""
     result = _read_gate_selection_if_present(github, issue_number)
     if result is None:
@@ -1312,19 +1374,27 @@ def read_gate_selection(github: GitHub, issue_number: int) -> tuple[int, GateSel
     return result
 
 
-def _read_gate_selection_if_present(github: GitHub, issue_number: int) -> tuple[int, GateSelection, str] | None:
+def read_gate_selection_if_present(github: GitHub, issue_number: int) -> tuple[int, GateSelectionRecord, str] | None:
+    """Read the optional typed Gate record without creating or repairing it."""
+    return _read_gate_selection_if_present(github, issue_number)
+
+
+def _read_gate_selection_if_present(github: GitHub, issue_number: int) -> tuple[int, GateSelectionRecord, str] | None:
     try:
         comments = github.issue_comments(issue_number)
     except GitHubError as exc:
         raise GatePolicyError(f"gate selection readback failed: {exc}") from exc
+    markers = ("<!-- PASES_GATE_SELECTION_V1\n", "<!-- PASES_GATE_SELECTION_LEGACY_V1\n")
     rows = [row for row in comments if isinstance(row, dict) and isinstance(row.get("body"), str)
-            and row["body"].startswith("<!-- PASES_GATE_SELECTION_V1\n")]
+            and row["body"].startswith(markers)]
     if not rows:
         return None
     if len(rows) != 1:
         raise GatePolicyError("gate selection record is missing or duplicated")
-    selection = GateSelection.from_payload(
-        _decode_record_comment(rows[0]["body"], "PASES_GATE_SELECTION_V1"))
+    sentinel = "PASES_GATE_SELECTION_LEGACY_V1" if rows[0]["body"].startswith(
+        "<!-- PASES_GATE_SELECTION_LEGACY_V1\n") else "PASES_GATE_SELECTION_V1"
+    parser = LegacyGateSelection.from_payload if sentinel == "PASES_GATE_SELECTION_LEGACY_V1" else GateSelection.from_payload
+    selection = parser(_decode_record_comment(rows[0]["body"], sentinel))
     if (selection.issue_number != issue_number
             or selection.repository.casefold() != github.repo.casefold()):
         raise GatePolicyError("gate selection repository or Issue identity is mismatched")
@@ -1346,10 +1416,13 @@ def pin_gate_selection(github: GitHub, selection: GateSelection) -> tuple[int, s
     except GitHubError as exc:
         raise GatePolicyError(f"gate selection readback failed: {exc}") from exc
     rows = [row for row in comments if isinstance(row, dict) and isinstance(row.get("body"), str)
-            and row["body"].startswith("<!-- PASES_GATE_SELECTION_V1\n")]
+            and row["body"].startswith(("<!-- PASES_GATE_SELECTION_V1\n",
+                                        "<!-- PASES_GATE_SELECTION_LEGACY_V1\n"))]
     if len(rows) > 1:
         raise GatePolicyError("multiple gate selection records exist")
     if rows:
+        if rows[0]["body"].startswith("<!-- PASES_GATE_SELECTION_LEGACY_V1\n"):
+            raise GatePolicyError("existing legacy Gate conflicts with ordinary Gate selection")
         existing = GateSelection.from_payload(_decode_record_comment(rows[0]["body"], "PASES_GATE_SELECTION_V1"))
         if (existing.repository.casefold() != selection.repository.casefold()
                 or existing.issue_number != selection.issue_number

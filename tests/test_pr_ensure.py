@@ -8,10 +8,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
 
-from p_ases.execution import binding_digest
+from p_ases.checkpoint import PRBinding, write_pr_binding
+from p_ases.execution import binding_digest, read_binding
 from p_ases.git import head_sha40, run_git
 from p_ases.github import GitHubError
-from p_ases.work import WorkError, bind_work, ensure_pull_request, read_pr_binding_history
+from p_ases.work import (
+    WorkError, bind_work, ensure_pull_request, execution_binding_path,
+    read_pr_binding_history,
+)
 
 
 BODY = "Review implementation and evidence.\n\nCloses #30\n"
@@ -24,9 +28,11 @@ class FakeGitHub:
         self.root, self.base_sha = root, base_sha
         self.pull = None
         self.create_count = 0
+        self.search_count = 0
         self.lose_create_response = False
 
     def pull_requests_for_refs(self, *, base_ref, head_ref):
+        self.search_count += 1
         if self.pull is None:
             return []
         return [self.pull]
@@ -132,6 +138,95 @@ class PREnsureTests(unittest.TestCase):
                                         title="Issue #30 work", body=BODY)
             self.assertEqual(retry.binding, updated.binding)
             self.assertEqual(retry.checkpoint_sha256, updated.checkpoint_sha256)
+
+    def test_approved_adc_successor_appends_pr_binding_without_changing_old_bytes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo, base, binding = self._bound_repo(root)
+            github = FakeGitHub(repo, base)
+            first = ensure_pull_request(repo, github, repository="owner/repo", issue_number=30,
+                                        binding=binding, branch_ref="pases/work", base_ref="main",
+                                        title="Issue #30 work", body=BODY)
+            first_path = read_pr_binding_history(repo, 30)[0][0]
+            first_bytes = first_path.read_bytes()
+
+            successor = bind_work(repo, repository="owner/repo", issue_number=30,
+                                  adc_comment_id=124, adc_sha256="b" * 64,
+                                  base_ref="main", branch_ref="pases/work",
+                                  expected_base_sha40=base).binding
+            current = read_binding(execution_binding_path(repo, 30))
+            self.assertEqual(current, successor)
+            updated = ensure_pull_request(repo, github, repository="owner/repo", issue_number=30,
+                                          binding=current, branch_ref="pases/work", base_ref="main",
+                                          title="Issue #30 work", body=BODY)
+
+            history = read_pr_binding_history(repo, 30)
+            self.assertEqual(len(history), 2)
+            self.assertEqual(history[0][1], first.binding)
+            self.assertEqual(history[1][1], updated.binding)
+            self.assertEqual(history[1][1].adc_comment_id, 124)
+            self.assertEqual(history[1][1].pr_head_sha40, first.binding.pr_head_sha40)
+            self.assertEqual(first_path.read_bytes(), first_bytes)
+
+            retry = ensure_pull_request(repo, github, repository="owner/repo", issue_number=30,
+                                        binding=current, branch_ref="pases/work", base_ref="main",
+                                        title="Issue #30 work", body=BODY)
+            self.assertEqual(retry.binding, updated.binding)
+            self.assertEqual(len(read_pr_binding_history(repo, 30)), 2)
+
+    def test_stale_execution_binding_is_rejected_before_pr_search(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo, base, binding = self._bound_repo(root)
+            github = FakeGitHub(repo, base)
+            bind_work(repo, repository="owner/repo", issue_number=30,
+                      adc_comment_id=124, adc_sha256="b" * 64,
+                      base_ref="main", branch_ref="pases/work",
+                      expected_base_sha40=base)
+
+            with self.assertRaisesRegex(WorkError, "latest immutable ExecutionBinding"):
+                ensure_pull_request(repo, github, repository="owner/repo", issue_number=30,
+                                    binding=binding, branch_ref="pases/work", base_ref="main",
+                                    title="Issue #30 work", body=BODY)
+            self.assertEqual(github.search_count, 0)
+            self.assertEqual(github.create_count, 0)
+
+    def test_pr_binding_adc_history_rollback_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo, base, binding = self._bound_repo(root)
+            github = FakeGitHub(repo, base)
+            first = ensure_pull_request(repo, github, repository="owner/repo", issue_number=30,
+                                        binding=binding, branch_ref="pases/work", base_ref="main",
+                                        title="Issue #30 work", body=BODY)
+            bind_work(repo, repository="owner/repo", issue_number=30,
+                      adc_comment_id=124, adc_sha256="b" * 64,
+                      base_ref="main", branch_ref="pases/work",
+                      expected_base_sha40=base)
+            second = ensure_pull_request(repo, github, repository="owner/repo", issue_number=30,
+                                         binding=read_binding(execution_binding_path(repo, 30)),
+                                         branch_ref="pases/work", base_ref="main",
+                                         title="Issue #30 work", body=BODY)
+            self.assertNotEqual(first.binding, second.binding)
+
+            bind_work(repo, repository="owner/repo", issue_number=30,
+                      adc_comment_id=125, adc_sha256="c" * 64,
+                      base_ref="main", branch_ref="pases/work",
+                      expected_base_sha40=base)
+            rolled_back = PRBinding("owner/repo", 30, binding.adc_comment_id, binding.adc_sha256,
+                                    base, "pases/work", 73, head_sha40(repo))
+            write_pr_binding(execution_binding_path(repo, 30).with_name("pr-binding-000003.json"),
+                             rolled_back)
+            before = github.search_count
+            before_create = github.create_count
+
+            with self.assertRaisesRegex(WorkError, "ADC generations must be forward-only"):
+                ensure_pull_request(repo, github, repository="owner/repo", issue_number=30,
+                                    binding=read_binding(execution_binding_path(repo, 30)),
+                                    branch_ref="pases/work", base_ref="main",
+                                    title="Issue #30 work", body=BODY)
+            self.assertEqual(github.search_count, before)
+            self.assertEqual(github.create_count, before_create)
 
     def test_draft_closed_mismatched_and_duplicate_candidates_are_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:

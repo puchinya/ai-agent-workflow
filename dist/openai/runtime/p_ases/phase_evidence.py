@@ -12,7 +12,9 @@ from typing import Any, Mapping
 from urllib.parse import urlsplit
 
 from .adc import ADCError, VerifiedADC, verify_adc
-from .gate_policy import BOOTSTRAP_REPOSITORY, GatePolicyError, read_gate_selection, select_gate
+from .gate_policy import (
+    BOOTSTRAP_REPOSITORY, GatePolicyError, LegacyGateSelection, read_gate_selection, select_gate,
+)
 from .consumer_activation import ConsumerActivationError, read_consumer_activation_history
 from .github import GitHub, GitHubError
 from .execution import ExecutionError, read_binding
@@ -243,7 +245,7 @@ def _verify_frozen_binding(github: GitHub, root: Path, issue_number: int, verifi
 def verify_ordinary_issue_context(github: GitHub, root: Path, issue_number: int,
                                  expected_kind: IssueKind | None = None, *, require_binding: bool = False
                                  ) -> tuple[dict[str, Any], VerifiedADC, IssueKind, str, str]:
-    _check_activation(github, issue_number)
+    _check_activation(github, issue_number, root)
     try:
         issue = github.issue(issue_number)
         if issue.get("number") != issue_number or issue.get("state") != "open" or issue.get("pull_request") is not None:
@@ -410,7 +412,7 @@ def _validate_ready_traceability(root: Path, path: str, content: bytes, github: 
     return verified_targets
 
 
-def _check_activation(github: GitHub, issue_number: int) -> None:
+def _check_activation(github: GitHub, issue_number: int, root: Path | None = None) -> None:
     if github.repo.casefold() == BOOTSTRAP_REPOSITORY.casefold() and issue_number in BOOTSTRAP_ISSUES:
         raise PhaseEvidenceError("fixed Bootstrap and parent Issues do not use ordinary phase evidence")
     try:
@@ -419,6 +421,15 @@ def _check_activation(github: GitHub, issue_number: int) -> None:
                 or not isinstance(issue.get("created_at"), str)):
             raise PhaseEvidenceError("P-ASES gate selection requires the exact GitHub Issue resource")
         gate_comment_id, pinned, _body = read_gate_selection(github, issue_number)
+        if isinstance(pinned, LegacyGateSelection):
+            if root is None:
+                raise PhaseEvidenceError("legacy Gate validation requires the bound worktree")
+            from .legacy_adoption import LegacyAdoptionError, verify_legacy_gate_selection
+            try:
+                verify_legacy_gate_selection(github, root, issue_number, gate_comment_id, pinned)
+            except LegacyAdoptionError as exc:
+                raise PhaseEvidenceError(f"legacy Gate Adoption evidence is invalid: {exc}") from exc
+            return
         activation_issue_number = pinned.activation_issue_number
         if activation_issue_number is None:
             raise PhaseEvidenceError("Gate Selection does not name its consumer Activation Issue")
@@ -492,7 +503,8 @@ def _verify_predecessor_receipt(github: GitHub, root: Path, issue_number: int,
                                 declared_paths: Mapping[str, tuple[str, ...]],
                                 adc_reasons: Mapping[str, str],
                                 documents_by_path: Mapping[str, Mapping[str, str]],
-                                previous_sha: str | None) -> tuple[PhaseDecision, str]:
+                                previous_sha: str | None, *,
+                                allow_artifact_drift: bool = False) -> tuple[PhaseDecision, str]:
     source, target = edge
     _comment_id, prior = _find_receipt(
         github, issue_number, source=source, target=target,
@@ -531,7 +543,7 @@ def _verify_predecessor_receipt(github: GitHub, root: Path, issue_number: int,
     for path, role in expected_paths.items():
         current = documents_by_path.get(path)
         if (current is None or current["role"] != role
-                or current["sha256"] != rows[path]["sha256"]):
+                or (not allow_artifact_drift and current["sha256"] != rows[path]["sha256"])):
             raise PhaseEvidenceError(
                 "a previously completed specification/design artifact changed; "
                 "return to requirements and reapprove the ADC",
@@ -540,10 +552,17 @@ def _verify_predecessor_receipt(github: GitHub, root: Path, issue_number: int,
 
 
 def _collect_payload(github: GitHub, root: Path, issue_number: int, source: Phase, target: Phase,
-                     skips: Mapping[str, str], *, check_source_phase: bool = True
+                     skips: Mapping[str, str], *, check_source_phase: bool = True,
+                     allow_predecessor_artifact_drift: bool = False,
                      ) -> tuple[PhaseDecision, dict[str, Any], VerifiedADC, str, str]:
     if type(issue_number) is not int or issue_number < 1:
         raise PhaseEvidenceError("Issue number must be a positive integer")
+    if (allow_predecessor_artifact_drift
+            and (github.repo.casefold() != "puchinya/ai-agent-workflow".casefold()
+                 or issue_number != 46 or target is not Phase.READY
+                 or source not in {Phase.REQUIREMENTS, Phase.SPECIFICATION, Phase.DESIGN}
+                 or check_source_phase)):
+        raise PhaseEvidenceError("artifact drift is permitted only for Issue #46 Ready checkpoint planning")
     issue, verified, kind, branch_ref, local_sha = verify_ordinary_issue_context(
         github, root, issue_number, require_binding=True,
     )
@@ -613,6 +632,7 @@ def _collect_payload(github: GitHub, root: Path, issue_number: int, source: Phas
         _prior, previous_sha = _verify_predecessor_receipt(
             github, Path(root), issue_number, edge, verified, kind, branch_ref, local_sha,
             declared_paths, adc_reasons, documents_by_path, previous_sha,
+            allow_artifact_drift=allow_predecessor_artifact_drift,
         )
 
     documents = sorted(documents_by_path.values(), key=lambda row: row["path"])

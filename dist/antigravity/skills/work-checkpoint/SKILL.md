@@ -12,9 +12,9 @@ Owner: runtime/p_ases/checkpoint.py and work.py. Inputs are the current Issue, e
 
 1. Before resuming, read context and verify the exact ADC pointer.
 2. Inspect the existing binding and checkpoint history without rewriting them.
-3. Recover only the same Issue, repository, ADC, base ref/SHA, branch, and workspace identity.
-4. Use ordinary work routes to append checkpoints after successful state transitions.
-5. Never resolve a newer base for a bound execution. A changed or missing checkpoint is not silently reconstructed from current Git state.
+3. Recover only the same Issue, repository, ADC, base ref/SHA, branch, and workspace identity. A formally approved ADC successor may be added only through the normal bind route, which appends an ExecutionBinding generation while preserving the frozen base, branch, and workspace.
+4. Use ordinary work routes to append checkpoints and PRBinding generations after successful state transitions. A PRBinding for a later approved ADC is append-only: its PR, base, branch, and repository lineage must match, and its ADC generation must not move backward in ExecutionBinding history. Preserve every prior PRBinding byte.
+5. Never resolve a newer base for a bound execution. A changed or missing checkpoint is not silently reconstructed from current Git state. A stale ExecutionBinding input or mismatched PRBinding history blocks before PR search or mutation.
 
 ## CLI
 

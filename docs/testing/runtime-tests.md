@@ -41,6 +41,10 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
     - [2.14.1 ORA-RT-014 Expected result](#2141-ora-rt-014-expected-result)
   - [2.15 TST-RT-015 Error and boundary cases](#215-tst-rt-015-error-and-boundary-cases)
     - [2.15.1 ORA-RT-015 Fail-closed result](#2151-ora-rt-015-fail-closed-result)
+  - [2.16 TST-RT-016 Legacy Adoption CLI and plan file](#216-tst-rt-016-legacy-adoption-cli-and-plan-file)
+    - [2.16.1 ORA-RT-016 Expected result](#2161-ora-rt-016-expected-result)
+  - [2.17 TST-RT-017 UNAVAILABLE review exception CLI](#217-tst-rt-017-unavailable-review-exception-cli)
+    - [2.17.1 ORA-RT-017 Expected result](#2171-ora-rt-017-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -75,6 +79,10 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
 - [ORA-RT-014](#ora-rt-014) — 2.14.1 ORA-RT-014 Expected result
 - [TST-RT-015](#tst-rt-015) — 2.15 TST-RT-015 Error and boundary cases
 - [ORA-RT-015](#ora-rt-015) — 2.15.1 ORA-RT-015 Fail-closed result
+- [TST-RT-016](#tst-rt-016) — 2.16 TST-RT-016 Legacy Adoption CLI and plan file
+- [ORA-RT-016](#ora-rt-016) — 2.16.1 ORA-RT-016 Expected result
+- [TST-RT-017](#tst-rt-017) — 2.17 TST-RT-017 UNAVAILABLE review exception CLI
+- [ORA-RT-017](#ora-rt-017) — 2.17.1 ORA-RT-017 Expected result
 <!-- heading-map:end -->
 
 
@@ -162,13 +170,13 @@ A binding is created only for the validated clean workspace and exact base; exis
 <a id="tst-rt-007-review-pr-retryreadback"></a>
 ### 2.7 TST-RT-007 Review PR retry/readback
 
-**Setup and action:** Simulate no candidate, one matching open PR, an ambiguous result, and a lost create response.
+**Setup and action:** Simulate no candidate, one matching open PR, an ambiguous result, and a lost create response. Starting from an immutable PRBinding, append a forward approved ADC generation in the ExecutionBinding history and rerun PR ensure without changing the PR, base, branch, or worktree. Also supply a stale ExecutionBinding, a PRBinding ADC rollback, and mismatched PR/base/branch lineage.
 
 <a id="ora-rt-007"></a>
 <a id="ora-rt-007-expected-result"></a>
 #### 2.7.1 ORA-RT-007 Expected result
 
-Creation is followed by exact API readback; retries reuse one matching PR and ambiguity never creates duplicates.
+Creation is followed by exact API readback; retries reuse one matching PR and ambiguity never creates duplicates. A current approved ADC successor appends a new PRBinding generation while preserving every prior PRBinding byte. Each PRBinding ADC must map to the immutable ExecutionBinding history in nondecreasing order; stale ExecutionBinding inputs, ADC rollback, and changed PR/base/branch lineage block before PR search or mutation. A changed HEAD remains an append-only descendant of the prior PRBinding HEAD.
 
 <a id="tst-rt-008"></a>
 <a id="tst-rt-008-contract-byte-identity"></a>
@@ -265,3 +273,29 @@ No credentials or Issue bodies are emitted, and local state stays scoped to its 
 #### 2.15.1 ORA-RT-015 Fail-closed result
 
 Every invalid boundary returns a nonzero bounded error before an unrelated local or GitHub mutation.
+
+<a id="tst-rt-016"></a>
+<a id="tst-rt-016-legacy-adoption-cli-and-plan-file"></a>
+### 2.16 TST-RT-016 Legacy Adoption CLI and plan file
+<!-- agent-doc-type: test-specification -->
+<!-- agent-doc-schema: 2 -->
+
+**Setup and action:** Parse the read-only `legacy-adoption-plan` and `legacy-reset-plan` routes, then the separate apply routes. Write a plan file once, read it back, and vary canonical JSON, schema, plan digest, output overwrite, and exact approval comment ID.
+
+<a id="ora-rt-016"></a>
+<a id="ora-rt-016-expected-result"></a>
+#### 2.16.1 ORA-RT-016 Expected result
+
+CLI plan output is deterministic, labels risk acknowledgement `AWAITING_OWNER_APPROVAL`, and exposes the exact Owner-authored comment template, both risk IDs, and the single-writer condition. Apply requires the exact canonical V2 plan file, Owner-authored comment, and current authenticated Owner User; success reports `KNOWN_RISK_ACCEPTED_BY_OWNER` separately from technical `ADOPTED` or `NOOP`. Missing, changed, non-Owner, or overwritten plan data blocks; CLI does not generate or publish an Owner approval or claim atomicity/history immutability.
+
+<a id="tst-rt-017"></a>
+<a id="tst-rt-017-unavailable-review-exception-cli"></a>
+### 2.17 TST-RT-017 UNAVAILABLE review exception CLI
+
+**Setup and action:** Parse `audit independent ISSUE PR HEAD PLAN SEPARATE_CONTEXT_REPORT` and confirm it writes the legacy `PASES_INDEPENDENT_REVIEW_V2` with `assurance=UNAVAILABLE` and formal `verdict=BLOCKED`, plus `PASES_INDEPENDENT_REVIEW_OCCURRENCE_V1` with exact original output bytes, actual verdict/findings, and linked V2/subject/ExecutionBinding/PRBinding/profile digests. Then parse `delivery review-unavailable-plan ISSUE PR HEAD VERIFICATION_PLAN --host-surface SURFACE --output PLAN_FILE` and `delivery review-unavailable-apply ... --chat-decision-comment-id ID`. Exercise every supported host surface, missing report/occurrence, changed/stale report, same-context report, failed review, missing Verification Plan, changed plan bytes, stale subject, negative chat answer, wrong operation/scope, and exact affirmative active-chat decision. Run Readiness and Final Delivery with ordinary review and provenance-exception paths.
+
+<a id="ora-rt-017"></a>
+<a id="ora-rt-017-expected-result"></a>
+#### 2.17.1 ORA-RT-017 Expected result
+
+Plan generation is read-only and requires one current exact-subject separate-context Independent Review report with verdict `PASS`, no unresolved A/B/C findings, the frozen Verification Plan, and current subject. `UNAVAILABLE` labels only the host provenance limitation; no report means no review and blocks. The Owner selects the exact active chat prompt; the workflow may append the technical decision record and separately versioned exception receipt through the established GitHub writer. It never requests an Owner-authored approval comment. Every exception consumer validates the complete Issue marker history for the current PR HEAD; duplicate, malformed, or conflicting same-HEAD records block Readiness, User Review, and Final Delivery after publication as well as during apply. The host surface is limited to `codex_cloud`, `codex_local_cli`, `codex_desktop`, or `claude_code`. User Review start/sync/status must recompute the exact current Verification/Required Checks, Acceptance, Self-Audit, dependency state, bindings, profile, review report, and exception evidence without writes before use and again before any session or result persistence. The live Issue kind/phase/attention labels are checked before writes and reread before phase mutation; wrong `--kind`, an invalid source phase, attention, or changed labels block with no session/snapshot/result/phase mutation. Invalid, stale, or missing evidence blocks before unrelated local or GitHub mutations, and CLI failures return structured `BLOCKED` JSON.

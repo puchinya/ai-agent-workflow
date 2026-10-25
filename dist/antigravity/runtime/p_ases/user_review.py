@@ -1,7 +1,8 @@
-"""Exact-subject human User Review: GitHub evidence and a fail-closed chat boundary.
+"""Exact-subject human User Review with forward chat-recorded decisions.
 
-Only the host can authenticate a direct chat event. Never deserialize a claimed
-chat identity from a file or external text as a trusted approval.
+Legacy V1 results and host-attested chat events remain readable. Issue #46 V2
+results label direct chat decisions as operator-reported and keep the GitHub
+recorder identity separate from the chat author.
 """
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from .delivery import ReadinessResult
+from .delivery import ReadinessResult, ReadinessResultV2, ReadinessResultV3
 from .evidence_store import VerificationSubject
 from .path_safety import path_has_symlink
 
@@ -353,9 +354,95 @@ class UserReviewResult:
                    tuple(value["unresolved_thread_ids"])).validate()
 
 
+@dataclass(frozen=True)
+class UserReviewResultV2:
+    """Issue #46 result tied to an operator-reported active chat decision."""
+
+    status: str
+    subject: UserReviewSubject
+    feedback_sha256: str
+    reasons: tuple[str, ...]
+    next_phase: str
+    selected_approval_event: str | None
+    unresolved_thread_ids: tuple[str, ...]
+    chat_decision_comment_id: int | None
+    chat_decision_sha256: str | None
+    evidence_channel: str = "operator_reported_chat"
+    schema: str = "PASES_USER_REVIEW_RESULT_V2"
+
+    def validate(self) -> "UserReviewResultV2":
+        self.subject.validate()
+        if (self.schema != "PASES_USER_REVIEW_RESULT_V2" or self.status not in STATES
+                or self.evidence_channel != "operator_reported_chat"
+                or not isinstance(self.feedback_sha256, str) or not SHA256.fullmatch(self.feedback_sha256)
+                or type(self.reasons) is not tuple
+                or any(not isinstance(row, str) or not row for row in self.reasons)
+                or self.next_phase not in {"user-review", "execution", "requirements"}
+                or type(self.unresolved_thread_ids) is not tuple
+                or self.unresolved_thread_ids != tuple(sorted(set(self.unresolved_thread_ids)))
+                or any(not isinstance(row, str) or not row for row in self.unresolved_thread_ids)):
+            raise UserReviewError("User Review V2 result has invalid status, scope, or evidence")
+        if self.status == "APPROVED":
+            if (self.reasons or self.next_phase != "user-review" or self.unresolved_thread_ids
+                    or type(self.chat_decision_comment_id) is not int or self.chat_decision_comment_id < 1
+                    or not isinstance(self.chat_decision_sha256, str)
+                    or not SHA256.fullmatch(self.chat_decision_sha256)
+                    or self.selected_approval_event != f"chat:{self.chat_decision_comment_id}"):
+                raise UserReviewError("User Review V2 approval lacks exact chat decision evidence")
+        elif not self.reasons or self.chat_decision_comment_id is not None or self.chat_decision_sha256 is not None:
+            raise UserReviewError("non-approved User Review V2 must not carry an approval decision")
+        return self
+
+    def payload(self) -> dict[str, Any]:
+        self.validate()
+        return {"chat_decision_comment_id": self.chat_decision_comment_id,
+                "chat_decision_sha256": self.chat_decision_sha256,
+                "evidence_channel": self.evidence_channel,
+                "feedback_sha256": self.feedback_sha256,
+                "next_phase": self.next_phase,
+                "reasons": list(self.reasons),
+                "schema": self.schema,
+                "selected_approval_event": self.selected_approval_event,
+                "status": self.status,
+                "subject": self.subject.as_dict(),
+                "unresolved_thread_ids": list(self.unresolved_thread_ids)}
+
+    @property
+    def sha256(self) -> str:
+        return hashlib.sha256(_canonical(self.payload())).hexdigest()
+
+    def as_dict(self) -> dict[str, Any]:
+        return {**self.payload(), "result_sha256": self.sha256}
+
+    @classmethod
+    def from_dict(cls, value: Any) -> "UserReviewResultV2":
+        expected = {"chat_decision_comment_id", "chat_decision_sha256", "evidence_channel",
+                    "feedback_sha256", "next_phase", "reasons", "result_sha256", "schema",
+                    "selected_approval_event", "status", "subject", "unresolved_thread_ids"}
+        if not isinstance(value, dict) or set(value) != expected or value.get("schema") != "PASES_USER_REVIEW_RESULT_V2":
+            raise UserReviewError("User Review V2 result has unknown or missing fields")
+        raw_subject = value["subject"]
+        if not isinstance(raw_subject, dict) or set(raw_subject) != {"verification_subject", "readiness_sha256"}:
+            raise UserReviewError("User Review V2 subject is malformed")
+        if not isinstance(value["reasons"], list) or not isinstance(value["unresolved_thread_ids"], list):
+            raise UserReviewError("User Review V2 reasons or thread IDs are malformed")
+        result = cls(
+            value["status"], UserReviewSubject(
+                VerificationSubject.from_dict(raw_subject["verification_subject"]),
+                raw_subject["readiness_sha256"],
+            ).validate(), value["feedback_sha256"], tuple(value["reasons"]), value["next_phase"],
+            value["selected_approval_event"], tuple(value["unresolved_thread_ids"]),
+            value["chat_decision_comment_id"], value["chat_decision_sha256"],
+            value["evidence_channel"], value["schema"],
+        ).validate()
+        if value["result_sha256"] != result.sha256:
+            raise UserReviewError("User Review V2 digest does not match its canonical content")
+        return result
+
+
 def evaluate_user_review(
     subject: UserReviewSubject,
-    readiness: ReadinessResult,
+    readiness: ReadinessResult | ReadinessResultV2 | ReadinessResultV3,
     current_pr_head_sha40: str,
     events: Iterable[FeedbackEvent],
     *,
@@ -377,13 +464,16 @@ def evaluate_user_review(
     unresolved = tuple(sorted(set(unresolved_thread_ids)))
     if any(not isinstance(value, str) or not value for value in unresolved):
         raise UserReviewError("unresolved review thread IDs must be non-empty strings")
-    if not isinstance(readiness, ReadinessResult):
+    if not isinstance(readiness, (ReadinessResult, ReadinessResultV2, ReadinessResultV3)):
         reasons.append("Review Readiness is missing")
     else:
         readiness.validate()
-        if (readiness.status != "PASS" or readiness.subject != subject.verification_subject
+        permitted_status = (readiness.status == "PASS" if isinstance(readiness, ReadinessResult)
+                            else readiness.status == "READY_WITH_EXCEPTION"
+                            and readiness.review_assurance == "UNAVAILABLE")
+        if (not permitted_status or readiness.subject != subject.verification_subject
                 or readiness.sha256 != subject.readiness_sha256):
-            reasons.append("current exact-subject Review Readiness PASS is missing or stale")
+            reasons.append("current exact-subject Review Readiness is missing, blocked, or stale")
     if not isinstance(current_pr_head_sha40, str) or not SHA40.fullmatch(current_pr_head_sha40):
         reasons.append("current PR HEAD is invalid")
     elif current_pr_head_sha40 != subject.verification_subject.pr_head_sha40:
@@ -445,6 +535,60 @@ def evaluate_user_review(
     ) else "PENDING"
     return UserReviewResult(status, subject, digest, tuple(reasons or ["no explicit current user approval"]),
                             "user-review", None, unresolved).validate()
+
+
+def evaluate_user_review_chat(
+    subject: UserReviewSubject,
+    readiness: ReadinessResult | ReadinessResultV3,
+    current_pr_head_sha40: str,
+    events: Iterable[FeedbackEvent],
+    *,
+    chat_decision_comment_id: int | None,
+    chat_decision_sha256: str | None,
+    all_feedback_surfaces_read: bool = True,
+    unresolved_thread_ids: Iterable[str] = (),
+) -> UserReviewResultV2:
+    """Evaluate Issue #46's distinct active-chat decision against current inputs."""
+    subject.validate()
+    digest = feedback_digest(tuple(events))
+    unresolved = tuple(sorted(set(unresolved_thread_ids)))
+    if any(not isinstance(value, str) or not value for value in unresolved):
+        raise UserReviewError("unresolved review thread IDs must be non-empty strings")
+    reasons: list[str] = []
+    if not isinstance(readiness, (ReadinessResult, ReadinessResultV3)):
+        reasons.append("current V1 PASS or provenance-exception V3 Readiness is required")
+    else:
+        readiness.validate()
+        permitted = readiness.status == "PASS" if isinstance(readiness, ReadinessResult) else (
+            readiness.status == "READY_WITH_EXCEPTION"
+            and readiness.review_occurrence == "COMPLETED"
+            and readiness.review_outcome == "PASS"
+        )
+        if (not permitted or readiness.subject != subject.verification_subject
+                or readiness.sha256 != subject.readiness_sha256):
+            reasons.append("current exact-subject Readiness is missing, blocked, or stale")
+    if not isinstance(current_pr_head_sha40, str) or not SHA40.fullmatch(current_pr_head_sha40):
+        reasons.append("current PR HEAD is invalid")
+    elif current_pr_head_sha40 != subject.verification_subject.pr_head_sha40:
+        reasons.append("PR HEAD changed; chat approval is stale")
+    if not all_feedback_surfaces_read:
+        reasons.append("GitHub feedback enumeration is incomplete")
+    if unresolved:
+        reasons.append("unresolved GitHub review threads remain")
+    if chat_decision_comment_id is None or chat_decision_sha256 is None:
+        reasons.append("active-chat User Review approval is missing")
+    elif (type(chat_decision_comment_id) is not int or chat_decision_comment_id < 1
+          or not isinstance(chat_decision_sha256, str) or not SHA256.fullmatch(chat_decision_sha256)):
+        reasons.append("active-chat User Review decision reference is invalid")
+    status = "BLOCKED" if reasons else "APPROVED"
+    return UserReviewResultV2(
+        status=status, subject=subject, feedback_sha256=digest,
+        reasons=tuple(dict.fromkeys(reasons)), next_phase="user-review",
+        selected_approval_event=(None if status != "APPROVED" else f"chat:{chat_decision_comment_id}"),
+        unresolved_thread_ids=unresolved,
+        chat_decision_comment_id=chat_decision_comment_id if status == "APPROVED" else None,
+        chat_decision_sha256=chat_decision_sha256 if status == "APPROVED" else None,
+    ).validate()
 
 
 def reject_unattested_chat_event(_: Any) -> None:
