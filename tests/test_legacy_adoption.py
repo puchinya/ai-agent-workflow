@@ -446,6 +446,16 @@ class LegacyAdoptionContractTests(unittest.TestCase):
         with self.assertRaisesRegex(LegacyAdoptionError, "attribution"):
             verify_owner_approval(wrong_issue, plan, 930)
 
+    def test_owner_approval_accepts_only_one_github_terminal_lf(self):
+        plan = make_plan()
+        body = owner_approval_comment(plan)
+        github = adoption_github([adoption_comment(930, body + "\n")])
+        self.assertEqual(verify_owner_approval(github, plan, 930)["body"], body + "\n")
+
+        for changed in (body + "\n\n", body + "\ntext"):
+            with self.subTest(changed=repr(changed)), self.assertRaises(LegacyAdoptionError):
+                verify_owner_approval(adoption_github([adoption_comment(930, changed)]), plan, 930)
+
     def test_adoption_apply_is_stale_fail_closed_without_a_write(self):
         plan = make_plan()
         github = adoption_github()

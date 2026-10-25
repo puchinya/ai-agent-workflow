@@ -102,6 +102,14 @@ def _record_payload(body: Any, sentinel: str) -> dict[str, Any]:
         raise LegacyAdoptionError(str(exc)) from exc
 
 
+def _owner_approval_record_payload(body: Any) -> dict[str, Any]:
+    """Decode an Owner approval, allowing GitHub's single terminal LF serialization."""
+    if not isinstance(body, str):
+        raise LegacyAdoptionError("Owner approval comment body is invalid")
+    canonical_body = body[:-1] if body.endswith("\n") else body
+    return _record_payload(canonical_body, OWNER_APPROVAL_SCHEMA)
+
+
 def _body(sentinel: str, payload: dict[str, Any]) -> str:
     return f"<!-- {sentinel}\n{_canonical(payload).decode('utf-8')}\n-->"
 
@@ -776,15 +784,19 @@ def verify_owner_approval(github: GitHub, plan: LegacyAdoptionPlan | LegacyReset
         body_value = row.get("body") if isinstance(row, dict) else None
         if not isinstance(body_value, str) or not body_value.startswith(OWNER_APPROVAL_MARKER):
             continue
-        payload = _record_payload(body_value, OWNER_APPROVAL_SCHEMA)
+        payload = _owner_approval_record_payload(body_value)
         if payload.get("issue_number") != plan.value["issue_number"]:
             raise LegacyAdoptionError("Owner approval comment is attached to a different Issue")
         if payload == expected:
             candidates.append(row)
     if len(candidates) != 1 or candidates[0].get("id") != comment_id:
         raise LegacyAdoptionError("exact Owner approval comment is missing, duplicated, or has the wrong ID")
+    expected_body = _body(OWNER_APPROVAL_SCHEMA, expected)
+    candidate_body = candidates[0].get("body")
+    if candidate_body not in {expected_body, expected_body + "\n"}:
+        raise LegacyAdoptionError("Owner approval comment body differs from the exact canonical payload")
     row = _read_comment_direct_list_direct(
-        github, plan.value["issue_number"], comment_id, expected_body=_body(OWNER_APPROVAL_SCHEMA, expected),
+        github, plan.value["issue_number"], comment_id, expected_body=candidate_body,
     )
     actor = row.get("user")
     owner_login = plan.value["repository"].split("/", 1)[0]
