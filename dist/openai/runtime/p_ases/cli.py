@@ -2656,12 +2656,19 @@ def _user_review_run(args: argparse.Namespace, repository: str, root: Path, gith
             exception_path=getattr(args, "review_unavailable_exception", None),
         )
         user_review_subject = UserReviewSubject(subject, readiness.sha256).validate()
-        session_started_at = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
-        session = UserReviewSession(user_review_subject, session_started_at).validate()
-        session_path = review_session_path(root, session)
+        session_path = review_session_path(root, user_review_subject)
+        session_preexisting = False
         if args.verb == "start":
-            # Persist only after Readiness/V2/profile and all live feedback reads pass.
-            pass
+            if path_has_symlink(session_path):
+                raise UserReviewError("User Review session path must not traverse a symbolic link")
+            if session_path.exists():
+                session = read_review_session(session_path)
+                if session.subject != user_review_subject:
+                    raise UserReviewError("existing User Review session belongs to a different exact subject")
+                session_preexisting = True
+            else:
+                started_at = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+                session = UserReviewSession(user_review_subject, started_at).validate()
         else:
             session = read_review_session(session_path)
             if session.subject != user_review_subject:
@@ -2704,7 +2711,26 @@ def _user_review_run(args: argparse.Namespace, repository: str, root: Path, gith
                 github, args.issue, getattr(args, "kind", None), args.verb, result,
             )
             if args.verb == "start":
-                session = write_review_session(session_path, session)
+                if session_preexisting:
+                    persisted_session = read_review_session(session_path)
+                    if persisted_session != session:
+                        raise UserReviewError("immutable User Review session changed during start replay")
+                else:
+                    if session_path.exists():
+                        concurrent_session = read_review_session(session_path)
+                        if concurrent_session != session:
+                            raise UserReviewError(
+                                "a concurrent start established a different immutable session; no feedback was written"
+                            )
+                    persisted_session = write_review_session(session_path, session)
+                    if persisted_session != session:
+                        raise UserReviewError(
+                            "a concurrent start established a different immutable session; no feedback was written"
+                        )
+            else:
+                persisted_session = read_review_session(session_path)
+                if persisted_session != session:
+                    raise UserReviewError("immutable User Review session changed during synchronization")
             snapshot_path = feedback_snapshot_path(root, snapshot)
             write_feedback_snapshot(snapshot_path, snapshot)
             record = {"result": result.as_dict(), "result_sha256": result.sha256,
@@ -2715,6 +2741,8 @@ def _user_review_run(args: argparse.Namespace, repository: str, root: Path, gith
             if args.verb in {"start", "sync"}:
                 _review_phase_transition(github, args.issue, issue_kind, result, args.verb)
         else:
+            if read_review_session(session_path) != session:
+                raise UserReviewError("immutable User Review session changed during status readback")
             snapshot_path = feedback_snapshot_path(root, snapshot)
             record_path = _review_record_path(root, args.issue, user_review_subject, result, snapshot.sha256)
         _json({"status": result.status, "subject": user_review_subject.as_dict(),

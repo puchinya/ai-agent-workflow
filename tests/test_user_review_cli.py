@@ -7,6 +7,7 @@ import json
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -20,7 +21,11 @@ from p_ases.execution import ExecutionBinding, binding_digest, write_binding
 from p_ases.git import GitError
 from p_ases.profile import load_profile
 from p_ases.review_assurance import IndependentReviewV2, write_independent_review_v2
-from p_ases.user_review import FeedbackSnapshot, UserReviewError, UserReviewSubject, feedback_snapshot_path
+from p_ases.user_review import (
+    FeedbackSnapshot, UserReviewError, UserReviewSession, UserReviewSubject,
+    feedback_snapshot_path, normalize_github_feedback, read_review_session,
+    review_session_path, write_review_session,
+)
 from p_ases.verification import VerificationResult
 from p_ases.cli import (
     CLIError, _delivery_final, _latest_review_snapshot, _recompute_user_review_readiness,
@@ -36,6 +41,161 @@ USER_SUBJECT = UserReviewSubject(VERIFICATION_SUBJECT, READINESS.sha256).validat
 
 
 class UserReviewCliRegressionTests(unittest.TestCase):
+    @staticmethod
+    def _approved_feedback(subject, observed_at):
+        event_at = "2026-10-25T10:02:00Z"
+        events = normalize_github_feedback(
+            issue_comments=(), pr_comments=(),
+            pr_reviews=({
+                "id": 700, "state": "APPROVED", "commit_id": HEAD, "body": "",
+                "user": {"id": 42, "login": "octocat", "type": "User"},
+                "submitted_at": event_at, "updated_at": event_at,
+                "html_url": "https://github.com/octo/repo/pull/37#pullrequestreview-700",
+            },),
+            diff_comments=(),
+        )
+        return FeedbackSnapshot(subject, events, (), observed_at).validate()
+
+    def _invoke_approved_start(self, root, github, clock_values, *, session_writer=None):
+        verified_adc = SimpleNamespace(
+            pointer=SimpleNamespace(state="approved", comment_id=5, sha256="f" * 64),
+        )
+        clock_values = iter(clock_values)
+        clock_calls = []
+
+        class FrozenClock:
+            @staticmethod
+            def now(_tz):
+                value = next(clock_values)
+                clock_calls.append(value)
+                return value
+
+        args = SimpleNamespace(
+            verb="start", issue=31, pr=37, head=HEAD, plan=root / "plan.json",
+            readiness=root / "readiness.json", kind="child", new_scope=False,
+            review_unavailable_exception=None,
+        )
+        assurance = (object(), object())
+        output = io.StringIO()
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch("p_ases.cli.datetime", FrozenClock))
+            stack.enter_context(patch("p_ases.cli._approved_issue_adc", return_value=({}, verified_adc)))
+            stack.enter_context(patch("p_ases.cli.verify_adc", return_value=verified_adc))
+            stack.enter_context(patch("p_ases.cli._load_plan", return_value=(object(), (), (), ())))
+            stack.enter_context(patch("p_ases.cli._subject", return_value=VERIFICATION_SUBJECT))
+            stack.enter_context(patch("p_ases.cli._readback_current_pr", return_value={"head_sha": HEAD}))
+            stack.enter_context(patch("p_ases.cli.read_readiness", return_value=READINESS))
+            stack.enter_context(patch("p_ases.cli._recompute_user_review_readiness", return_value=READINESS))
+            stack.enter_context(patch("p_ases.cli.read_binding", return_value=object()))
+            stack.enter_context(patch("p_ases.cli._require_readiness_review_assurance", return_value=assurance))
+            stack.enter_context(patch(
+                "p_ases.cli._review_payload_from_github",
+                side_effect=lambda _github, subject, *, observed_at: self._approved_feedback(subject, observed_at),
+            ))
+            if session_writer is not None:
+                stack.enter_context(patch("p_ases.cli.write_review_session", side_effect=session_writer))
+            stack.enter_context(contextlib.redirect_stdout(output))
+            status = _user_review_run(args, "octo/repo", root, github)
+        return status, json.loads(output.getvalue()), clock_calls
+
+    def test_repeated_start_reuses_original_session_after_approval(self):
+        class FakeGitHub:
+            def __init__(self):
+                self.labels = ["kind:child", "phase:verification"]
+                self.label_writes = 0
+
+            def issue(self, _number):
+                return {"number": 31, "state": "open", "pull_request": None,
+                        "labels": [{"name": label} for label in self.labels]}
+
+            def pull_request(self, _number):
+                return {"number": 37, "head": {"sha": HEAD}}
+
+            def authenticated_user(self):
+                return {"id": 42, "login": "octocat", "type": "User"}
+
+            def replace_issue_labels(self, _number, labels):
+                self.label_writes += 1
+                self.labels = list(labels)
+
+        values = (
+            datetime(2026, 10, 25, 10, 1, tzinfo=timezone.utc),  # session start T1
+            datetime(2026, 10, 25, 10, 3, tzinfo=timezone.utc),  # first observation
+            datetime(2026, 10, 25, 10, 4, tzinfo=timezone.utc),  # first final readback
+            datetime(2026, 10, 25, 10, 5, tzinfo=timezone.utc),  # replay observation
+            datetime(2026, 10, 25, 10, 6, tzinfo=timezone.utc),  # replay final readback
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            github = FakeGitHub()
+            write_calls = []
+
+            def count_write(path, session):
+                write_calls.append(session)
+                return write_review_session(path, session)
+
+            first_status, first_result, first_clock_calls = self._invoke_approved_start(
+                root, github, values[:3], session_writer=count_write,
+            )
+            second_status, second_result, second_clock_calls = self._invoke_approved_start(
+                root, github, values[3:], session_writer=count_write,
+            )
+
+            session = read_review_session(review_session_path(root, USER_SUBJECT))
+            self.assertEqual(first_status, 0)
+            self.assertEqual(first_result["status"], "APPROVED")
+            self.assertEqual(second_status, 0)
+            self.assertEqual(second_result["status"], "APPROVED")
+            self.assertFalse(any("predates" in reason for reason in second_result["reasons"]))
+            self.assertEqual(session.started_at, "2026-10-25T10:01:00.000000Z")
+            self.assertEqual(len(write_calls), 1)
+            self.assertEqual(github.label_writes, 1)
+            self.assertEqual(len(first_clock_calls), 3)
+            self.assertEqual(len(second_clock_calls), 2)
+
+    def test_concurrent_start_with_different_session_writes_no_feedback_or_phase(self):
+        class FakeGitHub:
+            def __init__(self):
+                self.labels = ["kind:child", "phase:verification"]
+                self.label_writes = 0
+
+            def issue(self, _number):
+                return {"number": 31, "state": "open", "pull_request": None,
+                        "labels": [{"name": label} for label in self.labels]}
+
+            def pull_request(self, _number):
+                return {"number": 37, "head": {"sha": HEAD}}
+
+            def authenticated_user(self):
+                return {"id": 42, "login": "octocat", "type": "User"}
+
+            def replace_issue_labels(self, _number, labels):
+                self.label_writes += 1
+                self.labels = list(labels)
+
+        def concurrent_writer(path, candidate):
+            competing = UserReviewSession(candidate.subject, "2026-10-25T10:00:00Z").validate()
+            write_review_session(path, competing)
+            return write_review_session(path, candidate)
+
+        values = (
+            datetime(2026, 10, 25, 10, 1, tzinfo=timezone.utc),
+            datetime(2026, 10, 25, 10, 3, tzinfo=timezone.utc),
+            datetime(2026, 10, 25, 10, 4, tzinfo=timezone.utc),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            github = FakeGitHub()
+            status, result, _calls = self._invoke_approved_start(
+                root, github, values, session_writer=concurrent_writer,
+            )
+            review_dir = review_session_path(root, USER_SUBJECT).parent
+            self.assertEqual(status, 2)
+            self.assertEqual(result["status"], "BLOCKED")
+            self.assertTrue(any("concurrent start" in reason for reason in result["reasons"]))
+            self.assertEqual(sorted(path.name for path in review_dir.iterdir()), ["session.json"])
+            self.assertEqual(github.label_writes, 0)
+
     def test_operator_supplied_native_bytes_block_all_user_review_verbs(self):
         class FakeGitHub:
             def __init__(self, phase):
