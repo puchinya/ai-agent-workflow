@@ -4,6 +4,10 @@ description: Evaluate Review Readiness and Final Delivery without merging or pub
 ---
 # Delivery control
 
+## Sandboxed GitHub CLI
+
+Run every `gh` command used for delivery, including scripts that call `gh` and Admin device login, inside the normal sandboxed execution environment. Do not escalate sandbox permissions or retry `gh` outside the sandbox. If sandboxed authentication, network access, or repository permissions are unavailable, report the exact failure and stop that GitHub operation.
+
 ## One-time Issue #63 / PR #64 adoption handoff
 
 The bootstrap implementation and exact-final-HEAD CI precede adoption. Before a distinct authenticated V3 `EXECUTION_ADOPTION` decision is applied to the full frozen plan, do not claim ordinary Phase, Verification, Acceptance, Self-Audit, Independent Review, Readiness, or User Review PASS. After adoption, resume the ordinary Phase/QA/review/readiness lifecycle and still request a separate User Review decision, Consumer Activation's exact Ruleset plan approval when Activation requires a write, Activation approval, and exact-HEAD PR merge approval. Issue #63 does not plan, verify, or apply Rulesets before its PR merges. Adoption marks the missing original tuple `UNVERIFIED`; it is not a delivery waiver. If final plan, Git refs, ADC/Phase, CI, owner decision, or workspace attachment drifts, stop with zero adoption writes and obtain a new plan/approval. Ordinary remote anchor and reattachment remain separate follow-up.
