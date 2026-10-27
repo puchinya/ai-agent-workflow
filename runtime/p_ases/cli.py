@@ -38,7 +38,7 @@ from .ruleset_management import (
 from .git import GitError, current_branch, discover_repository, head_sha40, remote_branch_sha, worktree_clean
 from .document_format import DocumentFormatError, format_tree
 from .documents import DocumentError, validate_documents
-from .github import GitHub, GitHubError
+from .github import GitHub, GitHubError, ReadOnlyGitHub
 from .execution import (
     AdoptedExecutionEpoch, ExecutionError, ExecutionIdentity, binding_digest,
     execution_identity_base, execution_identity_context_id, execution_identity_digest, read_binding,
@@ -210,6 +210,20 @@ def _repo_root(value: str | None) -> Path:
 
 def _gh(root: Path) -> GitHub:
     return GitHub(discover_repository(root))
+
+
+def _read_only_github(github: GitHub | ReadOnlyGitHub) -> ReadOnlyGitHub:
+    """Create or verify the GET-only transport used by independent User Review reads."""
+    if type(github) is ReadOnlyGitHub:
+        github.verify_read_only_scope()
+        return github
+    if type(github) is not GitHub:
+        raise CLIError("read-only GitHub verifier route cannot be positively verified")
+    reader = ReadOnlyGitHub(github.repo)
+    reader.verify_read_only_scope()
+    if reader is github:
+        raise CLIError("read-only GitHub verifier must be a separate client instance")
+    return reader
 
 
 def _positive_number(value: str) -> int:
@@ -2227,6 +2241,7 @@ def _ruleset_operation_plan(github: GitHub, plan_path: Path) -> tuple[dict[str, 
 
 def _user_review_owner_context(args: argparse.Namespace, repository: str,
                                github: GitHub) -> dict[str, Any]:
+    github = _read_only_github(github)
     if args.session is None or args.readiness is None or args.feedback_snapshot is None:
         raise OwnerAuthorizationError(
             "USER_REVIEW requires --session, --readiness, and --feedback-snapshot"
@@ -2907,9 +2922,15 @@ def _verify_ruleset_noop(github: GitHub, plan: dict[str, Any]) -> dict[str, Any]
     return first
 
 
-def _solo_owner_identity(github: GitHub, repository: str, issue_number: int,
+def _solo_owner_identity(github: ReadOnlyGitHub, repository: str, issue_number: int,
                          pr_number: int, expected_head_sha40: str) -> tuple[int, int, int]:
     """Read configured owner, fresh PR author and independent read-only principal."""
+    if type(github) is not ReadOnlyGitHub:
+        raise CLIError("User Review verifier must use the dedicated read-only GitHub client")
+    try:
+        github.verify_read_only_scope()
+    except GitHubError as exc:
+        raise CLIError("User Review read-only verifier route is not positively verified") from exc
     if repository.casefold() != "puchinya/ai-agent-workflow" or issue_number != 63:
         raise CLIError("solo_owner identity is only configured for puchinya/ai-agent-workflow Issue #63")
     metadata = github.repository_metadata()
@@ -2937,11 +2958,17 @@ def _solo_owner_identity(github: GitHub, repository: str, issue_number: int,
 
 
 def _read_user_review_relay_approval(
-    github: GitHub, *, session: UserReviewSession, readiness: Any,
+    github: ReadOnlyGitHub, *, session: UserReviewSession, readiness: Any,
     owner_id: int, verifier_id: int, feedback_sha256: str | None = None,
     plan_sha256: str | None = None, approval_scope_sha256: str | None = None,
 ) -> UserReviewRelayApproval | None:
     """Read all dedicated carriers as complete direct/list/direct evidence."""
+    if type(github) is not ReadOnlyGitHub:
+        raise UserReviewRelayError("User Review carrier verification requires the dedicated read-only GitHub client")
+    try:
+        github.verify_read_only_scope()
+    except GitHubError as exc:
+        raise UserReviewRelayError("User Review carrier reads lack a verified read-only GitHub route") from exc
     subject = session.subject.verification_subject
 
     def carrier_ids(rows: list[dict[str, Any]]) -> tuple[int, ...]:
@@ -3069,6 +3096,8 @@ def _user_review_run(args: argparse.Namespace, repository: str, root: Path, gith
     result: UserReviewResult | None = None
     snapshot: FeedbackSnapshot | None = None
     try:
+        broker = github
+        github = _read_only_github(github)
         issue_row, verified_adc = _approved_issue_adc(github, args.issue, repository)
         issue_kind, issue_phase, issue_attention = _issue_kind_phase(issue_row, args.issue)
         requested_kind = getattr(args, "kind", None)
@@ -3225,7 +3254,7 @@ def _user_review_run(args: argparse.Namespace, repository: str, root: Path, gith
                     or saved_snapshot_sha256 != snapshot.sha256):
                 raise UserReviewError("persisted User Review result differs from its typed evaluation")
             if args.verb in {"start", "sync"}:
-                _review_phase_transition(github, args.issue, issue_kind, result, args.verb)
+                _review_phase_transition(broker, args.issue, issue_kind, result, args.verb)
         else:
             snapshot_path = feedback_snapshot_path(root, snapshot)
             record_path = _review_record_path(root, args.issue, user_review_subject, result, snapshot.sha256)
@@ -3258,6 +3287,7 @@ def _user_review_record(args: argparse.Namespace) -> int:
 def _delivery_final(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
     blockers: list[str] = []
     try:
+        github = _read_only_github(github)
         _issue, verified_adc = _approved_issue_adc(github, args.issue, repository)
         plan, _reqs, _oracles, _tests = _load_plan(root, repository, args.issue, args.plan, verified_adc)
         subject = _subject(repository, args.issue, args.pr, args.head, verified_adc, plan)

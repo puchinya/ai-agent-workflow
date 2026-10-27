@@ -22,7 +22,7 @@ from p_ases.cli import (
 )
 from p_ases.delivery import ReadinessResult
 from p_ases.evidence_store import VerificationSubject
-from p_ases.github import GitHubError
+from p_ases.github import GitHubError, ReadOnlyGitHub
 from p_ases.owner_consent import OwnerDecisionError
 from p_ases.phase_evidence import PhaseEvidenceError
 from p_ases.user_review import UserReviewResult, UserReviewSubject
@@ -133,6 +133,9 @@ class PasesCLITests(unittest.TestCase):
             effective_branch_rules=Mock(side_effect=GitHubError("forbidden", status_code=403)),
             authenticated_user=Mock(return_value={"id": 3744776}),
         )
+        read_only_github = ReadOnlyGitHub(repository)
+        for method in ("pull_request", "pull_review_decision", "branch_protection", "authenticated_user"):
+            setattr(read_only_github, method, getattr(github, method))
         args = SimpleNamespace(
             issue=63, pr=64, head=head, plan=Path("plan.json"),
             readiness=Path("readiness.json"), verification=Path("verification.json"),
@@ -175,6 +178,7 @@ class PasesCLITests(unittest.TestCase):
             "_same_snapshot_payload": {"return_value": True},
             "_write_immutable": {"return_value": None},
             "build_ruleset_plan": {"side_effect": GitHubError("forbidden", status_code=403)},
+            "_read_only_github": {"return_value": read_only_github},
         }
         def run_delivery():
             output = io.StringIO()

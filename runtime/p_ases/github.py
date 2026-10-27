@@ -953,3 +953,33 @@ class GitHub:
         if len(matches) != 1:
             raise GitHubError("Issue dependency was not confirmed by readback")
         return matches[0]
+
+
+@dataclass
+class ReadOnlyGitHub(GitHub):
+    """Verifier route limited to GitHub GETs and GraphQL query operations."""
+
+    _allowed_methods = frozenset({"GET"})
+
+    def verify_read_only_scope(self) -> None:
+        """Fail closed unless this is the unmodified, GET-only verifier client."""
+        if (type(self) is not ReadOnlyGitHub
+                or self._allowed_methods != frozenset({"GET"})
+                or "request" in vars(self)
+                or "_graphql" in vars(self)
+                or getattr(type(self), "request", None) is not ReadOnlyGitHub.request
+                or getattr(type(self), "_graphql", None) is not ReadOnlyGitHub._graphql):
+            raise GitHubError("read-only GitHub verifier scope is not positively verified")
+
+    def request(self, method: str, endpoint: str, payload: dict[str, Any] | None = None) -> Any:
+        verb = method.upper() if isinstance(method, str) else ""
+        if verb not in self._allowed_methods or payload is not None:
+            raise GitHubError("read-only GitHub verifier client permits GET requests only")
+        return super().request(verb, endpoint)
+
+    def _graphql(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        if (not isinstance(query, str) or not re.match(r"\s*query(?:\s|\(|\{)", query)
+                or re.search(r"\b(?:mutation|subscription)\b", query)
+                or not isinstance(variables, dict)):
+            raise GitHubError("read-only GitHub verifier permits GraphQL query operations only")
+        return super()._graphql(query, variables)

@@ -15,14 +15,15 @@ sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases.delivery import ReadinessResult
 from p_ases.evidence_store import VerificationSubject
-from p_ases.github import GitHubError
+from p_ases.github import GitHub, GitHubError, ReadOnlyGitHub
 from p_ases.phases import Attention, IssueKind, Phase
 from p_ases.user_review import (
     FeedbackSnapshot, UserReviewError, UserReviewResult, UserReviewSession, UserReviewSubject,
     feedback_snapshot_path, review_session_path, write_review_session,
 )
 from p_ases.cli import (
-    _latest_review_snapshot, _parser, _readiness_phase_blocker, _review_phase_transition, _user_review_run,
+    CLIError, _latest_review_snapshot, _parser, _read_only_github, _readiness_phase_blocker,
+    _review_phase_transition, _solo_owner_identity, _user_review_run,
 )
 
 
@@ -31,6 +32,15 @@ VERIFICATION_SUBJECT = VerificationSubject(
     "octo/repo", 31, 37, 123, "b" * 64, "c" * 64, HEAD).validate()
 READINESS = ReadinessResult("PASS", VERIFICATION_SUBJECT, (), ("d" * 64,), "e" * 64).validate()
 USER_SUBJECT = UserReviewSubject(VERIFICATION_SUBJECT, READINESS.sha256).validate()
+
+
+def readonly_fake(github):
+    reader = ReadOnlyGitHub("octo/repo")
+    for name in ("issue", "pull_request", "authenticated_user"):
+        if hasattr(github, name):
+            setattr(reader, name, getattr(github, name))
+    reader.verify_read_only_scope()
+    return reader
 
 
 class UserReviewCliRegressionTests(unittest.TestCase):
@@ -98,9 +108,37 @@ class UserReviewCliRegressionTests(unittest.TestCase):
                 patch("p_ases.cli.read_readiness", return_value=readiness), \
                 patch("p_ases.cli._review_payload_from_github", side_effect=feedback), \
                 patch("p_ases.cli._review_phase_transition", wraps=_review_phase_transition) as transition, \
+                patch("p_ases.cli._read_only_github", side_effect=lambda _github: readonly_fake(github)), \
                 contextlib.redirect_stdout(output):
             status = _user_review_run(args, "octo/repo", root, github)
         return status, json.loads(output.getvalue()), transition
+
+    def test_solo_owner_identity_rejects_generic_writable_github_client(self):
+        with self.assertRaisesRegex(CLIError, "dedicated read-only"):
+            _solo_owner_identity(GitHub("puchinya/ai-agent-workflow"),
+                                 "puchinya/ai-agent-workflow", 63, 64, HEAD)
+
+    def test_user_review_constructs_a_distinct_read_only_client(self):
+        broker = GitHub("puchinya/ai-agent-workflow")
+        reader = _read_only_github(broker)
+        self.assertIsNot(reader, broker)
+        self.assertIs(type(reader), ReadOnlyGitHub)
+        reader.verify_read_only_scope()
+
+    def test_solo_owner_identity_uses_verifier_principal_from_read_only_route(self):
+        reader = ReadOnlyGitHub("puchinya/ai-agent-workflow")
+        reader.repository_metadata = lambda: {
+            "id": 1401910271, "full_name": "puchinya/ai-agent-workflow",
+            "owner": {"type": "User", "id": 3744776, "login": "puchinya"},
+        }
+        reader.pull_request = lambda _number: {
+            "head": {"sha": HEAD}, "user": {"type": "User", "id": 3744776},
+        }
+        reader.authenticated_user = lambda: {"type": "User", "id": 9881, "login": "verifier-bot"}
+        self.assertEqual(
+            _solo_owner_identity(reader, "puchinya/ai-agent-workflow", 63, 64, HEAD),
+            (3744776, 3744776, 9881),
+        )
 
     def test_user_review_parser_leaves_kind_unset_unless_explicitly_requested(self):
         for verb in ("start", "sync", "status"):
