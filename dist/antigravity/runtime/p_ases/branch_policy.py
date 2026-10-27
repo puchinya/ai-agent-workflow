@@ -106,7 +106,8 @@ def _ruleset_summary(
             return False, ("EFFECTIVE_RULE_SHAPE_INVALID",), None
         effective_ids.append(ruleset_id)
     unique_ids = sorted(set(effective_ids))
-    if len(unique_ids) != len(effective_ids) and len(effective_ids) != len(set((row.get("ruleset_id"), row.get("type")) for row in effective_rules)):
+    effective_keys = {(row["ruleset_id"], row["type"]) for row in effective_rules}
+    if len(effective_keys) != len(effective_ids):
         reasons.append("DUPLICATE_EFFECTIVE_RULE")
     if len(unique_ids) != 1:
         reasons.append("ACTIVE_RULESET_MISSING_OR_AMBIGUOUS")

@@ -425,6 +425,88 @@ class RulesetManagementTests(unittest.TestCase):
         self.assertEqual(dict(policy.source_errors)["legacy_protection"], 403)
         self.assertEqual(evidence["source_errors"]["legacy_protection"], 403)
 
+    def test_policy_reads_one_detail_for_distinct_rules_under_the_same_ruleset(self):
+        from p_ases.ruleset_management import _read_policy
+
+        rules = [
+            {"type": "pull_request", "parameters": {"required_approving_review_count": 0}},
+            {"type": "required_status_checks", "parameters": {
+                "required_status_checks": [{"context": "ci", "integration_id": 15368}],
+            }},
+            {"type": "non_fast_forward", "parameters": {}},
+        ]
+        effective = [
+            {"ruleset_id": 44, "ruleset_source_type": "Repository",
+             "ruleset_source": REPOSITORY, **copy.deepcopy(rule)}
+            for rule in rules
+        ]
+        detail = {
+            "id": 44, "source": REPOSITORY, "source_type": "Repository",
+            "enforcement": "active", "target": "branch",
+            "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
+            "bypass_actors": [], "rules": rules,
+        }
+
+        class PolicyReads:
+            def __init__(self):
+                self.detail_calls = []
+
+            def branch(self, branch):
+                return {"name": branch, "protected": True}
+
+            def branch_protection(self, _branch):
+                raise GitHubError("legacy protection is not configured", status_code=404)
+
+            def effective_branch_rules(self, _branch):
+                return copy.deepcopy(effective)
+
+            def ruleset_details(self, ruleset_id, *, source_type):
+                self.detail_calls.append((ruleset_id, source_type))
+                return copy.deepcopy(detail)
+
+        github = PolicyReads()
+        policy, evidence = _read_policy(
+            github, REPOSITORY, "main", "solo_owner", (("ci", 15368),), "main",
+        )
+        self.assertEqual(policy.status, "VERIFIED")
+        self.assertEqual(github.detail_calls, [(44, "Repository")])
+        self.assertEqual(len(evidence["ruleset_details"]), 1)
+
+    def test_policy_rejects_inconsistent_source_mapping_for_same_ruleset_id(self):
+        from p_ases.ruleset_management import _read_policy
+
+        effective = [
+            {"ruleset_id": 44, "ruleset_source_type": "Repository",
+             "ruleset_source": REPOSITORY, "type": "pull_request", "parameters": {}},
+            {"ruleset_id": 44, "ruleset_source_type": "Organization",
+             "ruleset_source": "other-org", "type": "required_status_checks", "parameters": {}},
+        ]
+
+        class PolicyReads:
+            def __init__(self):
+                self.detail_calls = 0
+
+            def branch(self, branch):
+                return {"name": branch, "protected": True}
+
+            def branch_protection(self, _branch):
+                raise GitHubError("legacy protection is not configured", status_code=404)
+
+            def effective_branch_rules(self, _branch):
+                return copy.deepcopy(effective)
+
+            def ruleset_details(self, ruleset_id, *, source_type):
+                self.detail_calls += 1
+                return {"id": ruleset_id, "source_type": source_type}
+
+        github = PolicyReads()
+        policy, evidence = _read_policy(
+            github, REPOSITORY, "main", "solo_owner", (("ci", 15368),), "main",
+        )
+        self.assertNotEqual(policy.status, "VERIFIED")
+        self.assertEqual(github.detail_calls, 1)
+        self.assertIsNone(evidence["source_errors"]["ruleset_details"])
+
     def test_lost_ruleset_create_response_recovers_exactly_once(self):
         from p_ases.branch_policy import EffectiveBranchPolicy
 

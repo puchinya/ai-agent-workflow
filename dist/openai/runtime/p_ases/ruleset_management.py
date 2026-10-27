@@ -275,14 +275,23 @@ def _read_policy(github: GitHub, repository: str, branch: str, review_mode: str,
         errors["effective_rules"] = exc.status_code
     if effective is not None:
         details = []
-        seen: set[int] = set()
+        seen: dict[int, tuple[str, str]] = {}
         for row in effective:
             ruleset_id = row.get("ruleset_id")
             source_type = row.get("ruleset_source_type", row.get("source_type"))
-            if type(ruleset_id) is not int or ruleset_id < 1 or ruleset_id in seen:
+            source = row.get("ruleset_source", row.get("source"))
+            if (type(ruleset_id) is not int or ruleset_id < 1
+                    or source_type not in {"Repository", "Organization"}
+                    or not isinstance(source, str) or not source):
                 errors["ruleset_details"] = None
                 continue
-            seen.add(ruleset_id)
+            source_mapping = (source_type, source.casefold())
+            previous_mapping = seen.get(ruleset_id)
+            if previous_mapping is not None:
+                if previous_mapping != source_mapping:
+                    errors["ruleset_details"] = None
+                continue
+            seen[ruleset_id] = source_mapping
             try:
                 details.append(github.ruleset_details(ruleset_id, source_type=source_type))
             except GitHubError as exc:

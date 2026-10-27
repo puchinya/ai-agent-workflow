@@ -138,6 +138,13 @@ class BranchPolicyTests(unittest.TestCase):
         details[0]["source"] = "other/repo"
         self.assertEqual(assess(effective=rules, rulesets=details).status, "MISMATCH")
 
+    def test_duplicate_effective_rule_type_is_rejected(self):
+        rules, details = solo_ruleset()
+        rules.append(dict(rules[0]))
+        result = assess(effective=rules, rulesets=details)
+        self.assertEqual(result.status, "MISMATCH")
+        self.assertIn("DUPLICATE_EFFECTIVE_RULE", result.reason_codes)
+
     def test_check_policy_names_are_not_repository_constants(self):
         custom = RequiredCheckPolicy((("consumer-build", 9876),)).validate()
         effective, details = solo_ruleset(check_rows=(("consumer-build", 9876),))
