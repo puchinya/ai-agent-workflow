@@ -34,9 +34,10 @@ from p_ases.issue_graph import (
     validate_split,
 )
 from p_ases.phase_evidence import (
-    PhaseDecision, PhaseEvidenceError, VerifiedOrdinaryIssueContext,
+    PhaseDecision, PhaseEvidenceError, ReadyPhaseRefresh, VerifiedOrdinaryIssueContext,
     _artifact_impacts, _check_activation, _collect_payload, _readback,
-    _markdown_anchors, _receipt_subject, _validate_ready_traceability, publish_phase_evidence,
+    _markdown_anchors, _receipt_subject, _validate_ready_traceability,
+    publish_phase_evidence, refresh_ready_phase_evidence,
     verify_ordinary_issue_context, verify_phase_evidence, verify_ready_preparation,
 )
 from p_ases.phases import (
@@ -870,6 +871,91 @@ class PhaseEvidenceCollectionTests(unittest.TestCase):
                 return {"id": comment_id}
 
         return FakeGitHub()
+
+    def test_ready_refresh_appends_current_head_receipt_and_exact_repeat_is_noop(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repository, verified = self.make_repository(root)
+            github = self.fake_github(root, repository)
+            github.phase = Phase.READY
+            github.issue_body = "# Issue 40\nStable body.\n"
+            baseline_sha = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=root, check=True,
+                capture_output=True, text=True,
+            ).stdout.strip()
+            document_path = "docs/testing/oracle.md"
+            document_sha = hashlib.sha256((root / document_path).read_bytes()).hexdigest()
+            documents = [{"role": "test-oracle", "path": document_path, "sha256": document_sha}]
+            baseline = PhaseDecision({
+                "schema": "PASES_PHASE_DECISION_V1",
+                "repository": repository,
+                "issue_number": 40,
+                "issue_kind": IssueKind.SINGLE.value,
+                "from_phase": Phase.REQUIREMENTS.value,
+                "to_phase": Phase.READY.value,
+                "adc_comment_id": verified.pointer.comment_id,
+                "adc_sha256": verified.contract.sha256,
+                "branch_ref": "issues/40",
+                "commit_sha40": baseline_sha,
+                "documents": documents,
+                "skip_reasons": {"specification": "not required", "design": "not required"},
+            })
+            github.comments.append({"id": 90, "body": baseline.body()})
+            (root / "notes.txt").write_text("unrelated committed work\n", encoding="utf-8")
+            subprocess.run(["git", "add", "notes.txt"], cwd=root, check=True, capture_output=True)
+            subprocess.run(
+                ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                 "commit", "-m", "unrelated work after ready"],
+                cwd=root, check=True, capture_output=True,
+            )
+
+            def context_for_head(*_args, **_kwargs):
+                commit = subprocess.run(
+                    ["git", "rev-parse", "HEAD"], cwd=root, check=True,
+                    capture_output=True, text=True,
+                ).stdout.strip()
+                issue = github.issue(40)
+                issue["body"] = github.issue_body
+                return VerifiedOrdinaryIssueContext(
+                    issue, verified, IssueKind.SINGLE, "issues/40", commit, True,
+                )
+
+            def current_decision(_github, _root, _issue_number, context):
+                payload = dict(baseline.payload)
+                payload["commit_sha40"] = context.commit_sha40
+                return Phase.REQUIREMENTS, {"specification": "not required", "design": "not required"}, PhaseDecision(payload)
+
+            with patch("p_ases.phase_evidence.verify_ordinary_issue_context", side_effect=context_for_head), \
+                    patch("p_ases.phase_evidence._ready_decision_for_context", side_effect=current_decision), \
+                    patch("p_ases.phase_evidence._find_receipt", return_value=(90, baseline)):
+                comment_id, record, status = refresh_ready_phase_evidence(github, root, 40)
+                self.assertEqual(status, "REFRESHED")
+                self.assertEqual(comment_id, 101)
+                self.assertIsInstance(record, ReadyPhaseRefresh)
+                self.assertEqual(record.payload["predecessor_comment_id"], 90)
+                self.assertEqual(record.payload["commit_sha40"], context_for_head().commit_sha40)
+                self.assertEqual(github.phase, Phase.READY)
+
+                context = context_for_head()
+                ready = verify_ready_preparation(
+                    github, root, 40, IssueKind.SINGLE, verified_context=context,
+                )
+                self.assertEqual(ready.payload["commit_sha40"], context.commit_sha40)
+                repeated_id, repeated, repeated_status = refresh_ready_phase_evidence(github, root, 40)
+                self.assertEqual((repeated_id, repeated, repeated_status), (comment_id, record, "NOOP"))
+                self.assertEqual(len([row for row in github.comments if "PASES_PHASE_READY_REFRESH_V1" in row["body"]]), 1)
+
+                github.issue_body = "# Issue 40\nChanged body.\n"
+                with self.assertRaisesRegex(PhaseEvidenceError, "stale or changed"):
+                    refresh_ready_phase_evidence(github, root, 40)
+                self.assertEqual(len(github.comments), 2)
+
+                github.issue_body = "# Issue 40\nStable body.\n"
+                refresh_index = next(index for index, row in enumerate(github.comments) if row["id"] == comment_id)
+                github.comments[refresh_index]["body"] += "edited"
+                with self.assertRaises(PhaseEvidenceError):
+                    refresh_ready_phase_evidence(github, root, 40)
+                self.assertEqual(len(github.comments), 2)
 
     def test_collection_binds_approved_adc_and_artifacts_to_regular_branch_blobs(self):
         with tempfile.TemporaryDirectory() as temporary:

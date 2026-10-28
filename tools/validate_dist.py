@@ -27,7 +27,8 @@ FORBIDDEN_PATH = re.compile(r"(?i)(?:update-template|refresh-template-manifest|t
 CLI_ROUTES = {
     "project": {"status"}, "context": {"show"},
     "adc": {"validate", "publish", "verify", "restore"},
-    "issue": {"validate-split", "split", "advance", "phase-evidence", "phase-rebaseline", "integration-check"},
+    "issue": {"validate-split", "split", "advance", "phase-evidence", "phase-refresh-ready",
+              "phase-rebaseline", "integration-check"},
     "docs": {"validate", "format"},
     "work": {"base", "branch", "bind", "recover", "adoption-refresh"},
     "pr": {"ensure"}, "verification": {"plan", "collect", "validate", "final", "published"},

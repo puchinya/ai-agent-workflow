@@ -98,6 +98,7 @@ from .phase_evidence import (
     BOOTSTRAP_ISSUES as PHASE_EVIDENCE_BOOTSTRAP_ISSUES,
     PhaseEvidenceError,
     publish_phase_evidence,
+    refresh_ready_phase_evidence,
     verify_ordinary_issue_context,
     verify_ready_preparation,
     verify_phase_evidence,
@@ -4380,6 +4381,14 @@ def _parser() -> argparse.ArgumentParser:
     phase_evidence.add_argument("--root", type=Path, required=True,
                                 help="repository root containing the committed documents")
     phase_evidence.add_argument("--skip-phase", action="append", default=[], metavar="PHASE=REASON")
+    phase_refresh_ready = issue_commands.add_parser(
+        "phase-refresh-ready",
+        help="append an exact current-HEAD READY receipt refresh without changing Issue labels",
+    )
+    phase_refresh_ready.add_argument("issue", type=_positive_number)
+    phase_refresh_ready.add_argument("--repo", help="repository owner/name; defaults to origin")
+    phase_refresh_ready.add_argument("--root", type=Path, required=True,
+                                     help="repository root containing the committed documents")
     integration_check = issue_commands.add_parser("integration-check", help="read back all child merges and parent evidence")
     integration_check.add_argument("parent", type=_positive_number)
     integration_check.add_argument("--verification-comment-id", type=_positive_number,
@@ -5107,6 +5116,22 @@ def main(argv: list[str] | None = None) -> int:
                    "branch_ref": decision.payload["branch_ref"],
                    "commit_sha40": decision.payload["commit_sha40"],
                    "documents": decision.payload["documents"]})
+            return 0
+
+        if args.verb == "phase-refresh-ready":
+            root = _repo_root(str(args.root)).resolve()
+            github = GitHub(repository)
+            comment_id, receipt, result = refresh_ready_phase_evidence(github, root, args.issue)
+            _json({
+                "status": result,
+                "issue": args.issue,
+                "comment_id": comment_id,
+                "schema": receipt.payload["schema"],
+                "phase": receipt.payload.get("phase", receipt.payload.get("to_phase")),
+                "commit_sha40": receipt.payload["commit_sha40"],
+                "ready_decision_comment_id": receipt.payload.get("ready_decision_comment_id", comment_id),
+                "predecessor_comment_id": receipt.payload.get("predecessor_comment_id"),
+            })
             return 0
 
         if args.verb == "advance":

@@ -560,6 +560,35 @@ class PasesCLITests(unittest.TestCase):
         ])
         self.assertEqual((advance.phase_evidence_comment_id, advance.root), (99, ROOT))
 
+    def test_phase_refresh_ready_cli_is_generic_and_reports_current_receipt(self):
+        args = _parser().parse_args([
+            "issue", "phase-refresh-ready", "40", "--repo", "octo/repo", "--root", str(ROOT),
+        ])
+        self.assertEqual((args.namespace, args.verb, args.issue), ("issue", "phase-refresh-ready", 40))
+        receipt = SimpleNamespace(payload={
+            "schema": "PASES_PHASE_READY_REFRESH_V1",
+            "phase": "ready",
+            "commit_sha40": "a" * 40,
+            "ready_decision_comment_id": 90,
+            "predecessor_comment_id": 90,
+        })
+        output = {}
+        with patch("p_ases.cli._repo_root", return_value=ROOT), \
+                patch("p_ases.cli.GitHub", return_value=SimpleNamespace(repo="octo/repo")), \
+                patch("p_ases.cli.refresh_ready_phase_evidence", return_value=(101, receipt, "REFRESHED")) as refresh, \
+                patch("p_ases.cli._json", side_effect=lambda value: output.update(value)):
+            result = main([
+                "issue", "phase-refresh-ready", "40", "--repo", "octo/repo", "--root", str(ROOT),
+            ])
+        self.assertEqual(result, 0)
+        self.assertEqual(output, {
+            "status": "REFRESHED", "issue": 40, "comment_id": 101,
+            "schema": "PASES_PHASE_READY_REFRESH_V1", "phase": "ready",
+            "commit_sha40": "a" * 40, "ready_decision_comment_id": 90,
+            "predecessor_comment_id": 90,
+        })
+        refresh.assert_called_once()
+
     def test_issue_63_approved_adc_publish_requires_exact_supersede_and_runs_phase_bootstrap(self):
         pointer = SimpleNamespace(comment_id=6228771810, sha256="a" * 64,
                                   byte_length=7, state="approved")
