@@ -19,8 +19,10 @@ from .adc import (
     verify_adc_generation,
 )
 from .github import GitHubError
+from .owner_consent import OwnerDecisionError, SCHEMA_V3, read_verified_owner_decision
 
 REPOSITORY = "puchinya/ai-agent-workflow"
+REPOSITORY_ID = 1401910271
 ISSUE_NUMBER = 63
 OWNER_ID = 3744776
 BASELINE_ADC_COMMENT_ID = 6228771805
@@ -221,13 +223,27 @@ def _issue_state(github: Any) -> tuple[dict[str, Any], list[str]]:
     return issue, labels
 
 
+def _require_adc_supersede_decision(github: Any, adc: VerifiedADC) -> None:
+    """Require the exact typed chat-confirmed approval for this ADC generation."""
+    try:
+        read_verified_owner_decision(
+            github, issue_number=ISSUE_NUMBER, owner_id=OWNER_ID,
+            operation="ADC_SUPERSEDE", subject_sha256=adc.pointer.sha256,
+            repository_id=REPOSITORY_ID, expected_schema=SCHEMA_V3,
+        )
+    except OwnerDecisionError as exc:
+        raise PhaseRebaselineError(
+            "ADC phase evidence requires its exact chat-confirmed ADC_SUPERSEDE decision"
+        ) from exc
+
+
 def _approved_generations(github: Any) -> tuple[VerifiedADC, ...]:
     try:
         if getattr(github, "repo", None) != REPOSITORY:
             raise PhaseRebaselineError("phase rebaseline is restricted to puchinya/ai-agent-workflow#63")
         metadata = github.repository_metadata()
         owner = metadata.get("owner") if isinstance(metadata, dict) else None
-        if (not isinstance(metadata, dict) or metadata.get("id") != 1401910271
+        if (not isinstance(metadata, dict) or metadata.get("id") != REPOSITORY_ID
                 or metadata.get("full_name") != REPOSITORY or not isinstance(owner, dict)
                 or owner.get("type") != "User" or owner.get("id") != OWNER_ID):
             raise PhaseRebaselineError("configured repository identity changed")
@@ -237,20 +253,7 @@ def _approved_generations(github: Any) -> tuple[VerifiedADC, ...]:
         current = verify_adc(github, ISSUE_NUMBER)
         if current.pointer.state != "approved":
             raise PhaseRebaselineError("current ADC pointer is not approved")
-        successor_text = current.contract.content.decode("utf-8", errors="strict")
-        # The approved ADC authorizes automatic Phase Intent/Applied execution
-        # and explicitly says a PHASE_REBASE decision is not required. Validate
-        # those contract statements rather than requiring implementation-only
-        # schema and label names to appear in the contract text.
-        required_authority = (
-            "automatic phase rebaseline",
-            "automatic #63 Phase Intent/Applied path",
-            "`PHASE_REBASE` decisionは要求せず",
-            "必須の技術記録を残す",
-        )
-        if ("REQ-F01-015" not in current.contract.requirement_ids
-                or any(term not in successor_text for term in required_authority)):
-            raise PhaseRebaselineError("approved successor ADC does not contain the exact phase-bootstrap authority")
+        _require_adc_supersede_decision(github, current)
         baseline = verify_adc_generation(
             github, ISSUE_NUMBER, BASELINE_ADC_COMMENT_ID, BASELINE_ADC_SHA256, state="approved",
         )
@@ -264,15 +267,6 @@ def _approved_generations(github: Any) -> tuple[VerifiedADC, ...]:
         if (len(chain) < 2 or chain[0].pointer != baseline.pointer
                 or chain[-1].pointer != current.pointer):
             raise PhaseRebaselineError("current approved ADC is not a forward successor of the configured baseline")
-        recovery_edges = _recovery_generation_indexes(chain)
-        if recovery_edges:
-            recovery_authority = (
-                "REQ-F01-018", INTENT_V3_SCHEMA, "6271832228", "6468215907", "6469056354",
-                "phase:execution", "at most one label PUT",
-            )
-            if ("REQ-F01-018" not in current.contract.requirement_ids
-                    or any(term not in successor_text for term in recovery_authority)):
-                raise PhaseRebaselineError("approved ADC does not contain the exact Phase V3 recovery authority")
         return chain
     except ADCError as exc:
         raise PhaseRebaselineError(str(exc)) from exc
@@ -903,6 +897,13 @@ def rebaseline_issue_phase(github: Any, issue_number: int = ISSUE_NUMBER) -> dic
         if v1_intent is None or v1_applied is None:
             raise PhaseRebaselineError("new ADC generation requires the completed immutable V1 predecessor pair")
         recovery_generations = _recovery_generation_indexes(adc_chain)
+        incomplete_recoveries = [
+            recovery_index for recovery_index in recovery_generations
+            if (v2_pairs.get(recovery_index) is None or v2_pairs[recovery_index][1] is None)
+        ]
+        for recovery_index in incomplete_recoveries:
+            recovery_successor = recovery_generations[recovery_index][1]
+            _require_adc_supersede_decision(github, recovery_successor)
         for recovery_index, (predecessor, recovery_successor) in sorted(recovery_generations.items()):
             recovery_pair = v2_pairs.get(recovery_index)
             if recovery_pair is not None:

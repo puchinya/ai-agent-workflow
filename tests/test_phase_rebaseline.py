@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases.adc import ADCPointer, parse_adc  # noqa: E402
 from p_ases.github import GitHubError  # noqa: E402
+from p_ases.owner_consent import OwnerDecisionError  # noqa: E402
 from p_ases import phase_rebaseline as phase_module  # noqa: E402
 from p_ases.phase_rebaseline import (  # noqa: E402
     APPLIED_SCHEMA,
@@ -43,13 +44,9 @@ CURRENT_ADC_SHA256 = "f1cab9b9edca34d4e80c486642059881b62abd5d95b993999a52494494
 
 def verified(comment_id: int, sha256: str, state: str = "approved") -> SimpleNamespace:
     pointer = ADCPointer(comment_id, sha256, 100, state)
-    authority = ("REQ-F01-015 REQ-F01-018 automatic phase rebaseline automatic #63 Phase Intent/Applied path "
-                 "`PHASE_REBASE` decisionは要求せず、必須の技術記録を残す "
-                 "PASES_PHASE_REBASE_INTENT_V3 6271832228 6468215907 6469056354 "
-                 "phase:execution at most one label PUT")
     return SimpleNamespace(pointer=pointer, contract=SimpleNamespace(
-        sha256=sha256, content=authority.encode("utf-8"),
-        requirement_ids=("REQ-F01-015", "REQ-F01-018")))
+        sha256=sha256, content=b"approved ADC fixture",
+        requirement_ids=()))
 
 
 def canonical_body(schema: str, payload: dict) -> str:
@@ -143,6 +140,13 @@ class FakeGitHub:
 
 
 class PhaseRebaselineTests(unittest.TestCase):
+    def setUp(self):
+        self.owner_decision_reader = patch.object(
+            phase_module, "read_verified_owner_decision", return_value=SimpleNamespace(comment_id=1),
+        )
+        self.owner_decision_reader.start()
+        self.addCleanup(self.owner_decision_reader.stop)
+
     def call(self, github: FakeGitHub):
         current = verified(6228771810, NEW_SHA)
         predecessor = verified(BASELINE_ADC_COMMENT_ID, OLD_SHA)
@@ -683,20 +687,32 @@ class PhaseRebaselineTests(unittest.TestCase):
         self.assertFalse(github.comments)
         self.assertFalse(any(call[0] == "replace_issue_labels" for call in github.calls))
 
-    def test_approved_pointer_without_phase_authority_in_successor_adc_blocks(self):
+    def test_approved_pointer_without_typed_chat_approval_blocks(self):
         github = FakeGitHub()
         current = SimpleNamespace(
             pointer=ADCPointer(6228771810, NEW_SHA, 100, "approved"),
-            contract=SimpleNamespace(content=b"REQ-F01-015 but no phase-bootstrap authority",
-                                     requirement_ids=("REQ-F01-015",)),
+            contract=SimpleNamespace(content=b"approved ADC bytes", requirement_ids=()),
         )
         predecessor = verified(BASELINE_ADC_COMMENT_ID, OLD_SHA)
         with patch.object(phase_module, "verify_adc", return_value=current), \
                 patch.object(phase_module, "verify_adc_generation", return_value=predecessor), \
-                patch.object(phase_module, "verify_adc_forward_generations", return_value=(predecessor, current)):
-            with self.assertRaisesRegex(PhaseRebaselineError, "does not contain the exact phase-bootstrap authority"):
+                patch.object(phase_module, "verify_adc_forward_generations", return_value=(predecessor, current)), \
+                patch.object(phase_module, "read_verified_owner_decision",
+                             side_effect=OwnerDecisionError("missing exact decision")):
+            with self.assertRaisesRegex(PhaseRebaselineError, "exact chat-confirmed ADC_SUPERSEDE decision"):
                 rebaseline_issue_phase(github, 63)
         self.assertFalse(github.comments)
+        self.assertFalse(any(call[0] == "replace_issue_labels" for call in github.calls))
+
+    def test_incomplete_v3_recovery_requires_typed_approval_for_recovery_adc(self):
+        github = FakeGitHub(["enhancement", "phase:execution", "kind:single"])
+        self.add_v2_predecessor_for_recovery(github)
+        with patch.object(phase_module, "read_verified_owner_decision",
+                          side_effect=[SimpleNamespace(comment_id=1),
+                                       OwnerDecisionError("missing recovery approval")]):
+            with self.assertRaisesRegex(PhaseRebaselineError, "exact chat-confirmed ADC_SUPERSEDE decision"):
+                self.call_v3_recovery(github)
+        self.assertFalse(any(row["body"].startswith(f"<!-- {INTENT_V3_SCHEMA}\n") for row in github.comments))
         self.assertFalse(any(call[0] == "replace_issue_labels" for call in github.calls))
 
     def test_missing_github_write_permission_is_reported_without_requesting_phase_approval(self):
