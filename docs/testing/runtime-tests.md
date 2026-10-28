@@ -2,7 +2,7 @@
 <!-- agent-doc-schema: 2 -->
 # Runtime and CLI Test Specification
 
-- Status: Issue #63 is OPEN at `phase:requirements`. Current approved ADC comment #6469199612 has SHA-256 `84ff1f8ee6582c65d937a755593efad98ca481254712c05f35d73f6510cf12d8`. The V3 recovery generations are Intent/Applied #6469356263/#6469538910 and #6469619562/#6470070164; current ADC V2 generation is #6470193595/#6470279567. Implementation of the approved Independent Review confidence behavior is in progress. No current-HEAD PASES Independent Review V2, Readiness PASS, or User Review record has been produced by this change yet.
+- Status: Issue #63 is OPEN at `phase:requirements`. Current approved ADC comment #6471580482 has SHA-256 `22ec1585a11d9a791eaf9b0e89baf604775e5168b3f5844a290485a7aab5d218`; its Phase V2 Intent/Applied pair is #6472026312/#6472411402. The V3 recovery generations remain #6469356263/#6469538910 and #6469619562/#6470070164. PR #64 HEAD immediately before this documentation update was `5d1267f1ba436d3681ea261372aca6ea084a757e`; it had no current-head Independent Review V2, Readiness PASS, or User Review record. These changes require fresh exact-HEAD evidence.
 - Owning specification: ../specs/
 
 The stable RT test IDs preserve the earlier traceability graph. Current CLI cases use the namespaced P-ASES routes. Procedures for APIs that the Runtime Specification marks legacy are regression conditions for retained internal behavior, not public-command compatibility requirements.
@@ -55,6 +55,8 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
     - [2.21.1 ORA-RT-021 Expected result](#2211-ora-rt-021-expected-result)
   - [2.22 TST-RT-022 Versioned Independent Review provenance confidence](#222-tst-rt-022-versioned-independent-review-provenance-confidence)
     - [2.22.1 ORA-RT-022 Expected result](#2221-ora-rt-022-expected-result)
+  - [2.23 TST-RT-023 Independent Review result ingestion with optional host IDs](#223-tst-rt-023-independent-review-result-ingestion-with-optional-host-ids)
+    - [2.23.1 ORA-RT-023 Expected result](#2231-ora-rt-023-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -103,6 +105,8 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
 - [ORA-RT-021](#ora-rt-021) — 2.21.1 ORA-RT-021 Expected result
 - [TST-RT-022](#tst-rt-022) — 2.22 TST-RT-022 Versioned Independent Review provenance confidence
 - [ORA-RT-022](#ora-rt-022) — 2.22.1 ORA-RT-022 Expected result
+- [TST-RT-023](#tst-rt-023) — 2.23 TST-RT-023 Independent Review result ingestion with optional host IDs
+- [ORA-RT-023](#ora-rt-023) — 2.23.1 ORA-RT-023 Expected result
 <!-- heading-map:end -->
 
 
@@ -375,3 +379,13 @@ Before V2 Applied, refresh returns `ADC_REFRESH_PENDING_PHASE_REBASELINE` and ap
 #### 2.22.1 ORA-RT-022 Expected result
 
 V1 records round-trip with their original schema, digest, and bytes. A valid V2 result with a distinct child context and current exact subject is accepted when host IDs are missing; it is persisted as `PASES_INDEPENDENT_REVIEW_V2` with `LIMITED` confidence and missing IDs visible. A complete matching identity set is `HIGH`. Missing IDs alone do not prevent Readiness PASS when every other gate passes. Malformed IDs, an available binding mismatch, a known same-context spawn/reviewer ID, stale subject, unresolved A/B finding, failed/unknown child outcome, or non-PASS verdict remain non-passing. V2 does not claim host authenticity or replace actual host spawn/join and child-result requirements.
+
+<a id="tst-rt-023"></a>
+### 2.23 TST-RT-023 Independent Review result ingestion with optional host IDs
+
+**Setup and action:** Provide the runtime with an unchanged, child-authored review result bound to the current repository, Issue, PR, approved ADC, HEAD, full diff, checklist, and test evidence. Model a host that has actually spawned and joined a fresh native child, then ingest the same valid result with all host IDs absent, each optional ID absent in turn, and all IDs available and matching. Record the artifact bytes before and after ingestion, the persisted V2 fields, confidence and missing-ID report, and Readiness result. Cross-check that the host lifecycle—not the runtime fixture—is exercised by [TST-UR-007](pases-lifecycle-tests.md#tst-ur-007) and [TST-UR-008](pases-lifecycle-tests.md#tst-ur-008). Also inject no child result, unknown spawn/join outcome, a known same-context identity, a mismatching available binding, malformed or stale evidence, incomplete checklist, blocking finding, and non-PASS verdict.
+
+<a id="ora-rt-023"></a>
+#### 2.23.1 ORA-RT-023 Expected result
+
+For a valid joined-child result, runtime ingestion accepts missing optional host IDs, preserves the raw result unchanged, stores `PASES_INDEPENDENT_REVIEW_V2` with `LIMITED` confidence, and reports each missing ID. A complete matching set yields `HIGH`. Missing IDs do not mean the review was skipped; the host must still perform and verify the actual spawn, join, and child-result handoff as required by TST-UR-007/008. With all other exact-subject gates passing, `LIMITED` alone does not block Readiness. No result, failed or unknown spawn/join, known same-context identity, mismatch, stale or malformed evidence, incomplete checklist, blocking finding, or non-PASS verdict remains non-passing and cannot advance the lifecycle.

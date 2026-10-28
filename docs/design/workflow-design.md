@@ -2,7 +2,7 @@
 <!-- agent-doc-schema: 2 -->
 # Portable Workflow Design
 
-- Status: Issue #63 is OPEN at `phase:requirements`. Current approved ADC comment #6469199612 has SHA-256 `84ff1f8ee6582c65d937a755593efad98ca481254712c05f35d73f6510cf12d8`. The V3 recovery generations are Intent/Applied #6469356263/#6469538910 and #6469619562/#6470070164; current ADC V2 generation is #6470193595/#6470279567. Implementation of the approved Independent Review confidence behavior is in progress. No current-HEAD PASES Independent Review V2, Readiness PASS, or User Review record has been produced by this change yet.
+- Status: Issue #63 is OPEN at `phase:requirements`. Current approved ADC comment #6471580482 has SHA-256 `22ec1585a11d9a791eaf9b0e89baf604775e5168b3f5844a290485a7aab5d218`; its Phase V2 Intent/Applied pair is #6472026312/#6472411402. The V3 recovery generations remain #6469356263/#6469538910 and #6469619562/#6470070164. PR #64 HEAD immediately before this documentation update was `5d1267f1ba436d3681ea261372aca6ea084a757e`; it had no current-head Independent Review V2, Readiness PASS, or User Review record. These changes require fresh exact-HEAD evidence.
 - Owning Issue: [Issue #7](https://github.com/puchinya/ai-agent-workflow/issues/7)
 - Related specification: [Portable Workflow Specification](../specs/workflow-spec.md)
 
@@ -21,7 +21,8 @@
   - [5.6 DES-F01-013 Bootstrap and independent delivery gates](#56-des-f01-013-bootstrap-and-independent-delivery-gates)
   - [5.7 DES-F01-014 Activation-scoped administrator session](#57-des-f01-014-activation-scoped-administrator-session)
   - [5.8 DES-F01-015 Chat-confirmed decisions and separated operations](#58-des-f01-015-chat-confirmed-decisions-and-separated-operations)
-  - [5.9 DES-F01-018 Exact Phase evidence recovery](#59-des-f01-018-exact-phase-evidence-recovery)
+  - [5.9 DES-F01-016 Native Independent Review execution and confidence](#59-des-f01-016-native-independent-review-execution-and-confidence)
+  - [5.10 DES-F01-018 Exact Phase evidence recovery](#510-des-f01-018-exact-phase-evidence-recovery)
 - [6 DES-WF-003 Workspace execution flow](#6-des-wf-003-workspace-execution-flow)
 - [7 DES-WF-004 Failure handling](#7-des-wf-004-failure-handling)
 - [8 DES-WF-005 Authorization boundary and PR handoff](#8-des-wf-005-authorization-boundary-and-pr-handoff)
@@ -42,7 +43,8 @@
 - [DES-F01-013](#des-f01-013) — 5.6 DES-F01-013 Bootstrap and independent delivery gates
 - [DES-F01-014](#des-f01-014) — 5.7 DES-F01-014 Activation-scoped administrator session
 - [DES-F01-015](#des-f01-015) — 5.8 DES-F01-015 Chat-confirmed decisions and separated operations
-- [DES-F01-018](#des-f01-018) — 5.9 DES-F01-018 Exact Phase evidence recovery
+- [DES-F01-016](#des-f01-016) — 5.9 DES-F01-016 Native Independent Review execution and confidence
+- [DES-F01-018](#des-f01-018) — 5.10 DES-F01-018 Exact Phase evidence recovery
 - [DES-WF-003](#des-wf-003) — 6 DES-WF-003 Workspace execution flow
 - [DES-WF-004](#des-wf-004) — 7 DES-WF-004 Failure handling
 - [DES-WF-005](#des-wf-005) — 8 DES-WF-005 Authorization boundary and PR handoff
@@ -67,7 +69,7 @@ Legacy design note: detailed procedures below that still mention the former flat
 | One semantic owner per rule | Workflow phase policy lives in this specification; CLI data and failure semantics live in the [Runtime specification](../specs/runtime-spec.md). |
 | Sixteen host-portable Skills | The exact canonical inventory lives under `workflow/skills/`; the distribution builder copies it unchanged. |
 | Compact context routing | The runtime emits validated paths and identifiers rather than document contents. |
-| Review is evidence, not approval | Self-review and independent-review records bind claims to contract units, checklist, and exact PR HEAD. The host owns mandatory native subagent provenance; runtime context-ID validation does not authenticate the host session. |
+| Review is evidence, not approval | Self-review and independent-review records bind claims to contract units, checklist, and exact PR HEAD. The host must spawn and join a fresh native child even when optional host IDs are unavailable; those IDs affect recorded confidence, not whether the review runs. Runtime context-ID validation does not authenticate the host session. |
 | Self-review covers the complete approved contract | A schema-v2 contract-conformance layer records evidence for deterministic H2 units; safely normalized new Reviewer Checklist H2 may be excluded, while legacy/non-canonical historical checklist H2 remains covered as a unit. The Reviewer Checklist remains a separate concise summary. |
 | Durable documents agree in the final result | The Issue carries Specification, Design, and Status decisions; implementation checks them against the final diff, and self-review verifies alignment. Artifact creation/edit order is not an acceptance condition. |
 | Four evidence gates precede Required Checks | The delivery gate checks Final Verification, self-review, QA, and Independent Review in order before Required Checks for the same current HEAD. |
@@ -200,7 +202,15 @@ For a new approved ADC publication, the shared `validate_approval_ready_adc` che
 
 <a id="des-f01-018"></a>
 <a id="des-f01-018-exact-phase-evidence-recovery"></a>
-### 5.9 DES-F01-018 Exact Phase evidence recovery
+<a id="des-f01-016"></a>
+### 5.9 DES-F01-016 Native Independent Review execution and confidence
+
+The host owns the review lifecycle. Once the exact current subject and review inputs are ready, it starts one dedicated fresh native child, waits for that child to finish, and collects the child's own result. Missing host-reported spawn/session, reviewer, or implementation-binding identifiers do not suppress this lifecycle. The host records every identifier it can supply and passes the child's result to the existing runtime unchanged. A complete matching identity set yields `HIGH`; missing optional identifiers yield `LIMITED` and are listed. The runtime never infers that a child ran from IDs or from an artifact alone.
+
+The child's result must bind the current repository, Issue, PR, approved ADC, HEAD, full diff, checklist, and test evidence. No child result, failed or unknown spawn/join, same-context identity, stale or malformed result, available binding mismatch, incomplete checklist, non-PASS verdict, unresolved A/B finding, or blocking C finding remains blocking. Missing IDs alone do not block a valid joined child's result. Independent Review remains a required gate before Readiness and the User Review handoff; confidence describes provenance completeness and does not replace performing the review. V1 bytes and all existing Verification, Acceptance, Self-Audit, CI, User Review, Final Delivery, and merge gates remain unchanged.
+
+<a id="des-f01-018"></a>
+### 5.10 DES-F01-018 Exact Phase evidence recovery
 
 The V3 Phase receipt path is a one-time recovery for exactly the two approved #63 ADC edges enumerated by REQ-F01-018. V1 and V2 histories remain immutable and retain their original validation rules. Each V3 pair is chained to the immediately preceding Applied comment ID and canonical payload digest, and binds the exact predecessor/successor ADC IDs and digests, Issue body digest, complete sorted labels, operation, phases, and authenticated executor. The `execution -> requirements` edge may issue one label PUT only when the live phase is exactly `execution`; the following `requirements -> requirements` edge records the existing full label set and performs no label write. The current ADC generation and every later ordinary successor use V2. Before and after each append or label mutation, the runtime verifies exact Issue/ADC/history state. Lost responses are resolved by readback, never by replaying a confirmed label write; out-of-scope edges, gaps, mismatches, duplicates, or edits block.
 

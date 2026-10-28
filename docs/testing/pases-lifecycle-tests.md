@@ -2,7 +2,7 @@
 <!-- agent-doc-schema: 2 -->
 # P-ASES Human Review and Integration Test Specification
 
-- Status: Issue #63 is OPEN at `phase:requirements`. Current approved ADC comment #6469199612 has SHA-256 `84ff1f8ee6582c65d937a755593efad98ca481254712c05f35d73f6510cf12d8`. The V3 recovery generations are Intent/Applied #6469356263/#6469538910 and #6469619562/#6470070164; current ADC V2 generation is #6470193595/#6470279567. Implementation of the approved Independent Review confidence behavior is in progress. No current-HEAD PASES Independent Review V2, Readiness PASS, or User Review record has been produced by this change yet.
+- Status: Issue #63 is OPEN at `phase:requirements`. Current approved ADC comment #6471580482 has SHA-256 `22ec1585a11d9a791eaf9b0e89baf604775e5168b3f5844a290485a7aab5d218`; its Phase V2 Intent/Applied pair is #6472026312/#6472411402. The V3 recovery generations remain #6469356263/#6469538910 and #6469619562/#6470070164. PR #64 HEAD immediately before this documentation update was `5d1267f1ba436d3681ea261372aca6ea084a757e`; it had no current-head Independent Review V2, Readiness PASS, or User Review record. These changes require fresh exact-HEAD evidence.
 - Owning specification: ../specs/workflow-spec.md
 
 <!-- contents:start -->
