@@ -17,10 +17,11 @@ sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases.adc import publish_adc
 from p_ases.cli import (
-    CLI_ADVANCE_TARGETS, CLIError, OwnerAuthorizationError, _delivery_final,
+    CLI_ADVANCE_TARGETS, CLIError, OwnerAuthorizationError, _audit_independent, _delivery_final,
     _owner_merge_gate, _parser, _work_command, main,
 )
 from p_ases.delivery import ReadinessResult
+from p_ases.audits import IndependentReviewV2, read_independent_review
 from p_ases.evidence_store import VerificationSubject
 from p_ases.github import GitHubError, ReadOnlyGitHub
 from p_ases.owner_consent import OwnerDecisionError
@@ -42,6 +43,77 @@ def ordinary_context(github, adc=None):
 
 
 class PasesCLITests(unittest.TestCase):
+    def test_independent_audit_accepts_real_child_result_with_missing_host_ids_as_limited(self):
+        subject = VerificationSubject("octo/repo", 30, 55, 123, "a" * 64, "b" * 64, "c" * 40)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifact = {
+                "context_id": "fresh-child-context", "findings": [], "provenance": "",
+                "reviewed_head_sha40": subject.pr_head_sha40, "schema": "PASES_INDEPENDENT_REVIEW_CONTEXT_V1",
+                "session_description": "Reviewed exact PR diff and checklist", "subject": subject.as_dict(),
+                "verdict": "PASS",
+            }
+            (root / "child-review.json").write_text(json.dumps(artifact), encoding="utf-8")
+            args = SimpleNamespace(input=root / "child-review.json", issue=30, plan=Path("plan.json"),
+                                   pr=55, head=subject.pr_head_sha40)
+            output = io.StringIO()
+            with patch("p_ases.cli._audit_subject", return_value=(object(), subject, (), {})), \
+                    patch("p_ases.cli._read_execution_identity", return_value=object()), \
+                    patch("p_ases.cli.execution_identity_context_id", return_value="execution-binding:current"), \
+                    contextlib.redirect_stdout(output):
+                status = _audit_independent(args, "octo/repo", root, object())
+            self.assertEqual(status, 0)
+            result = json.loads(output.getvalue())
+            self.assertEqual(result["status"], "PASS")
+            self.assertEqual(result["review_schema"], "PASES_INDEPENDENT_REVIEW_V2")
+            self.assertEqual(result["provenance_confidence"], "LIMITED")
+            review = read_independent_review(Path(result["path"]))
+            self.assertIsInstance(review, IndependentReviewV2)
+            self.assertIsNone(review.spawn_session_id)
+            self.assertIsNone(review.reviewer_id)
+            self.assertIsNone(review.implementation_binding_id)
+
+    def test_independent_audit_accepts_matching_available_binding_and_rejects_mismatch(self):
+        subject = VerificationSubject("octo/repo", 30, 55, 123, "a" * 64, "b" * 64, "c" * 40)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            provenance = json.dumps({
+                "implementation_binding_id": "execution-binding:current",
+                "reviewer_id": 456,
+                "spawn_session_id": "spawn-123",
+            }, sort_keys=True, separators=(",", ":"))
+            artifact = {
+                "context_id": "fresh-child-context", "findings": [], "provenance": provenance,
+                "reviewed_head_sha40": subject.pr_head_sha40, "schema": "PASES_INDEPENDENT_REVIEW_CONTEXT_V1",
+                "session_description": "Reviewed exact PR diff and checklist", "subject": subject.as_dict(),
+                "verdict": "PASS",
+            }
+            (root / "child-review.json").write_text(json.dumps(artifact), encoding="utf-8")
+            args = SimpleNamespace(input=root / "child-review.json", issue=30, plan=Path("plan.json"),
+                                   pr=55, head=subject.pr_head_sha40)
+            output = io.StringIO()
+            with patch("p_ases.cli._audit_subject", return_value=(object(), subject, (), {})), \
+                    patch("p_ases.cli._read_execution_identity", return_value=object()), \
+                    patch("p_ases.cli.execution_identity_context_id", return_value="execution-binding:current"), \
+                    contextlib.redirect_stdout(output):
+                self.assertEqual(_audit_independent(args, "octo/repo", root, object()), 0)
+            review = read_independent_review(Path(json.loads(output.getvalue())["path"]))
+            self.assertEqual(review.provenance_confidence, "HIGH")
+            self.assertEqual(review.implementation_binding_id, "execution-binding:current")
+
+            (root / "child-review.json").write_text(json.dumps({
+                **artifact,
+                "provenance": json.dumps({
+                    "implementation_binding_id": "execution-binding:stale",
+                    "reviewer_id": 456, "spawn_session_id": "spawn-456",
+                }, sort_keys=True, separators=(",", ":")),
+            }), encoding="utf-8")
+            with patch("p_ases.cli._audit_subject", return_value=(object(), subject, (), {})), \
+                    patch("p_ases.cli._read_execution_identity", return_value=object()), \
+                    patch("p_ases.cli.execution_identity_context_id", return_value="execution-binding:current"):
+                with self.assertRaisesRegex(CLIError, "does not match the current execution"):
+                    _audit_independent(args, "octo/repo", root, object())
+
     def test_owner_merge_gate_accepts_only_well_shaped_final_delivery_schemas(self):
         head = "a" * 40
         subject = {

@@ -22,6 +22,9 @@ from p_ases.phase_rebaseline import (  # noqa: E402
     INTENT_SCHEMA,
     INTENT_V2_SCHEMA,
     APPLIED_V2_SCHEMA,
+    INTENT_V3_SCHEMA,
+    APPLIED_V3_SCHEMA,
+    V3_RECOVERY_GENERATIONS,
     OWNER_ID,
     REPOSITORY,
     PhaseRebaselineError,
@@ -40,10 +43,13 @@ CURRENT_ADC_SHA256 = "f1cab9b9edca34d4e80c486642059881b62abd5d95b993999a52494494
 
 def verified(comment_id: int, sha256: str, state: str = "approved") -> SimpleNamespace:
     pointer = ADCPointer(comment_id, sha256, 100, state)
-    authority = ("REQ-F01-015 automatic phase rebaseline automatic #63 Phase Intent/Applied path "
-                 "`PHASE_REBASE` decisionは要求せず、必須の技術記録を残す")
+    authority = ("REQ-F01-015 REQ-F01-018 automatic phase rebaseline automatic #63 Phase Intent/Applied path "
+                 "`PHASE_REBASE` decisionは要求せず、必須の技術記録を残す "
+                 "PASES_PHASE_REBASE_INTENT_V3 6271832228 6468215907 6469056354 "
+                 "phase:execution at most one label PUT")
     return SimpleNamespace(pointer=pointer, contract=SimpleNamespace(
-        sha256=sha256, content=authority.encode("utf-8"), requirement_ids=("REQ-F01-015",)))
+        sha256=sha256, content=authority.encode("utf-8"),
+        requirement_ids=("REQ-F01-015", "REQ-F01-018")))
 
 
 def canonical_body(schema: str, payload: dict) -> str:
@@ -93,7 +99,7 @@ class FakeGitHub:
 
     def create_issue_comment(self, number: int, body: str) -> dict:
         schema = body.split("\n", 1)[0][5:]
-        is_applied = schema in {APPLIED_SCHEMA, APPLIED_V2_SCHEMA}
+        is_applied = schema in {APPLIED_SCHEMA, APPLIED_V2_SCHEMA, APPLIED_V3_SCHEMA}
         if is_applied and self.fail_applied_comment_once:
             self.fail_applied_comment_once = False
             raise GitHubError("simulated response interruption")
@@ -249,6 +255,51 @@ class PhaseRebaselineTests(unittest.TestCase):
             stack.enter_context(patch.object(
                 phase_module, "verify_adc_forward_generations", return_value=chain))
             return rebaseline_issue_phase(github, 63)
+
+    def call_v3_recovery(self, github: FakeGitHub):
+        first_predecessor_id, first_predecessor_sha, first_successor_id, first_successor_sha = V3_RECOVERY_GENERATIONS[0]
+        _second_predecessor_id, _second_predecessor_sha, second_successor_id, second_successor_sha = V3_RECOVERY_GENERATIONS[1]
+        chain = (
+            verified(BASELINE_ADC_COMMENT_ID, BASELINE_ADC_SHA256),
+            verified(PREVIOUS_ADC_COMMENT_ID, PREVIOUS_ADC_SHA256),
+            verified(first_predecessor_id, first_predecessor_sha),
+            verified(first_successor_id, first_successor_sha),
+            verified(second_successor_id, second_successor_sha),
+            verified(6469199612, "84ff1f8ee6582c65d937a755593efad98ca481254712c05f35d73f6510cf12d8"),
+        )
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(phase_module, "verify_adc", return_value=chain[-1]))
+            stack.enter_context(patch.object(phase_module, "verify_adc_generation", return_value=chain[0]))
+            stack.enter_context(patch.object(phase_module, "verify_adc_forward_generations", return_value=chain))
+            return rebaseline_issue_phase(github, 63)
+
+    def add_v2_predecessor_for_recovery(self, github: FakeGitHub) -> dict:
+        _old_intent, old_applied = self.add_historical_v1_pair(github)
+        first_predecessor_id, first_predecessor_sha, _successor_id, _successor_sha = V3_RECOVERY_GENERATIONS[0]
+        predecessor = verified(PREVIOUS_ADC_COMMENT_ID, PREVIOUS_ADC_SHA256)
+        successor = verified(first_predecessor_id, first_predecessor_sha)
+        previous = phase_module._record_from_row(old_applied, APPLIED_SCHEMA)
+        labels = ["enhancement", "kind:single", "phase:requirements"]
+        payload = phase_module._intent_v2_payload(predecessor, successor, previous,
+                                                  github.issue_body, labels, ACTOR_ID)
+        intent_row = github.add_record(6272033112, INTENT_V2_SCHEMA, payload)
+        intent = phase_module._record_from_row(intent_row, INTENT_V2_SCHEMA)
+        applied_payload = {
+            "schema": APPLIED_V2_SCHEMA, "repository": REPOSITORY, "issue_number": 63,
+            "intent_comment_id": intent.comment_id, "intent_sha256": intent.payload_sha256,
+            "predecessor_adc_comment_id": predecessor.pointer.comment_id,
+            "predecessor_adc_sha256": predecessor.pointer.sha256,
+            "successor_adc_comment_id": successor.pointer.comment_id,
+            "successor_adc_sha256": successor.pointer.sha256,
+            "previous_applied_comment_id": previous.comment_id,
+            "previous_applied_payload_sha256": previous.payload_sha256,
+            "operation": "adopt_existing_requirements", "from_phase": "requirements",
+            "to_phase": "requirements", "labels_after": payload["labels_after"],
+            "issue_body_sha256": payload["issue_body_sha256"], "executor_user_id": ACTOR_ID,
+        }
+        applied = github.add_record(6272087499, APPLIED_V2_SCHEMA, applied_payload)
+        github.next_comment_id = 6469199622
+        return applied
 
     def test_approved_adc_bootstraps_without_phase_decision_and_preserves_all_other_labels(self):
         github = FakeGitHub(["enhancement", "phase:ready", "kind:single", "attention:review"])
@@ -425,6 +476,78 @@ class PhaseRebaselineTests(unittest.TestCase):
         self.assertEqual(tuple(row["body"] for row in github.comments[:2]), v1_bytes)
         self.assertEqual(tuple(row["body"] for row in github.comments[2:4]), first_v2_bytes)
         self.assertFalse(any(call[0] == "replace_issue_labels" for call in github.calls))
+
+    def test_exact_v3_recovery_is_ordered_and_then_latest_generation_uses_v2(self):
+        github = FakeGitHub(["enhancement", "phase:execution", "kind:single"])
+        self.add_v2_predecessor_for_recovery(github)
+        v1_bytes = tuple(row["body"] for row in github.comments[:2])
+
+        first = self.call_v3_recovery(github)
+
+        self.assertEqual(first["status"], "APPLIED_V3")
+        self.assertEqual(first["label_writes"], 1)
+        self.assertEqual(github.labels, ["enhancement", "kind:single", "phase:requirements"])
+        first_intent, first_applied = github.comments[-2:]
+        self.assertTrue(first_intent["body"].startswith(f"<!-- {INTENT_V3_SCHEMA}\n"))
+        self.assertTrue(first_applied["body"].startswith(f"<!-- {APPLIED_V3_SCHEMA}\n"))
+        first_payload = json.loads(first_intent["body"].split("\n", 1)[1][:-3])
+        self.assertEqual(first_payload["predecessor_adc_comment_id"], V3_RECOVERY_GENERATIONS[0][0])
+        self.assertEqual(first_payload["successor_adc_comment_id"], V3_RECOVERY_GENERATIONS[0][2])
+        self.assertEqual(first_payload["from_phase"], "execution")
+        self.assertEqual(first_payload["to_phase"], "requirements")
+
+        writes_before_second = sum(call[0] == "replace_issue_labels" for call in github.calls)
+        second = self.call_v3_recovery(github)
+
+        self.assertEqual(second["status"], "APPLIED_V3")
+        self.assertEqual(second["label_writes"], 0)
+        self.assertEqual(sum(call[0] == "replace_issue_labels" for call in github.calls), writes_before_second)
+        second_intent, second_applied = github.comments[-2:]
+        second_payload = json.loads(second_intent["body"].split("\n", 1)[1][:-3])
+        first_applied_record = phase_module._record_from_row(first_applied, APPLIED_V3_SCHEMA)
+        self.assertEqual(second_payload["predecessor_adc_comment_id"], V3_RECOVERY_GENERATIONS[1][0])
+        self.assertEqual(second_payload["successor_adc_comment_id"], V3_RECOVERY_GENERATIONS[1][2])
+        self.assertEqual(second_payload["operation"], "adopt_existing_requirements")
+        self.assertEqual(second_payload["previous_applied_comment_id"], first_applied["id"])
+        self.assertEqual(second_payload["previous_applied_payload_sha256"], first_applied_record.payload_sha256)
+
+        current = self.call_v3_recovery(github)
+
+        self.assertEqual(current["status"], "RECORDED")
+        self.assertTrue(github.comments[-2]["body"].startswith(f"<!-- {INTENT_V2_SCHEMA}\n"))
+        self.assertTrue(github.comments[-1]["body"].startswith(f"<!-- {APPLIED_V2_SCHEMA}\n"))
+        self.assertEqual(tuple(row["body"] for row in github.comments[:2]), v1_bytes)
+        self.assertEqual(sum(call[0] == "replace_issue_labels" for call in github.calls), 1)
+        self.assertEqual(second_applied["id"], github.comments[-3]["id"])
+
+    def test_interrupted_v3_first_generation_recovers_without_second_label_put(self):
+        github = FakeGitHub(["enhancement", "phase:execution", "kind:single"])
+        self.add_v2_predecessor_for_recovery(github)
+        github.fail_applied_comment_once = True
+
+        with self.assertRaises(PhaseRebaselineError):
+            self.call_v3_recovery(github)
+        self.assertEqual(sum(call[0] == "replace_issue_labels" for call in github.calls), 1)
+        self.assertEqual(github.labels, ["enhancement", "kind:single", "phase:requirements"])
+        self.assertTrue(github.comments[-1]["body"].startswith(f"<!-- {INTENT_V3_SCHEMA}\n"))
+
+        recovered = self.call_v3_recovery(github)
+
+        self.assertEqual(recovered["status"], "RECOVERED_V3")
+        self.assertEqual(sum(call[0] == "replace_issue_labels" for call in github.calls), 1)
+        self.assertTrue(github.comments[-1]["body"].startswith(f"<!-- {APPLIED_V3_SCHEMA}\n"))
+
+    def test_v3_receipt_for_unapproved_generation_blocks_without_writes(self):
+        github = FakeGitHub(["enhancement", "phase:execution", "kind:single"])
+        self.add_v2_predecessor_for_recovery(github)
+        previous = phase_module._record_from_row(github.comments[-1], APPLIED_V2_SCHEMA)
+        # The plan formatter itself refuses an unapproved target before any GitHub write.
+        with self.assertRaisesRegex(PhaseRebaselineError, "outside the exact approved"):
+            payload = phase_module._intent_v3_payload(
+                verified(V3_RECOVERY_GENERATIONS[0][0], V3_RECOVERY_GENERATIONS[0][1]),
+                verified(6468215907, "0" * 64), previous, github.issue_body, github.labels, ACTOR_ID,
+            )
+        self.assertEqual(sum(call[0] == "replace_issue_labels" for call in github.calls), 0)
 
     def test_v2_generation_skip_or_wrong_previous_applied_digest_blocks_without_writes(self):
         skipped = FakeGitHub(["enhancement", "phase:requirements", "kind:single"])

@@ -9,7 +9,7 @@ ROOT = __import__("pathlib").Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases.acceptance import AcceptanceObservation, AcceptanceResult, evaluate_acceptance
-from p_ases.audits import AuditItem, IndependentReview, ReviewFinding, SelfAudit
+from p_ases.audits import AuditItem, IndependentReview, IndependentReviewV2, ReviewFinding, SelfAudit
 from p_ases.checkpoint import PRBinding
 from p_ases.context import WorkContext
 from p_ases.current_base import CurrentBaseAdvanceEvidence
@@ -214,6 +214,21 @@ class WorkReadinessSchemaTests(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             blocking.validate()
+
+    def test_limited_provenance_independent_review_still_passes_readiness(self):
+        subject, context, pr_binding, pr, passed, check, acceptance, audit, _review = setup()
+        review = IndependentReviewV2(
+            subject, "fresh-child-context", "implementation-session", "review-context.json",
+            "3" * 64, (), "PASS", "LIMITED", None, None, None,
+        ).validate()
+        result = evaluate_readiness(
+            subject=subject, pr=pr, pr_binding=pr_binding, work_context=context,
+            verification=passed, acceptance=acceptance, self_audit=audit,
+            required_item_ids=("REQ-08", "REQ-09", "checklist:exact-head"),
+            independent_review=review, required_checks_sha256=check.sha256,
+        )
+        self.assertEqual(result.status, "PASS")
+        self.assertTrue(result.ready_for_user_review)
 
 
 if __name__ == "__main__":

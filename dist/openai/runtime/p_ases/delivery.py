@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .acceptance import AcceptanceResult
-from .audits import AuditError, IndependentReview, SelfAudit
+from .audits import AuditError, IndependentReview, IndependentReviewV2, SelfAudit
 from .checkpoint import CheckpointError, PRBinding
 from .context import WorkContext, WorkContextError
 from .current_base import CurrentBaseAdvanceEvidence
@@ -390,7 +390,7 @@ def evaluate_readiness(
     acceptance: AcceptanceResult | None,
     self_audit: SelfAudit | None,
     required_item_ids: Iterable[str],
-    independent_review: IndependentReview | None,
+    independent_review: IndependentReview | IndependentReviewV2 | None,
     required_checks_sha256: str | None,
     blocker_reasons: Iterable[str] = (),
     current_base_advance: CurrentBaseAdvanceEvidence | None = None,
@@ -559,7 +559,7 @@ def evaluate_readiness(
                 reasons.append(f"self-audit status is {self_audit.status}")
             digest_refs.add(self_audit.sha256)
 
-    if not isinstance(independent_review, IndependentReview):
+    if not isinstance(independent_review, (IndependentReview, IndependentReviewV2)):
         reasons.append("independent review artifact is missing")
     else:
         try:

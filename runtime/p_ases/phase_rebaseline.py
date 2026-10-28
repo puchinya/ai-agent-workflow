@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -28,10 +29,14 @@ INTENT_SCHEMA = "PASES_PHASE_REBASE_INTENT_V1"
 APPLIED_SCHEMA = "PASES_PHASE_REBASE_APPLIED_V1"
 INTENT_V2_SCHEMA = "PASES_PHASE_REBASE_INTENT_V2"
 APPLIED_V2_SCHEMA = "PASES_PHASE_REBASE_APPLIED_V2"
+INTENT_V3_SCHEMA = "PASES_PHASE_REBASE_INTENT_V3"
+APPLIED_V3_SCHEMA = "PASES_PHASE_REBASE_APPLIED_V3"
 INTENT_START = f"<!-- {INTENT_SCHEMA}\n"
 APPLIED_START = f"<!-- {APPLIED_SCHEMA}\n"
 INTENT_V2_START = f"<!-- {INTENT_V2_SCHEMA}\n"
 APPLIED_V2_START = f"<!-- {APPLIED_V2_SCHEMA}\n"
+INTENT_V3_START = f"<!-- {INTENT_V3_SCHEMA}\n"
+APPLIED_V3_START = f"<!-- {APPLIED_V3_SCHEMA}\n"
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
 PHASE_SCHEMAS = {
@@ -39,7 +44,18 @@ PHASE_SCHEMAS = {
     APPLIED_SCHEMA: APPLIED_START,
     INTENT_V2_SCHEMA: INTENT_V2_START,
     APPLIED_V2_SCHEMA: APPLIED_V2_START,
+    INTENT_V3_SCHEMA: INTENT_V3_START,
+    APPLIED_V3_SCHEMA: APPLIED_V3_START,
 }
+
+# Exact approved Issue #63 generations whose previous Phase operation was
+# blocked after publication. V3 may recover only these two ordered pairs.
+V3_RECOVERY_GENERATIONS = (
+    (6271832228, "221e62a86a5b682237948abec1ee287d24d3808a9ad4fa22960be2c869fdcd05",
+     6468215907, "6b2ab1c83aead86efe602b700bdfd33807d1675a56089a6a3ffc29175e2b601a"),
+    (6468215907, "6b2ab1c83aead86efe602b700bdfd33807d1675a56089a6a3ffc29175e2b601a",
+     6469056354, "f03465611fda6df485b323beab212f132cb9df2145827d46d0f0525445584efe"),
+)
 
 
 class PhaseRebaselineError(ValueError):
@@ -147,10 +163,16 @@ def _read_history(github: Any) -> tuple[PhaseRecord, ...]:
             raise PhaseRebaselineError("phase evidence history contains an invalid comment ID")
         if ids != sorted(ids) or len(ids) != len(set(ids)):
             raise PhaseRebaselineError("phase evidence history is duplicated or not append-only")
-        direct_before = {
-            row["id"]: github.issue_comment(ISSUE_NUMBER, row["id"])
-            for row, _schema in first_rows
-        }
+        def direct_readback() -> dict[int, dict[str, Any]]:
+            comment_ids = [row["id"] for row, _schema in first_rows]
+            if not comment_ids:
+                return {}
+            with ThreadPoolExecutor(max_workers=min(4, len(comment_ids))) as executor:
+                rows = list(executor.map(lambda comment_id: github.issue_comment(ISSUE_NUMBER, comment_id),
+                                         comment_ids))
+            return dict(zip(comment_ids, rows, strict=True))
+
+        direct_before = direct_readback()
         second = github.issue_comments(ISSUE_NUMBER)
         second_rows = []
         for row in second:
@@ -160,10 +182,7 @@ def _read_history(github: Any) -> tuple[PhaseRecord, ...]:
         second_ids = [row.get("id") if isinstance(row, dict) else None for row in second_rows]
         if second_ids != ids:
             raise PhaseRebaselineError("phase evidence history changed during direct/list/direct readback")
-        direct_after = {
-            row["id"]: github.issue_comment(ISSUE_NUMBER, row["id"])
-            for row, _schema in first_rows
-        }
+        direct_after = direct_readback()
     except GitHubError as exc:
         raise PhaseRebaselineError(str(exc)) from exc
 
@@ -245,6 +264,15 @@ def _approved_generations(github: Any) -> tuple[VerifiedADC, ...]:
         if (len(chain) < 2 or chain[0].pointer != baseline.pointer
                 or chain[-1].pointer != current.pointer):
             raise PhaseRebaselineError("current approved ADC is not a forward successor of the configured baseline")
+        recovery_edges = _recovery_generation_indexes(chain)
+        if recovery_edges:
+            recovery_authority = (
+                "REQ-F01-018", INTENT_V3_SCHEMA, "6271832228", "6468215907", "6469056354",
+                "phase:execution", "at most one label PUT",
+            )
+            if ("REQ-F01-018" not in current.contract.requirement_ids
+                    or any(term not in successor_text for term in recovery_authority)):
+                raise PhaseRebaselineError("approved ADC does not contain the exact Phase V3 recovery authority")
         return chain
     except ADCError as exc:
         raise PhaseRebaselineError(str(exc)) from exc
@@ -287,6 +315,39 @@ def _intent_v2_payload(predecessor: VerifiedADC, successor: VerifiedADC, previou
         "to_phase": "requirements",
         "labels_before": stable_labels,
         "labels_after": stable_labels,
+        "issue_body_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+        "executor_user_id": executor_user_id,
+    }
+
+
+def _intent_v3_payload(predecessor: VerifiedADC, successor: VerifiedADC, previous_applied: PhaseRecord,
+                       body: str, labels: list[str], executor_user_id: int) -> dict[str, Any]:
+    stable_labels = sorted(labels)
+    edge = (predecessor.pointer.comment_id, predecessor.pointer.sha256,
+            successor.pointer.comment_id, successor.pointer.sha256)
+    if edge == V3_RECOVERY_GENERATIONS[0]:
+        from_phase, operation = "execution", "rebaseline_execution_to_requirements"
+        after = sorted([label for label in stable_labels if label != "phase:execution"]
+                       + ["phase:requirements"])
+    elif edge == V3_RECOVERY_GENERATIONS[1]:
+        from_phase, operation, after = "requirements", "adopt_existing_requirements", stable_labels
+    else:
+        raise PhaseRebaselineError("V3 Intent is outside the exact approved ADC recovery generations")
+    return {
+        "schema": INTENT_V3_SCHEMA,
+        "repository": REPOSITORY,
+        "issue_number": ISSUE_NUMBER,
+        "predecessor_adc_comment_id": predecessor.pointer.comment_id,
+        "predecessor_adc_sha256": predecessor.pointer.sha256,
+        "successor_adc_comment_id": successor.pointer.comment_id,
+        "successor_adc_sha256": successor.pointer.sha256,
+        "previous_applied_comment_id": previous_applied.comment_id,
+        "previous_applied_payload_sha256": previous_applied.payload_sha256,
+        "operation": operation,
+        "from_phase": from_phase,
+        "to_phase": "requirements",
+        "labels_before": stable_labels,
+        "labels_after": after,
         "issue_body_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
         "executor_user_id": executor_user_id,
     }
@@ -426,10 +487,89 @@ def _validate_v2_pair(intent: PhaseRecord, applied: PhaseRecord | None,
         raise PhaseRebaselineError("V2 Applied evidence does not exactly match its Intent")
 
 
+def _recovery_generation_indexes(adc_chain: tuple[VerifiedADC, ...]) -> dict[int, tuple[VerifiedADC, VerifiedADC]]:
+    """Return only the two exact ADC edges authorized for V3 recovery."""
+    recovered: dict[int, tuple[VerifiedADC, VerifiedADC]] = {}
+    for predecessor_id, predecessor_sha, successor_id, successor_sha in V3_RECOVERY_GENERATIONS:
+        matches = [index for index in range(1, len(adc_chain))
+                   if adc_chain[index - 1].pointer.comment_id == predecessor_id
+                   and adc_chain[index - 1].pointer.sha256 == predecessor_sha
+                   and adc_chain[index].pointer.comment_id == successor_id
+                   and adc_chain[index].pointer.sha256 == successor_sha]
+        if len(matches) > 1:
+            raise PhaseRebaselineError("V3 recovery ADC generation is duplicated")
+        if matches:
+            index = matches[0]
+            recovered[index] = (adc_chain[index - 1], adc_chain[index])
+    return recovered
+
+
+def _validate_v3_pair(intent: PhaseRecord, applied: PhaseRecord | None,
+                      predecessor: VerifiedADC, successor: VerifiedADC,
+                      previous_applied: PhaseRecord) -> None:
+    payload = intent.payload
+    first_recovery = successor.pointer.comment_id == V3_RECOVERY_GENERATIONS[0][2]
+    expected_from = "execution" if first_recovery else "requirements"
+    expected_operation = ("rebaseline_execution_to_requirements" if first_recovery
+                          else "adopt_existing_requirements")
+    required = {
+        "schema", "repository", "issue_number", "predecessor_adc_comment_id", "predecessor_adc_sha256",
+        "successor_adc_comment_id", "successor_adc_sha256", "previous_applied_comment_id",
+        "previous_applied_payload_sha256", "operation", "from_phase", "to_phase",
+        "labels_before", "labels_after", "issue_body_sha256", "executor_user_id",
+    }
+    if (set(payload) != required or payload.get("schema") != INTENT_V3_SCHEMA
+            or payload.get("repository") != REPOSITORY or payload.get("issue_number") != ISSUE_NUMBER
+            or payload.get("predecessor_adc_comment_id") != predecessor.pointer.comment_id
+            or payload.get("predecessor_adc_sha256") != predecessor.pointer.sha256
+            or payload.get("successor_adc_comment_id") != successor.pointer.comment_id
+            or payload.get("successor_adc_sha256") != successor.pointer.sha256
+            or payload.get("previous_applied_comment_id") != previous_applied.comment_id
+            or payload.get("previous_applied_payload_sha256") != previous_applied.payload_sha256
+            or payload.get("operation") != expected_operation
+            or payload.get("from_phase") != expected_from or payload.get("to_phase") != "requirements"
+            or any(not isinstance(payload.get(key), str) or SHA256.fullmatch(payload[key]) is None
+                   for key in ("predecessor_adc_sha256", "successor_adc_sha256",
+                               "previous_applied_payload_sha256", "issue_body_sha256"))
+            or any(type(payload.get(key)) is not int or payload[key] < 1
+                   for key in ("predecessor_adc_comment_id", "successor_adc_comment_id",
+                               "previous_applied_comment_id", "executor_user_id"))
+            or intent.comment_id <= successor.pointer.comment_id
+            or intent.comment_id <= previous_applied.comment_id):
+        raise PhaseRebaselineError("V3 Intent evidence fields do not match its authorized recovery generation")
+    _validated_labels(payload, f"phase:{expected_from}", "phase:requirements")
+    expected_after = (sorted([label for label in payload["labels_before"]
+                              if label != "phase:execution"] + ["phase:requirements"])
+                      if first_recovery else payload["labels_before"])
+    if payload["labels_after"] != expected_after:
+        raise PhaseRebaselineError("V3 recovery Intent does not describe its exact authorized label operation")
+    if intent.actor_id != payload["executor_user_id"]:
+        raise PhaseRebaselineError("V3 Intent author does not match its authenticated executor identity")
+    if applied is None:
+        return
+    expected = {
+        "schema": APPLIED_V3_SCHEMA, "repository": REPOSITORY, "issue_number": ISSUE_NUMBER,
+        "intent_comment_id": intent.comment_id, "intent_sha256": intent.payload_sha256,
+        "predecessor_adc_comment_id": predecessor.pointer.comment_id,
+        "predecessor_adc_sha256": predecessor.pointer.sha256,
+        "successor_adc_comment_id": successor.pointer.comment_id,
+        "successor_adc_sha256": successor.pointer.sha256,
+        "previous_applied_comment_id": previous_applied.comment_id,
+        "previous_applied_payload_sha256": previous_applied.payload_sha256,
+        "operation": expected_operation, "from_phase": expected_from,
+        "to_phase": "requirements", "labels_after": payload["labels_after"],
+        "issue_body_sha256": payload["issue_body_sha256"],
+        "executor_user_id": payload["executor_user_id"],
+    }
+    if (applied.payload != expected or applied.comment_id <= intent.comment_id
+            or applied.actor_id != intent.actor_id):
+        raise PhaseRebaselineError("V3 Applied evidence does not exactly match its Intent")
+
+
 def _validate_generation_history(
     records: tuple[PhaseRecord, ...], adc_chain: tuple[VerifiedADC, ...],
 ) -> tuple[PhaseRecord | None, PhaseRecord | None, dict[int, tuple[PhaseRecord, PhaseRecord | None]]]:
-    """Validate immutable V1 history and contiguous V2 ADC-generation receipts."""
+    """Validate immutable V1 and contiguous V2 plus exact, forward-only V3 recovery receipts."""
     v1_intents = [record for record in records if record.schema == INTENT_SCHEMA]
     v1_applied = [record for record in records if record.schema == APPLIED_SCHEMA]
     if len(v1_intents) > 1 or len(v1_applied) > 1:
@@ -440,11 +580,16 @@ def _validate_generation_history(
 
     v2_intents: dict[int, PhaseRecord] = {}
     v2_applied: dict[int, PhaseRecord] = {}
-    if len(adc_chain) <= 2 and any(record.schema in {INTENT_V2_SCHEMA, APPLIED_V2_SCHEMA} for record in records):
+    v3_intents: dict[int, PhaseRecord] = {}
+    v3_applied: dict[int, PhaseRecord] = {}
+    v2_schemas = {INTENT_V2_SCHEMA, APPLIED_V2_SCHEMA}
+    v3_schemas = {INTENT_V3_SCHEMA, APPLIED_V3_SCHEMA}
+    if len(adc_chain) <= 2 and any(record.schema in v2_schemas | v3_schemas for record in records):
         raise PhaseRebaselineError("V2 phase evidence has no successor ADC generation")
     latest_index = len(adc_chain) - 1
+    recovery_generations = _recovery_generation_indexes(adc_chain)
     for record in records:
-        if record.schema not in {INTENT_V2_SCHEMA, APPLIED_V2_SCHEMA}:
+        if record.schema not in v2_schemas | v3_schemas:
             continue
         pointer_id, digest = record.payload.get("successor_adc_comment_id"), record.payload.get("successor_adc_sha256")
         if (type(pointer_id) is not int or pointer_id < 1 or not isinstance(digest, str)
@@ -453,42 +598,69 @@ def _validate_generation_history(
         indexes = [index for index, generation in enumerate(adc_chain)
                    if generation.pointer.comment_id == pointer_id and generation.pointer.sha256 == digest]
         if len(indexes) != 1 or indexes[0] < 2 or indexes[0] > latest_index:
-            raise PhaseRebaselineError("V2 phase evidence references an unknown or skipped ADC generation")
-        target = v2_intents if record.schema == INTENT_V2_SCHEMA else v2_applied
-        if indexes[0] in target:
-            raise PhaseRebaselineError("duplicate V2 phase evidence for one ADC generation")
-        target[indexes[0]] = record
+            raise PhaseRebaselineError("phase evidence references an unknown or skipped ADC generation")
+        index = indexes[0]
+        if record.schema in v3_schemas and index not in recovery_generations:
+            raise PhaseRebaselineError("V3 phase evidence references a generation outside the approved recovery scope")
+        if record.schema in v2_schemas and index in recovery_generations:
+            # The two explicitly recovered generations must use their scoped V3
+            # receipt pair. V2 remains the normal format for later generations.
+            raise PhaseRebaselineError("V2 phase evidence conflicts with an authorized V3 recovery generation")
+        if record.schema in {INTENT_V2_SCHEMA, INTENT_V3_SCHEMA}:
+            target = v2_intents if record.schema == INTENT_V2_SCHEMA else v3_intents
+        else:
+            target = v2_applied if record.schema == APPLIED_V2_SCHEMA else v3_applied
+        if index in target:
+            raise PhaseRebaselineError("duplicate phase evidence for one ADC generation")
+        target[index] = record
 
     if (v1_intent is None or v1_result is None) and len(adc_chain) > 2:
         raise PhaseRebaselineError("new ADC generation cannot skip the incomplete historical V1 phase pair")
-    if set(v2_applied) - set(v2_intents):
-        raise PhaseRebaselineError("V2 Applied evidence has no matching Intent")
-    all_indexes = set(v2_intents) | set(v2_applied)
-    if all_indexes:
-        if all_indexes != set(range(2, max(all_indexes) + 1)):
-            raise PhaseRebaselineError("V2 phase evidence skips an ADC generation")
-        if max(all_indexes) < latest_index - 1:
-            raise PhaseRebaselineError("current ADC generation skips one or more Phase receipts")
-        if any(index < latest_index and index not in v2_applied for index in all_indexes):
-            raise PhaseRebaselineError("an earlier V2 ADC generation has an incomplete phase receipt")
-    if latest_index > 2 and any(index not in v2_applied for index in range(2, latest_index)):
-        raise PhaseRebaselineError("current ADC generation skips one or more completed Phase receipts")
+    if set(v2_applied) - set(v2_intents) or set(v3_applied) - set(v3_intents):
+        raise PhaseRebaselineError("phase Applied evidence has no matching Intent")
+    if set(v2_intents) & set(v3_intents) or set(v2_applied) & set(v3_applied):
+        raise PhaseRebaselineError("conflicting V2 and V3 phase evidence exists for one ADC generation")
 
     previous_applied = v1_result
     validated: dict[int, tuple[PhaseRecord, PhaseRecord | None]] = {}
+    incomplete_index: int | None = None
     for index in range(2, latest_index + 1):
-        intent = v2_intents.get(index)
-        applied = v2_applied.get(index)
+        is_recovery = index in recovery_generations
+        intent = (v3_intents if is_recovery else v2_intents).get(index)
+        applied = (v3_applied if is_recovery else v2_applied).get(index)
         if intent is None:
             if applied is not None:
-                raise PhaseRebaselineError("V2 Applied evidence has no matching Intent")
+                raise PhaseRebaselineError("phase Applied evidence has no matching Intent")
+            if is_recovery:
+                # An absent V3 pair is permitted only as a pending exact recovery
+                # edge. Later receipts are rejected below until it is filled.
+                if incomplete_index is None:
+                    incomplete_index = index
+                continue
+            if index < latest_index:
+                raise PhaseRebaselineError("current ADC generation skips one or more completed Phase receipts")
             continue
         if previous_applied is None:
-            raise PhaseRebaselineError("V2 phase generation has no completed predecessor Applied record")
-        _validate_v2_pair(intent, applied, adc_chain, index, previous_applied)
+            raise PhaseRebaselineError("phase generation has no completed predecessor Applied record")
+        if incomplete_index is not None and index > incomplete_index:
+            raise PhaseRebaselineError("phase evidence skips an incomplete authorized recovery generation")
+        if is_recovery:
+            predecessor, successor = recovery_generations[index]
+            _validate_v3_pair(intent, applied, predecessor, successor, previous_applied)
+        else:
+            _validate_v2_pair(intent, applied, adc_chain, index, previous_applied)
         validated[index] = (intent, applied)
         if applied is not None:
             previous_applied = applied
+        else:
+            if incomplete_index is not None and incomplete_index != index:
+                raise PhaseRebaselineError("multiple incomplete Phase generations exist")
+            incomplete_index = index
+    if incomplete_index is not None:
+        later_records = [index for index in (set(v2_intents) | set(v2_applied) | set(v3_intents) | set(v3_applied))
+                         if index > incomplete_index]
+        if later_records:
+            raise PhaseRebaselineError("phase evidence exists after an incomplete earlier generation")
     if len(adc_chain) > 2 and v1_result is None:
         raise PhaseRebaselineError("V2 phase history has no completed V1 predecessor")
     return v1_intent, v1_result, validated
@@ -498,7 +670,7 @@ def _create_and_verify(github: Any, schema: str, payload: dict[str, Any]) -> Pha
     body = _body(schema, payload)
     records = _read_history(github)
     matching = [record for record in records if record.schema == schema and record.body == body]
-    if schema in {INTENT_V2_SCHEMA, APPLIED_V2_SCHEMA}:
+    if schema in {INTENT_V2_SCHEMA, APPLIED_V2_SCHEMA, INTENT_V3_SCHEMA, APPLIED_V3_SCHEMA}:
         generation_key = (payload.get("successor_adc_comment_id"), payload.get("successor_adc_sha256"))
         conflicting = [record for record in records
                        if record.schema == schema and record.body != body
@@ -532,6 +704,21 @@ def _verify_current_successor(github: Any, intent: PhaseRecord) -> tuple[Verifie
         predecessor, successor = chain
     elif intent.schema == INTENT_V2_SCHEMA:
         predecessor, successor = chain[-2:]
+    elif intent.schema == INTENT_V3_SCHEMA:
+        predecessor_id = payload.get("predecessor_adc_comment_id")
+        predecessor_sha = payload.get("predecessor_adc_sha256")
+        successor_id = payload.get("successor_adc_comment_id")
+        successor_sha = payload.get("successor_adc_sha256")
+        matches = [(chain[index - 1], chain[index]) for index in range(1, len(chain))
+                   if chain[index - 1].pointer.comment_id == predecessor_id
+                   and chain[index - 1].pointer.sha256 == predecessor_sha
+                   and chain[index].pointer.comment_id == successor_id
+                   and chain[index].pointer.sha256 == successor_sha]
+        authorized = any((predecessor_id, predecessor_sha, successor_id, successor_sha) == edge
+                         for edge in V3_RECOVERY_GENERATIONS)
+        if not authorized or len(matches) != 1:
+            raise PhaseRebaselineError("V3 Intent does not match an exact approved recovery ADC generation")
+        predecessor, successor = matches[0]
     else:
         raise PhaseRebaselineError("phase Intent schema is unsupported")
     if (predecessor.pointer.comment_id != payload["predecessor_adc_comment_id"]
@@ -562,6 +749,22 @@ def _append_applied(github: Any, intent: PhaseRecord) -> PhaseRecord:
             applied_payload["executor_user_id"] = payload["executor_user_id"]
     elif intent.schema == INTENT_V2_SCHEMA:
         schema = APPLIED_V2_SCHEMA
+        applied_payload = {
+            "schema": schema, "repository": REPOSITORY, "issue_number": ISSUE_NUMBER,
+            "intent_comment_id": intent.comment_id, "intent_sha256": intent.payload_sha256,
+            "predecessor_adc_comment_id": payload["predecessor_adc_comment_id"],
+            "predecessor_adc_sha256": payload["predecessor_adc_sha256"],
+            "successor_adc_comment_id": payload["successor_adc_comment_id"],
+            "successor_adc_sha256": payload["successor_adc_sha256"],
+            "previous_applied_comment_id": payload["previous_applied_comment_id"],
+            "previous_applied_payload_sha256": payload["previous_applied_payload_sha256"],
+            "operation": payload["operation"], "from_phase": payload["from_phase"],
+            "to_phase": payload["to_phase"], "labels_after": payload["labels_after"],
+            "issue_body_sha256": payload["issue_body_sha256"],
+            "executor_user_id": payload["executor_user_id"],
+        }
+    elif intent.schema == INTENT_V3_SCHEMA:
+        schema = APPLIED_V3_SCHEMA
         applied_payload = {
             "schema": schema, "repository": REPOSITORY, "issue_number": ISSUE_NUMBER,
             "intent_comment_id": intent.comment_id, "intent_sha256": intent.payload_sha256,
@@ -699,6 +902,81 @@ def rebaseline_issue_phase(github: Any, issue_number: int = ISSUE_NUMBER) -> dic
 
         if v1_intent is None or v1_applied is None:
             raise PhaseRebaselineError("new ADC generation requires the completed immutable V1 predecessor pair")
+        recovery_generations = _recovery_generation_indexes(adc_chain)
+        for recovery_index, (predecessor, recovery_successor) in sorted(recovery_generations.items()):
+            recovery_pair = v2_pairs.get(recovery_index)
+            if recovery_pair is not None:
+                intent, applied = recovery_pair
+                body_digest = hashlib.sha256(initial_issue["body"].encode("utf-8")).hexdigest()
+                if body_digest != intent.payload["issue_body_sha256"]:
+                    raise PhaseRebaselineError("Issue body changed after the V3 recovery Intent")
+                _verify_current_successor(github, intent)
+                before_labels = intent.payload["labels_before"]
+                after_labels = intent.payload["labels_after"]
+                if applied is not None:
+                    if not _labels_exact(initial_labels, after_labels):
+                        raise PhaseRebaselineError("completed V3 recovery evidence does not match current Issue labels")
+                    _verify_post_write(github, intent)
+                    continue
+                if recovery_index == min(recovery_generations):
+                    if _labels_exact(initial_labels, before_labels):
+                        raise PhaseRebaselineError(
+                            "V3 Intent exists but target labels are absent; refusing a second label PUT")
+                    if not _labels_exact(initial_labels, after_labels):
+                        raise PhaseRebaselineError("Issue labels drifted after the V3 recovery Intent")
+                elif not _labels_exact(initial_labels, after_labels):
+                    raise PhaseRebaselineError("V3 requirements adoption does not match current Issue labels")
+                _verify_post_write(github, intent)
+                applied_record = _append_applied(github, intent)
+                return {"status": "RECOVERED_V3", "phase_action": "RECOVER_MISSING_GENERATION",
+                        "label_writes": 0, "intent_comment_id": intent.comment_id,
+                        "applied_comment_id": applied_record.comment_id,
+                        "adc_comment_id": successor.pointer.comment_id,
+                        "adc_sha256": successor.pointer.sha256, "labels": sorted(initial_labels)}
+
+            previous_applied = (v1_applied if recovery_index - 1 == 1
+                                else v2_pairs.get(recovery_index - 1, (None, None))[1])
+            if previous_applied is None:
+                raise PhaseRebaselineError("V3 recovery requires the immediately preceding Applied receipt")
+            first_recovery = recovery_successor.pointer.comment_id == V3_RECOVERY_GENERATIONS[0][2]
+            expected_phase = "execution" if first_recovery else "requirements"
+            phase_labels = [label for label in initial_labels if label.startswith("phase:")]
+            kind_labels = [label for label in initial_labels if label.startswith("kind:")]
+            if phase_labels != [f"phase:{expected_phase}"] or kind_labels != ["kind:single"]:
+                raise PhaseRebaselineError(
+                    f"V3 recovery requires the exact phase:{expected_phase} / kind:single state")
+            labels_before = sorted(initial_labels)
+            payload = _intent_v3_payload(predecessor, recovery_successor, previous_applied,
+                                         initial_issue["body"], labels_before, identity["id"])
+            intent = _create_and_verify(github, INTENT_V3_SCHEMA, payload)
+            _validate_generation_history(_read_history(github), adc_chain)
+            latest_issue, latest_labels = _issue_state(github)
+            _verify_current_successor(github, intent)
+            if (latest_issue.get("body") != initial_issue.get("body")
+                    or not _labels_exact(latest_labels, payload["labels_before"])):
+                raise PhaseRebaselineError("Issue or ADC changed before the V3 recovery operation")
+            if first_recovery:
+                try:
+                    github.replace_issue_labels(ISSUE_NUMBER, payload["labels_after"])
+                except GitHubError as exc:
+                    if exc.status_code == 403:
+                        raise PhaseRebaselineError(
+                            "BLOCKED_PERMISSION: authenticated executor cannot update Issue labels") from exc
+                    current_issue, current_labels = _issue_state(github)
+                    if (not _labels_exact(current_labels, payload["labels_after"])
+                            or current_issue.get("body") != initial_issue.get("body")):
+                        raise PhaseRebaselineError(
+                            "V3 label PUT outcome is uncertain; refusing another write") from exc
+            _verify_post_write(github, intent)
+            applied_record = _append_applied(github, intent)
+            return {"status": "APPLIED_V3", "phase_action": "RECOVER_MISSING_GENERATION",
+                    "label_writes": 1 if first_recovery else 0,
+                    "intent_comment_id": intent.comment_id,
+                    "applied_comment_id": applied_record.comment_id,
+                    "adc_comment_id": successor.pointer.comment_id,
+                    "adc_sha256": successor.pointer.sha256,
+                    "labels": payload["labels_after"]}
+
         generation_index = len(adc_chain) - 1
         current_pair = v2_pairs.get(generation_index)
         if current_pair is not None:

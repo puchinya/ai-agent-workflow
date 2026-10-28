@@ -2,7 +2,7 @@
 <!-- agent-doc-schema: 2 -->
 # Runtime and CLI Test Specification
 
-- Status: TST-RT-018, TST-RT-019, and TST-RT-020 remain draft cases. The current approved Issue #63 ADC is comment #6271832228 (SHA-256 `221e62a86a5b682237948abec1ee287d24d3808a9ad4fa22960be2c869fdcd05`), pointer #6271833303, with completed Phase V2 pair #6272033112/#6272087499. Issue #63 is OPEN at `phase:specification`; current-generation specification receipt #6272672508 binds commit `15d4cda596ca3b29fa7bbdd7de4b03f66817aab2`. The adopted epoch refresh completed with current PRBinding digest `55ebf90537af1aa65fc4703267d908d71f1e144fa81f739e7b197d23b430839f`. Design/ready receipts and downstream Verification/Review/Delivery evidence remain outstanding.
+- Status: Issue #63 is OPEN at `phase:requirements`. Current approved ADC comment #6469199612 has SHA-256 `84ff1f8ee6582c65d937a755593efad98ca481254712c05f35d73f6510cf12d8`. The V3 recovery generations are Intent/Applied #6469356263/#6469538910 and #6469619562/#6470070164; current ADC V2 generation is #6470193595/#6470279567. Implementation of the approved Independent Review confidence behavior is in progress. No current-HEAD PASES Independent Review V2, Readiness PASS, or User Review record has been produced by this change yet.
 - Owning specification: ../specs/
 
 The stable RT test IDs preserve the earlier traceability graph. Current CLI cases use the namespaced P-ASES routes. Procedures for APIs that the Runtime Specification marks legacy are regression conditions for retained internal behavior, not public-command compatibility requirements.
@@ -53,6 +53,8 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
     - [2.20.1 ORA-RT-020 Expected result](#2201-ora-rt-020-expected-result)
   - [2.21 TST-RT-021 Adopted epoch ADC successor refresh](#221-tst-rt-021-adopted-epoch-adc-successor-refresh)
     - [2.21.1 ORA-RT-021 Expected result](#2211-ora-rt-021-expected-result)
+  - [2.22 TST-RT-022 Versioned Independent Review provenance confidence](#222-tst-rt-022-versioned-independent-review-provenance-confidence)
+    - [2.22.1 ORA-RT-022 Expected result](#2221-ora-rt-022-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -99,6 +101,8 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
 - [ORA-RT-020](#ora-rt-020) — 2.20.1 ORA-RT-020 Expected result
 - [TST-RT-021](#tst-rt-021) — 2.21 TST-RT-021 Adopted epoch ADC successor refresh
 - [ORA-RT-021](#ora-rt-021) — 2.21.1 ORA-RT-021 Expected result
+- [TST-RT-022](#tst-rt-022) — 2.22 TST-RT-022 Versioned Independent Review provenance confidence
+- [ORA-RT-022](#ora-rt-022) — 2.22.1 ORA-RT-022 Expected result
 <!-- heading-map:end -->
 
 
@@ -361,3 +365,13 @@ No `PASES_EXECUTION_ADOPTION_V1`, complete canonical plan snapshot, local adopte
 #### 2.21.1 ORA-RT-021 Expected result
 
 Before V2 Applied, refresh returns `ADC_REFRESH_PENDING_PHASE_REBASELINE` and appends nothing. After V2 Applied and before refresh, ordinary verification returns `ADC_REFRESH_REQUIRED`; only the exact #63 refresh route can append. Success adds one PRBinding V3 with the same adoption ID and frozen Issue/PR/base/branch, current approved ADC and exact HEAD, plus one V2 checkpoint referencing the unchanged adopted-epoch digest. A completed retry is `NOOP` with no writes. If the binding append exists but the checkpoint is missing, recovery verifies that exact row and writes only the checkpoint. Invalid, backward, missing, edited, noncontiguous, non-ancestor, wrong-actor, wrong-PR, or drifted state blocks without editing the adopted epoch or earlier history. Current gates use the newest valid PRBinding as current-ADC authority while retaining the epoch's original ADC fields; ordinary V1 and non-#63 workflows remain unchanged.
+
+<a id="tst-rt-022"></a>
+### 2.22 TST-RT-022 Versioned Independent Review provenance confidence
+
+**Setup and action:** Build V1 and V2 Independent Review records for the same exact verification subject. Verify V1 canonical bytes and digest remain unchanged. For V2, test all host IDs absent, each ID absent independently, all IDs present and matching, a mismatching available implementation binding, malformed IDs, and a spawn/reviewer identity equal to the implementation context. Exercise review artifact read/write, exact-subject Readiness with `LIMITED` confidence and all other gates passing, stale subject, same-context reviewer, unresolved A/B finding, and non-PASS verdict. Test `audit independent` ingestion for a real child-authored exact-subject artifact with empty/partial/full canonical provenance and verify confidence plus missing-ID reporting.
+
+<a id="ora-rt-022"></a>
+#### 2.22.1 ORA-RT-022 Expected result
+
+V1 records round-trip with their original schema, digest, and bytes. A valid V2 result with a distinct child context and current exact subject is accepted when host IDs are missing; it is persisted as `PASES_INDEPENDENT_REVIEW_V2` with `LIMITED` confidence and missing IDs visible. A complete matching identity set is `HIGH`. Missing IDs alone do not prevent Readiness PASS when every other gate passes. Malformed IDs, an available binding mismatch, a known same-context spawn/reviewer ID, stale subject, unresolved A/B finding, failed/unknown child outcome, or non-PASS verdict remain non-passing. V2 does not claim host authenticity or replace actual host spawn/join and child-result requirements.
