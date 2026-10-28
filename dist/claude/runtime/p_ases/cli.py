@@ -5137,16 +5137,20 @@ def main(argv: list[str] | None = None) -> int:
             ordinary_issue = (not bootstrap and kind in {IssueKind.SINGLE, IssueKind.CHILD})
             root: Path | None = None
             approved_adc = None
+            ordinary_context = None
             if ordinary_issue:
                 if args.root is None:
                     raise CLIError("ordinary Issue phase transitions require --root for Activation and ADC verification")
                 root = _repo_root(str(args.root)).resolve()
-                _context_issue, approved_adc, _actual_kind, _branch_ref, _local_sha = verify_ordinary_issue_context(
+                ordinary_context = verify_ordinary_issue_context(
                     github, root, args.issue, kind,
                     require_binding=target in {Phase.EXECUTION, Phase.VERIFICATION},
                 )
+                approved_adc = ordinary_context.verified_adc
                 if target is Phase.EXECUTION:
-                    verify_ready_preparation(github, root, args.issue, kind)
+                    verify_ready_preparation(
+                        github, root, args.issue, kind, verified_context=ordinary_context,
+                    )
             if evidence_required:
                 if args.phase_evidence_comment_id is None:
                     raise CLIError("specification, design, and ready transitions require --phase-evidence-comment-id")
@@ -5162,15 +5166,18 @@ def main(argv: list[str] | None = None) -> int:
             kept.append(f"phase:{next_state.phase.value}")
             kept.extend(f"attention:{item.value}" for item in sorted(next_state.attention, key=lambda x: x.value))
             if ordinary_issue and root is not None:
-                _context_issue, latest_adc, _actual_kind, _branch_ref, _local_sha = verify_ordinary_issue_context(
+                latest_context = verify_ordinary_issue_context(
                     github, root, args.issue, kind,
                     require_binding=target in {Phase.EXECUTION, Phase.VERIFICATION},
                 )
+                latest_adc = latest_context.verified_adc
                 if (approved_adc is None or latest_adc.pointer != approved_adc.pointer
                         or latest_adc.contract.sha256 != approved_adc.contract.sha256):
                     raise CLIError("approved ADC pointer or generation changed before the phase label write")
                 if target is Phase.EXECUTION:
-                    verify_ready_preparation(github, root, args.issue, kind)
+                    verify_ready_preparation(
+                        github, root, args.issue, kind, verified_context=latest_context,
+                    )
             if evidence_required and root is not None:
                 verify_phase_evidence(github, root, args.issue, args.phase_evidence_comment_id,
                                       phase, target, skip_reasons)
@@ -5197,12 +5204,13 @@ def main(argv: list[str] | None = None) -> int:
                     ordinary=ordinary_issue,
                 )
                 if ordinary_issue and root is not None:
-                    context_issue, final_adc, _actual_kind, _branch_ref, _local_sha = verify_ordinary_issue_context(
+                    final_context = verify_ordinary_issue_context(
                         github, root, args.issue, kind,
                         require_binding=target in {Phase.EXECUTION, Phase.VERIFICATION},
                     )
+                    final_adc = final_context.verified_adc
                     _validate_issue_advance_readback(
-                        context_issue, original_issue=issue, repository=repository,
+                        final_context.issue, original_issue=issue, repository=repository,
                         issue_number=args.issue, expected_labels=kept, kind=kind,
                         target=next_state.phase, attention=next_state.attention,
                         ordinary=True,

@@ -34,9 +34,10 @@ from p_ases.issue_graph import (
     validate_split,
 )
 from p_ases.phase_evidence import (
-    PhaseDecision, PhaseEvidenceError, _artifact_impacts, _check_activation, _collect_payload, _readback,
+    PhaseDecision, PhaseEvidenceError, VerifiedOrdinaryIssueContext,
+    _artifact_impacts, _check_activation, _collect_payload, _readback,
     _markdown_anchors, _receipt_subject, _validate_ready_traceability, publish_phase_evidence,
-    verify_phase_evidence, verify_ready_preparation,
+    verify_ordinary_issue_context, verify_phase_evidence, verify_ready_preparation,
 )
 from p_ases.phases import (
     Attention,
@@ -977,6 +978,18 @@ class PhaseEvidenceCollectionTests(unittest.TestCase):
                 self.assertEqual(verify_ready_preparation(
                     github, root, 40, IssueKind.SINGLE,
                 ), ready)
+
+                with patch("p_ases.phase_evidence._check_activation"), \
+                        patch("p_ases.phase_evidence.verify_adc", return_value=verified):
+                    context = verify_ordinary_issue_context(
+                        github, root, 40, IssueKind.SINGLE, require_binding=True,
+                    )
+                self.assertIsInstance(context, VerifiedOrdinaryIssueContext)
+                with patch("p_ases.phase_evidence.verify_ordinary_issue_context",
+                           side_effect=AssertionError("repeated complete history read")):
+                    self.assertEqual(verify_ready_preparation(
+                        github, root, 40, IssueKind.SINGLE, verified_context=context,
+                    ), ready)
 
             self.assertEqual({row["path"] for row in specification.payload["documents"]},
                              {"docs/specs/product.md"})

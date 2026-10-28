@@ -8,7 +8,7 @@ import posixpath
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, NamedTuple
 from urllib.parse import urlsplit
 
 from .adc import ADCError, VerifiedADC, verify_adc
@@ -24,6 +24,22 @@ from .work import execution_binding_path
 
 class PhaseEvidenceError(ValueError):
     pass
+
+
+class VerifiedOrdinaryIssueContext(NamedTuple):
+    """One exact read of the live facts needed to validate a phase receipt.
+
+    Callers may reuse this value only within one command invocation. Mutation
+    boundaries must acquire a fresh context; immutable history validation is
+    therefore shared within a boundary without weakening before/after checks.
+    """
+
+    issue: dict[str, Any]
+    verified_adc: VerifiedADC
+    kind: IssueKind
+    branch_ref: str
+    commit_sha40: str
+    binding_verified: bool
 
 
 SENTINEL = "PASES_PHASE_DECISION_V1"
@@ -303,7 +319,7 @@ def _verify_frozen_binding(github: GitHub, root: Path, issue_number: int, verifi
 
 def verify_ordinary_issue_context(github: GitHub, root: Path, issue_number: int,
                                  expected_kind: IssueKind | None = None, *, require_binding: bool = False
-                                 ) -> tuple[dict[str, Any], VerifiedADC, IssueKind, str, str]:
+                                 ) -> VerifiedOrdinaryIssueContext:
     _check_activation(github, issue_number)
     try:
         issue = github.issue(issue_number)
@@ -327,9 +343,44 @@ def verify_ordinary_issue_context(github: GitHub, root: Path, issue_number: int,
             raise PhaseEvidenceError("local Git HEAD does not match the Issue branch commit on GitHub")
         if require_binding:
             _verify_frozen_binding(github, root, issue_number, verified, branch_ref, local_sha)
-        return issue, verified, kind, branch_ref, local_sha
+        return VerifiedOrdinaryIssueContext(
+            issue, verified, kind, branch_ref, local_sha, require_binding,
+        )
     except (ADCError, GitHubError, GitError) as exc:
         raise PhaseEvidenceError(str(exc)) from exc
+
+
+def _reuse_verified_context(github: GitHub, root: Path, issue_number: int,
+                            expected_kind: IssueKind | None,
+                            context: VerifiedOrdinaryIssueContext) -> VerifiedOrdinaryIssueContext:
+    """Validate an invocation-local proof before using it to avoid a duplicate full history read."""
+    if (not isinstance(context, VerifiedOrdinaryIssueContext)
+            or type(context.binding_verified) is not bool or not context.binding_verified):
+        raise PhaseEvidenceError("phase receipt reuse requires a current binding-verified Issue context")
+    issue = context.issue
+    if not isinstance(issue, dict):
+        raise PhaseEvidenceError("reused phase receipt context has a malformed Issue snapshot")
+    repository_url = issue.get("repository_url")
+    try:
+        actual_kind, _labels = _kind_from_issue(issue)
+    except PhaseEvidenceError:
+        raise
+    if (not isinstance(issue, dict) or issue.get("number") != issue_number
+            or issue.get("state") != "open" or issue.get("pull_request") is not None
+            or not isinstance(repository_url, str) or repository_url.casefold()
+            != f"https://api.github.com/repos/{github.repo}".casefold()
+            or not isinstance(context.verified_adc, VerifiedADC)
+            or context.verified_adc.pointer.state != "approved"
+            or context.kind not in {IssueKind.SINGLE, IssueKind.CHILD} or actual_kind is not context.kind
+            or (expected_kind is not None and context.kind is not expected_kind)):
+        raise PhaseEvidenceError("reused phase receipt context does not match the exact open Issue and approved ADC")
+    try:
+        if (current_branch(root) != context.branch_ref
+                or head_sha40(root) != context.commit_sha40):
+            raise PhaseEvidenceError("Issue worktree changed since its binding-verified context was read")
+    except GitError as exc:
+        raise PhaseEvidenceError(str(exc)) from exc
+    return context
 
 
 def _markdown_anchors(content: bytes) -> set[str]:
@@ -604,13 +655,15 @@ def _verify_predecessor_receipt(github: GitHub, root: Path, issue_number: int,
 
 
 def _collect_payload(github: GitHub, root: Path, issue_number: int, source: Phase, target: Phase,
-                     skips: Mapping[str, str], *, check_source_phase: bool = True
+                     skips: Mapping[str, str], *, check_source_phase: bool = True,
+                     verified_context: VerifiedOrdinaryIssueContext | None = None,
                      ) -> tuple[PhaseDecision, dict[str, Any], VerifiedADC, str, str]:
     if type(issue_number) is not int or issue_number < 1:
         raise PhaseEvidenceError("Issue number must be a positive integer")
-    issue, verified, kind, branch_ref, local_sha = verify_ordinary_issue_context(
-        github, root, issue_number, require_binding=True,
-    )
+    context = (verify_ordinary_issue_context(github, root, issue_number, require_binding=True)
+               if verified_context is None else
+               _reuse_verified_context(github, root, issue_number, None, verified_context))
+    issue, verified, kind, branch_ref, local_sha, _binding_verified = context
     labels = [row.get("name") for row in issue.get("labels", []) if isinstance(row, dict)]
     if check_source_phase and parse_phase_labels(labels) is not source:
         raise PhaseEvidenceError("Issue phase label differs from the requested evidence source phase")
@@ -699,11 +752,13 @@ def _collect_payload(github: GitHub, root: Path, issue_number: int, source: Phas
 
 
 def verify_ready_preparation(github: GitHub, root: Path, issue_number: int,
-                             expected_kind: IssueKind) -> PhaseDecision:
+                             expected_kind: IssueKind, *,
+                             verified_context: VerifiedOrdinaryIssueContext | None = None) -> PhaseDecision:
     """Rebuild and reread the exact ready receipt before entering implementation."""
-    issue, verified, kind, _branch_ref, _local_sha = verify_ordinary_issue_context(
-        github, root, issue_number, expected_kind, require_binding=True,
-    )
+    context = (verify_ordinary_issue_context(github, root, issue_number, expected_kind, require_binding=True)
+               if verified_context is None else
+               _reuse_verified_context(github, root, issue_number, expected_kind, verified_context))
+    issue, verified, kind, _branch_ref, _local_sha, _binding_verified = context
     labels = [row.get("name") for row in issue.get("labels", []) if isinstance(row, dict)]
     if parse_phase_labels(labels) is not Phase.READY:
         raise PhaseEvidenceError("execution requires the Issue to be in the ready phase")
@@ -719,6 +774,7 @@ def verify_ready_preparation(github: GitHub, root: Path, issue_number: int,
         skips = {key: adc_reasons.get(key, "") for key in ("specification", "design")}
     decision, _issue, _adc, _branch, _commit = _collect_payload(
         github, root, issue_number, source, Phase.READY, skips, check_source_phase=False,
+        verified_context=context,
     )
     _comment_id, stored = _find_receipt(
         github, issue_number, source=source, target=Phase.READY,

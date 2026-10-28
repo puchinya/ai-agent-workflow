@@ -25,7 +25,8 @@ from p_ases.audits import IndependentReviewV2, read_independent_review
 from p_ases.evidence_store import VerificationSubject
 from p_ases.github import GitHubError, ReadOnlyGitHub
 from p_ases.owner_consent import OwnerDecisionError
-from p_ases.phase_evidence import PhaseEvidenceError
+from p_ases.phase_evidence import PhaseEvidenceError, VerifiedOrdinaryIssueContext
+from p_ases.phases import IssueKind
 from p_ases.user_review import UserReviewResult, UserReviewSubject
 from p_ases.verification import VerificationResult
 from test_adc_intake import FakeGitHub, adc_bytes
@@ -39,7 +40,10 @@ def verified_adc(comment_id: int = 77, digest: str = "a" * 64):
 
 
 def ordinary_context(github, adc=None):
-    return (copy.deepcopy(github.record), adc or verified_adc(), None, "pases/issue-1", "b" * 40)
+    return VerifiedOrdinaryIssueContext(
+        copy.deepcopy(github.record), adc or verified_adc(), IssueKind.CHILD,
+        "pases/issue-1", "b" * 40, True,
+    )
 
 
 class PasesCLITests(unittest.TestCase):
@@ -867,18 +871,65 @@ class PasesCLITests(unittest.TestCase):
                 self.writes += 1
 
         github = GitHub()
+        context = ordinary_context(github)
         stderr = io.StringIO()
         with patch("p_ases.cli.GitHub", return_value=github), \
                 patch("p_ases.cli.verify_ordinary_issue_context",
-                      side_effect=lambda *_args, **_kwargs: ordinary_context(github)), \
+                      return_value=context), \
                 patch("p_ases.cli.verify_ready_preparation",
-                      side_effect=PhaseEvidenceError("ready receipt is stale")), \
+                      side_effect=PhaseEvidenceError("ready receipt is stale")) as ready_check, \
                 contextlib.redirect_stderr(stderr):
             status = main(["issue", "advance", "40", "execution", "--kind", "child",
                            "--root", str(ROOT), "--repo", "octo/repo"])
         self.assertEqual(status, 2)
         self.assertEqual(github.writes, 0)
         self.assertIn("ready receipt is stale", stderr.getvalue())
+        ready_check.assert_called_once()
+        self.assertIs(ready_check.call_args.kwargs["verified_context"], context)
+
+    def test_ready_to_execution_reuses_each_boundary_snapshot_without_duplicate_history_reads(self):
+        class GitHub:
+            repo = "octo/repo"
+
+            def __init__(self):
+                self.record = {
+                    "id": 40, "number": 40, "repository_url": "https://api.github.com/repos/octo/repo",
+                    "state": "open", "body": "Issue body", "pull_request": None,
+                    "labels": [{"name": "kind:child"}, {"name": "phase:ready"}],
+                }
+                self.writes = 0
+
+            def issue(self, _number):
+                return copy.deepcopy(self.record)
+
+            def replace_issue_labels(self, _number, labels):
+                self.writes += 1
+                self.record["labels"] = [{"name": label} for label in labels]
+
+        github = GitHub()
+        contexts = []
+
+        def read_context(*_args, **_kwargs):
+            context = ordinary_context(github)
+            contexts.append(context)
+            return context
+
+        stdout = io.StringIO()
+        with patch("p_ases.cli._repo_root", return_value=ROOT), \
+                patch("p_ases.cli.GitHub", return_value=github), \
+                patch("p_ases.cli.verify_ordinary_issue_context", side_effect=read_context) as context_reader, \
+                patch("p_ases.cli.verify_ready_preparation") as ready_check, \
+                contextlib.redirect_stdout(stdout):
+            status = main(["issue", "advance", "40", "execution", "--kind", "child",
+                           "--root", str(ROOT), "--repo", "octo/repo"])
+
+        self.assertEqual(status, 0, stdout.getvalue())
+        self.assertEqual(github.writes, 1)
+        self.assertEqual(context_reader.call_count, 3)
+        self.assertEqual(ready_check.call_count, 2)
+        self.assertIs(ready_check.call_args_list[0].kwargs["verified_context"], contexts[0])
+        self.assertIs(ready_check.call_args_list[1].kwargs["verified_context"], contexts[1])
+        self.assertIn('"status": "ADVANCED"', stdout.getvalue())
 
     def test_explicit_repository_lets_github_commands_run_without_local_checkout(self):
         github = FakeGitHub()
