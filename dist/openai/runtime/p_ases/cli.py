@@ -17,8 +17,7 @@ from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from .adc import (
-    ADCError, adc_forward_generation_session, parse_adc, publish_adc,
-    refresh_adc_forward_generation_session, restore_adc, validate_approval_ready_adc,
+    ADCError, parse_adc, publish_adc, restore_adc, validate_approval_ready_adc,
     verify_adc, verify_adc_generation,
 )
 from .admin_auth import AdminAuthError, temporary_admin_client
@@ -874,8 +873,7 @@ def _acceptance_validate(args: argparse.Namespace, repository: str, root: Path, 
 
 
 def _acceptance_recompute_saved(args: argparse.Namespace, repository: str, root: Path, github: GitHub,
-                                result: AcceptanceResult, *,
-                                verification_result: VerificationResult | None = None) -> AcceptanceResult:
+                                result: AcceptanceResult) -> AcceptanceResult:
     if result.subject.repository != repository or result.subject.issue_number != args.issue:
         raise CLIError("Acceptance result belongs to a different repository or Issue")
     _readback_current_pr(github, result.subject)
@@ -893,12 +891,7 @@ def _acceptance_recompute_saved(args: argparse.Namespace, repository: str, root:
         result.artifact_type, current_subject, [row.as_dict() for row in result.observations], result.baseline_sha40,
     )
     # Recompute current Verification and use its immutable local readback as the input gate.
-    if verification_result is None:
-        current_verification, _ = _calculate_verification(recompute_args, repository, root, github)
-    else:
-        current_verification = verification_result
-        if current_verification.subject != current_subject:
-            raise CLIError("precomputed Verification does not match the current Acceptance subject")
+    current_verification, _ = _calculate_verification(recompute_args, repository, root, github)
     verification_path = verification_result_path(root / ".p_ases" / "verification", current_verification)
     write_verification_result(verification_path, current_verification)
     recompute_args.verification = verification_path
@@ -1986,7 +1979,6 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
         saved_acceptance = read_acceptance_result(args.acceptance)
         current_acceptance = _acceptance_recompute_saved(
             argparse.Namespace(issue=args.issue), repository, root, github, saved_acceptance,
-            verification_result=verification,
         )
         if subject is None or saved_acceptance.subject != subject or current_acceptance != saved_acceptance:
             blockers.append("saved #29 Acceptance is stale or does not match the current exact subject")
@@ -2050,10 +2042,6 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
         blockers.append(f"Required Check policy cannot be trusted: {exc}")
 
     if subject is not None and verified_adc is not None:
-        # Earlier read-only checks may share immutable ADC history within this
-        # command. Start the final gate with a fresh journal read before using
-        # any cached generation evidence for persistence.
-        refresh_adc_forward_generation_session(github, args.issue)
         try:
             final_issue = github.issue(args.issue)
             if final_issue.get("number") != args.issue or final_issue.get("state") != "open":
@@ -2095,7 +2083,6 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
                 blockers.append("local worktree or remote branch changed before Readiness persistence")
         except GitError as exc:
             blockers.append(f"local/remote branch final readback failed before Readiness persistence: {exc}")
-        last_verification = None
         if verification is not None:
             try:
                 last_verification, _last_refs = _calculate_verification(
@@ -2110,7 +2097,6 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
             try:
                 last_acceptance = _acceptance_recompute_saved(
                     argparse.Namespace(issue=args.issue), repository, root, github, acceptance,
-                    verification_result=last_verification,
                 )
                 if last_acceptance != acceptance:
                     blockers.append("#29 Acceptance changed before Readiness persistence")
@@ -4972,8 +4958,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.verb == "bootstrap-check":
                 return _delivery_bootstrap_check(args, repository, root, github)
             if args.verb == "readiness":
-                with adc_forward_generation_session(github, args.issue):
-                    return _delivery_readiness(args, repository, root, github)
+                return _delivery_readiness(args, repository, root, github)
             if args.verb == "final":
                 return _delivery_final(args, repository, root, github)
             if args.verb == "finalize":

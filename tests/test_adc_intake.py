@@ -6,18 +6,16 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases.adc import (
-    ADCPointer, ADCError, adc_forward_generation_session, parse_adc, publish_adc, restore_adc,
-    refresh_adc_forward_generation_session, validate_approval_ready_adc, verify_adc,
-    verify_adc_forward_generations, verify_adc_generation,
+    ADCPointer, ADCError, parse_adc, publish_adc, restore_adc,
+    validate_approval_ready_adc, verify_adc, verify_adc_forward_generations, verify_adc_generation,
 )
-from p_ases.github import GitHub, GitHubError
+from p_ases.github import GitHubError
 from p_ases.intake import (
     Decision,
     Intent,
@@ -294,59 +292,6 @@ class ADCValidationTests(unittest.TestCase):
             current_pointer=current,
             check_current_pointer=True,
         ).content, candidate)
-
-
-class ADCForwardGenerationCacheTests(unittest.TestCase):
-    def test_read_session_reuses_validated_ranges_and_final_refresh_discards_them(self):
-        github = GitHub("octo/repo")
-        generations = tuple(
-            SimpleNamespace(pointer=ADCPointer(comment_id, digest, 100, "approved"))
-            for comment_id, digest in zip((2001, 2002, 2003), ("1" * 64, "2" * 64, "3" * 64))
-        )
-        with patch("p_ases.adc._verify_adc_forward_generations_uncached",
-                   return_value=generations) as verify:
-            with adc_forward_generation_session(github, 1):
-                full = verify_adc_forward_generations(
-                    github, 1, prior_comment_id=2001, prior_sha256="1" * 64,
-                    current_comment_id=2003, current_sha256="3" * 64,
-                    allow_historical_target=True,
-                )
-                earlier = verify_adc_forward_generations(
-                    github, 1, prior_comment_id=2001, prior_sha256="1" * 64,
-                    current_comment_id=2002, current_sha256="2" * 64,
-                    allow_historical_target=True,
-                )
-                self.assertEqual(len(full), 3)
-                self.assertEqual([row.pointer.comment_id for row in earlier], [2001, 2002])
-                self.assertEqual(verify.call_count, 1)
-
-                refresh_adc_forward_generation_session(github, 1)
-                verify_adc_forward_generations(
-                    github, 1, prior_comment_id=2001, prior_sha256="1" * 64,
-                    current_comment_id=2003, current_sha256="3" * 64,
-                    allow_historical_target=True,
-                )
-                self.assertEqual(verify.call_count, 2)
-
-    def test_historical_cache_cannot_satisfy_a_strict_current_generation_check(self):
-        github = GitHub("octo/repo")
-        generations = tuple(
-            SimpleNamespace(pointer=ADCPointer(comment_id, digest, 100, "approved"))
-            for comment_id, digest in zip((2001, 2002), ("1" * 64, "2" * 64))
-        )
-        with patch("p_ases.adc._verify_adc_forward_generations_uncached",
-                   return_value=generations) as verify:
-            with adc_forward_generation_session(github, 1):
-                verify_adc_forward_generations(
-                    github, 1, prior_comment_id=2001, prior_sha256="1" * 64,
-                    current_comment_id=2002, current_sha256="2" * 64,
-                    allow_historical_target=True,
-                )
-                verify_adc_forward_generations(
-                    github, 1, prior_comment_id=2001, prior_sha256="1" * 64,
-                    current_comment_id=2002, current_sha256="2" * 64,
-                )
-                self.assertEqual(verify.call_count, 2)
 
 
 class ADCPublicationTests(unittest.TestCase):

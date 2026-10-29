@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import re
 import os
-from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
-from .adc import ADCError, adc_forward_generation_scope, verify_adc_forward_generations
+from .adc import ADCError, verify_adc_forward_generations
 from .checkpoint import (
     CheckpointError, PRBinding, WorkCheckpoint, checkpoint_path, read_checkpoint,
     read_pr_binding, validate_ref, write_checkpoint, write_pr_binding,
@@ -393,37 +392,15 @@ def read_pr_binding_history(work_directory: Path, issue_number: int, *,
         except GitError as exc:
             raise WorkError(f"could not verify PRBinding Git ancestry: {exc}") from exc
         prior = current
-    binding_edges = list(zip(rows, rows[1:]))
-    for (_previous_path, previous), (_current_path, current) in binding_edges:
+    for (_previous_path, previous), (_current_path, current) in zip(rows, rows[1:]):
         if not _same_pr_execution_identity(previous, current):
             raise WorkError("immutable PRBinding history changes its frozen execution identity")
         if (previous.adc_comment_id, previous.adc_sha256) != (current.adc_comment_id, current.adc_sha256):
             if github is None:
                 raise WorkError("PRBinding ADC generations require current GitHub journal verification")
-    changed_adc_edges = [
-        (previous, current)
-        for (_previous_path, previous), (_current_path, current) in binding_edges
-        if (previous.adc_comment_id, previous.adc_sha256)
-        != (current.adc_comment_id, current.adc_sha256)
-    ]
-    scope = nullcontext()
-    if changed_adc_edges and isinstance(github, GitHub):
-        first, last = changed_adc_edges[0][0], changed_adc_edges[-1][1]
-        try:
-            scope = adc_forward_generation_scope(
-                github, issue_number,
-                prior_comment_id=first.adc_comment_id, prior_sha256=first.adc_sha256,
-                current_comment_id=last.adc_comment_id, current_sha256=last.adc_sha256,
-            )
-        except ADCError as exc:
-            raise WorkError(f"PRBinding ADC history range is invalid: {exc}") from exc
-    with scope:
-        for (_previous_path, previous), (_current_path, current) in binding_edges:
-            _verify_pr_binding_successor(
-                github, issue_number, previous, current,
-                current_base_evidence=current_base_evidence,
-                allow_historical_adc_target=True,
-            )
+        _verify_pr_binding_successor(github, issue_number, previous, current,
+                                     current_base_evidence=current_base_evidence,
+                                     allow_historical_adc_target=True)
     return rows
 
 
