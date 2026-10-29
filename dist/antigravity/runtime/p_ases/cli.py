@@ -72,7 +72,8 @@ from .work import (
     pr_binding_path, recover_work,
 )
 from .audits import (
-    AuditError, AuditItem, IndependentReview, IndependentReviewV2, ReviewFinding, SelfAudit,
+    AuditError, AuditItem, IndependentReview, IndependentReviewV2, IndependentReviewV3,
+    ReviewFindingV3, ReviewUnitResult, SelfAudit,
     read_independent_review, read_self_audit, write_independent_review, write_self_audit,
 )
 from .delivery import (
@@ -1420,15 +1421,16 @@ def _audit_self(args: argparse.Namespace, repository: str, root: Path, github: G
 
 
 def _audit_independent(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
-    _verified, subject, _required, _checklist_labels = _audit_subject(args, repository, root, github)
+    _verified, subject, required, _checklist_labels = _audit_subject(args, repository, root, github)
     value = _read_json(args.input, "independent-review context artifact", root=root)
     expected = {"context_id", "findings", "provenance", "reviewed_head_sha40", "schema",
-                "session_description", "subject", "verdict"}
+                "review_units", "session_description", "subject", "verdict"}
     if (not isinstance(value, dict) or set(value) != expected
-            or value.get("schema") != "PASES_INDEPENDENT_REVIEW_CONTEXT_V1"
+            or value.get("schema") != "PASES_INDEPENDENT_REVIEW_CONTEXT_V2"
             or VerificationSubject.from_dict(value.get("subject")) != subject
             or value.get("reviewed_head_sha40") != subject.pr_head_sha40
-            or not isinstance(value.get("findings"), list)):
+            or not isinstance(value.get("findings"), list)
+            or not isinstance(value.get("review_units"), list)):
         raise CLIError("independent-review artifact is stale or has unknown/missing fields")
     if any(not isinstance(value.get(field), str) or not value[field].strip()
            for field in ("context_id", "session_description", "verdict")):
@@ -1466,34 +1468,50 @@ def _audit_independent(args: argparse.Namespace, repository: str, root: Path, gi
     if any(str(host_ids[name]) == implementation_context
            for name in ("spawn_session_id", "reviewer_id") if host_ids[name] is not None):
         raise CLIError("independent-review provenance identifies the implementation context")
-    findings: list[ReviewFinding] = []
+    findings: list[ReviewFindingV3] = []
     for row in value["findings"]:
-        if not isinstance(row, dict) or set(row) != {"description", "evidence_ref", "finding_id", "resolved", "severity"}:
+        if not isinstance(row, dict) or set(row) != {
+            "blocks_readiness", "description", "evidence_ref", "finding_id", "resolved", "severity",
+        }:
             raise CLIError("independent-review finding has unknown/missing fields")
         evidence_ref, _digest = _verified_file_evidence(root, row["evidence_ref"])
-        findings.append(ReviewFinding(row["finding_id"], row["severity"], row["resolved"],
-                                      row["description"], evidence_ref).validate())
-    findings.sort(key=lambda item: item.finding_id)
+        findings.append(ReviewFindingV3(row["finding_id"], row["severity"], row["resolved"],
+                                         row["description"], evidence_ref,
+                                         row["blocks_readiness"]).validate())
+    if tuple(item.finding_id for item in findings) != tuple(sorted(item.finding_id for item in findings)):
+        raise CLIError("independent-review findings must be in canonical ID order")
+    review_units: list[ReviewUnitResult] = []
+    for row in value["review_units"]:
+        if not isinstance(row, dict) or set(row) != {"evidence_refs", "item_id", "status"}:
+            raise CLIError("independent-review unit has unknown/missing fields")
+        if not isinstance(row["evidence_refs"], list):
+            raise CLIError("independent-review unit evidence_refs must be an array")
+        refs = tuple(_verified_file_evidence(root, ref)[0] for ref in row["evidence_refs"])
+        review_units.append(ReviewUnitResult(row["item_id"], row["status"], refs).validate())
+    if tuple(item.item_id for item in review_units) != tuple(sorted(item.item_id for item in review_units)):
+        raise CLIError("independent-review units must be in canonical ID order")
     raw = _safe_file_bytes(args.input, "independent-review context artifact", root=root)
     context_dir = root / ".p_ases" / "audits" / str(args.issue) / subject.sha256
     context_path = context_dir / f"review-context-{hashlib.sha256(raw).hexdigest()}.json"
-    _write_immutable(context_path, raw, root=root)
     context_ref = str(context_path.relative_to(root))
     confidence = "HIGH" if all(identity is not None for identity in host_ids.values()) else "LIMITED"
-    review = IndependentReviewV2(
+    review = IndependentReviewV3(
         subject=subject, reviewer_context_id=value["context_id"],
         implementation_context_id=implementation_context, context_artifact_ref=context_ref,
-        context_artifact_sha256=hashlib.sha256(raw).hexdigest(), findings=tuple(findings), verdict=value["verdict"],
+        context_artifact_sha256=hashlib.sha256(raw).hexdigest(), review_units=tuple(review_units),
+        findings=tuple(findings), verdict=value["verdict"],
         provenance_confidence=confidence, spawn_session_id=host_ids["spawn_session_id"],
         reviewer_id=host_ids["reviewer_id"], implementation_binding_id=host_ids["implementation_binding_id"],
-    ).validate()
+    ).validate(required)
+    _write_immutable(context_path, raw, root=root)
     path = root / ".p_ases" / "audits" / str(args.issue) / subject.sha256 / f"independent-{review.sha256}.json"
     write_independent_review(path, review)
     _json({"status": review.verdict, "subject": subject.as_dict(), "subject_sha256": subject.sha256,
-           "review_sha256": review.sha256, "review_schema": "PASES_INDEPENDENT_REVIEW_V2",
+           "review_sha256": review.sha256, "review_schema": "PASES_INDEPENDENT_REVIEW_V3",
            "reviewer_context_id": review.reviewer_context_id,
            "implementation_context_id": review.implementation_context_id,
            "provenance_confidence": review.provenance_confidence,
+           "review_unit_count": len(review.review_units),
            "spawn_session_id": review.spawn_session_id, "reviewer_id": review.reviewer_id,
            "implementation_binding_id": review.implementation_binding_id,
            "path": str(path), "context_artifact": str(context_path),
@@ -1555,14 +1573,19 @@ def _current_base_evidence_for_pr(root: Path, github: GitHub, repository: str,
         raise CLIError(f"current base is not the exact verified Activation transition: {exc}") from exc
 
 
-def _read_audit_references(root: Path, audit: SelfAudit | IndependentReview | IndependentReviewV2) -> tuple[str, ...]:
+def _read_audit_references(
+    root: Path, audit: SelfAudit | IndependentReview | IndependentReviewV2 | IndependentReviewV3,
+) -> tuple[str, ...]:
     references: list[str] = []
     if isinstance(audit, SelfAudit):
         refs = [ref for item in audit.items for ref in item.evidence_refs]
     else:
         refs = [audit.context_artifact_ref, *(item.evidence_ref for item in audit.findings)]
+        if isinstance(audit, IndependentReviewV3):
+            refs.extend(ref for item in audit.review_units for ref in item.evidence_refs)
     for ref in refs:
-        if isinstance(audit, (IndependentReview, IndependentReviewV2)) and ref == audit.context_artifact_ref:
+        if isinstance(audit, (IndependentReview, IndependentReviewV2, IndependentReviewV3)) \
+                and ref == audit.context_artifact_ref:
             if (not isinstance(ref, str) or Path(ref).is_absolute() or "\\" in ref
                     or any(part in {"", ".", ".."} for part in ref.split("/"))):
                 raise CLIError("independent-review context reference is not a canonical workspace-relative path")
@@ -2024,7 +2047,11 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
             self_audit = None
         try:
             independent_review = read_independent_review(args.independent_review)
-            independent_review.validate()
+            if isinstance(independent_review, IndependentReviewV3):
+                independent_review.validate(required_item_ids)
+            else:
+                independent_review.validate()
+                blockers.append("independent review lacks child-authored complete review-unit coverage")
             if subject is None or independent_review.subject != subject:
                 blockers.append("independent review is stale or does not match the current exact subject")
             if (binding is not None and independent_review.implementation_context_id
@@ -2137,6 +2164,10 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
         if independent_review is not None:
             try:
                 final_review = read_independent_review(args.independent_review)
+                if isinstance(final_review, IndependentReviewV3):
+                    final_review.validate(required_item_ids)
+                else:
+                    final_review.validate()
                 if final_review != independent_review:
                     blockers.append("independent review changed before Readiness persistence")
                 _read_audit_references(root, final_review)
@@ -2189,21 +2220,24 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
             )
     path = readiness_path(root, result)
     write_readiness(path, result)
-    review_schema = ("PASES_INDEPENDENT_REVIEW_V2" if isinstance(independent_review, IndependentReviewV2)
+    review_schema = ("PASES_INDEPENDENT_REVIEW_V3" if isinstance(independent_review, IndependentReviewV3)
+                     else "PASES_INDEPENDENT_REVIEW_V2" if isinstance(independent_review, IndependentReviewV2)
                      else "PASES_INDEPENDENT_REVIEW_V1" if isinstance(independent_review, IndependentReview)
                      else None)
     review_confidence = (independent_review.provenance_confidence
-                         if isinstance(independent_review, IndependentReviewV2)
+                         if isinstance(independent_review, (IndependentReviewV2, IndependentReviewV3))
                          else "LEGACY_UNSPECIFIED" if isinstance(independent_review, IndependentReview)
                          else None)
     missing_host_ids = ([name for name in ("spawn_session_id", "reviewer_id", "implementation_binding_id")
                          if getattr(independent_review, name) is None]
-                        if isinstance(independent_review, IndependentReviewV2) else [])
+                        if isinstance(independent_review, (IndependentReviewV2, IndependentReviewV3)) else [])
     _json({"status": result.status, "subject": result.subject.as_dict(),
            "subject_sha256": result.subject.sha256, "readiness_sha256": result.sha256,
            "independent_review_schema": review_schema,
            "independent_review_provenance_confidence": review_confidence,
            "independent_review_missing_host_ids": missing_host_ids,
+           "independent_review_unit_ids": ([item.item_id for item in independent_review.review_units]
+                                           if isinstance(independent_review, IndependentReviewV3) else []),
            "ready_for_user_review": result.ready_for_user_review, "path": str(path),
            "reasons": list(result.reasons),
            "evidence_refs": [str(path), str(args.plan), str(args.verification), str(args.acceptance),

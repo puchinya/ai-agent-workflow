@@ -416,6 +416,208 @@ class IndependentReviewV2:
         return review
 
 
+@dataclass(frozen=True)
+class ReviewUnitResult:
+    """Child-authored evidence that one required review unit was inspected."""
+
+    item_id: str
+    status: str
+    evidence_refs: tuple[str, ...]
+
+    def validate(self) -> "ReviewUnitResult":
+        _nonempty(self.item_id, "Independent review unit ID")
+        if not isinstance(self.status, str) or self.status not in {"PASS", "FAIL"}:
+            raise AuditError("Independent review unit status must be PASS or FAIL")
+        if (type(self.evidence_refs) is not tuple or not self.evidence_refs
+                or any(not isinstance(ref, str) or not ref.strip() for ref in self.evidence_refs)):
+            raise AuditError("Independent review unit requires explicit evidence references")
+        return self
+
+    def as_dict(self) -> dict[str, Any]:
+        self.validate()
+        return {"evidence_refs": list(self.evidence_refs), "item_id": self.item_id, "status": self.status}
+
+
+@dataclass(frozen=True)
+class ReviewFindingV3:
+    finding_id: str
+    severity: str
+    resolved: bool
+    description: str
+    evidence_ref: str
+    blocks_readiness: bool
+
+    def validate(self) -> "ReviewFindingV3":
+        _nonempty(self.finding_id, "Review finding ID")
+        if not isinstance(self.severity, str) or self.severity not in SEVERITIES:
+            raise AuditError("Review finding severity must be A, B, or C")
+        if type(self.resolved) is not bool or type(self.blocks_readiness) is not bool:
+            raise AuditError("Review finding flags must be boolean")
+        if self.severity != "C" and self.blocks_readiness:
+            raise AuditError("Only a reviewer-designated C finding may set blocks_readiness")
+        _nonempty(self.description, "Review finding description")
+        _nonempty(self.evidence_ref, "Review finding evidence reference")
+        return self
+
+    def as_dict(self) -> dict[str, Any]:
+        self.validate()
+        return {"blocks_readiness": self.blocks_readiness, "description": self.description,
+                "evidence_ref": self.evidence_ref, "finding_id": self.finding_id,
+                "resolved": self.resolved, "severity": self.severity}
+
+
+@dataclass(frozen=True)
+class IndependentReviewV3:
+    """Exact-subject review with child-authored unit coverage and typed blocking C findings."""
+
+    subject: VerificationSubject
+    reviewer_context_id: str
+    implementation_context_id: str
+    context_artifact_ref: str
+    context_artifact_sha256: str
+    review_units: tuple[ReviewUnitResult, ...]
+    findings: tuple[ReviewFindingV3, ...]
+    verdict: str
+    provenance_confidence: str
+    spawn_session_id: str | int | None
+    reviewer_id: str | int | None
+    implementation_binding_id: str | None
+
+    def validate(self, required_item_ids: Iterable[str] | None = None) -> "IndependentReviewV3":
+        if required_item_ids is None:
+            if type(self.review_units) is not tuple:
+                raise AuditError("Independent review unit results are required")
+            required = tuple(item.item_id for item in self.review_units if isinstance(item, ReviewUnitResult))
+        else:
+            required = tuple(required_item_ids)
+        if (not required or any(not isinstance(item, str) or not item.strip() for item in required)
+                or len(set(required)) != len(required)):
+            raise AuditError("Independent review required item set is missing, invalid, or duplicated")
+        if required != tuple(sorted(required)):
+            raise AuditError("Independent review required item set must be in canonical order")
+
+        # Reuse the frozen V2 checks for subject, context, and optional host-identity semantics.
+        common = IndependentReviewV2(
+            subject=self.subject,
+            reviewer_context_id=self.reviewer_context_id,
+            implementation_context_id=self.implementation_context_id,
+            context_artifact_ref=self.context_artifact_ref,
+            context_artifact_sha256=self.context_artifact_sha256,
+            findings=(), verdict=self.verdict,
+            provenance_confidence=self.provenance_confidence,
+            spawn_session_id=self.spawn_session_id, reviewer_id=self.reviewer_id,
+            implementation_binding_id=self.implementation_binding_id,
+        )
+        common.validate()
+        if type(self.review_units) is not tuple or not self.review_units:
+            raise AuditError("Independent review unit results are required")
+        for item in self.review_units:
+            if not isinstance(item, ReviewUnitResult):
+                raise AuditError("Independent review unit result has an invalid type")
+            item.validate()
+        unit_ids = tuple(item.item_id for item in self.review_units)
+        if unit_ids != tuple(sorted(unit_ids)) or len(set(unit_ids)) != len(unit_ids):
+            raise AuditError("Independent review unit results must be sorted and unique")
+        if unit_ids != required:
+            raise AuditError("Independent review must cover every required review unit exactly")
+        if type(self.findings) is not tuple:
+            raise AuditError("Independent review findings must be a tuple")
+        for finding in self.findings:
+            if not isinstance(finding, ReviewFindingV3):
+                raise AuditError("Independent review finding has an invalid type")
+            finding.validate()
+        finding_ids = tuple(item.finding_id for item in self.findings)
+        if finding_ids != tuple(sorted(finding_ids)) or len(set(finding_ids)) != len(finding_ids):
+            raise AuditError("Independent review findings must be sorted and unique")
+        if not isinstance(self.verdict, str) or self.verdict not in VERDICTS:
+            raise AuditError("Independent review verdict is unknown")
+        if self.blocking_findings and self.verdict == "PASS":
+            raise AuditError("Independent review with unresolved blocking findings cannot PASS")
+        if any(item.status != "PASS" for item in self.review_units) and self.verdict == "PASS":
+            raise AuditError("Independent review with failed review units cannot PASS")
+        return self
+
+    @property
+    def blocking_findings(self) -> tuple[ReviewFindingV3, ...]:
+        return tuple(item for item in self.findings if not item.resolved and (
+            item.severity in {"A", "B"} or (item.severity == "C" and item.blocks_readiness)
+        ))
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            "context_artifact_ref": self.context_artifact_ref,
+            "context_artifact_sha256": self.context_artifact_sha256,
+            "findings": [item.as_dict() for item in self.findings],
+            "implementation_binding_id": self.implementation_binding_id,
+            "implementation_context_id": self.implementation_context_id,
+            "provenance_confidence": self.provenance_confidence,
+            "review_units": [item.as_dict() for item in self.review_units],
+            "reviewer_context_id": self.reviewer_context_id,
+            "reviewer_id": self.reviewer_id,
+            "schema": "PASES_INDEPENDENT_REVIEW_V3",
+            "spawn_session_id": self.spawn_session_id,
+            "subject": self.subject.as_dict(),
+            "verdict": self.verdict,
+        }
+
+    @property
+    def sha256(self) -> str:
+        return hashlib.sha256(_canonical(self.payload())).hexdigest()
+
+    def to_bytes(self) -> bytes:
+        value = self.payload()
+        value["review_sha256"] = self.sha256
+        return _canonical(value) + b"\n"
+
+    @classmethod
+    def from_bytes(cls, raw: bytes) -> "IndependentReviewV3":
+        try:
+            value = json.loads(raw.decode("utf-8", errors="strict"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise AuditError("Independent review V3 is not valid UTF-8 JSON") from exc
+        expected = {
+            "context_artifact_ref", "context_artifact_sha256", "findings", "implementation_binding_id",
+            "implementation_context_id", "provenance_confidence", "review_sha256", "review_units",
+            "reviewer_context_id", "reviewer_id", "schema", "spawn_session_id", "subject", "verdict",
+        }
+        if (not isinstance(value, dict) or set(value) != expected
+                or value.get("schema") != "PASES_INDEPENDENT_REVIEW_V3"
+                or not isinstance(value.get("findings"), list)
+                or not isinstance(value.get("review_units"), list)):
+            raise AuditError("Independent review V3 has unknown/missing fields or schema")
+        findings: list[ReviewFindingV3] = []
+        for row in value["findings"]:
+            if not isinstance(row, dict) or set(row) != {
+                "blocks_readiness", "description", "evidence_ref", "finding_id", "resolved", "severity",
+            }:
+                raise AuditError("Independent review V3 finding has unknown/missing fields")
+            findings.append(ReviewFindingV3(row["finding_id"], row["severity"], row["resolved"],
+                                             row["description"], row["evidence_ref"], row["blocks_readiness"]))
+        review_units: list[ReviewUnitResult] = []
+        for row in value["review_units"]:
+            if not isinstance(row, dict) or set(row) != {"evidence_refs", "item_id", "status"}:
+                raise AuditError("Independent review unit has unknown/missing fields")
+            if not isinstance(row["evidence_refs"], list):
+                raise AuditError("Independent review unit evidence_refs must be an array")
+            review_units.append(ReviewUnitResult(row["item_id"], row["status"], tuple(row["evidence_refs"])))
+        review = cls(
+            subject=VerificationSubject.from_dict(value["subject"]),
+            reviewer_context_id=value["reviewer_context_id"],
+            implementation_context_id=value["implementation_context_id"],
+            context_artifact_ref=value["context_artifact_ref"],
+            context_artifact_sha256=value["context_artifact_sha256"],
+            review_units=tuple(review_units), findings=tuple(findings), verdict=value["verdict"],
+            provenance_confidence=value["provenance_confidence"], spawn_session_id=value["spawn_session_id"],
+            reviewer_id=value["reviewer_id"], implementation_binding_id=value["implementation_binding_id"],
+        )
+        # Required IDs come from the exact approved ADC during readiness. Standalone parsing validates
+        # canonical form and the digest; the caller supplies the subject's required set separately.
+        review.validate(tuple(item.item_id for item in review.review_units))
+        if value["review_sha256"] != review.sha256 or review.to_bytes() != raw:
+            raise AuditError("Independent review V3 digest or canonical bytes do not match")
+        return review
+
+
 def _safe_read(path: Path, label: str) -> bytes:
     if path_has_symlink(path) or not path.is_file():
         raise AuditError(f"{label} must be a regular non-symlink file")
@@ -469,7 +671,7 @@ def write_self_audit(path: Path, audit: SelfAudit, required_item_ids: Iterable[s
     return audit.sha256
 
 
-IndependentReviewEvidence = IndependentReview | IndependentReviewV2
+IndependentReviewEvidence = IndependentReview | IndependentReviewV2 | IndependentReviewV3
 
 
 def read_independent_review(path: Path) -> IndependentReviewEvidence:
@@ -478,13 +680,15 @@ def read_independent_review(path: Path) -> IndependentReviewEvidence:
         value = json.loads(raw.decode("utf-8", errors="strict"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise AuditError("Independent review is not valid UTF-8 JSON") from exc
+    if isinstance(value, dict) and value.get("schema") == "PASES_INDEPENDENT_REVIEW_V3":
+        return IndependentReviewV3.from_bytes(raw)
     if isinstance(value, dict) and value.get("schema") == "PASES_INDEPENDENT_REVIEW_V2":
         return IndependentReviewV2.from_bytes(raw)
     return IndependentReview.from_bytes(raw)
 
 
 def write_independent_review(path: Path, review: IndependentReviewEvidence) -> str:
-    if not isinstance(review, (IndependentReview, IndependentReviewV2)):
+    if not isinstance(review, (IndependentReview, IndependentReviewV2, IndependentReviewV3)):
         raise AuditError("Independent review has an unsupported type")
     review.validate()
     _write_once(path, review.to_bytes(), "Independent review")

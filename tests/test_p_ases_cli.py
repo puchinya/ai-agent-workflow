@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import hashlib
 import io
 import json
 import sys
@@ -21,7 +22,7 @@ from p_ases.cli import (
     _owner_merge_gate, _parser, _work_command, main,
 )
 from p_ases.delivery import ReadinessResult
-from p_ases.audits import IndependentReviewV2, read_independent_review
+from p_ases.audits import AuditError, IndependentReviewV3, read_independent_review
 from p_ases.evidence_store import VerificationSubject
 from p_ases.github import GitHubError, ReadOnlyGitHub
 from p_ases.owner_consent import OwnerDecisionError
@@ -46,22 +47,35 @@ def ordinary_context(github, adc=None):
     )
 
 
+def child_review_context(root, subject, provenance=""):
+    evidence = root / "review-unit-evidence.txt"
+    evidence.write_text("child inspected the exact contract unit\n", encoding="utf-8")
+    evidence_ref = f"review-unit-evidence.txt#sha256={hashlib.sha256(evidence.read_bytes()).hexdigest()}"
+    return {
+        "context_id": "fresh-child-context", "findings": [], "provenance": provenance,
+        "review_units": [
+            {"evidence_refs": [evidence_ref], "item_id": "REQ-F01-016", "status": "PASS"},
+            {"evidence_refs": [evidence_ref], "item_id": "checklist:01", "status": "PASS"},
+        ],
+        "reviewed_head_sha40": subject.pr_head_sha40, "schema": "PASES_INDEPENDENT_REVIEW_CONTEXT_V2",
+        "session_description": "Reviewed the exact contract units, checklist, diff, and tests",
+        "subject": subject.as_dict(), "verdict": "PASS",
+    }
+
+
 class PasesCLITests(unittest.TestCase):
     def test_independent_audit_accepts_real_child_result_with_missing_host_ids_as_limited(self):
         subject = VerificationSubject("octo/repo", 30, 55, 123, "a" * 64, "b" * 64, "c" * 40)
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            artifact = {
-                "context_id": "fresh-child-context", "findings": [], "provenance": "",
-                "reviewed_head_sha40": subject.pr_head_sha40, "schema": "PASES_INDEPENDENT_REVIEW_CONTEXT_V1",
-                "session_description": "Reviewed exact PR diff and checklist", "subject": subject.as_dict(),
-                "verdict": "PASS",
-            }
+            artifact = child_review_context(root, subject)
             (root / "child-review.json").write_text(json.dumps(artifact), encoding="utf-8")
             args = SimpleNamespace(input=root / "child-review.json", issue=30, plan=Path("plan.json"),
                                    pr=55, head=subject.pr_head_sha40)
             output = io.StringIO()
-            with patch("p_ases.cli._audit_subject", return_value=(object(), subject, (), {})), \
+            with patch("p_ases.cli._audit_subject", return_value=(object(), subject,
+                                                                   ("REQ-F01-016", "checklist:01"),
+                                                                   {"checklist:01": "Independent review"})), \
                     patch("p_ases.cli._read_execution_identity", return_value=object()), \
                     patch("p_ases.cli.execution_identity_context_id", return_value="execution-binding:current"), \
                     contextlib.redirect_stdout(output):
@@ -69,10 +83,13 @@ class PasesCLITests(unittest.TestCase):
             self.assertEqual(status, 0)
             result = json.loads(output.getvalue())
             self.assertEqual(result["status"], "PASS")
-            self.assertEqual(result["review_schema"], "PASES_INDEPENDENT_REVIEW_V2")
+            self.assertEqual(result["review_schema"], "PASES_INDEPENDENT_REVIEW_V3")
             self.assertEqual(result["provenance_confidence"], "LIMITED")
+            self.assertEqual(result["review_unit_count"], 2)
             review = read_independent_review(Path(result["path"]))
-            self.assertIsInstance(review, IndependentReviewV2)
+            self.assertIsInstance(review, IndependentReviewV3)
+            self.assertEqual(tuple(item.item_id for item in review.review_units),
+                             ("REQ-F01-016", "checklist:01"))
             self.assertIsNone(review.spawn_session_id)
             self.assertIsNone(review.reviewer_id)
             self.assertIsNone(review.implementation_binding_id)
@@ -86,17 +103,14 @@ class PasesCLITests(unittest.TestCase):
                 "reviewer_id": 456,
                 "spawn_session_id": "spawn-123",
             }, sort_keys=True, separators=(",", ":"))
-            artifact = {
-                "context_id": "fresh-child-context", "findings": [], "provenance": provenance,
-                "reviewed_head_sha40": subject.pr_head_sha40, "schema": "PASES_INDEPENDENT_REVIEW_CONTEXT_V1",
-                "session_description": "Reviewed exact PR diff and checklist", "subject": subject.as_dict(),
-                "verdict": "PASS",
-            }
+            artifact = child_review_context(root, subject, provenance)
             (root / "child-review.json").write_text(json.dumps(artifact), encoding="utf-8")
             args = SimpleNamespace(input=root / "child-review.json", issue=30, plan=Path("plan.json"),
                                    pr=55, head=subject.pr_head_sha40)
             output = io.StringIO()
-            with patch("p_ases.cli._audit_subject", return_value=(object(), subject, (), {})), \
+            with patch("p_ases.cli._audit_subject", return_value=(object(), subject,
+                                                                   ("REQ-F01-016", "checklist:01"),
+                                                                   {"checklist:01": "Independent review"})), \
                     patch("p_ases.cli._read_execution_identity", return_value=object()), \
                     patch("p_ases.cli.execution_identity_context_id", return_value="execution-binding:current"), \
                     contextlib.redirect_stdout(output):
@@ -112,11 +126,72 @@ class PasesCLITests(unittest.TestCase):
                     "reviewer_id": 456, "spawn_session_id": "spawn-456",
                 }, sort_keys=True, separators=(",", ":")),
             }), encoding="utf-8")
-            with patch("p_ases.cli._audit_subject", return_value=(object(), subject, (), {})), \
+            with patch("p_ases.cli._audit_subject", return_value=(object(), subject,
+                                                                   ("REQ-F01-016", "checklist:01"),
+                                                                   {"checklist:01": "Independent review"})), \
                     patch("p_ases.cli._read_execution_identity", return_value=object()), \
                     patch("p_ases.cli.execution_identity_context_id", return_value="execution-binding:current"):
                 with self.assertRaisesRegex(CLIError, "does not match the current execution"):
                     _audit_independent(args, "octo/repo", root, object())
+
+    def test_independent_audit_rejects_missing_child_authored_review_unit(self):
+        subject = VerificationSubject("octo/repo", 30, 55, 123, "a" * 64, "b" * 64, "c" * 40)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifact = child_review_context(root, subject)
+            artifact["review_units"].pop()
+            (root / "child-review.json").write_text(json.dumps(artifact), encoding="utf-8")
+            args = SimpleNamespace(input=root / "child-review.json", issue=30, plan=Path("plan.json"),
+                                   pr=55, head=subject.pr_head_sha40)
+            with patch("p_ases.cli._audit_subject", return_value=(object(), subject,
+                                                                   ("REQ-F01-016", "checklist:01"),
+                                                                   {"checklist:01": "Independent review"})), \
+                    patch("p_ases.cli._read_execution_identity", return_value=object()), \
+                    patch("p_ases.cli.execution_identity_context_id", return_value="execution-binding:current"):
+                with self.assertRaisesRegex(AuditError, "cover every required review unit exactly"):
+                    _audit_independent(args, "octo/repo", root, object())
+            self.assertFalse((root / ".p_ases" / "audits").exists())
+
+    def test_independent_audit_rejects_legacy_context_without_review_units(self):
+        subject = VerificationSubject("octo/repo", 30, 55, 123, "a" * 64, "b" * 64, "c" * 40)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifact = child_review_context(root, subject)
+            artifact.pop("review_units")
+            artifact["schema"] = "PASES_INDEPENDENT_REVIEW_CONTEXT_V1"
+            (root / "child-review.json").write_text(json.dumps(artifact), encoding="utf-8")
+            args = SimpleNamespace(input=root / "child-review.json", issue=30, plan=Path("plan.json"),
+                                   pr=55, head=subject.pr_head_sha40)
+            with patch("p_ases.cli._audit_subject", return_value=(object(), subject,
+                                                                   ("REQ-F01-016", "checklist:01"),
+                                                                   {"checklist:01": "Independent review"})):
+                with self.assertRaisesRegex(CLIError, "unknown/missing fields"):
+                    _audit_independent(args, "octo/repo", root, object())
+            self.assertFalse((root / ".p_ases" / "audits").exists())
+
+    def test_independent_audit_blocks_reviewer_designated_unresolved_c_finding(self):
+        subject = VerificationSubject("octo/repo", 30, 55, 123, "a" * 64, "b" * 64, "c" * 40)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifact = child_review_context(root, subject)
+            c_evidence = root / "c-finding-evidence.txt"
+            c_evidence.write_text("reviewer-designated blocking C finding\n", encoding="utf-8")
+            artifact["findings"] = [{
+                "blocks_readiness": True, "description": "New required behavior", "evidence_ref":
+                    f"c-finding-evidence.txt#sha256={hashlib.sha256(c_evidence.read_bytes()).hexdigest()}",
+                "finding_id": "C-01", "resolved": False, "severity": "C",
+            }]
+            (root / "child-review.json").write_text(json.dumps(artifact), encoding="utf-8")
+            args = SimpleNamespace(input=root / "child-review.json", issue=30, plan=Path("plan.json"),
+                                   pr=55, head=subject.pr_head_sha40)
+            with patch("p_ases.cli._audit_subject", return_value=(object(), subject,
+                                                                   ("REQ-F01-016", "checklist:01"),
+                                                                   {"checklist:01": "Independent review"})), \
+                    patch("p_ases.cli._read_execution_identity", return_value=object()), \
+                    patch("p_ases.cli.execution_identity_context_id", return_value="execution-binding:current"):
+                with self.assertRaisesRegex(AuditError, "unresolved blocking findings"):
+                    _audit_independent(args, "octo/repo", root, object())
+            self.assertFalse((root / ".p_ases" / "audits").exists())
 
     def test_owner_merge_gate_accepts_only_well_shaped_final_delivery_schemas(self):
         head = "a" * 40

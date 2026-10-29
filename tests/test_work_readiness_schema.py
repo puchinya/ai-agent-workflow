@@ -9,7 +9,10 @@ ROOT = __import__("pathlib").Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases.acceptance import AcceptanceObservation, AcceptanceResult, evaluate_acceptance
-from p_ases.audits import AuditItem, IndependentReview, IndependentReviewV2, ReviewFinding, SelfAudit
+from p_ases.audits import (
+    AuditItem, IndependentReview, IndependentReviewV2, IndependentReviewV3, ReviewFinding,
+    ReviewFindingV3, ReviewUnitResult, SelfAudit,
+)
 from p_ases.checkpoint import PRBinding
 from p_ases.context import WorkContext
 from p_ases.current_base import CurrentBaseAdvanceEvidence
@@ -77,11 +80,15 @@ def setup(*, draft=False, fork=False, stale=False, unresolved=False):
         AuditItem("REQ-09", "PASS", ("readiness.json#sha256",)),
         AuditItem("checklist:exact-head", "PASS", ("pr-readback.json#sha256",)),
     ), key=lambda row: row.item_id))).validate(("REQ-08", "REQ-09", "checklist:exact-head"))
-    findings = (ReviewFinding("A-01", "A", False, "Blocking example", "review.md#A-01"),) if unresolved else ()
-    review = IndependentReview(
+    required_review_ids = ("REQ-08", "REQ-09", "checklist:exact-head")
+    findings = (ReviewFindingV3("A-01", "A", False, "Blocking example", "review.md#A-01", False),) if unresolved else ()
+    review = IndependentReviewV3(
         subject, "fresh-review-session", "implementation-session", "review-context.json",
-        "2" * 64, findings, "CONCERNS" if unresolved else "PASS",
-    ).validate()
+        "2" * 64,
+        tuple(ReviewUnitResult(item_id, "PASS", (f"review-evidence.json#{item_id}",))
+              for item_id in required_review_ids),
+        findings, "CONCERNS" if unresolved else "PASS", "LIMITED", None, None, None,
+    ).validate(required_review_ids)
     return subject, context, pr_binding, pr, pass_result, check, acceptance, audit, review
 
 
@@ -217,6 +224,25 @@ class WorkReadinessSchemaTests(unittest.TestCase):
 
     def test_limited_provenance_independent_review_still_passes_readiness(self):
         subject, context, pr_binding, pr, passed, check, acceptance, audit, _review = setup()
+        required = ("REQ-08", "REQ-09", "checklist:exact-head")
+        review = IndependentReviewV3(
+            subject, "fresh-child-context", "implementation-session", "review-context.json",
+            "3" * 64,
+            tuple(ReviewUnitResult(item_id, "PASS", (f"review-evidence.json#{item_id}",))
+                  for item_id in required),
+            (), "PASS", "LIMITED", None, None, None,
+        ).validate(required)
+        result = evaluate_readiness(
+            subject=subject, pr=pr, pr_binding=pr_binding, work_context=context,
+            verification=passed, acceptance=acceptance, self_audit=audit,
+            required_item_ids=required,
+            independent_review=review, required_checks_sha256=check.sha256,
+        )
+        self.assertEqual(result.status, "PASS")
+        self.assertTrue(result.ready_for_user_review)
+
+    def test_legacy_review_without_child_authored_unit_coverage_cannot_pass_readiness(self):
+        subject, context, pr_binding, pr, passed, check, acceptance, audit, _review = setup()
         review = IndependentReviewV2(
             subject, "fresh-child-context", "implementation-session", "review-context.json",
             "3" * 64, (), "PASS", "LIMITED", None, None, None,
@@ -227,8 +253,66 @@ class WorkReadinessSchemaTests(unittest.TestCase):
             required_item_ids=("REQ-08", "REQ-09", "checklist:exact-head"),
             independent_review=review, required_checks_sha256=check.sha256,
         )
-        self.assertEqual(result.status, "PASS")
-        self.assertTrue(result.ready_for_user_review)
+        self.assertEqual(result.status, "BLOCKED")
+        self.assertIn("independent review lacks child-authored complete review-unit coverage", result.reasons)
+
+        legacy_v1 = IndependentReview(
+            subject, "fresh-child-context", "implementation-session", "review-context.json",
+            "4" * 64, (), "PASS",
+        ).validate()
+        v1_result = evaluate_readiness(
+            subject=subject, pr=pr, pr_binding=pr_binding, work_context=context,
+            verification=passed, acceptance=acceptance, self_audit=audit,
+            required_item_ids=("REQ-08", "REQ-09", "checklist:exact-head"),
+            independent_review=legacy_v1, required_checks_sha256=check.sha256,
+        )
+        self.assertEqual(v1_result.status, "BLOCKED")
+
+    def test_review_v3_requires_exact_unit_coverage_and_typed_blocking_c(self):
+        subject, *_ = setup()
+        required = ("REQ-08", "REQ-09", "checklist:exact-head")
+        units = tuple(ReviewUnitResult(item_id, "PASS", (f"evidence.json#{item_id}",))
+                      for item_id in required)
+        incomplete = IndependentReviewV3(
+            subject, "review", "implementation", "context.json", "4" * 64,
+            units[:-1], (), "PASS", "LIMITED", None, None, None,
+        )
+        with self.assertRaisesRegex(ValueError, "cover every required review unit exactly"):
+            incomplete.validate(required)
+
+        nonblocking_c = IndependentReviewV3(
+            subject, "review", "implementation", "context.json", "5" * 64, units,
+            (ReviewFindingV3("C-01", "C", False, "New optional requirement", "c.json#sha256=x", False),),
+            "PASS", "LIMITED", None, None, None,
+        ).validate(required)
+        self.assertEqual(nonblocking_c.blocking_findings, ())
+        subject, context, pr_binding, pr, passed, check, acceptance, audit, _review = setup()
+        nonblocking_result = evaluate_readiness(
+            subject=subject, pr=pr, pr_binding=pr_binding, work_context=context,
+            verification=passed, acceptance=acceptance, self_audit=audit,
+            required_item_ids=required, independent_review=nonblocking_c,
+            required_checks_sha256=check.sha256,
+        )
+        self.assertEqual(nonblocking_result.status, "PASS")
+        blocking_c = IndependentReviewV3(
+            subject, "review", "implementation", "context.json", "6" * 64, units,
+            (ReviewFindingV3("C-01", "C", False, "Reviewer-designated blocker", "c.json#sha256=x", True),),
+            "PASS", "LIMITED", None, None, None,
+        )
+        with self.assertRaisesRegex(ValueError, "unresolved blocking findings"):
+            blocking_c.validate(required)
+        blocking_c_concerns = IndependentReviewV3(
+            **{**blocking_c.__dict__, "verdict": "CONCERNS"},
+        ).validate(required)
+        blocking_result = evaluate_readiness(
+            subject=subject, pr=pr, pr_binding=pr_binding, work_context=context,
+            verification=passed, acceptance=acceptance, self_audit=audit,
+            required_item_ids=required, independent_review=blocking_c_concerns,
+            required_checks_sha256=check.sha256,
+        )
+        self.assertEqual(blocking_result.status, "CONCERNS")
+        with self.assertRaisesRegex(ValueError, "Only a reviewer-designated C finding"):
+            ReviewFindingV3("B-01", "B", False, "A/B is inherently blocking", "b.json#sha256=x", True).validate()
 
 
 if __name__ == "__main__":

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .acceptance import AcceptanceResult
-from .audits import AuditError, IndependentReview, IndependentReviewV2, SelfAudit
+from .audits import AuditError, IndependentReview, IndependentReviewV2, IndependentReviewV3, SelfAudit
 from .checkpoint import CheckpointError, PRBinding
 from .context import WorkContext, WorkContextError
 from .current_base import CurrentBaseAdvanceEvidence
@@ -390,7 +390,7 @@ def evaluate_readiness(
     acceptance: AcceptanceResult | None,
     self_audit: SelfAudit | None,
     required_item_ids: Iterable[str],
-    independent_review: IndependentReview | IndependentReviewV2 | None,
+    independent_review: IndependentReview | IndependentReviewV2 | IndependentReviewV3 | None,
     required_checks_sha256: str | None,
     blocker_reasons: Iterable[str] = (),
     current_base_advance: CurrentBaseAdvanceEvidence | None = None,
@@ -399,6 +399,7 @@ def evaluate_readiness(
     if not isinstance(subject, VerificationSubject):
         raise ReadinessError("Readiness requires an exact Verification subject")
     subject.validate()
+    required_ids = tuple(sorted(required_item_ids))
     reasons: list[str] = []
     digest_refs: set[str] = set()
     required_check_policy_sha256: str | None = None
@@ -549,7 +550,7 @@ def evaluate_readiness(
         reasons.append("self-audit is missing")
     else:
         try:
-            self_audit.validate(required_item_ids)
+                self_audit.validate(required_ids)
         except AuditError as exc:
             reasons.append(f"self-audit is incomplete or invalid: {exc}")
         else:
@@ -559,20 +560,25 @@ def evaluate_readiness(
                 reasons.append(f"self-audit status is {self_audit.status}")
             digest_refs.add(self_audit.sha256)
 
-    if not isinstance(independent_review, (IndependentReview, IndependentReviewV2)):
+    if not isinstance(independent_review, (IndependentReview, IndependentReviewV2, IndependentReviewV3)):
         reasons.append("independent review artifact is missing")
     else:
         try:
-            independent_review.validate()
+            if isinstance(independent_review, IndependentReviewV3):
+                independent_review.validate(required_ids)
+            else:
+                independent_review.validate()
         except AuditError as exc:
             reasons.append(f"independent review artifact is invalid: {exc}")
         else:
+            if not isinstance(independent_review, IndependentReviewV3):
+                reasons.append("independent review lacks child-authored complete review-unit coverage")
             if independent_review.subject != subject:
                 reasons.append("independent review belongs to a different exact subject")
             if independent_review.verdict != "PASS":
                 reasons.append(f"independent review verdict is {independent_review.verdict}")
             if independent_review.blocking_findings:
-                reasons.append("independent review has unresolved A/B findings")
+                reasons.append("independent review has unresolved blocking findings")
             digest_refs.add(independent_review.sha256)
 
     normalized_reasons = tuple(reasons)

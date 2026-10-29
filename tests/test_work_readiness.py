@@ -10,7 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases.audits import (
-    AuditError, AuditItem, IndependentReview, IndependentReviewV2, ReviewFinding, SelfAudit,
+    AuditError, AuditItem, IndependentReview, IndependentReviewV2, IndependentReviewV3,
+    ReviewFinding, ReviewFindingV3, ReviewUnitResult, SelfAudit,
     read_independent_review, read_self_audit, write_independent_review, write_self_audit,
 )
 from p_ases.evidence_store import VerificationSubject
@@ -122,6 +123,28 @@ class WorkReadinessTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(AuditError, "binding ID"):
             mismatched.validate()
+
+    def test_independent_review_v3_round_trips_child_unit_coverage_and_blocking_c(self):
+        required = ("REQ-F01-016", "checklist:01", "checklist:02")
+        review = IndependentReviewV3(
+            subject=SUBJECT, reviewer_context_id="fresh-review-context",
+            implementation_context_id="execution-binding:current", context_artifact_ref="review-context.json",
+            context_artifact_sha256="b" * 64,
+            review_units=tuple(ReviewUnitResult(item_id, "PASS", (f"evidence/{index}.json#sha256=" + str(index) * 64,))
+                               for index, item_id in enumerate(required, start=1)),
+            findings=(ReviewFindingV3("C-01", "C", False, "Reviewer-designated blocker",
+                                      "evidence/c.json#sha256=" + "d" * 64, True),),
+            verdict="CONCERNS", provenance_confidence="LIMITED", spawn_session_id=None,
+            reviewer_id=None, implementation_binding_id=None,
+        ).validate(required)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "independent-review-v3.json"
+            self.assertEqual(write_independent_review(path, review), review.sha256)
+            restored = read_independent_review(path)
+            self.assertIsInstance(restored, IndependentReviewV3)
+            self.assertEqual(restored, review)
+            with self.assertRaisesRegex(AuditError, "cover every required review unit exactly"):
+                restored.validate(required[:-1])
 
     def test_independent_review_v2_still_rejects_same_context_and_unresolved_blockers(self):
         same_context = IndependentReviewV2(
