@@ -6,9 +6,11 @@ import hashlib
 import os
 import re
 import tempfile
+from contextlib import contextmanager
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator, Sequence
 from urllib.parse import urlsplit
 
 from .github import GitHub, GitHubError
@@ -100,6 +102,34 @@ class ADCPointer:
 class VerifiedADC:
     contract: ADC
     pointer: ADCPointer
+
+
+@dataclass
+class _ADCForwardGenerationScope:
+    github: GitHub
+    issue_number: int
+    prior_comment_id: int
+    prior_sha256: str
+    current_comment_id: int
+    current_sha256: str
+    verified: tuple[VerifiedADC, ...] | None = None
+
+
+@dataclass
+class _ADCForwardGenerationSession:
+    github: GitHub
+    issue_number: int
+    # Each tuple was read back against the live Issue and pointer journal. The
+    # boolean is true only when its final generation was also proven current.
+    ranges: list[tuple[tuple[VerifiedADC, ...], bool]]
+
+
+_ADC_FORWARD_GENERATION_SCOPE: ContextVar[_ADCForwardGenerationScope | None] = ContextVar(
+    "pases_adc_forward_generation_scope", default=None,
+)
+_ADC_FORWARD_GENERATION_SESSION: ContextVar[_ADCForwardGenerationSession | None] = ContextVar(
+    "pases_adc_forward_generation_session", default=None,
+)
 
 
 def _repo_name(value: str) -> str:
@@ -452,12 +482,14 @@ def _latest_pointer_record(
     issue_number: int,
     *,
     issue_body: str,
+    comments: Sequence[dict[str, Any]] | None = None,
 ) -> tuple[ADCPointer | None, str | None, int | None]:
     """Read the append-only pointer journal; fall back to the legacy Issue-body pointer."""
     try:
         records: list[tuple[int, str, str, ADCPointer]] = []
         operation_records: dict[str, tuple[str, str, ADCPointer, int]] = {}
-        for listed in github.issue_comments(issue_number):
+        listed_comments = github.issue_comments(issue_number) if comments is None else comments
+        for listed in listed_comments:
             body = listed.get("body") if isinstance(listed, dict) else None
             if not isinstance(body, str) or not body.startswith(POINTER_RECORD_SENTINEL):
                 continue
@@ -843,6 +875,50 @@ def verify_adc(github: GitHub, issue_number: int) -> VerifiedADC:
     return VerifiedADC(contract, pointer)
 
 
+def _verify_adc_comment_triplet(
+    github: GitHub,
+    issue_number: int,
+    pointer: ADCPointer,
+    direct_before: Any,
+    listed: Any,
+    direct_after: Any,
+) -> VerifiedADC:
+    """Validate one ADC carrier against direct/list/direct reads from one operation."""
+    fingerprints: list[tuple[Any, ...]] = []
+    for row in (direct_before, listed, direct_after):
+        _check_comment(row, github.repo, issue_number, pointer.comment_id)
+        body = row.get("body")
+        created, updated = row.get("created_at"), row.get("updated_at")
+        author = row.get("user")
+        if (not isinstance(body, str) or not isinstance(created, str) or not isinstance(updated, str)
+                or created != updated or not isinstance(author, dict)
+                or type(author.get("id")) is not int or author["id"] < 1
+                or not isinstance(author.get("login"), str) or not author["login"]
+                or author.get("type") != "User"):
+            raise ADCError("historical ADC comment was edited or has no stable human author")
+        fingerprints.append((row.get("id"), body, created, updated,
+                             author["id"], author["login"].casefold(), author["type"],
+                             row.get("issue_url"), row.get("html_url"), row.get("url")))
+    if fingerprints[0] != fingerprints[1] or fingerprints[1] != fingerprints[2]:
+        raise ADCError("historical ADC comment changed during direct/list/direct readback")
+    comment_id = pointer.comment_id
+    expected_urls = (f"https://api.github.com/repos/{github.repo}/issues/{issue_number}",
+                     f"https://github.com/{github.repo}/issues/{issue_number}#issuecomment-{comment_id}",
+                     f"https://api.github.com/repos/{github.repo}/issues/comments/{comment_id}")
+    actual_urls = tuple(value.casefold() if isinstance(value, str) else None
+                         for value in fingerprints[1][7:])
+    if actual_urls != tuple(value.casefold() for value in expected_urls):
+        raise ADCError("historical ADC comment repository URLs do not match its Issue")
+    data = fingerprints[1][1].encode("utf-8", errors="strict")
+    contract = parse_adc(data, github.repo, issue_number)
+    digest = hashlib.sha256(data).hexdigest()
+    if digest != pointer.sha256 or len(data) != pointer.byte_length:
+        raise ADCError("historical ADC comment does not match its immutable pointer")
+    if contract.sha256 != digest or contract.byte_length != pointer.byte_length:
+        raise ADCError("historical ADC comment does not match its immutable pointer")
+    return VerifiedADC(contract, pointer)
+
+
 def verify_adc_generation(github: GitHub, issue_number: int, comment_id: int, sha256: str,
                          *, state: str) -> VerifiedADC:
     """Verify an exact historical ADC generation from the append-only pointer journal."""
@@ -852,13 +928,16 @@ def verify_adc_generation(github: GitHub, issue_number: int, comment_id: int, sh
         raise ADCError("historical ADC state is unknown")
     try:
         issue = _check_issue(github.issue(issue_number), github.repo, issue_number)
+        journal_comments = github.issue_comments(issue_number)
         # Validate the complete predecessor chain before selecting an older entry.
-        _latest_pointer_record(github, issue_number, issue_body=issue.get("body") or "")
+        _latest_pointer_record(
+            github, issue_number, issue_body=issue.get("body") or "", comments=journal_comments,
+        )
         generations: list[ADCPointer] = []
         legacy = parse_pointer(issue.get("body") or "")
         if legacy is not None:
             generations.append(legacy)
-        for row in github.issue_comments(issue_number):
+        for row in journal_comments:
             body = row.get("body") if isinstance(row, dict) else None
             if not isinstance(body, str) or not body.startswith(POINTER_RECORD_SENTINEL):
                 continue
@@ -877,7 +956,8 @@ def verify_adc_generation(github: GitHub, issue_number: int, comment_id: int, sh
             raise ADCError("historical ADC generation is missing, duplicated, or has the wrong state")
         direct = _check_comment(github.issue_comment(issue_number, comment_id),
                                 github.repo, issue_number, comment_id)
-        listed = [row for row in github.issue_comments(issue_number)
+        readback_comments = github.issue_comments(issue_number)
+        listed = [row for row in readback_comments
                   if isinstance(row, dict) and row.get("id") == comment_id]
         after = _check_comment(github.issue_comment(issue_number, comment_id),
                                github.repo, issue_number, comment_id)
@@ -885,39 +965,10 @@ def verify_adc_generation(github: GitHub, issue_number: int, comment_id: int, sh
         raise ADCError(str(exc)) from exc
     if len(listed) != 1:
         raise ADCError("historical ADC comment is missing or duplicated")
-    fingerprints = []
-    for row in (direct, listed[0], after):
-        body = row.get("body")
-        created, updated = row.get("created_at"), row.get("updated_at")
-        author = row.get("user")
-        if (not isinstance(body, str) or not isinstance(created, str) or not isinstance(updated, str)
-                or created != updated or not isinstance(author, dict)
-                or type(author.get("id")) is not int or author["id"] < 1
-                or not isinstance(author.get("login"), str) or not author["login"]
-                or author.get("type") != "User"):
-            raise ADCError("historical ADC comment was edited or has no stable human author")
-        fingerprints.append((row.get("id"), body, created, updated,
-                             author["id"], author["login"].casefold(), author["type"],
-                             row.get("issue_url"), row.get("html_url"), row.get("url")))
-    if fingerprints[0] != fingerprints[1] or fingerprints[1] != fingerprints[2]:
-        raise ADCError("historical ADC comment changed during direct/list/direct readback")
-    repository = github.repo
-    comment_id = fingerprints[1][0]
-    expected_urls = (f"https://api.github.com/repos/{repository}/issues/{issue_number}",
-                     f"https://github.com/{repository}/issues/{issue_number}#issuecomment-{comment_id}",
-                     f"https://api.github.com/repos/{repository}/issues/comments/{comment_id}")
-    actual_urls = tuple(value.casefold() if isinstance(value, str) else None
-                         for value in fingerprints[1][7:])
-    if actual_urls != tuple(value.casefold() for value in expected_urls):
-        raise ADCError("historical ADC comment repository URLs do not match its Issue")
-    data = fingerprints[1][1].encode("utf-8", errors="strict")
-    contract = parse_adc(data, github.repo, issue_number)
-    if contract.sha256 != sha256 or contract.byte_length != matching[0].byte_length:
-        raise ADCError("historical ADC comment does not match its immutable pointer")
-    return VerifiedADC(contract, matching[0])
+    return _verify_adc_comment_triplet(github, issue_number, matching[0], direct, listed[0], after)
 
 
-def verify_adc_forward_generations(
+def _verify_adc_forward_generations_uncached(
     github: GitHub, issue_number: int, *, prior_comment_id: int, prior_sha256: str,
     current_comment_id: int, current_sha256: str, allow_historical_target: bool = False,
 ) -> tuple[VerifiedADC, ...]:
@@ -990,6 +1041,170 @@ def verify_adc_forward_generations(
         return tuple(verified_rows)
     except GitHubError as exc:
         raise ADCError(str(exc)) from exc
+
+
+@contextmanager
+def adc_forward_generation_scope(
+    github: Any,
+    issue_number: int,
+    *,
+    prior_comment_id: int,
+    prior_sha256: str,
+    current_comment_id: int,
+    current_sha256: str,
+) -> Iterator[None]:
+    """Share one validated ADC range across a single immutable history read."""
+    if not isinstance(github, GitHub):
+        yield
+        return
+    if (type(issue_number) is not int or issue_number < 1
+            or type(prior_comment_id) is not int or prior_comment_id < 1
+            or type(current_comment_id) is not int or current_comment_id <= prior_comment_id
+            or not isinstance(prior_sha256, str) or not SHA256.fullmatch(prior_sha256)
+            or not isinstance(current_sha256, str) or not SHA256.fullmatch(current_sha256)):
+        raise ADCError("ADC successor scope is malformed, stale or backward")
+    scope = _ADCForwardGenerationScope(
+        github, issue_number, prior_comment_id, prior_sha256, current_comment_id, current_sha256,
+    )
+    token: Token[_ADCForwardGenerationScope | None] = _ADC_FORWARD_GENERATION_SCOPE.set(scope)
+    try:
+        yield
+    finally:
+        _ADC_FORWARD_GENERATION_SCOPE.reset(token)
+
+
+@contextmanager
+def adc_forward_generation_session(github: Any, issue_number: int) -> Iterator[None]:
+    """Reuse exact verified ADC ranges during one read-only lifecycle command."""
+    if not isinstance(github, GitHub):
+        yield
+        return
+    if type(issue_number) is not int or issue_number < 1:
+        raise ADCError("ADC successor session Issue is malformed")
+    session = _ADCForwardGenerationSession(github, issue_number, [])
+    token: Token[_ADCForwardGenerationSession | None] = _ADC_FORWARD_GENERATION_SESSION.set(session)
+    try:
+        yield
+    finally:
+        _ADC_FORWARD_GENERATION_SESSION.reset(token)
+
+
+def refresh_adc_forward_generation_session(github: Any, issue_number: int) -> None:
+    """Discard request-local history before a command's final live readback."""
+    session = _ADC_FORWARD_GENERATION_SESSION.get()
+    if (session is not None and session.github is github
+            and session.issue_number == issue_number):
+        session.ranges.clear()
+
+
+def _select_verified_adc_range(
+    generations: tuple[VerifiedADC, ...],
+    *,
+    prior_comment_id: int,
+    prior_sha256: str,
+    current_comment_id: int,
+    current_sha256: str,
+) -> tuple[VerifiedADC, ...]:
+    prior_matches = [index for index, row in enumerate(generations)
+                     if row.pointer.comment_id == prior_comment_id and row.pointer.sha256 == prior_sha256]
+    current_matches = [index for index, row in enumerate(generations)
+                       if row.pointer.comment_id == current_comment_id and row.pointer.sha256 == current_sha256]
+    if (len(prior_matches) != 1 or len(current_matches) != 1
+            or prior_matches[0] >= current_matches[0]):
+        raise ADCError("ADC successor journal has a gap, rollback or unknown generation")
+    return generations[prior_matches[0]:current_matches[0] + 1]
+
+
+def _cached_session_range(
+    session: _ADCForwardGenerationSession,
+    *,
+    prior_comment_id: int,
+    prior_sha256: str,
+    current_comment_id: int,
+    current_sha256: str,
+    require_current: bool,
+) -> tuple[VerifiedADC, ...] | None:
+    for generations, current_verified in reversed(session.ranges):
+        if require_current and (not current_verified
+                                or not generations
+                                or generations[-1].pointer.comment_id != current_comment_id
+                                or generations[-1].pointer.sha256 != current_sha256):
+            continue
+        try:
+            return _select_verified_adc_range(
+                generations, prior_comment_id=prior_comment_id, prior_sha256=prior_sha256,
+                current_comment_id=current_comment_id, current_sha256=current_sha256,
+            )
+        except ADCError:
+            continue
+    return None
+
+
+def verify_adc_forward_generations(
+    github: GitHub,
+    issue_number: int,
+    *,
+    prior_comment_id: int,
+    prior_sha256: str,
+    current_comment_id: int,
+    current_sha256: str,
+    allow_historical_target: bool = False,
+) -> tuple[VerifiedADC, ...]:
+    """Verify an approved ADC range, reusing a request-scoped immutable history check."""
+    if (type(prior_comment_id) is not int or prior_comment_id < 1
+            or type(current_comment_id) is not int or current_comment_id <= prior_comment_id
+            or not isinstance(prior_sha256, str) or not SHA256.fullmatch(prior_sha256)
+            or not isinstance(current_sha256, str) or not SHA256.fullmatch(current_sha256)
+            or type(allow_historical_target) is not bool):
+        raise ADCError("ADC successor range is malformed, stale or backward")
+    scope = _ADC_FORWARD_GENERATION_SCOPE.get()
+    session = _ADC_FORWARD_GENERATION_SESSION.get()
+    if (session is not None
+            and (session.github is not github or session.issue_number != issue_number)):
+        session = None
+    if (scope is not None and scope.github is github and scope.issue_number == issue_number
+            and allow_historical_target):
+        if scope.verified is None:
+            scope.verified = (_cached_session_range(
+                session, prior_comment_id=scope.prior_comment_id,
+                prior_sha256=scope.prior_sha256, current_comment_id=scope.current_comment_id,
+                current_sha256=scope.current_sha256, require_current=False,
+            ) if session is not None else None)
+            if scope.verified is None:
+                scope.verified = _verify_adc_forward_generations_uncached(
+                    github, issue_number,
+                    prior_comment_id=scope.prior_comment_id, prior_sha256=scope.prior_sha256,
+                    current_comment_id=scope.current_comment_id, current_sha256=scope.current_sha256,
+                    allow_historical_target=True,
+                )
+                if session is not None:
+                    session.ranges.append((scope.verified, False))
+        return _select_verified_adc_range(
+            scope.verified, prior_comment_id=prior_comment_id, prior_sha256=prior_sha256,
+            current_comment_id=current_comment_id, current_sha256=current_sha256,
+        )
+    if session is not None:
+        cached = _cached_session_range(
+            session, prior_comment_id=prior_comment_id, prior_sha256=prior_sha256,
+            current_comment_id=current_comment_id, current_sha256=current_sha256,
+            require_current=not allow_historical_target,
+        )
+        if cached is not None:
+            return cached
+        verified = _verify_adc_forward_generations_uncached(
+            github, issue_number,
+            prior_comment_id=prior_comment_id, prior_sha256=prior_sha256,
+            current_comment_id=current_comment_id, current_sha256=current_sha256,
+            allow_historical_target=allow_historical_target,
+        )
+        session.ranges.append((verified, not allow_historical_target))
+        return verified
+    return _verify_adc_forward_generations_uncached(
+        github, issue_number,
+        prior_comment_id=prior_comment_id, prior_sha256=prior_sha256,
+        current_comment_id=current_comment_id, current_sha256=current_sha256,
+        allow_historical_target=allow_historical_target,
+    )
 
 
 def restore_adc(github: GitHub, issue_number: int, destination: Path) -> VerifiedADC:
