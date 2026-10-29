@@ -1,11 +1,12 @@
 # Issue #63 Independent Review status
 
-Updated 2026-10-28. This status summarizes the approved review-confidence behavior and its current implementation state.
+Updated 2026-10-30. This file reports current evidence and review blockers; it does not replace the approved ADC or runtime gate results.
 
 <!-- contents:start -->
 **Contents**
 - [1 Governing state](#1-governing-state)
-- [2 Review behavior](#2-review-behavior)
+- [2 Review behavior and current evidence](#2-review-behavior-and-current-evidence)
+- [3 Open review findings](#3-open-review-findings)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -16,17 +17,27 @@ Updated 2026-10-28. This status summarizes the approved review-confidence behavi
 <a id="governing-state"></a>
 ## 1 Governing state
 
-- Issue #63 is OPEN at `phase:requirements`.
-- Current approved ADC: Issue comment #6469199612, SHA-256 `84ff1f8ee6582c65d937a755593efad98ca481254712c05f35d73f6510cf12d8`.
-- Phase V3 recovery pairs: Intent/Applied #6469356263/#6469538910 and #6469619562/#6470070164.
-- Current ADC generation Phase V2 pair: #6470193595/#6470279567.
-- PR #64 remains OPEN. The implementation branch currently starts at `5d4beef09ea350c434787978892d8e1c47227739`; the changes described here are not yet committed or pushed.
+- Issue #63 is OPEN at `phase:verification` with `kind:single`.
+- PR #64 is OPEN and non-draft. The latest reviewed source HEAD is `3c508e91edfdc6deb1d0945af02c8e4c489677e8`; this status-only correction does not change runtime or review behavior.
+- Current approved ADC: Issue comment #6471580482, SHA-256 `22ec1585a11d9a791eaf9b0e89baf604775e5168b3f5844a290485a7aab5d218`.
+- The five checks in Actions run [#40908325927](https://github.com/puchinya/ai-agent-workflow/actions/runs/40908325927) passed on the reviewed source HEAD: Ubuntu Python 3.10/3.14, Windows Python 3.14, macOS Python 3.14, and PR metadata. The status-only PR update will trigger a new check run.
+- Exact-HEAD Verification comment #6502837351 and Acceptance comment #6503240116 are present. Local Self-Audit artifact `e42a3132132da1769ed2a12d9d73d474b552831d981c87140c267978143567a3/self-1def0934617ad99d81ba614dd673de3ce46e3c46bfc177819ecad06983df5125.json` reports PASS.
+- No approved ADC, adoption epoch, Phase receipt, Binding, or earlier review artifact has been rewritten.
 
-<a id="review-behavior"></a>
-## 2 Review behavior
+<a id="review-behavior-and-current-evidence"></a>
+## 2 Review behavior and current evidence
 
-Independent Review still requires the host to spawn and join a dedicated fresh child and receive its exact-subject result. The child must review the approved contract, checklist, current HEAD, full diff, and test evidence, then author its own result. A missing child, failed or unknown spawn/join, same-context result, stale or malformed result, blocking finding, or failed checklist remains a blocker.
+The approved REQ-F01-016 requires an actual fresh host-native child to be spawned and joined. Its exact-subject result must cover the approved ADC, full diff, checklist, and test evidence. Missing host IDs affect confidence only: all matching IDs yield `HIGH`; absent IDs yield `LIMITED`. Neither confidence value means that the review was skipped, and neither proves host authenticity cryptographically.
 
-Host identifiers affect recorded confidence only when they are unavailable. `PASES_INDEPENDENT_REVIEW_V2` records `HIGH` when spawn/session, reviewer, and implementation-binding identifiers are all present and match; otherwise it records `LIMITED` and exposes the missing values. An available mismatching binding or known same-context spawn/reviewer identity still blocks. A valid `LIMITED` review can satisfy Readiness if every other exact-subject gate passes. The runtime does not claim cryptographic host authentication from these caller-reported identifiers.
+A local `PASES_INDEPENDENT_REVIEW_V2` artifact exists for the current HEAD, review SHA-256 `d3c477412552794e4868dd65823971ce05cd53519d227d36bd630df5ac82c575`, with `LIMITED` confidence. Its child output describes a limited review of readiness recomputation and ADC history, not a complete review of the current PR contract, full diff, and every checklist item. The local V1 Readiness artifact reports PASS, but the latest code review found that the runtime does not validate complete independent-review checklist coverage or typed blocking-C status. The PASS record therefore does not resolve those findings.
 
-`PASES_INDEPENDENT_REVIEW_V1` retains its existing bytes and reader behavior. No formal V2 Independent Review or current-HEAD Readiness result has been produced by this implementation change yet; code changes invalidate any prior review of an older HEAD.
+Latest formal review: PR review #5702161681, CHANGES REQUIRED. Its A-1 finding was explicitly withdrawn in follow-up comment #6509828894. The remaining A-2, B-1, and D-1 findings are tracked below; D-1 is corrected by this status update. No User Review approval, PR_MERGE approval, Ruleset write, Activation, PR merge, or Issue close is recorded here.
+
+<a id="open-review-findings"></a>
+## 3 Open review findings
+
+- **A-2 — checklist coverage:** `audit independent` receives no typed per-unit/per-checklist result and cannot reject missing checklist coverage. The current approved ADC #6471580482 authorizes the documentation/test-oracle traceability correction only; it does not authorize a new runtime artifact schema or readiness behavior. Resolving this finding requires a forward successor ADC and an approved phase/rework path before runtime changes.
+- **B-1 — blocking C:** `ReviewFinding` has no typed reviewer blocking marker for severity C, and readiness blocks unresolved A/B only. The current approved ADC does not authorize this runtime schema/policy change. Resolving it requires the same forward authorization before implementation; C remains a newly discovered requirement category, not an implementer A finding.
+- **D-1 — stale status:** corrected in this file and the PR description to report the current Issue phase, ADC, HEAD, CI, and review state. Older status snapshots in the PR description remain labeled historical.
+
+The current Issue phase is `verification`. The approved design does not allow code changes to move implicitly backward to `execution`; runtime remediation must use an explicitly approved forward contract and phase/rework path. Do not change the current ADC or historical receipts to imply that this authorization already exists.
