@@ -474,9 +474,10 @@ def _evaluate_typed_relay_review(
             if (not isinstance(approval.feedback_sha256, str)
                     or feedback_digest(prior_events) != approval.feedback_sha256):
                 reasons.append("owner-local User Review approval is bound to a different prior feedback snapshot")
+        review_started = _time(session.started_at)
         for row in rows:
-            if row.deleted or row.edited:
-                reasons.append("GitHub feedback was deleted or edited")
+            if row.deleted or (row.edited and _time(row.updated_at) >= review_started):
+                reasons.append("GitHub feedback was deleted or edited during this review session")
             if (row.channel == "pr-review" and row.kind == "approved"
                     and row.actor_id == pr_author_user_id):
                 reasons.append("formal self-approval is not accepted as solo_owner User Review evidence")

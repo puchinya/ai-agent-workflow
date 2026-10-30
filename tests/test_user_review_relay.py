@@ -438,6 +438,59 @@ class UserReviewRelayTests(unittest.TestCase):
         self.assertEqual(result.selected_approval_event, "user-review-relay:101")
         self.assertEqual(result.selected_approval_evidence, approval.as_selected_evidence())
 
+    def test_feedback_edits_before_session_are_current_but_edits_during_session_block(self) -> None:
+        def edited_comment(updated_at: str, event_id: str) -> FeedbackEvent:
+            return FeedbackEvent(
+                channel="pr-comment", event_id=event_id, actor_id=OWNER_ID,
+                actor_login="puchinya", actor_type="User",
+                created_at="2026-10-17T08:00:00Z", updated_at=updated_at,
+                kind="questions", head_sha40=None, body_sha256="8" * 64,
+                source_url=f"https://github.com/{REPOSITORY}/pull/{PR_NUMBER}#issuecomment-{event_id}",
+                edited=True,
+            ).validate()
+
+        plan_sha, scope_sha = "f" * 64, "9" * 64
+        before_session = edited_comment("2026-10-17T08:59:00Z", "pre-session-edit")
+        prior_digest = feedback_digest((before_session,))
+        comment = github_comment(chat_confirmed_decision_body(
+            feedback_sha256=prior_digest, plan_sha256=plan_sha,
+            approval_scope_sha256=scope_sha,
+        ))
+        approval = verify(
+            decision_history(comment), feedback_sha256=prior_digest,
+            plan_sha256=plan_sha, approval_scope_sha256=scope_sha,
+        )
+        result = evaluate_user_review(
+            SESSION, READINESS, PR_HEAD_SHA40,
+            feedback_snapshot(before_session, carrier_feedback_event(comment)),
+            review_mode="solo_owner", pr_author_user_id=OWNER_ID,
+            repository_owner_user_id=OWNER_ID,
+            authenticated_verifier_user_id=READ_ONLY_VERIFIER_ID,
+            allowed_human_user_ids=(OWNER_ID,), relay_approval=approval,
+        )
+        self.assertEqual(result.status, "APPROVED")
+
+        during_session = edited_comment("2026-10-17T09:00:00Z", "during-session-edit")
+        prior_digest = feedback_digest((during_session,))
+        later_comment = github_comment(chat_confirmed_decision_body(
+            feedback_sha256=prior_digest, plan_sha256=plan_sha,
+            approval_scope_sha256=scope_sha,
+        ), comment_id=102)
+        later_approval = verify(
+            decision_history(later_comment), feedback_sha256=prior_digest,
+            plan_sha256=plan_sha, approval_scope_sha256=scope_sha,
+        )
+        blocked = evaluate_user_review(
+            SESSION, READINESS, PR_HEAD_SHA40,
+            feedback_snapshot(during_session, carrier_feedback_event(later_comment)),
+            review_mode="solo_owner", pr_author_user_id=OWNER_ID,
+            repository_owner_user_id=OWNER_ID,
+            authenticated_verifier_user_id=READ_ONLY_VERIFIER_ID,
+            allowed_human_user_ids=(OWNER_ID,), relay_approval=later_approval,
+        )
+        self.assertEqual(blocked.status, "BLOCKED")
+        self.assertIn("GitHub feedback was deleted or edited during this review session", blocked.reasons)
+
     def test_wrong_mode_subject_feedback_and_unresolved_threads_never_approve(self) -> None:
         comment = github_comment(decision_body())
         approval = verify(decision_history(comment))
