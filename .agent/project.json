@@ -42,6 +42,9 @@
       "targets": []
     }
   ],
+  "final_delivery": {
+    "review_mode": "solo_owner"
+  },
   "hooks": {
     "branch_switch": [],
     "verify_final": [
@@ -53,9 +56,6 @@
     "verify_quick": []
   },
   "initialized": true,
-  "final_delivery": {
-    "review_mode": "solo_owner"
-  },
   "milestones": {
     "mode": "required",
     "version_source": {
