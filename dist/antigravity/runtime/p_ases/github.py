@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import re
 import subprocess
 import time
@@ -14,7 +15,9 @@ from urllib.parse import quote, urlencode
 
 
 class GitHubError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 def _positive_int(value: Any, label: str) -> int:
@@ -28,6 +31,8 @@ class GitHub:
     repo: str
     _api_request_count: int = field(default=0, init=False, repr=False)
     _api_elapsed_ms: float = field(default=0.0, init=False, repr=False)
+    _admin_token_override: str | None = field(default=None, init=False, repr=False)
+    _admin_config_dir: str | None = field(default=None, init=False, repr=False)
 
     @property
     def api_metrics(self) -> dict[str, int | float]:
@@ -59,12 +64,14 @@ class GitHub:
                 raise GitHubError("GitHub API payload must be an object")
             argv.extend(["--input", "-"])
             input_text = json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
+        child_env = self._child_environment()
         started = time.perf_counter()
         self._api_request_count += 1
         try:
             result = subprocess.run(
                 argv, input=input_text, text=True, encoding="utf-8", errors="replace",
                 check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                env=child_env,
             )
         except OSError as exc:
             raise GitHubError(f"could not start GitHub API client: {exc}") from exc
@@ -72,13 +79,31 @@ class GitHub:
             self._api_elapsed_ms += (time.perf_counter() - started) * 1000
         if result.returncode:
             # gh stderr may include credentials or payload values; never return it.
-            raise GitHubError(f"GitHub API {verb} {endpoint} failed (gh exit status {result.returncode})")
+            match = re.search(r"\bHTTP\s+(\d{3})\b", result.stderr or "", re.IGNORECASE)
+            status_code = int(match.group(1)) if match else None
+            raise GitHubError(f"GitHub API {verb} {endpoint} failed (gh exit status {result.returncode})",
+                              status_code=status_code)
         if not result.stdout.strip():
             return None
         try:
             return json.loads(result.stdout)
         except json.JSONDecodeError as exc:
             raise GitHubError(f"GitHub API {verb} {endpoint} returned invalid JSON") from exc
+
+    def _child_environment(self) -> dict[str, str]:
+        """Apply this client's scoped auth boundary to every gh API subprocess."""
+        child_env = os.environ.copy()
+        if self._admin_token_override is not None and self._admin_config_dir is not None:
+            raise GitHubError("Admin client cannot combine token and isolated gh-config authentication")
+        if self._admin_token_override is not None:
+            for name in ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"):
+                child_env.pop(name, None)
+            child_env["GH_TOKEN"] = self._admin_token_override
+        elif self._admin_config_dir is not None:
+            for name in ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"):
+                child_env.pop(name, None)
+            child_env["GH_CONFIG_DIR"] = self._admin_config_dir
+        return child_env
 
     def _paginate(self, endpoint: str) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
@@ -98,6 +123,21 @@ class GitHub:
         result = self.request("GET", f"{self.prefix}/issues/{number}")
         if not isinstance(result, dict):
             raise GitHubError("GitHub Issue response must be an object")
+        return result
+
+    def issues_all(self) -> list[dict[str, Any]]:
+        """Read every repository Issue for direct/list/direct closure verification."""
+        rows = self._paginate(f"{self.prefix}/issues?state=all")
+        if any(type(row.get("number")) is not int or row["number"] < 1 for row in rows):
+            raise GitHubError("GitHub Issue list contains a row without a valid number")
+        return rows
+
+    def close_issue(self, number: int) -> dict[str, Any]:
+        """Close one Issue through the shared gh API transport."""
+        number = _positive_int(number, "Issue number")
+        result = self.request("PATCH", f"{self.prefix}/issues/{number}", {"state": "closed"})
+        if not isinstance(result, dict) or result.get("number") != number or result.get("state") != "closed":
+            raise GitHubError("GitHub Issue close response is incomplete or does not confirm closure")
         return result
 
     def repository_metadata(self) -> dict[str, Any]:
@@ -145,8 +185,128 @@ class GitHub:
             raise GitHubError("GitHub PR readback is missing or has a mismatched number")
         return result
 
+    def merge_pull_request(self, number: int, expected_head_sha40: str, *,
+                           commit_title: str | None = None,
+                           commit_message: str | None = None) -> dict[str, Any]:
+        """Make one merge request with GitHub's exact-head precondition."""
+        number = _positive_int(number, "PR number")
+        if not isinstance(expected_head_sha40, str) or not re.fullmatch(r"[0-9a-f]{40}", expected_head_sha40):
+            raise GitHubError("PR merge requires a full lowercase expected HEAD SHA")
+        payload: dict[str, Any] = {"sha": expected_head_sha40, "merge_method": "merge"}
+        if commit_title is not None:
+            if not isinstance(commit_title, str) or not commit_title.strip() or any(c in commit_title for c in "\x00\r\n"):
+                raise GitHubError("PR merge commit title must be a non-empty single line")
+            payload["commit_title"] = commit_title
+        if commit_message is not None:
+            if not isinstance(commit_message, str) or not commit_message.strip() or "\x00" in commit_message:
+                raise GitHubError("PR merge commit message must be non-empty text")
+            payload["commit_message"] = commit_message
+        result = self.request("PUT", f"{self.prefix}/pulls/{number}/merge", payload)
+        if (not isinstance(result, dict) or result.get("merged") is not True
+                or not isinstance(result.get("sha"), str)
+                or not re.fullmatch(r"[0-9a-f]{40}", result["sha"])):
+            raise GitHubError("GitHub merge response is incomplete or does not confirm a merge")
+        return result
+
     def pull_request_files(self, number: int) -> list[dict[str, Any]]:
         return self._paginate(f"{self.prefix}/pulls/{_positive_int(number, 'PR number')}/files")
+
+    def pull_request_commits(self, number: int) -> list[dict[str, Any]]:
+        """Read complete PR commit history and message bytes for merge-scope checks."""
+        rows = self._paginate(f"{self.prefix}/pulls/{_positive_int(number, 'PR number')}/commits")
+        for row in rows:
+            commit = row.get("commit") if isinstance(row, dict) else None
+            if (not isinstance(row, dict) or not isinstance(row.get("sha"), str)
+                    or not re.fullmatch(r"[0-9a-f]{40}", row["sha"])
+                    or not isinstance(commit, dict) or not isinstance(commit.get("message"), str)):
+                raise GitHubError("GitHub PR commit page contains an incomplete commit row")
+        return rows
+
+    def pull_request_closing_issues(self, number: int) -> list[dict[str, Any]]:
+        """Read GitHub's computed auto-close Issue references for one PR."""
+        number = _positive_int(number, "PR number")
+        owner, name = self.repo.split("/", 1)
+        query = """query($owner:String!,$name:String!,$number:Int!,$cursor:String){
+          repository(owner:$owner,name:$name){pullRequest(number:$number){number
+            closingIssuesReferences(first:100,after:$cursor){nodes{number repository{nameWithOwner}}
+              pageInfo{hasNextPage endCursor}}
+          }}
+        }"""
+        result: list[dict[str, Any]] = []
+        cursor: str | None = None
+        while True:
+            data = self._graphql(query, {"owner": owner, "name": name, "number": number, "cursor": cursor})
+            repository = data.get("repository")
+            pr = repository.get("pullRequest") if isinstance(repository, dict) else None
+            connection = pr.get("closingIssuesReferences") if isinstance(pr, dict) else None
+            nodes = connection.get("nodes") if isinstance(connection, dict) else None
+            page = connection.get("pageInfo") if isinstance(connection, dict) else None
+            if (not isinstance(pr, dict) or pr.get("number") != number or not isinstance(nodes, list)
+                    or any(not isinstance(row, dict) for row in nodes) or not isinstance(page, dict)):
+                raise GitHubError("GitHub closing-Issue reference page is incomplete")
+            for row in nodes:
+                repository_row = row.get("repository")
+                if (type(row.get("number")) is not int or row["number"] < 1
+                        or not isinstance(repository_row, dict)
+                        or not isinstance(repository_row.get("nameWithOwner"), str)):
+                    raise GitHubError("GitHub closing-Issue reference identity is incomplete")
+                result.append({"number": row["number"], "repository": repository_row["nameWithOwner"]})
+            if page.get("hasNextPage") is not True:
+                return result
+            cursor = page.get("endCursor")
+            if not isinstance(cursor, str) or not cursor:
+                raise GitHubError("GitHub closing-Issue reference cursor is missing")
+
+    def issue_pull_request_cross_references(self, issue_number: int) -> list[dict[str, Any]]:
+        """Read PR cross-reference events and GitHub's auto-close flag for an Issue."""
+        issue_number = _positive_int(issue_number, "Issue number")
+        owner, name = self.repo.split("/", 1)
+        query = """query($owner:String!,$name:String!,$number:Int!,$cursor:String){
+          repository(owner:$owner,name:$name){issue(number:$number){number
+            timelineItems(first:100,after:$cursor,itemTypes:[CROSS_REFERENCED_EVENT]){
+              nodes{... on CrossReferencedEvent{willCloseTarget source{
+                __typename ... on PullRequest{number repository{nameWithOwner}}
+              }}}
+              pageInfo{hasNextPage endCursor}
+            }
+          }}
+        }"""
+        result: list[dict[str, Any]] = []
+        cursor: str | None = None
+        while True:
+            data = self._graphql(query, {"owner": owner, "name": name,
+                                         "number": issue_number, "cursor": cursor})
+            repository = data.get("repository")
+            issue = repository.get("issue") if isinstance(repository, dict) else None
+            connection = issue.get("timelineItems") if isinstance(issue, dict) else None
+            nodes = connection.get("nodes") if isinstance(connection, dict) else None
+            page = connection.get("pageInfo") if isinstance(connection, dict) else None
+            if (not isinstance(issue, dict) or issue.get("number") != issue_number
+                    or not isinstance(nodes, list) or any(not isinstance(row, dict) for row in nodes)
+                    or not isinstance(page, dict)):
+                raise GitHubError("GitHub Issue cross-reference page is incomplete")
+            for row in nodes:
+                source = row.get("source")
+                if source is None:
+                    raise GitHubError("GitHub Issue cross-reference source is missing")
+                if not isinstance(source, dict) or source.get("__typename") not in {"PullRequest", "Issue"}:
+                    raise GitHubError("GitHub Issue cross-reference source type is incomplete")
+                if source.get("__typename") == "Issue":
+                    continue
+                if (type(source.get("number")) is not int or source["number"] < 1
+                        or type(row.get("willCloseTarget")) is not bool):
+                    raise GitHubError("GitHub PR cross-reference identity or close flag is incomplete")
+                repo_row = source.get("repository")
+                if not isinstance(repo_row, dict) or not isinstance(repo_row.get("nameWithOwner"), str):
+                    raise GitHubError("GitHub PR cross-reference repository is incomplete")
+                result.append({"pr_number": source["number"],
+                               "repository": repo_row["nameWithOwner"],
+                               "will_close_target": row["willCloseTarget"]})
+            if page.get("hasNextPage") is not True:
+                return result
+            cursor = page.get("endCursor")
+            if not isinstance(cursor, str) or not cursor:
+                raise GitHubError("GitHub Issue cross-reference cursor is missing")
 
     def collaborator_permission(self, login: str) -> dict[str, Any]:
         if not isinstance(login, str) or not re.fullmatch(r"[A-Za-z0-9-]+", login):
@@ -206,7 +366,7 @@ class GitHub:
             result = subprocess.run(
                 ["gh", "api", "graphql", "--input", "-"], input=body, text=True,
                 encoding="utf-8", errors="replace", check=False,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self._child_environment(),
             )
         except OSError as exc:
             raise GitHubError(f"could not start GitHub GraphQL client: {exc}") from exc
@@ -227,13 +387,13 @@ class GitHub:
         thread_query = """query($owner:String!,$name:String!,$number:Int!,$cursor:String){
           repository(owner:$owner,name:$name){pullRequest(number:$number){
             reviewThreads(first:100,after:$cursor){nodes{id isResolved isOutdated
-              comments(first:100){nodes{databaseId body createdAt updatedAt path author{databaseId login __typename} commit{oid}}
+              comments(first:100){nodes{databaseId}
                 pageInfo{hasNextPage endCursor}}
             } pageInfo{hasNextPage endCursor}
           }}}
         }"""
         comment_query = """query($threadId:ID!,$cursor:String){node(id:$threadId){... on PullRequestReviewThread{
-          comments(first:100,after:$cursor){nodes{databaseId body createdAt updatedAt path author{databaseId login __typename} commit{oid}}
+          comments(first:100,after:$cursor){nodes{databaseId}
             pageInfo{hasNextPage endCursor}}}}}"""
         threads: list[dict[str, Any]] = []
         cursor: str | None = None
@@ -301,6 +461,74 @@ class GitHub:
             raise GitHubError("branch protection response must be an object")
         return result
 
+    def effective_branch_rules(self, branch: str) -> list[dict[str, Any]]:
+        """Read every GitHub ruleset rule that applies to one exact branch."""
+        if not isinstance(branch, str) or not branch or any(char in branch for char in "\x00\r\n"):
+            raise GitHubError("effective branch rules lookup requires a branch name")
+        rows = self._paginate(f"{self.prefix}/rules/branches/{quote(branch, safe='')}")
+        for row in rows:
+            if (not isinstance(row.get("type"), str) or not row["type"]
+                    or type(row.get("ruleset_id")) is not int or row["ruleset_id"] < 1
+                    or row.get("ruleset_source_type", row.get("source_type")) not in {"Repository", "Organization"}
+                    or not isinstance(row.get("ruleset_source", row.get("source")), str)
+                    or not row.get("ruleset_source", row.get("source"))
+                    or (row.get("parameters") is not None and not isinstance(row.get("parameters"), dict))):
+                raise GitHubError("effective branch rules response is incomplete")
+        return rows
+
+    def ruleset_details(self, ruleset_id: int, *, source_type: str) -> dict[str, Any]:
+        """Read full ruleset metadata from its repository or organization owner."""
+        ruleset_id = _positive_int(ruleset_id, "ruleset ID")
+        owner, _name = self.repo.split("/", 1)
+        if source_type == "Repository":
+            endpoint = f"{self.prefix}/rulesets/{ruleset_id}"
+        elif source_type == "Organization":
+            endpoint = f"orgs/{owner}/rulesets/{ruleset_id}"
+        else:
+            raise GitHubError("ruleset source type is unknown")
+        result = self.request("GET", endpoint)
+        if (not isinstance(result, dict) or result.get("id") != ruleset_id
+                or result.get("source_type") != source_type
+                or not isinstance(result.get("source"), str) or not result.get("source")
+                or result.get("target") != "branch"
+                or result.get("enforcement") not in {"active", "evaluate", "disabled"}
+                or not isinstance(result.get("rules"), list)
+                or not isinstance(result.get("bypass_actors"), list)):
+            raise GitHubError("GitHub ruleset detail response is incomplete or mismatched")
+        return result
+
+    def repository_rulesets(self) -> list[dict[str, Any]]:
+        """Read repository-scoped rulesets only; organization rules are never writable here."""
+        rows = self._paginate(f"{self.prefix}/rulesets")
+        for row in rows:
+            if (type(row.get("id")) is not int or row["id"] < 1
+                    or not isinstance(row.get("name"), str) or not row["name"]
+                    or row.get("target") != "branch"
+                    or row.get("enforcement") not in {"active", "evaluate", "disabled"}):
+                raise GitHubError("repository ruleset inventory is incomplete")
+        return rows
+
+    def create_repository_ruleset(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Create exactly one repository ruleset. Callers must enforce approval first."""
+        if not isinstance(payload, dict):
+            raise GitHubError("repository ruleset payload must be an object")
+        result = self.request("POST", f"{self.prefix}/rulesets", payload)
+        if (not isinstance(result, dict) or type(result.get("id")) is not int or result["id"] < 1
+                or result.get("name") != payload.get("name")):
+            raise GitHubError("created repository ruleset response is incomplete or mismatched")
+        return result
+
+    def update_repository_ruleset(self, ruleset_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        """Replace one repository ruleset by its previously verified stable ID."""
+        ruleset_id = _positive_int(ruleset_id, "ruleset ID")
+        if not isinstance(payload, dict):
+            raise GitHubError("repository ruleset payload must be an object")
+        result = self.request("PUT", f"{self.prefix}/rulesets/{ruleset_id}", payload)
+        if (not isinstance(result, dict) or result.get("id") != ruleset_id
+                or result.get("name") != payload.get("name")):
+            raise GitHubError("updated repository ruleset response is incomplete or mismatched")
+        return result
+
     def branch(self, branch: str) -> dict[str, Any]:
         if not isinstance(branch, str) or not branch or any(char in branch for char in "\x00\r\n"):
             raise GitHubError("branch lookup requires a branch name")
@@ -317,6 +545,19 @@ class GitHub:
         result = self.request("GET", f"{self.prefix}/compare/{base_sha40}...{head_sha40}")
         if not isinstance(result, dict) or result.get("status") not in {"ahead", "behind", "identical", "diverged"}:
             raise GitHubError("GitHub commit comparison response is incomplete")
+        return result
+
+    def commit_details(self, commit_sha40: str) -> dict[str, Any]:
+        """Read exact Git commit parent identities for constrained history proofs."""
+        if not isinstance(commit_sha40, str) or not re.fullmatch(r"[0-9a-f]{40}", commit_sha40):
+            raise GitHubError("commit lookup requires a full SHA-40")
+        result = self.request("GET", f"{self.prefix}/git/commits/{commit_sha40}")
+        parents = result.get("parents") if isinstance(result, dict) else None
+        if (not isinstance(result, dict) or result.get("sha") != commit_sha40
+                or not isinstance(parents, list)
+                or any(not isinstance(row, dict) or not isinstance(row.get("sha"), str)
+                       or not re.fullmatch(r"[0-9a-f]{40}", row["sha"]) for row in parents)):
+            raise GitHubError("GitHub commit parent readback is incomplete or mismatched")
         return result
 
     def pull_requests_all(self) -> list[dict[str, Any]]:
@@ -712,3 +953,33 @@ class GitHub:
         if len(matches) != 1:
             raise GitHubError("Issue dependency was not confirmed by readback")
         return matches[0]
+
+
+@dataclass
+class ReadOnlyGitHub(GitHub):
+    """Verifier route limited to GitHub GETs and GraphQL query operations."""
+
+    _allowed_methods = frozenset({"GET"})
+
+    def verify_read_only_scope(self) -> None:
+        """Fail closed unless this is the unmodified, GET-only verifier client."""
+        if (type(self) is not ReadOnlyGitHub
+                or self._allowed_methods != frozenset({"GET"})
+                or "request" in vars(self)
+                or "_graphql" in vars(self)
+                or getattr(type(self), "request", None) is not ReadOnlyGitHub.request
+                or getattr(type(self), "_graphql", None) is not ReadOnlyGitHub._graphql):
+            raise GitHubError("read-only GitHub verifier scope is not positively verified")
+
+    def request(self, method: str, endpoint: str, payload: dict[str, Any] | None = None) -> Any:
+        verb = method.upper() if isinstance(method, str) else ""
+        if verb not in self._allowed_methods or payload is not None:
+            raise GitHubError("read-only GitHub verifier client permits GET requests only")
+        return super().request(verb, endpoint)
+
+    def _graphql(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        if (not isinstance(query, str) or not re.match(r"\s*query(?:\s|\(|\{)", query)
+                or re.search(r"\b(?:mutation|subscription)\b", query)
+                or not isinstance(variables, dict)):
+            raise GitHubError("read-only GitHub verifier permits GraphQL query operations only")
+        return super()._graphql(query, variables)

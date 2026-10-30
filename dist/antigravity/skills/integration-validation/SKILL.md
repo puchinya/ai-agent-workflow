@@ -36,6 +36,11 @@ python -m p_ases delivery parent 26 --verification-comment-id VERIFICATION_COMME
 
    Require `issue integration-check` to return `PASS` before interpreting the `delivery parent` result. Both commands re-read the exact current comments and their Actions provenance. Parent Integration, parent User Review, Activation, merge, and release remain separate decisions.
 
+
+## Lifecycle handoff
+
+Child Issues in the parent DAG follow the ordinary single/child sequence: approved ADC/rebaseline, exact frozen Binding, specification/design/Test Oracle artifacts and receipts, `ready`, `execution`, implementation, current Verification/Acceptance/Self-Audit and fresh native Independent Review, then `verification`, Review Readiness, and `user-review start`. Parent Integration and parent User Review remain on their separate parent route. Blocking findings are fixed during `execution` at a new HEAD with a fresh child. Runtime commands are one-shot mutations/readbacks; Skills and adapters own orchestration. Readiness cannot PASS outside its permitted phase/session, and PENDING is waiting only after session, feedback snapshot, and `phase:user-review` readback.
+
 ## Failure handling and output
 
 Handwritten PASS, stale run, wrong repository/SHA/App/event/workflow, skipped step, incomplete matrix, open child, mutated pointer, or wrong merge ancestry blocks. Report the exact child or Actions source and failed identity field. Do not treat #32's open PR as parent acceptance.

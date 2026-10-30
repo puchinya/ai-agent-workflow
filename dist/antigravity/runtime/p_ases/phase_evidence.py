@@ -6,9 +6,10 @@ import hashlib
 import json
 import posixpath
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, NamedTuple
 from urllib.parse import urlsplit
 
 from .adc import ADCError, VerifiedADC, verify_adc
@@ -26,7 +27,25 @@ class PhaseEvidenceError(ValueError):
     pass
 
 
+class VerifiedOrdinaryIssueContext(NamedTuple):
+    """One exact read of the live facts needed to validate a phase receipt.
+
+    Callers may reuse this value only within one command invocation. Mutation
+    boundaries must acquire a fresh context; immutable history validation is
+    therefore shared within a boundary without weakening before/after checks.
+    """
+
+    issue: dict[str, Any]
+    verified_adc: VerifiedADC
+    kind: IssueKind
+    branch_ref: str
+    commit_sha40: str
+    binding_verified: bool
+
+
 SENTINEL = "PASES_PHASE_DECISION_V1"
+READY_REFRESH_SCHEMA = "PASES_PHASE_READY_REFRESH_V1"
+READY_REFRESH_START = f"<!-- {READY_REFRESH_SCHEMA}\n"
 FIELDS = {
     "schema", "repository", "issue_number", "issue_kind", "from_phase", "to_phase",
     "adc_comment_id", "adc_sha256", "branch_ref", "commit_sha40", "documents", "skip_reasons",
@@ -41,6 +60,10 @@ DOCUMENT_ROOTS = {
 }
 BOOTSTRAP_ISSUES = {26, 27, 28, 29, 30, 31, 32}
 IMPACT_LINE = re.compile(r"(?im)^\s*[-*]\s*(Specification|Design|Testing):\s*(.*?)\s*$")
+CANONICAL_IMPACT_LINE = re.compile(r"(?im)^\s*Canonical:\s*(.*?)\s*$")
+BRACED_DOC_PATH = re.compile(
+    r"(docs/(?:specs|design|testing)/[A-Za-z0-9._/-]*?)\{([^{}]+)\}([A-Za-z0-9._/-]*)"
+)
 DOC_PATH = re.compile(r"(?<![A-Za-z0-9_.-])docs/(?:specs|design|testing)/[A-Za-z0-9._/-]+")
 
 
@@ -155,6 +178,94 @@ class PhaseDecision:
         return cls(checked)
 
 
+READY_REFRESH_FIELDS = {
+    "schema", "repository", "issue_number", "issue_kind", "phase", "adc_comment_id", "adc_sha256",
+    "ready_decision_comment_id", "ready_decision_sha256", "branch_ref", "commit_sha40", "documents",
+    "issue_body_sha256", "labels", "predecessor_comment_id", "predecessor_body_sha256",
+}
+
+
+def _validate_ready_refresh_payload(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != READY_REFRESH_FIELDS:
+        raise PhaseEvidenceError("ready refresh record has unknown or missing fields")
+    if value["schema"] != READY_REFRESH_SCHEMA or value["phase"] != Phase.READY.value:
+        raise PhaseEvidenceError("ready refresh record schema or phase is unsupported")
+    if not isinstance(value["repository"], str) or not re.fullmatch(
+            r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", value["repository"]):
+        raise PhaseEvidenceError("ready refresh repository is invalid")
+    if type(value["issue_number"]) is not int or value["issue_number"] < 1:
+        raise PhaseEvidenceError("ready refresh Issue number is invalid")
+    if (not isinstance(value["issue_kind"], str)
+            or value["issue_kind"] not in {IssueKind.SINGLE.value, IssueKind.CHILD.value}):
+        raise PhaseEvidenceError("ready refresh Issue kind is invalid")
+    for key in ("adc_comment_id", "ready_decision_comment_id", "predecessor_comment_id"):
+        if type(value[key]) is not int or value[key] < 1:
+            raise PhaseEvidenceError(f"ready refresh {key} is invalid")
+    for key in ("adc_sha256", "ready_decision_sha256", "issue_body_sha256", "predecessor_body_sha256"):
+        if not isinstance(value[key], str) or not SHA256.fullmatch(value[key]):
+            raise PhaseEvidenceError(f"ready refresh {key} is invalid")
+    if not isinstance(value["branch_ref"], str) or not value["branch_ref"].strip() or any(
+            char in value["branch_ref"] for char in "\x00\r\n"):
+        raise PhaseEvidenceError("ready refresh branch ref is invalid")
+    if not isinstance(value["commit_sha40"], str) or not SHA40.fullmatch(value["commit_sha40"]):
+        raise PhaseEvidenceError("ready refresh commit SHA is invalid")
+    rows = value["documents"]
+    if not isinstance(rows, list):
+        raise PhaseEvidenceError("ready refresh documents must be an array")
+    paths: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {"role", "path", "sha256"}:
+            raise PhaseEvidenceError("ready refresh document entry has unknown or missing fields")
+        role, path, digest = row["role"], row["path"], row["sha256"]
+        if (not isinstance(role, str) or role not in DOCUMENT_ROLES
+                or not isinstance(path, str) or not path.startswith(DOCUMENT_ROOTS[role])
+                or not isinstance(digest, str) or not SHA256.fullmatch(digest)):
+            raise PhaseEvidenceError("ready refresh document identity is invalid")
+        if (path.startswith("/") or "\\" in path
+                or any(part in {"", ".", ".."} for part in path.split("/"))
+                or any(char in path for char in "\x00\r\n?#:")):
+            raise PhaseEvidenceError("ready refresh document path is unsafe")
+        paths.append(path)
+    if paths != sorted(paths) or len(paths) != len(set(paths)):
+        raise PhaseEvidenceError("ready refresh documents must be path-sorted and unique")
+    labels = value["labels"]
+    if (not isinstance(labels, list) or any(not isinstance(label, str) or not label for label in labels)
+            or labels != sorted(set(labels)) or f"phase:{Phase.READY.value}" not in labels
+            or f"kind:{value['issue_kind']}" not in labels):
+        raise PhaseEvidenceError("ready refresh labels must be a complete sorted ready-phase label set")
+    if not any(row["role"] == "test-oracle" for row in rows):
+        raise PhaseEvidenceError("ready refresh has no committed test/Oracle artifact")
+    return value
+
+
+@dataclass(frozen=True)
+class ReadyPhaseRefresh:
+    payload: dict[str, Any]
+
+    def body(self) -> str:
+        checked = _validate_ready_refresh_payload(self.payload)
+        return READY_REFRESH_START + _canonical(checked) + "\n-->"
+
+    @property
+    def body_sha256(self) -> str:
+        return hashlib.sha256(self.body().encode("utf-8")).hexdigest()
+
+    @classmethod
+    def from_body(cls, body: Any) -> "ReadyPhaseRefresh":
+        if (not isinstance(body, str) or not body.startswith(READY_REFRESH_START)
+                or not body.endswith("\n-->")):
+            raise PhaseEvidenceError("ready refresh comment format is invalid")
+        raw = body[len(READY_REFRESH_START):-len("\n-->")]
+        try:
+            payload = json.loads(raw, object_pairs_hook=_unique_pairs)
+        except (json.JSONDecodeError, UnicodeError) as exc:
+            raise PhaseEvidenceError("ready refresh JSON is malformed") from exc
+        checked = _validate_ready_refresh_payload(payload)
+        if _canonical(checked) != raw:
+            raise PhaseEvidenceError("ready refresh JSON is not canonical")
+        return cls(checked)
+
+
 def _artifact_impacts(verified: VerifiedADC) -> tuple[dict[str, tuple[str, ...]], dict[str, str]]:
     text = verified.contract.section("artifact_impact")
     lines: dict[str, str] = {}
@@ -163,6 +274,35 @@ def _artifact_impacts(verified: VerifiedADC) -> tuple[dict[str, tuple[str, ...]]
         if role in lines:
             raise PhaseEvidenceError(f"approved ADC duplicates its {match.group(1)} artifact impact")
         lines[role] = match.group(2).strip()
+    if set(lines) != DOCUMENT_ROLES:
+        canonical_matches = list(CANONICAL_IMPACT_LINE.finditer(text))
+        if len(canonical_matches) != 1:
+            raise PhaseEvidenceError(
+                "approved ADC must declare Specification, Design, and Testing impacts or one Canonical path list"
+            )
+        canonical = canonical_matches[0].group(1)
+        while True:
+            expanded, count = BRACED_DOC_PATH.subn(
+                lambda match: ", ".join(
+                    match.group(1) + item.strip() + match.group(3)
+                    for item in match.group(2).split(",") if item.strip()
+                ), canonical,
+            )
+            canonical = expanded
+            if count == 0:
+                break
+        declarations = {role: [] for role in DOCUMENT_ROLES}
+        for path in DOC_PATH.findall(canonical):
+            if path.startswith(DOCUMENT_ROOTS["specification"]):
+                declarations["specification"].append(path)
+            elif path.startswith(DOCUMENT_ROOTS["design"]):
+                declarations["design"].append(path)
+            elif path.startswith(DOCUMENT_ROOTS["test-oracle"]):
+                declarations["test-oracle"].append(path)
+        if lines:
+            for role, declaration in lines.items():
+                declarations[role].extend(DOC_PATH.findall(declaration))
+        lines = {role: ", ".join(paths) for role, paths in declarations.items()}
     if set(lines) != DOCUMENT_ROLES:
         raise PhaseEvidenceError("approved ADC must declare Specification, Design, and Testing artifact impact")
     paths: dict[str, tuple[str, ...]] = {}
@@ -224,8 +364,36 @@ def _kind_from_issue(issue: dict[str, Any]) -> tuple[IssueKind, list[str]]:
 
 def _verify_frozen_binding(github: GitHub, root: Path, issue_number: int, verified: VerifiedADC,
                            branch_ref: str, commit_sha: str) -> None:
+    path = execution_binding_path(root.resolve(), issue_number)
+    if not path.exists():
+        if issue_number != 63 or not (
+                (root / ".p_ases" / "state" / str(issue_number) / "execution-adoption.json").exists()
+                or (root / ".p_ases" / "state" / str(issue_number) / "workspace-attachment.json").exists()):
+            raise PhaseEvidenceError("a valid frozen Issue ExecutionBinding is required when no adopted epoch exists")
+        try:
+            from .execution_adoption import ExecutionAdoptionError, verify_adopted_execution
+            adopted_readback = verify_adopted_execution(
+                github, root, expected_adc_comment_id=verified.pointer.comment_id,
+                expected_adc_sha256=verified.contract.sha256,
+            )
+            adopted = adopted_readback["epoch"]
+            current_binding = adopted_readback["pr_binding"]
+            if (issue_number != 63 or adopted.repository.casefold() != github.repo.casefold()
+                    or adopted.issue_number != issue_number
+                    or current_binding.adoption_id != adopted.adoption_id
+                    or current_binding.adc_comment_id != verified.pointer.comment_id
+                    or current_binding.adc_sha256 != verified.contract.sha256
+                    or adopted.branch_ref != branch_ref
+                    or current_binding.branch_ref != branch_ref
+                    or current_binding.pr_head_sha40 != commit_sha
+                    or not is_ancestor(root, adopted.selected_base_sha40, commit_sha)
+                    or not is_ancestor(root, adopted.observed_start_head_sha40, commit_sha)):
+                raise PhaseEvidenceError("verified adopted epoch/PRBinding does not match this Issue/ADC/branch/HEAD")
+            return
+        except (ExecutionAdoptionError, GitError) as exc:
+            raise PhaseEvidenceError(f"a valid authenticated adopted execution epoch is required: {exc}") from exc
     try:
-        binding = read_binding(execution_binding_path(root.resolve(), issue_number))
+        binding = read_binding(path)
         if (binding.repository.casefold() != github.repo.casefold()
                 or binding.issue_number != issue_number
                 or binding.adc_comment_id != verified.pointer.comment_id
@@ -242,7 +410,7 @@ def _verify_frozen_binding(github: GitHub, root: Path, issue_number: int, verifi
 
 def verify_ordinary_issue_context(github: GitHub, root: Path, issue_number: int,
                                  expected_kind: IssueKind | None = None, *, require_binding: bool = False
-                                 ) -> tuple[dict[str, Any], VerifiedADC, IssueKind, str, str]:
+                                 ) -> VerifiedOrdinaryIssueContext:
     _check_activation(github, issue_number)
     try:
         issue = github.issue(issue_number)
@@ -266,9 +434,44 @@ def verify_ordinary_issue_context(github: GitHub, root: Path, issue_number: int,
             raise PhaseEvidenceError("local Git HEAD does not match the Issue branch commit on GitHub")
         if require_binding:
             _verify_frozen_binding(github, root, issue_number, verified, branch_ref, local_sha)
-        return issue, verified, kind, branch_ref, local_sha
+        return VerifiedOrdinaryIssueContext(
+            issue, verified, kind, branch_ref, local_sha, require_binding,
+        )
     except (ADCError, GitHubError, GitError) as exc:
         raise PhaseEvidenceError(str(exc)) from exc
+
+
+def _reuse_verified_context(github: GitHub, root: Path, issue_number: int,
+                            expected_kind: IssueKind | None,
+                            context: VerifiedOrdinaryIssueContext) -> VerifiedOrdinaryIssueContext:
+    """Validate an invocation-local proof before using it to avoid a duplicate full history read."""
+    if (not isinstance(context, VerifiedOrdinaryIssueContext)
+            or type(context.binding_verified) is not bool or not context.binding_verified):
+        raise PhaseEvidenceError("phase receipt reuse requires a current binding-verified Issue context")
+    issue = context.issue
+    if not isinstance(issue, dict):
+        raise PhaseEvidenceError("reused phase receipt context has a malformed Issue snapshot")
+    repository_url = issue.get("repository_url")
+    try:
+        actual_kind, _labels = _kind_from_issue(issue)
+    except PhaseEvidenceError:
+        raise
+    if (not isinstance(issue, dict) or issue.get("number") != issue_number
+            or issue.get("state") != "open" or issue.get("pull_request") is not None
+            or not isinstance(repository_url, str) or repository_url.casefold()
+            != f"https://api.github.com/repos/{github.repo}".casefold()
+            or not isinstance(context.verified_adc, VerifiedADC)
+            or context.verified_adc.pointer.state != "approved"
+            or context.kind not in {IssueKind.SINGLE, IssueKind.CHILD} or actual_kind is not context.kind
+            or (expected_kind is not None and context.kind is not expected_kind)):
+        raise PhaseEvidenceError("reused phase receipt context does not match the exact open Issue and approved ADC")
+    try:
+        if (current_branch(root) != context.branch_ref
+                or head_sha40(root) != context.commit_sha40):
+            raise PhaseEvidenceError("Issue worktree changed since its binding-verified context was read")
+    except GitError as exc:
+        raise PhaseEvidenceError(str(exc)) from exc
+    return context
 
 
 def _markdown_anchors(content: bytes) -> set[str]:
@@ -422,7 +625,10 @@ def _check_activation(github: GitHub, issue_number: int) -> None:
         activation_issue_number = pinned.activation_issue_number
         if activation_issue_number is None:
             raise PhaseEvidenceError("Gate Selection does not name its consumer Activation Issue")
-        history = read_consumer_activation_history(github, github.repo, activation_issue_number)
+        history = read_consumer_activation_history(
+            github, github.repo, activation_issue_number,
+            through_record_id=pinned.activation_comment_id,
+        )
         activation_row = next((row for row in history if row[1] == pinned.activation_comment_id), None)
         if activation_row is None:
             raise PhaseEvidenceError("Gate Selection does not point to a valid historical consumer Activation")
@@ -540,13 +746,15 @@ def _verify_predecessor_receipt(github: GitHub, root: Path, issue_number: int,
 
 
 def _collect_payload(github: GitHub, root: Path, issue_number: int, source: Phase, target: Phase,
-                     skips: Mapping[str, str], *, check_source_phase: bool = True
+                     skips: Mapping[str, str], *, check_source_phase: bool = True,
+                     verified_context: VerifiedOrdinaryIssueContext | None = None,
                      ) -> tuple[PhaseDecision, dict[str, Any], VerifiedADC, str, str]:
     if type(issue_number) is not int or issue_number < 1:
         raise PhaseEvidenceError("Issue number must be a positive integer")
-    issue, verified, kind, branch_ref, local_sha = verify_ordinary_issue_context(
-        github, root, issue_number, require_binding=True,
-    )
+    context = (verify_ordinary_issue_context(github, root, issue_number, require_binding=True)
+               if verified_context is None else
+               _reuse_verified_context(github, root, issue_number, None, verified_context))
+    issue, verified, kind, branch_ref, local_sha, _binding_verified = context
     labels = [row.get("name") for row in issue.get("labels", []) if isinstance(row, dict)]
     if check_source_phase and parse_phase_labels(labels) is not source:
         raise PhaseEvidenceError("Issue phase label differs from the requested evidence source phase")
@@ -634,35 +842,334 @@ def _collect_payload(github: GitHub, root: Path, issue_number: int, source: Phas
     return decision, issue, verified, branch_ref, local_sha
 
 
-def verify_ready_preparation(github: GitHub, root: Path, issue_number: int,
-                             expected_kind: IssueKind) -> PhaseDecision:
-    """Rebuild and reread the exact ready receipt before entering implementation."""
-    issue, verified, kind, _branch_ref, _local_sha = verify_ordinary_issue_context(
-        github, root, issue_number, expected_kind, require_binding=True,
-    )
-    labels = [row.get("name") for row in issue.get("labels", []) if isinstance(row, dict)]
-    if parse_phase_labels(labels) is not Phase.READY:
-        raise PhaseEvidenceError("execution requires the Issue to be in the ready phase")
+def _ready_source_and_skips(verified: VerifiedADC) -> tuple[Phase, dict[str, str]]:
     declared_paths, adc_reasons = _artifact_impacts(verified)
-    if declared_paths.get("specification") and declared_paths.get("design"):
-        source, skips = Phase.DESIGN, {}
-    elif declared_paths.get("design"):
-        source, skips = Phase.DESIGN, {}
-    elif declared_paths.get("specification"):
-        source, skips = Phase.SPECIFICATION, {"design": adc_reasons.get("design", "")}
-    else:
-        source = Phase.REQUIREMENTS
-        skips = {key: adc_reasons.get(key, "") for key in ("specification", "design")}
+    if declared_paths.get("design"):
+        return Phase.DESIGN, {}
+    if declared_paths.get("specification"):
+        return Phase.SPECIFICATION, {"design": adc_reasons.get("design", "")}
+    return Phase.REQUIREMENTS, {
+        key: adc_reasons.get(key, "") for key in ("specification", "design")
+    }
+
+
+def _ready_labels(issue: Mapping[str, Any], issue_kind: IssueKind) -> list[str]:
+    rows = issue.get("labels")
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise PhaseEvidenceError("ready refresh requires a complete Issue label set")
+    labels = [row.get("name") for row in rows]
+    if (any(not isinstance(label, str) or not label for label in labels)
+            or len(labels) != len(set(labels)) or parse_phase_labels(labels) is not Phase.READY
+            or f"kind:{issue_kind.value}" not in labels):
+        raise PhaseEvidenceError("ready refresh requires the exact open ready-phase Issue labels")
+    return sorted(labels)
+
+
+def _validate_ready_decision_continuation(root: Path, ready_decision: PhaseDecision,
+                                         current_decision: PhaseDecision) -> None:
+    immutable_fields = (
+        "repository", "issue_number", "issue_kind", "from_phase", "to_phase",
+        "adc_comment_id", "adc_sha256", "branch_ref", "documents", "skip_reasons",
+    )
+    if (any(ready_decision.payload[key] != current_decision.payload[key] for key in immutable_fields)
+            or not is_ancestor(root, ready_decision.payload["commit_sha40"],
+                               current_decision.payload["commit_sha40"])):
+        raise PhaseEvidenceError(
+            "ready preparation receipt changed a completed artifact, phase, or branch history"
+        )
+
+
+def _read_ready_refresh_history(github: GitHub, issue_number: int
+                                ) -> tuple[tuple[int, ReadyPhaseRefresh, str], ...]:
+    """Read complete Issue history and direct/list/direct verify every refresh marker."""
+    try:
+        first = github.issue_comments(issue_number)
+        first_rows: list[dict[str, Any]] = []
+        for row in first:
+            body = row.get("body") if isinstance(row, dict) else None
+            if isinstance(body, str) and body.startswith("<!-- PASES_PHASE_READY_REFRESH"):
+                ReadyPhaseRefresh.from_body(body)
+                first_rows.append(row)
+        first_ids = [row.get("id") for row in first_rows]
+        if (any(type(comment_id) is not int or comment_id < 1 for comment_id in first_ids)
+                or first_ids != sorted(first_ids) or len(first_ids) != len(set(first_ids))):
+            raise PhaseEvidenceError("ready refresh history is duplicated or not append-only")
+        if not first_ids:
+            return ()
+        authenticated = github.authenticated_user()
+
+        def direct_readback() -> dict[int, dict[str, Any]]:
+            if not first_ids:
+                return {}
+            with ThreadPoolExecutor(max_workers=min(4, len(first_ids))) as executor:
+                rows = list(executor.map(lambda comment_id: github.issue_comment(issue_number, comment_id), first_ids))
+            return dict(zip(first_ids, rows, strict=True))
+
+        direct_before = direct_readback()
+        second = github.issue_comments(issue_number)
+        second_rows = []
+        for row in second:
+            body = row.get("body") if isinstance(row, dict) else None
+            if isinstance(body, str) and body.startswith("<!-- PASES_PHASE_READY_REFRESH"):
+                ReadyPhaseRefresh.from_body(body)
+                second_rows.append(row)
+        second_ids = [row.get("id") if isinstance(row, dict) else None for row in second_rows]
+        if second_ids != first_ids:
+            raise PhaseEvidenceError("ready refresh history changed during direct/list/direct readback")
+        direct_after = direct_readback()
+    except GitHubError as exc:
+        raise PhaseEvidenceError(f"ready refresh history readback failed: {exc}") from exc
+
+    records: list[tuple[int, ReadyPhaseRefresh, str]] = []
+    for listed, listed_again in zip(first_rows, second_rows, strict=True):
+        comment_id = listed["id"]
+        body = listed.get("body")
+        if not isinstance(body, str):
+            raise PhaseEvidenceError("ready refresh comment body is unavailable")
+        fingerprints = tuple(
+            _identity(row, repository=github.repo, issue_number=issue_number, authenticated=authenticated)
+            for row in (direct_before[comment_id], listed_again, direct_after[comment_id])
+        )
+        if fingerprints[0] != fingerprints[1] or fingerprints[1] != fingerprints[2]:
+            raise PhaseEvidenceError("ready refresh comment changed during direct/list/direct readback")
+        record = ReadyPhaseRefresh.from_body(body)
+        if (record.payload["repository"].casefold() != github.repo.casefold()
+                or record.payload["issue_number"] != issue_number
+                or record.payload["predecessor_comment_id"] >= comment_id):
+            raise PhaseEvidenceError("ready refresh identity or predecessor order is invalid")
+        records.append((comment_id, record, body))
+
+    groups: dict[int, list[tuple[int, ReadyPhaseRefresh, str]]] = {}
+    for row in records:
+        groups.setdefault(row[1].payload["ready_decision_comment_id"], []).append(row)
+    for decision_id, group in groups.items():
+        first_record = group[0][1]
+        prior_id = decision_id
+        prior_digest = first_record.payload["ready_decision_sha256"]
+        seen_heads: set[str] = set()
+        for comment_id, record, _body in group:
+            payload = record.payload
+            if (payload["predecessor_comment_id"] != prior_id
+                    or payload["predecessor_body_sha256"] != prior_digest
+                    or payload["ready_decision_sha256"] != first_record.payload["ready_decision_sha256"]
+                    or payload["commit_sha40"] in seen_heads
+                    or comment_id <= prior_id):
+                raise PhaseEvidenceError("ready refresh chain has a gap, duplicate, or wrong predecessor")
+            invariant_keys = (
+                "repository", "issue_number", "issue_kind", "phase", "adc_comment_id", "adc_sha256",
+                "ready_decision_comment_id", "ready_decision_sha256", "branch_ref", "documents",
+                "issue_body_sha256", "labels",
+            )
+            if any(payload[key] != first_record.payload[key] for key in invariant_keys):
+                raise PhaseEvidenceError("ready refresh chain changed its ADC, branch, labels, or artifacts")
+            seen_heads.add(payload["commit_sha40"])
+            prior_id, prior_digest = comment_id, record.body_sha256
+    return tuple(records)
+
+
+def _ready_refresh_chain(root: Path, history: tuple[tuple[int, ReadyPhaseRefresh, str], ...],
+                         *, ready_comment_id: int, ready_decision: PhaseDecision,
+                         issue: Mapping[str, Any], current_decision: PhaseDecision,
+                         current_labels: list[str]) -> tuple[int, ReadyPhaseRefresh, str] | None:
+    selected = [row for row in history if row[1].payload["ready_decision_comment_id"] == ready_comment_id]
+    if not selected:
+        if ready_decision.payload["commit_sha40"] != current_decision.payload["commit_sha40"]:
+            return None
+        return None
+    first = selected[0][1].payload
+    issue_body = issue.get("body")
+    if not isinstance(issue_body, str):
+        raise PhaseEvidenceError("ready refresh requires the exact Issue body")
+    expected_body_sha = hashlib.sha256(issue_body.encode("utf-8")).hexdigest()
+    ready_body_sha = hashlib.sha256(ready_decision.body().encode("utf-8")).hexdigest()
+    if (first["ready_decision_sha256"] != ready_body_sha
+            or first["predecessor_comment_id"] != ready_comment_id
+            or first["predecessor_body_sha256"] != ready_body_sha):
+        raise PhaseEvidenceError("ready refresh chain does not start at the exact READY decision")
+    prior_commit = ready_decision.payload["commit_sha40"]
+    for comment_id, record, _body in selected:
+        payload = record.payload
+        if (payload["repository"].casefold() != current_decision.payload["repository"].casefold()
+                or payload["issue_number"] != current_decision.payload["issue_number"]
+                or payload["issue_kind"] != current_decision.payload["issue_kind"]
+                or payload["phase"] != Phase.READY.value
+                or payload["ready_decision_comment_id"] != ready_comment_id
+                or payload["ready_decision_sha256"] != ready_body_sha
+                or payload["issue_body_sha256"] != expected_body_sha or payload["labels"] != current_labels
+                or payload["documents"] != current_decision.payload["documents"]
+                or payload["adc_comment_id"] != current_decision.payload["adc_comment_id"]
+                or payload["adc_sha256"] != current_decision.payload["adc_sha256"]
+                or payload["branch_ref"] != current_decision.payload["branch_ref"]
+                or not is_ancestor(root, prior_commit, payload["commit_sha40"])):
+            raise PhaseEvidenceError("ready refresh is stale or changed a completed artifact, label, or Issue body")
+        prior_commit = payload["commit_sha40"]
+    latest = selected[-1]
+    if not is_ancestor(root, prior_commit, current_decision.payload["commit_sha40"]):
+        raise PhaseEvidenceError("current Issue HEAD no longer descends from its latest READY refresh")
+    if latest[1].payload["commit_sha40"] != current_decision.payload["commit_sha40"]:
+        return None
+    if latest[1].payload["documents"] != current_decision.payload["documents"]:
+        raise PhaseEvidenceError("current ready refresh document set differs from the exact READY decision")
+    return latest
+
+
+def _ready_refresh_payload(*, repository: str, issue_number: int, kind: IssueKind,
+                           decision_comment_id: int, ready_decision: PhaseDecision,
+                           current_decision: PhaseDecision,
+                           issue_body: str, labels: list[str], predecessor_comment_id: int,
+                           predecessor_body_sha256: str) -> ReadyPhaseRefresh:
+    payload = {
+        "schema": READY_REFRESH_SCHEMA,
+        "repository": repository,
+        "issue_number": issue_number,
+        "issue_kind": kind.value,
+        "phase": Phase.READY.value,
+        "adc_comment_id": ready_decision.payload["adc_comment_id"],
+        "adc_sha256": ready_decision.payload["adc_sha256"],
+        "ready_decision_comment_id": decision_comment_id,
+        "ready_decision_sha256": hashlib.sha256(ready_decision.body().encode("utf-8")).hexdigest(),
+        "branch_ref": current_decision.payload["branch_ref"],
+        "commit_sha40": current_decision.payload["commit_sha40"],
+        "documents": current_decision.payload["documents"],
+        "issue_body_sha256": hashlib.sha256(issue_body.encode("utf-8")).hexdigest(),
+        "labels": labels,
+        "predecessor_comment_id": predecessor_comment_id,
+        "predecessor_body_sha256": predecessor_body_sha256,
+    }
+    return ReadyPhaseRefresh(_validate_ready_refresh_payload(payload))
+
+
+def _ready_decision_for_context(github: GitHub, root: Path, issue_number: int,
+                                context: VerifiedOrdinaryIssueContext) -> tuple[Phase, dict[str, str], PhaseDecision]:
+    source, skips = _ready_source_and_skips(context.verified_adc)
     decision, _issue, _adc, _branch, _commit = _collect_payload(
         github, root, issue_number, source, Phase.READY, skips, check_source_phase=False,
+        verified_context=context,
     )
-    _comment_id, stored = _find_receipt(
+    return source, skips, decision
+
+
+def verify_ready_preparation(github: GitHub, root: Path, issue_number: int,
+                             expected_kind: IssueKind, *,
+                             verified_context: VerifiedOrdinaryIssueContext | None = None) -> PhaseDecision:
+    """Rebuild exact READY evidence, including any current-HEAD refresh, before execution."""
+    context = (verify_ordinary_issue_context(github, root, issue_number, expected_kind, require_binding=True)
+               if verified_context is None else
+               _reuse_verified_context(github, root, issue_number, expected_kind, verified_context))
+    issue, verified, kind, _branch_ref, _local_sha, _binding_verified = context
+    labels = _ready_labels(issue, kind)
+    source, _skips, decision = _ready_decision_for_context(github, root, issue_number, context)
+    decision_comment_id, stored = _find_receipt(
         github, issue_number, source=source, target=Phase.READY,
         adc_comment_id=verified.pointer.comment_id, adc_sha256=verified.contract.sha256,
     )
+    _validate_ready_decision_continuation(root, stored, decision)
+    history = _read_ready_refresh_history(github, issue_number)
+    latest = _ready_refresh_chain(
+        root, history, ready_comment_id=decision_comment_id, ready_decision=stored,
+        issue=issue, current_decision=decision, current_labels=labels,
+    )
+    if latest is not None:
+        return decision
     if stored.body() != decision.body():
         raise PhaseEvidenceError("ready preparation receipt is stale for the current Issue branch HEAD")
     return stored
+
+
+def refresh_ready_phase_evidence(github: GitHub, root: Path, issue_number: int
+                                ) -> tuple[int, ReadyPhaseRefresh | PhaseDecision, str]:
+    """Append a current-HEAD READY attestation without changing Issue labels."""
+    context = verify_ordinary_issue_context(github, root, issue_number, require_binding=True)
+    issue, verified, kind, branch_ref, _commit_sha, _binding_verified = context
+    labels = _ready_labels(issue, kind)
+    if not isinstance(issue.get("body"), str):
+        raise PhaseEvidenceError("ready refresh requires the exact Issue body")
+    source, _skips, decision = _ready_decision_for_context(github, root, issue_number, context)
+    decision_comment_id, ready_decision = _find_receipt(
+        github, issue_number, source=source, target=Phase.READY,
+        adc_comment_id=verified.pointer.comment_id, adc_sha256=verified.contract.sha256,
+    )
+    _validate_ready_decision_continuation(root, ready_decision, decision)
+    history = _read_ready_refresh_history(github, issue_number)
+    latest = _ready_refresh_chain(
+        root, history, ready_comment_id=decision_comment_id, ready_decision=ready_decision,
+        issue=issue, current_decision=decision, current_labels=labels,
+    )
+    selected_history = [row for row in history
+                        if row[1].payload["ready_decision_comment_id"] == decision_comment_id]
+    if latest is not None:
+        return latest[0], latest[1], "NOOP"
+    if ready_decision.body() == decision.body():
+        return decision_comment_id, ready_decision, "CURRENT"
+
+    previous_id = decision_comment_id if not selected_history else selected_history[-1][0]
+    previous_body = ready_decision.body() if not selected_history else selected_history[-1][2]
+    record = _ready_refresh_payload(
+        repository=github.repo, issue_number=issue_number, kind=kind,
+        decision_comment_id=decision_comment_id, ready_decision=ready_decision,
+        current_decision=decision,
+        issue_body=issue["body"], labels=labels, predecessor_comment_id=previous_id,
+        predecessor_body_sha256=hashlib.sha256(previous_body.encode("utf-8")).hexdigest(),
+    )
+    # Refresh the live subject immediately before the one permitted append.
+    latest_context = verify_ordinary_issue_context(github, root, issue_number, kind, require_binding=True)
+    latest_issue, latest_verified, _latest_kind, latest_branch, _latest_sha, _binding_verified = latest_context
+    if (latest_verified.pointer != verified.pointer or latest_verified.contract.sha256 != verified.contract.sha256
+            or latest_branch != branch_ref or latest_issue.get("body") != issue.get("body")
+            or _ready_labels(latest_issue, kind) != labels):
+        raise PhaseEvidenceError("Issue, ADC, binding, or labels changed before ready refresh publication")
+    _latest_source, _latest_skips, latest_decision = _ready_decision_for_context(
+        github, root, issue_number, latest_context,
+    )
+    if latest_decision.body() != decision.body():
+        raise PhaseEvidenceError("READY artifacts or HEAD changed before ready refresh publication")
+    latest_history = _read_ready_refresh_history(github, issue_number)
+    latest_chain = _ready_refresh_chain(
+        root, latest_history, ready_comment_id=decision_comment_id, ready_decision=ready_decision,
+        issue=latest_issue, current_decision=latest_decision, current_labels=labels,
+    )
+    if latest_chain is not None:
+        return latest_chain[0], latest_chain[1], "NOOP"
+    latest_selected_history = [row for row in latest_history
+                               if row[1].payload["ready_decision_comment_id"] == decision_comment_id]
+    if (latest_selected_history != selected_history
+            or (latest_selected_history and latest_selected_history[-1][0] != previous_id)):
+        raise PhaseEvidenceError("ready refresh history changed before publication")
+
+    def verify_published_subject() -> None:
+        after_context = verify_ordinary_issue_context(
+            github, root, issue_number, kind, require_binding=True,
+        )
+        after_issue, after_adc, _after_kind, after_branch, _after_sha, _after_binding = after_context
+        if (after_adc.pointer != verified.pointer or after_adc.contract.sha256 != verified.contract.sha256
+                or after_branch != branch_ref or after_issue.get("body") != issue.get("body")
+                or _ready_labels(after_issue, kind) != labels):
+            raise PhaseEvidenceError("ready refresh subject changed before final readback")
+        _after_source, _after_skips, after_decision = _ready_decision_for_context(
+            github, root, issue_number, after_context,
+        )
+        if after_decision.body() != decision.body():
+            raise PhaseEvidenceError("READY artifacts or HEAD changed during ready refresh publication")
+
+    try:
+        created = github.create_issue_comment(issue_number, record.body())
+        comment_id = created.get("id") if isinstance(created, dict) else None
+    except GitHubError as exc:
+        recovered = _read_ready_refresh_history(github, issue_number)
+        matches = [(comment_id, item) for comment_id, item, body in recovered if body == record.body()]
+        if len(matches) != 1:
+            raise PhaseEvidenceError(f"ready refresh append failed or is ambiguous: {exc}") from exc
+        comment_id, record = matches[0]
+        verify_published_subject()
+        return comment_id, record, "RECOVERED"
+    if type(comment_id) is not int or comment_id < 1:
+        raise PhaseEvidenceError("ready refresh returned an invalid Issue comment ID")
+    refreshed_history = _read_ready_refresh_history(github, issue_number)
+    matches = [(row_id, item, body) for row_id, item, body in refreshed_history if body == record.body()]
+    if len(matches) != 1 or matches[0][0] != comment_id:
+        raise PhaseEvidenceError("ready refresh append is missing or duplicated after readback")
+    verify_published_subject()
+    return comment_id, matches[0][1], "REFRESHED"
 
 
 def _identity(comment: Any, *, repository: str, issue_number: int,

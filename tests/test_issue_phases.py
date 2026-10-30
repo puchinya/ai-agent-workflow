@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases.adc import ADCPointer, VerifiedADC, parse_adc, publish_adc
 from p_ases.cli import main as cli_main
+from p_ases.checkpoint import PRBinding, write_pr_binding
 from p_ases.execution import (
     ExecutionBinding, ExecutionError, binding_digest, read_binding, read_binding_history, write_binding,
 )
@@ -33,9 +34,11 @@ from p_ases.issue_graph import (
     validate_split,
 )
 from p_ases.phase_evidence import (
-    PhaseDecision, PhaseEvidenceError, _check_activation, _collect_payload, _readback,
-    _markdown_anchors, _receipt_subject, _validate_ready_traceability, publish_phase_evidence,
-    verify_ready_preparation,
+    PhaseDecision, PhaseEvidenceError, ReadyPhaseRefresh, VerifiedOrdinaryIssueContext,
+    _artifact_impacts, _check_activation, _collect_payload, _readback,
+    _markdown_anchors, _receipt_subject, _validate_ready_traceability,
+    publish_phase_evidence, refresh_ready_phase_evidence,
+    verify_ordinary_issue_context, verify_phase_evidence, verify_ready_preparation,
 )
 from p_ases.phases import (
     Attention,
@@ -413,6 +416,11 @@ class PhaseTests(unittest.TestCase):
         state = advance(state, Phase.REQUIREMENTS, new_requirements=True)
         self.assertIs(state.phase, Phase.REQUIREMENTS)
 
+    def test_verification_cannot_backtrack_to_execution_without_rework_decision(self):
+        state = PhaseState(1, IssueKind.CHILD, Phase.VERIFICATION)
+        with self.assertRaisesRegex(PhaseError, "BLOCKED_PHASE_REWORK_DECISION_REQUIRED"):
+            advance(state, Phase.EXECUTION)
+
     def test_issue_closure_requires_user_approval_and_merge_or_parent_integration(self):
         child = PhaseState(9, IssueKind.CHILD, Phase.USER_REVIEW)
         with self.assertRaisesRegex(PhaseError, "explicit user approval"):
@@ -658,6 +666,15 @@ class PhaseEvidenceActivationTests(unittest.TestCase):
                 patch("p_ases.phase_evidence.read_gate_selection", return_value=(302, self.gate, "body")):
             _check_activation(self.github, 40)
 
+        history_call = patch("p_ases.phase_evidence.read_consumer_activation_history",
+                             return_value=[(self.activation, 999)])
+        with history_call as read_history, \
+                patch("p_ases.phase_evidence.read_gate_selection", return_value=(302, self.gate, "body")):
+            _check_activation(self.github, 40)
+        read_history.assert_called_once_with(
+            self.github, self.repo, 25, through_record_id=999,
+        )
+
         stale_gate = GateSelection(
             self.repo, 40, PASES_POLICY, "2026-10-11T02:00:00Z", 998,
             self.activation.sha256, 25,
@@ -753,6 +770,7 @@ class PhaseEvidenceCollectionTests(unittest.TestCase):
     def make_repository(self, root: Path, *, staged: bool = False) -> tuple[str, VerifiedADC]:
         repository = "puchinya/ai-agent-workflow"
         files = {
+            ".gitignore": b".p_ases/\n",
             "docs/specs/product.md": b'<a id="req-01"></a>\n# Product specification\n',
         }
         if not staged:
@@ -776,7 +794,7 @@ class PhaseEvidenceCollectionTests(unittest.TestCase):
         test_source.write_bytes(b"def test_dummy():\n    assert True\n")
         for command in (
             ["git", "init", "-b", "issues/40"],
-            ["git", "add", "docs", "tests"],
+            ["git", "add", "."],
             ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
              "commit", "-m", "phase evidence fixtures"],
         ):
@@ -854,6 +872,91 @@ class PhaseEvidenceCollectionTests(unittest.TestCase):
 
         return FakeGitHub()
 
+    def test_ready_refresh_appends_current_head_receipt_and_exact_repeat_is_noop(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repository, verified = self.make_repository(root)
+            github = self.fake_github(root, repository)
+            github.phase = Phase.READY
+            github.issue_body = "# Issue 40\nStable body.\n"
+            baseline_sha = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=root, check=True,
+                capture_output=True, text=True,
+            ).stdout.strip()
+            document_path = "docs/testing/oracle.md"
+            document_sha = hashlib.sha256((root / document_path).read_bytes()).hexdigest()
+            documents = [{"role": "test-oracle", "path": document_path, "sha256": document_sha}]
+            baseline = PhaseDecision({
+                "schema": "PASES_PHASE_DECISION_V1",
+                "repository": repository,
+                "issue_number": 40,
+                "issue_kind": IssueKind.SINGLE.value,
+                "from_phase": Phase.REQUIREMENTS.value,
+                "to_phase": Phase.READY.value,
+                "adc_comment_id": verified.pointer.comment_id,
+                "adc_sha256": verified.contract.sha256,
+                "branch_ref": "issues/40",
+                "commit_sha40": baseline_sha,
+                "documents": documents,
+                "skip_reasons": {"specification": "not required", "design": "not required"},
+            })
+            github.comments.append({"id": 90, "body": baseline.body()})
+            (root / "notes.txt").write_text("unrelated committed work\n", encoding="utf-8")
+            subprocess.run(["git", "add", "notes.txt"], cwd=root, check=True, capture_output=True)
+            subprocess.run(
+                ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                 "commit", "-m", "unrelated work after ready"],
+                cwd=root, check=True, capture_output=True,
+            )
+
+            def context_for_head(*_args, **_kwargs):
+                commit = subprocess.run(
+                    ["git", "rev-parse", "HEAD"], cwd=root, check=True,
+                    capture_output=True, text=True,
+                ).stdout.strip()
+                issue = github.issue(40)
+                issue["body"] = github.issue_body
+                return VerifiedOrdinaryIssueContext(
+                    issue, verified, IssueKind.SINGLE, "issues/40", commit, True,
+                )
+
+            def current_decision(_github, _root, _issue_number, context):
+                payload = dict(baseline.payload)
+                payload["commit_sha40"] = context.commit_sha40
+                return Phase.REQUIREMENTS, {"specification": "not required", "design": "not required"}, PhaseDecision(payload)
+
+            with patch("p_ases.phase_evidence.verify_ordinary_issue_context", side_effect=context_for_head), \
+                    patch("p_ases.phase_evidence._ready_decision_for_context", side_effect=current_decision), \
+                    patch("p_ases.phase_evidence._find_receipt", return_value=(90, baseline)):
+                comment_id, record, status = refresh_ready_phase_evidence(github, root, 40)
+                self.assertEqual(status, "REFRESHED")
+                self.assertEqual(comment_id, 101)
+                self.assertIsInstance(record, ReadyPhaseRefresh)
+                self.assertEqual(record.payload["predecessor_comment_id"], 90)
+                self.assertEqual(record.payload["commit_sha40"], context_for_head().commit_sha40)
+                self.assertEqual(github.phase, Phase.READY)
+
+                context = context_for_head()
+                ready = verify_ready_preparation(
+                    github, root, 40, IssueKind.SINGLE, verified_context=context,
+                )
+                self.assertEqual(ready.payload["commit_sha40"], context.commit_sha40)
+                repeated_id, repeated, repeated_status = refresh_ready_phase_evidence(github, root, 40)
+                self.assertEqual((repeated_id, repeated, repeated_status), (comment_id, record, "NOOP"))
+                self.assertEqual(len([row for row in github.comments if "PASES_PHASE_READY_REFRESH_V1" in row["body"]]), 1)
+
+                github.issue_body = "# Issue 40\nChanged body.\n"
+                with self.assertRaisesRegex(PhaseEvidenceError, "stale or changed"):
+                    refresh_ready_phase_evidence(github, root, 40)
+                self.assertEqual(len(github.comments), 2)
+
+                github.issue_body = "# Issue 40\nStable body.\n"
+                refresh_index = next(index for index, row in enumerate(github.comments) if row["id"] == comment_id)
+                github.comments[refresh_index]["body"] += "edited"
+                with self.assertRaises(PhaseEvidenceError):
+                    refresh_ready_phase_evidence(github, root, 40)
+                self.assertEqual(len(github.comments), 2)
+
     def test_collection_binds_approved_adc_and_artifacts_to_regular_branch_blobs(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -872,6 +975,33 @@ class PhaseEvidenceCollectionTests(unittest.TestCase):
             self.assertEqual([row["path"] for row in decision.payload["documents"]], [
                 "docs/specs/product.md",
             ])
+
+    def test_artifact_impact_parser_accepts_canonical_braced_path_list(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repository, verified = self.make_repository(Path(temporary))
+            original = (
+                b"- Specification: docs/specs/product.md\n"
+                b"- Design: docs/design/system.md\n"
+                b"- Testing: docs/testing/oracle.md, docs/testing/traceability.md"
+            )
+            compact = (
+                b"Canonical: docs/specs/product.md, docs/design/system.md, "
+                b"docs/testing/{pases-lifecycle-tests,runtime-tests,traceability}.md; "
+                b"runtime/p_ases/phase_evidence.py"
+            )
+            content = verified.contract.content.replace(original, compact)
+            contract = parse_adc(content, repository, 40)
+            canonical = VerifiedADC(contract, ADCPointer(88, contract.sha256, len(content), "approved"))
+            paths, reasons = _artifact_impacts(canonical)
+        self.assertEqual(paths, {
+            "specification": ("docs/specs/product.md",),
+            "design": ("docs/design/system.md",),
+            "test-oracle": (
+                "docs/testing/pases-lifecycle-tests.md", "docs/testing/runtime-tests.md",
+                "docs/testing/traceability.md",
+            ),
+        })
+        self.assertEqual(reasons, {})
 
     def test_phase_evidence_accepts_incremental_spec_design_then_ready_documents(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -935,6 +1065,18 @@ class PhaseEvidenceCollectionTests(unittest.TestCase):
                     github, root, 40, IssueKind.SINGLE,
                 ), ready)
 
+                with patch("p_ases.phase_evidence._check_activation"), \
+                        patch("p_ases.phase_evidence.verify_adc", return_value=verified):
+                    context = verify_ordinary_issue_context(
+                        github, root, 40, IssueKind.SINGLE, require_binding=True,
+                    )
+                self.assertIsInstance(context, VerifiedOrdinaryIssueContext)
+                with patch("p_ases.phase_evidence.verify_ordinary_issue_context",
+                           side_effect=AssertionError("repeated complete history read")):
+                    self.assertEqual(verify_ready_preparation(
+                        github, root, 40, IssueKind.SINGLE, verified_context=context,
+                    ), ready)
+
             self.assertEqual({row["path"] for row in specification.payload["documents"]},
                              {"docs/specs/product.md"})
             self.assertEqual({row["path"] for row in design_decision.payload["documents"]},
@@ -990,21 +1132,112 @@ class PhaseEvidenceCollectionTests(unittest.TestCase):
                 )
                 binding_path = root / ".p_ases/state/40/execution-binding.json"
                 old_binding = read_binding(binding_path)
-                write_binding(binding_path, ExecutionBinding(
-                    repository, 40, newer_verified.pointer.comment_id, newer_contract.sha256,
-                    old_binding.base_ref, old_binding.base_sha, old_binding.branch_ref,
-                    old_binding.work_directory, old_binding.initial_head_sha,
-                ))
+                original_pr_binding = PRBinding(
+                    repository, 40, old_verified.pointer.comment_id, old_verified.contract.sha256,
+                    old_binding.base_sha, old_binding.branch_ref, 64, old_binding.initial_head_sha,
+                )
+                pr_binding_path = root / ".p_ases/state/40/pr-binding-000001.json"
+                write_pr_binding(pr_binding_path, original_pr_binding)
+                original_pr_binding_bytes = pr_binding_path.read_bytes()
+
+                context_output: dict[str, object] = {}
+                with patch("p_ases.cli.GitHub", return_value=github), \
+                        patch("p_ases.cli.verify_adc", return_value=newer_verified), \
+                        patch("p_ases.cli._json", side_effect=lambda value: context_output.update(value)):
+                    stale_status = cli_main([
+                        "context", "show", "40", "--repo", repository, "--root", str(root),
+                    ])
+                self.assertEqual(stale_status, 2)
+                self.assertEqual(context_output["status"], "STALE_BINDING")
+                self.assertEqual(context_output["binding_status"], "STALE_ADC")
+                stale_context = context_output["frozen_context"]
+                self.assertEqual(stale_context["base_sha"], old_binding.base_sha)
+                self.assertEqual(stale_context["branch_ref"], old_binding.branch_ref)
+                self.assertEqual(stale_context["work_directory"], old_binding.work_directory)
+
+                bind_output: dict[str, object] = {}
+                with patch("p_ases.cli.GitHub", return_value=github), \
+                        patch("p_ases.cli.verify_adc", return_value=newer_verified), \
+                        patch("p_ases.cli._json", side_effect=lambda value: bind_output.update(value)):
+                    bind_status = cli_main([
+                        "work", "bind", "40", "--base-ref", old_binding.base_ref,
+                        "--base-sha", old_binding.base_sha, "--branch-ref", old_binding.branch_ref,
+                        "--repo", repository, "--root", str(root),
+                    ])
+                self.assertEqual(bind_status, 0)
+                self.assertEqual(bind_output["status"], "BOUND")
+                history = read_binding_history(binding_path)
+                self.assertEqual(len(history), 2)
+                self.assertEqual(history[0], old_binding)
+                current_binding = history[-1]
+                self.assertEqual(current_binding.adc_comment_id, newer_verified.pointer.comment_id)
+                self.assertEqual(current_binding.adc_sha256, newer_verified.contract.sha256)
+                self.assertEqual(
+                    (current_binding.base_ref, current_binding.base_sha, current_binding.branch_ref,
+                     current_binding.work_directory, current_binding.initial_head_sha),
+                    (old_binding.base_ref, old_binding.base_sha, old_binding.branch_ref,
+                     old_binding.work_directory, old_binding.initial_head_sha),
+                )
+                self.assertEqual(pr_binding_path.read_bytes(), original_pr_binding_bytes)
+
+                rebound_output: dict[str, object] = {}
+                with patch("p_ases.cli.GitHub", return_value=github), \
+                        patch("p_ases.cli.verify_adc", return_value=newer_verified), \
+                        patch("p_ases.cli._json", side_effect=lambda value: rebound_output.update(value)):
+                    rebound_status = cli_main([
+                        "context", "show", "40", "--repo", repository, "--root", str(root),
+                    ])
+                self.assertEqual(rebound_status, 0)
+                self.assertEqual(rebound_output["status"], "BOUND")
+                self.assertEqual(rebound_output["binding_status"], "BOUND")
+
                 with patch("p_ases.phase_evidence.verify_adc", return_value=newer_verified):
                     new_id, new_receipt = publish_phase_evidence(
                         github, root, 40, Phase.REQUIREMENTS, Phase.SPECIFICATION, {},
+                    )
+                    self.assertEqual(
+                        verify_phase_evidence(
+                            github, root, 40, new_id, Phase.REQUIREMENTS, Phase.SPECIFICATION,
+                        ),
+                        new_receipt,
+                    )
+                    github.phase = Phase.SPECIFICATION
+                    design_id, design_receipt = publish_phase_evidence(
+                        github, root, 40, Phase.SPECIFICATION, Phase.DESIGN, {},
+                    )
+                    self.assertEqual(
+                        verify_phase_evidence(
+                            github, root, 40, design_id, Phase.SPECIFICATION, Phase.DESIGN,
+                        ),
+                        design_receipt,
+                    )
+                    github.phase = Phase.DESIGN
+                    ready_id, ready_receipt = publish_phase_evidence(
+                        github, root, 40, Phase.DESIGN, Phase.READY, {},
+                    )
+                    self.assertEqual(
+                        verify_phase_evidence(github, root, 40, ready_id, Phase.DESIGN, Phase.READY),
+                        ready_receipt,
                     )
 
             self.assertEqual(old_receipt.payload["adc_comment_id"], 88)
             self.assertEqual(new_receipt.payload["adc_comment_id"], 89)
             self.assertNotEqual(_receipt_subject(old_receipt.payload), _receipt_subject(new_receipt.payload))
-            self.assertEqual(len(github.comments), 2)
-            self.assertEqual(github.comments[-1]["id"], new_id)
+            self.assertEqual([row["id"] for row in github.comments], [100, 101, 102, 103])
+            self.assertEqual(github.comments[-3]["id"], new_id)
+            self.assertEqual(
+                [(new_receipt.payload["from_phase"], new_receipt.payload["to_phase"]),
+                 (design_receipt.payload["from_phase"], design_receipt.payload["to_phase"]),
+                 (ready_receipt.payload["from_phase"], ready_receipt.payload["to_phase"])],
+                [("requirements", "specification"), ("specification", "design"), ("design", "ready")],
+            )
+            self.assertEqual(
+                [new_receipt.payload["adc_comment_id"], design_receipt.payload["adc_comment_id"],
+                 ready_receipt.payload["adc_comment_id"]],
+                [89, 89, 89],
+            )
+            self.assertEqual(github.comments[0]["body"], old_receipt.body())
+            self.assertEqual(pr_binding_path.read_bytes(), original_pr_binding_bytes)
 
     def test_uncommitted_document_change_blocks_phase_evidence(self):
         with tempfile.TemporaryDirectory() as temporary:

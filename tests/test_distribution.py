@@ -110,6 +110,19 @@ A boundary violation returns nonzero.
 
 
 class DistributionMigrationTests(unittest.TestCase):
+    def test_delivery_skill_validator_accepts_admin_activation_continuations(self):
+        accepted = validate_dist.validate_skill_commands(
+            "`python -m p_ases delivery consumer-activation-admin-apply --plan plan.json "
+            "--approval-comment-id 123`",
+            "fixture/SKILL.md",
+        )
+        rejected = validate_dist.validate_skill_commands(
+            "`python -m p_ases delivery consumer-activation-admin-unknown`",
+            "fixture/SKILL.md",
+        )
+        self.assertEqual(accepted, [])
+        self.assertEqual(len(rejected), 1)
+
     def test_canonical_and_all_three_host_skill_and_runtime_sets_are_exact(self):
         self.assertEqual(tuple(build_dist.EXPECTED_SKILLS), SKILLS)
         self.assertEqual({path.name for path in (ROOT / "workflow/skills").iterdir() if path.is_dir()}, set(SKILLS))
