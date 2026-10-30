@@ -214,6 +214,7 @@ class UserReviewGitHubAdapterTests(unittest.TestCase):
         threads = fake.pull_review_threads(37)
         self.assertEqual([row["id"] for row in threads], ["thread-1", "thread-2"])
         self.assertEqual([row["databaseId"] for row in threads[0]["comments"]], [1, 2])
+        self.assertNotIn("author{databaseId", "".join(query for query, _variables in fake.calls))
         self.assertEqual(fake.calls[1][1]["threadId"], "thread-1")
         self.assertEqual(fake.calls[2][1]["cursor"], "thread-cursor")
 
