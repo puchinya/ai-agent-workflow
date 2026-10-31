@@ -1,6 +1,6 @@
 # Issue #63 Independent Review status
 
-Updated 2026-10-29. This file reports current evidence and review blockers; it does not replace the approved ADC or runtime gate results.
+**Historical snapshot captured 2026-10-29.** This file preserves the review evidence and blockers as they stood on that date. It is not a live status report: Issue, PR, CI, Activation, and gate state may have changed since capture. Use current GitHub readbacks and current lifecycle records for present state. This snapshot does not replace the approved ADC or runtime gate results.
 
 <!-- contents:start -->
 **Contents**
