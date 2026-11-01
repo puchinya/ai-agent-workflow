@@ -39,6 +39,12 @@
   - [9.12 REQ-F01-015 Owner-authorized decisions and separated operations](#912-req-f01-015-owner-authorized-decisions-and-separated-operations)
   - [9.13 REQ-F01-016 Native Independent Review execution and confidence](#913-req-f01-016-native-independent-review-execution-and-confidence)
   - [9.14 REQ-F01-018 Exact Phase evidence recovery](#914-req-f01-018-exact-phase-evidence-recovery)
+  - [9.15 REQ-F01-019 Cloud Network-secret Admin authentication](#915-req-f01-019-cloud-network-secret-admin-authentication)
+  - [9.16 REQ-F01-020 Complete Cloud Admin policy readback](#916-req-f01-020-complete-cloud-admin-policy-readback)
+  - [9.17 REQ-F01-021 Separate approvals and resumable Activation](#917-req-f01-021-separate-approvals-and-resumable-activation)
+  - [9.18 REQ-F01-022 Direct chat provenance for owner decisions](#918-req-f01-022-direct-chat-provenance-for-owner-decisions)
+  - [9.19 REQ-F01-023 Issue #63 lifecycle preservation](#919-req-f01-023-issue-63-lifecycle-preservation)
+  - [9.20 REQ-F01-024 Cloud transport regression and distribution coverage](#920-req-f01-024-cloud-transport-regression-and-distribution-coverage)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -67,6 +73,12 @@
 - [REQ-F01-015](#req-f01-015) — 9.12 REQ-F01-015 Owner-authorized decisions and separated operations
 - [REQ-F01-016](#req-f01-016) — 9.13 REQ-F01-016 Native Independent Review execution and confidence
 - [REQ-F01-018](#req-f01-018) — 9.14 REQ-F01-018 Exact Phase evidence recovery
+- [REQ-F01-019](#req-f01-019) — 9.15 REQ-F01-019 Cloud Network-secret Admin authentication
+- [REQ-F01-020](#req-f01-020) — 9.16 REQ-F01-020 Complete Cloud Admin policy readback
+- [REQ-F01-021](#req-f01-021) — 9.17 REQ-F01-021 Separate approvals and resumable Activation
+- [REQ-F01-022](#req-f01-022) — 9.18 REQ-F01-022 Direct chat provenance for owner decisions
+- [REQ-F01-023](#req-f01-023) — 9.19 REQ-F01-023 Issue #63 lifecycle preservation
+- [REQ-F01-024](#req-f01-024) — 9.20 REQ-F01-024 Cloud transport regression and distribution coverage
 <!-- heading-map:end -->
 
 
@@ -416,3 +428,33 @@ No child result, failed or unknown spawn/join, same-context reviewer identity, s
 ### 9.14 REQ-F01-018 Exact Phase evidence recovery
 
 For Issue #63 only, the current approved ADC authorizes `PASES_PHASE_REBASE_INTENT_V3` / `PASES_PHASE_REBASE_APPLIED_V3` for exactly two incomplete historical ADC edges: #6271832228 (SHA-256 `221e62a86a5b682237948abec1ee287d24d3808a9ad4fa22960be2c869fdcd05`) → #6468215907 (SHA-256 `6b2ab1c83aead86efe602b700bdfd33807d1675a56089a6a3ffc29175e2b601a`), then #6468215907 → #6469056354 (SHA-256 `f03465611fda6df485b323beab212f132cb9df2145827d46d0f0525445584efe`). Preserve all V1 and V2 records and bytes. The first V3 edge records and, only if the complete current label state is exactly `phase:execution`, performs at most one label update to `phase:requirements`. The second edge adopts existing `phase:requirements`, records identical before/after labels, and performs zero label updates. Each V3 Intent and Applied record binds the exact ADC predecessor/successor IDs and SHA-256 values, immediately preceding Applied ID and payload digest, Issue body digest, full sorted label state, operation/phases, and authenticated executor. Every mutation is followed by exact readback. Exact retries are read-only; an interrupted write may append only its matching Applied record after proving whether the one permitted label update already took effect. Any other ADC edge, phase, label change, history gap, edited/deleted record, duplicate, actor mismatch, or uncertain API result blocks without a repeated label write. After both exact recovery generations, ordinary later ADC generations use V2.
+
+<a id="req-f01-019"></a>
+### 9.15 REQ-F01-019 Cloud Network-secret Admin authentication
+
+Cloud Consumer Activation MUST support an explicit `cloud-network-secret` Admin authentication mode. The owner supplies an expiring, repository-limited Fine-grained PAT with Administration read/write and only the additional Issues, Pull requests, and Contents permissions required by the exact calls. Store it as a Cloud Network secret scoped to `api.github.com` HTTPS:443. The platform-provided `GH_TOKEN` value may be a proxy placeholder; pass it only to the isolated Admin `gh api` child with a private empty mode-0700 `GH_CONFIG_DIR`. Remove conflicting ambient credential variables from that child and leave the ordinary GitHub client/configuration unchanged. Do not read, persist, log, print, or pass the PAT through argv. This mode requires no owner-local TTY and MUST NOT start device/browser login. Missing or unready secret, wrong runtime, missing required permission, or failed proxy substitution returns `ADMIN_CLOUD_NETWORK_SECRET_UNAVAILABLE` without fallback. Existing `isolated-gh-device` and explicit local `pat` modes retain their prior meanings.
+
+<a id="req-f01-020"></a>
+### 9.16 REQ-F01-020 Complete Cloud Admin policy readback
+
+Before producing a Ruleset plan or performing any policy-dependent write, the Cloud Admin client MUST verify the authenticated principal is the configured repository owner User ID `3744776`, repository ID `1401910271`, `permissions.admin=true`, and collaborator admin permission. The same scoped Admin client MUST read the default branch, legacy branch protection, effective branch rules, Ruleset inventory and any selected Ruleset details, and relevant open-PR impact. HTTP 401, 403, 429, 5xx, invalid JSON, missing pages, or incomplete identity/policy reads return `ADMIN_POLICY_UNAVAILABLE` / `UNAVAILABLE` and block. A legacy protection `404` is `NOT_CONFIGURED` only when every other required read succeeds. `protected=false`, empty effective rules, or an empty Ruleset inventory MUST NOT turn a failed/partial protection read into success. No Ruleset plan, Ruleset write, Setup PR, or V2 record may proceed until these reads are complete.
+
+<a id="req-f01-021"></a>
+### 9.17 REQ-F01-021 Separate approvals and resumable Activation
+
+Use the existing Activation checkpoint, canonical Ruleset planner, and sole writer `ruleset_management.apply_ruleset_plan`. An exact blocker-free plan requires its own `RULESET_PLAN_APPLY` chat approval before create/update; an exact current Setup PR HEAD requires a separate `PR_MERGE` chat approval. Admin authentication is never approval. Preserve durable intent, idempotency, current-subject revalidation, ownership evidence, and readback. After an interrupted or ambiguous API response, perform read-only recovery; never blindly repeat POST/PUT or merge. A verified NOOP does not create a policy write approval or write.
+
+<a id="req-f01-022"></a>
+### 9.18 REQ-F01-022 Direct chat provenance for owner decisions
+
+An approval-dependent runtime write MUST use a genuine direct same-conversation owner user-role event only when the host passes that event through the existing in-process authorization boundary. A CLI option, file, stdin, agent-generated text, Issue comment, inferred role, or another unverified conversation is not an approval. If the direct user-role event is unavailable, return `CHAT_PROVENANCE_UNAVAILABLE`; do not create an owner decision or perform the dependent write. Chat evidence is operator-reported and MUST NOT be described as a signed or cryptographically authenticated chat event.
+
+<a id="req-f01-023"></a>
+### 9.19 REQ-F01-023 Issue #63 lifecycle preservation
+
+Preserve Issue #57 V1 and all existing Issue #63 approved ADCs, Gate Selection, Phase and Binding history, evidence, and merged PR #64 bytes. Do not reopen or amend PR #64. Keep Issue #63 OPEN until a verified V2 `ACTIVE` record is read back, its `created_at` is later than PR #64 `merged_at`, and current effective policy matches the V2 policy digest. Only then may the existing `delivery finalize 63 64` close Issue #63 once with exact readback. `SETUP_PENDING`, incomplete policy reads, or missing approvals are not `ACTIVE` and leave #63 OPEN.
+
+<a id="req-f01-024"></a>
+### 9.20 REQ-F01-024 Cloud transport regression and distribution coverage
+
+Tests MUST cover Cloud secret readiness and isolation, owner/repository identity, 401/403/404/429/5xx/partial policy reads, no writes before exact approval, no silent credential fallback, cleanup on failure/interruption, idempotent recovery, and Activation ordering. Canonical specification, design, lifecycle/runtime Oracle, traceability, skills, and adapter documentation MUST remain synchronized. Regenerate distribution output only through `tools/build_dist.py`; never edit distribution files by hand.
