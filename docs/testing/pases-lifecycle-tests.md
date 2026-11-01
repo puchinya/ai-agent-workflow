@@ -65,6 +65,18 @@
     - [2.27.1 ORA-F01-017 Expected result](#2271-ora-f01-017-expected-result)
   - [2.28 TST-F01-018 Exact Phase evidence recovery](#228-tst-f01-018-exact-phase-evidence-recovery)
     - [2.28.1 ORA-F01-018 Expected result](#2281-ora-f01-018-expected-result)
+  - [2.29 TST-F01-019 Cloud Network-secret Admin authentication](#229-tst-f01-019-cloud-network-secret-admin-authentication)
+    - [2.29.1 ORA-F01-019 Expected result](#2291-ora-f01-019-expected-result)
+  - [2.30 TST-F01-020 Complete Cloud Admin policy readback](#230-tst-f01-020-complete-cloud-admin-policy-readback)
+    - [2.30.1 ORA-F01-020 Expected result](#2301-ora-f01-020-expected-result)
+  - [2.31 TST-F01-021 Separate exact approvals and resumable Activation](#231-tst-f01-021-separate-exact-approvals-and-resumable-activation)
+    - [2.31.1 ORA-F01-021 Expected result](#2311-ora-f01-021-expected-result)
+  - [2.32 TST-F01-022 Direct chat provenance for owner decisions](#232-tst-f01-022-direct-chat-provenance-for-owner-decisions)
+    - [2.32.1 ORA-F01-022 Expected result](#2321-ora-f01-022-expected-result)
+  - [2.33 TST-F01-023 Issue #63 lifecycle preservation](#233-tst-f01-023-issue-63-lifecycle-preservation)
+    - [2.33.1 ORA-F01-023 Expected result](#2331-ora-f01-023-expected-result)
+  - [2.34 TST-F01-024 Cloud transport regression and distribution coverage](#234-tst-f01-024-cloud-transport-regression-and-distribution-coverage)
+    - [2.34.1 ORA-F01-024 Expected result](#2341-ora-f01-024-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -125,6 +137,18 @@
 - [ORA-F01-017](#ora-f01-017) — 2.27.1 ORA-F01-017 Expected result
 - [TST-F01-018](#tst-f01-018) — 2.28 TST-F01-018 Exact Phase evidence recovery
 - [ORA-F01-018](#ora-f01-018) — 2.28.1 ORA-F01-018 Expected result
+- [TST-F01-019](#tst-f01-019) — 2.29 TST-F01-019 Cloud Network-secret Admin authentication
+- [ORA-F01-019](#ora-f01-019) — 2.29.1 ORA-F01-019 Expected result
+- [TST-F01-020](#tst-f01-020) — 2.30 TST-F01-020 Complete Cloud Admin policy readback
+- [ORA-F01-020](#ora-f01-020) — 2.30.1 ORA-F01-020 Expected result
+- [TST-F01-021](#tst-f01-021) — 2.31 TST-F01-021 Separate exact approvals and resumable Activation
+- [ORA-F01-021](#ora-f01-021) — 2.31.1 ORA-F01-021 Expected result
+- [TST-F01-022](#tst-f01-022) — 2.32 TST-F01-022 Direct chat provenance for owner decisions
+- [ORA-F01-022](#ora-f01-022) — 2.32.1 ORA-F01-022 Expected result
+- [TST-F01-023](#tst-f01-023) — 2.33 TST-F01-023 Issue #63 lifecycle preservation
+- [ORA-F01-023](#ora-f01-023) — 2.33.1 ORA-F01-023 Expected result
+- [TST-F01-024](#tst-f01-024) — 2.34 TST-F01-024 Cloud transport regression and distribution coverage
+- [ORA-F01-024](#ora-f01-024) — 2.34.1 ORA-F01-024 Expected result
 <!-- heading-map:end -->
 
 
@@ -466,3 +490,63 @@ The existing adoption remains immutable and is never repeated. The successor ADC
 #### 2.28.1 ORA-F01-018 Expected result
 
 Only the exact two approved edges accept V3. The first records `execution -> requirements` and updates the label at most once; recovery after a lost response reads the full Issue state and never repeats an applied PUT. The second records `requirements -> requirements` with identical complete labels and zero label writes. Both V3 Applied records link to the immediately preceding Applied payload, and a later current ADC generation records with V2. Exact retry is read-only. Any edge/order/history/actor/Issue mismatch, incomplete read, changed label/body state, duplicate, edit, or deletion blocks without broadening recovery or rewriting history. Existing V1/V2 bytes remain unchanged; Phase recovery needs no additional Owner approval.
+
+<a id="tst-f01-019"></a>
+### 2.29 TST-F01-019 Cloud Network-secret Admin authentication
+
+**Setup and action:** Run the Admin-auth path in a Cloud task with the configured Network secret ready, absent, unready, expired, and bound to the wrong host. Inspect only nonsecret environment metadata. Verify the Admin `gh api` child gets a private empty config and the platform placeholder, while ordinary GitHub clients and ambient auth remain unchanged. Exercise failed proxy substitution, missing Admin permission, interruption, and cleanup; confirm no device flow or owner TTY starts.
+
+<a id="ora-f01-019"></a>
+#### 2.29.1 ORA-F01-019 Expected result
+
+Only a valid Cloud Network-secret binding reaches Admin API reads. Missing/invalid inputs produce `ADMIN_CLOUD_NETWORK_SECRET_UNAVAILABLE` without fallback or writes. The secret value never enters application data, argv, files, logs, or diagnostics; ordinary GitHub authentication remains unchanged, and temporary child resources are cleaned up best-effort on all exits.
+
+<a id="tst-f01-020"></a>
+### 2.30 TST-F01-020 Complete Cloud Admin policy readback
+
+**Setup and action:** With a mock Admin client, verify owner User ID, repository ID/admin permission, collaborator admin permission, default branch, legacy protection, effective rules, Ruleset list/details, and impacted open PR reads. Inject 401, 403, 404, 429, 5xx, malformed or partial JSON, missing pages, and disagreement between `protected`, branch rules, and Rulesets. Count plan and write calls.
+
+<a id="ora-f01-020"></a>
+#### 2.30.1 ORA-F01-020 Expected result
+
+Planning starts only after every required identity and policy read succeeds. A legacy-protection 404 is `NOT_CONFIGURED` only with complete remaining reads. Any 403 or incomplete/error result is `ADMIN_POLICY_UNAVAILABLE` / `UNAVAILABLE`; it yields no Ruleset plan, write, Setup PR, or V2 record. Empty inventory and `protected=false` never repair a missing read.
+
+<a id="tst-f01-021"></a>
+### 2.31 TST-F01-021 Separate exact approvals and resumable Activation
+
+**Setup and action:** Exercise blocker-free create/update and exact-owned NOOP plans, owner approval before apply, Setup PR creation, and a separate exact-HEAD merge decision. Inject drift after approval, lost POST/PUT or merge responses, process interruption at each durable checkpoint, existing unowned policy, and same-plan retry. Record all write counts and recovery reads.
+
+<a id="ora-f01-021"></a>
+#### 2.31.1 ORA-F01-021 Expected result
+
+No policy mutation occurs before exact `RULESET_PLAN_APPLY`; Setup PR merge requires its own current-HEAD `PR_MERGE`. NOOP creates no write approval. Drift invalidates the plan. Ambiguous responses recover by readback without blindly replaying a write or merge, and completed identical operations are read-only NOOPs. Admin credentials alone never authorize a mutation.
+
+<a id="tst-f01-022"></a>
+### 2.32 TST-F01-022 Direct chat provenance for owner decisions
+
+**Setup and action:** Exercise approval-dependent operations with an actual same-conversation owner user-role event forwarded by the host, and with no event, non-owner input, CLI flag, file, stdin, assistant text, Issue comment, or unverified other-conversation text. Bind each event to the displayed exact plan or PR HEAD, then mutate the subject before the write.
+
+<a id="ora-f01-022"></a>
+#### 2.32.1 ORA-F01-022 Expected result
+
+Only the genuine direct owner event at the in-process boundary can authorize its unchanged exact subject. Missing provenance returns `CHAT_PROVENANCE_UNAVAILABLE`; invalid or stale input creates no decision and performs zero dependent writes. Evidence describes operator-reported chat confirmation and never claims a cryptographic chat signature.
+
+<a id="tst-f01-023"></a>
+### 2.33 TST-F01-023 Issue #63 lifecycle preservation
+
+**Setup and action:** Snapshot Issue #57 V1 records, #63 ADC/Phase/Binding history, PR #64 merge metadata, and existing checkpoint before the new Cloud Activation. Run preflight, interrupted policy assessment, pending Setup PR, verified V2 ACTIVE with matching policy/time, and final close recovery. Compare all historical bytes and read Issue #63 directly and through listing after each case.
+
+<a id="ora-f01-023"></a>
+#### 2.33.1 ORA-F01-023 Expected result
+
+Historical records and merged PR #64 remain unchanged. Issue #63 stays OPEN before V2 ACTIVE and after `SETUP_PENDING`, missing policy evidence, or missing decisions. Only a verified V2 ACTIVE record later than the #64 merge and matching current effective policy permits the existing one-shot finalize route to close #63, with exact readback.
+
+<a id="tst-f01-024"></a>
+### 2.34 TST-F01-024 Cloud transport regression and distribution coverage
+
+**Setup and action:** Run unit tests for Cloud Admin transport, activation state, policy readback, owner authorization, and CLI failures. Run documentation/traceability validation, build and check every supported distribution, and exercise read-only Cloud smoke only when the current host exposes the required secret proxy and direct user-role event.
+
+<a id="ora-f01-024"></a>
+#### 2.34.1 ORA-F01-024 Expected result
+
+Unit and documentation oracles pass with source and generated distributions synchronized. Cloud smoke is reported only for surfaces actually exercised; unavailable secret proxy or host approval provenance is an explicit unverified blocker, never a fabricated PASS. Issue #63 is not closed by the implementation PR.
