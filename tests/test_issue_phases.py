@@ -40,6 +40,7 @@ from p_ases.phase_evidence import (
     publish_phase_evidence, refresh_ready_phase_evidence,
     verify_ordinary_issue_context, verify_phase_evidence, verify_ready_preparation,
 )
+from p_ases.phase_restart import PhaseGeneration
 from p_ases.phases import (
     Attention,
     IssueKind,
@@ -473,11 +474,33 @@ class PhaseEvidenceSchemaTests(unittest.TestCase):
     def test_phase_decision_uses_canonical_json_and_exact_schema(self):
         decision = PhaseDecision(self.payload())
         self.assertEqual(PhaseDecision.from_body(decision.body()), decision)
+        self.assertEqual(decision.body().splitlines()[0], "PASES_PHASE_DECISION_V1")
+        legacy_body = "PASES_PHASE_DECISION_V1\n" + json.dumps(
+            self.payload(), sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+        ) + "\n"
+        self.assertEqual(decision.body(), legacy_body)
         with self.assertRaisesRegex(PhaseEvidenceError, "format|canonical"):
             PhaseDecision.from_body("PASES_PHASE_DECISION_V1\n" + json.dumps(self.payload(), indent=2) + "\n")
         unknown = self.payload() | {"approved": True}
         with self.assertRaisesRegex(PhaseEvidenceError, "unknown or missing"):
             PhaseDecision(unknown).body()  # Serialization never bypasses model validation below.
+
+    def test_phase_decision_v2_binds_active_restart_generation(self):
+        payload = self.payload() | {
+            "schema": "PASES_PHASE_DECISION_V2",
+            "phase_generation_comment_id": 91,
+            "phase_generation_sha256": "d" * 64,
+        }
+        decision = PhaseDecision(payload)
+        self.assertEqual(decision.body().splitlines()[0], "PASES_PHASE_DECISION_V2")
+        self.assertEqual(PhaseDecision.from_body(decision.body()), decision)
+        for change in (
+            {"phase_generation_comment_id": True},
+            {"phase_generation_sha256": "not-a-digest"},
+            {"phase_generation_comment_id": None},
+        ):
+            with self.assertRaises(PhaseEvidenceError):
+                PhaseDecision(payload | change).body()
 
     def test_phase_decision_rejects_boolean_numbers_unsafe_paths_and_wrong_skip_edges(self):
         for change in (
@@ -975,6 +998,25 @@ class PhaseEvidenceCollectionTests(unittest.TestCase):
             self.assertEqual([row["path"] for row in decision.payload["documents"]], [
                 "docs/specs/product.md",
             ])
+
+    def test_active_restart_generation_uses_v2_phase_decision(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repository, verified = self.make_repository(root)
+            github = self.fake_github(root, repository)
+            generation = PhaseGeneration(91, "d" * 64, verified.pointer.comment_id,
+                                         verified.contract.sha256, 1, verified.pointer.comment_id,
+                                         "e" * 64)
+            with patch("p_ases.phase_evidence._check_activation"), \
+                    patch("p_ases.phase_evidence.verify_adc", return_value=verified), \
+                    patch("p_ases.phase_restart.current_phase_generation", return_value=generation):
+                decision, *_ = _collect_payload(
+                    github, root, 40, Phase.REQUIREMENTS, Phase.SPECIFICATION, {},
+                )
+        self.assertEqual(decision.payload["schema"], "PASES_PHASE_DECISION_V2")
+        self.assertEqual(decision.payload["phase_generation_comment_id"], 91)
+        self.assertEqual(decision.payload["phase_generation_sha256"], "d" * 64)
+        self.assertEqual(PhaseDecision.from_body(decision.body()), decision)
 
     def test_artifact_impact_parser_accepts_canonical_braced_path_list(self):
         with tempfile.TemporaryDirectory() as temporary:

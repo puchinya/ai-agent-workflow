@@ -444,7 +444,7 @@ The generic restart accepts only an open non-PR ordinary Issue with exactly one 
 <a id="req-f01-033"></a>
 ### 9.17 REQ-F01-033 Append-only Phase restart records
 
-Append canonical `PASES_PHASE_RESTART_INTENT_V1` and `PASES_PHASE_RESTART_APPLIED_V1` technical records. Bind repository name/ID, Issue number/stable ID, complete sorted labels before/after, approved ADC comment ID/SHA/length, Binding generation ID/digest, predecessor active Phase generation ID/digest (nullable only when none exists), authorization marker digest, transition, reason, authenticated human executor ID, and canonical UTC timestamps. Read each record direct/list/direct and validate Issue/repository/API/HTML URLs, author, created/updated equality, and exact body. Preserve every predecessor ADC, Binding, Phase Decision/receipt, Gate, and Activation record byte-for-byte.
+Append canonical `PASES_PHASE_RESTART_INTENT_V1` and `PASES_PHASE_RESTART_APPLIED_V1` technical records. Bind repository name/ID, Issue number/stable ID, complete sorted labels before/after, approved ADC comment ID/SHA/length, Binding generation ID/digest, predecessor active Phase generation ID/digest (nullable only when none exists), authorization marker digest, transition, reason, authenticated human executor ID, and canonical UTC timestamps. The predecessor is the latest verified Applied or Phase Decision event before Intent. An incomplete restart Intent from any earlier ADC generation blocks new Phase operations. Read each record direct/list/direct and validate Issue/repository/API/HTML URLs, author, created/updated equality, and exact body. Preserve every predecessor ADC, Binding, Phase Decision/receipt, Gate, and Activation record byte-for-byte.
 
 <a id="req-f01-034"></a>
 ### 9.18 REQ-F01-034 One-shot label transition and recovery
@@ -454,7 +454,7 @@ After complete read-only preflight, append and verify the exact Intent; re-read 
 <a id="req-f01-035"></a>
 ### 9.19 REQ-F01-035 Active Phase generation
 
-The exact Applied record starts the new active Phase generation, bound to the current approved ADC and Binding generation. Normal phase evidence must verify that generation before issuing new receipts. Existing specification/design/ready/execution receipts remain readable historical evidence but cannot satisfy a transition in the restarted generation. Requirements through later Execution evidence are produced again with the normal validators.
+The exact Applied record starts the new active Phase generation, bound to the current approved ADC and Binding generation. Normal phase evidence must verify that generation before issuing new receipts. After a restart, new phase receipts use `PASES_PHASE_DECISION_V2`, binding the Applied comment ID and exact body SHA-256; V1 serialization and prior V1 bytes remain unchanged. Existing specification/design/ready/execution receipts remain readable historical evidence but cannot satisfy a transition in the restarted generation. Requirements through later Execution evidence are produced again with the normal validators.
 
 <a id="req-f01-036"></a>
 ### 9.20 REQ-F01-036 Issue #63 compatibility

@@ -39,6 +39,13 @@
   - [9.12 REQ-F01-015 Owner-authorized decisions and separated operations](#912-req-f01-015-owner-authorized-decisions-and-separated-operations)
   - [9.13 REQ-F01-016 Native Independent Review execution and confidence](#913-req-f01-016-native-independent-review-execution-and-confidence)
   - [9.14 REQ-F01-018 Exact Phase evidence recovery](#914-req-f01-018-exact-phase-evidence-recovery)
+  - [9.15 REQ-F01-031 Generic Phase restart authorization](#915-req-f01-031-generic-phase-restart-authorization)
+  - [9.16 REQ-F01-032 Eligible Issue and Binding](#916-req-f01-032-eligible-issue-and-binding)
+  - [9.17 REQ-F01-033 Append-only Phase restart records](#917-req-f01-033-append-only-phase-restart-records)
+  - [9.18 REQ-F01-034 One-shot label transition and recovery](#918-req-f01-034-one-shot-label-transition-and-recovery)
+  - [9.19 REQ-F01-035 Active Phase generation](#919-req-f01-035-active-phase-generation)
+  - [9.20 REQ-F01-036 Issue #63 compatibility](#920-req-f01-036-issue-63-compatibility)
+  - [9.21 REQ-F01-037 ADC is the sole Phase restart approval](#921-req-f01-037-adc-is-the-sole-phase-restart-approval)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -67,6 +74,13 @@
 - [REQ-F01-015](#req-f01-015) — 9.12 REQ-F01-015 Owner-authorized decisions and separated operations
 - [REQ-F01-016](#req-f01-016) — 9.13 REQ-F01-016 Native Independent Review execution and confidence
 - [REQ-F01-018](#req-f01-018) — 9.14 REQ-F01-018 Exact Phase evidence recovery
+- [REQ-F01-031](#req-f01-031) — 9.15 REQ-F01-031 Generic Phase restart authorization
+- [REQ-F01-032](#req-f01-032) — 9.16 REQ-F01-032 Eligible Issue and Binding
+- [REQ-F01-033](#req-f01-033) — 9.17 REQ-F01-033 Append-only Phase restart records
+- [REQ-F01-034](#req-f01-034) — 9.18 REQ-F01-034 One-shot label transition and recovery
+- [REQ-F01-035](#req-f01-035) — 9.19 REQ-F01-035 Active Phase generation
+- [REQ-F01-036](#req-f01-036) — 9.20 REQ-F01-036 Issue #63 compatibility
+- [REQ-F01-037](#req-f01-037) — 9.21 REQ-F01-037 ADC is the sole Phase restart approval
 <!-- heading-map:end -->
 
 
@@ -91,9 +105,9 @@ Legacy note: the historical procedures retained in Section 3 are reference mater
 <a id="req-wf-001-workflow-phases"></a>
 ### 3.1 REQ-WF-001 Workflow phases
 
-Single and child Issues use `requirements -> [specification] -> [design] -> ready -> execution -> verification -> user-review -> closed`. Specification is required when observable product behavior is being decided or changed; design is required when a material technical decision is being made. Each omitted phase has its own explicit reason. The only skip edges are `requirements -> design`, `specification -> ready`, and `requirements -> ready` (the last requires separate specification and design reasons). The parent lifecycle is separate: `requirements -> ready -> execution -> integration -> user-review -> closed`.
+Single and child Issues use `requirements -> [specification] -> [design] -> ready -> execution -> verification -> user-review -> closed`. Specification is required when observable product behavior is being decided or changed; design is required when a material technical decision is being made. Each omitted phase has its own explicit reason. The only skip edges are `requirements -> design`, `specification -> ready`, and `requirements -> ready` (the last requires separate specification and design reasons). The parent lifecycle is separate: `requirements -> ready -> execution -> integration -> user-review -> closed`. An ordinary single/child Issue may also perform the one ADC-authorized `execution -> requirements` recovery edge defined by REQ-F01-031–037; it creates a new active Phase evidence generation and does not rewrite prior receipts.
 
-The current `kind:*` Issue label is the source of Issue kind, and each open Issue has exactly one `phase:*` label and at most one `attention:*` label. A new child Issue is created with `kind:child` and `phase:requirements`; existing phases are never reset. Parent #26 and fixed Bootstrap Issues #27–#32 retain their migration treatment and are not rewritten by the normal lifecycle gate. `closed` describes the actual closed GitHub Issue after separately authorized merge; it is not a GitHub `phase:closed` label.
+The current `kind:*` Issue label is the source of Issue kind, and each open Issue has exactly one `phase:*` label and at most one `attention:*` label. A new child Issue is created with `kind:child` and `phase:requirements`. A backward phase transition is allowed only through the exact typed authorization in the current approved ADC and the append-only recovery procedure in REQ-F01-031–037; ordinary phase advancement remains forward-only. Parent #26 and fixed Bootstrap Issues #27–#32 retain their migration treatment and are not rewritten by the normal lifecycle gate. `closed` describes the actual closed GitHub Issue after separately authorized merge; it is not a GitHub `phase:closed` label.
 
 An Issue is the authority for a work item. Repository-changing work begins from an owning Issue, one dedicated feature branch, its frozen work binding, and its current approved ADC. The ADC scopes the work; it does not replace product specifications, design, or independent tests. The approved ADC is the approval authority for the decisions recorded in it. A phase decision comment is only a technical receipt bound to that ADC generation, the actual Issue kind, frozen base/branch/worktree, branch commit, document bytes, and any independent skip reasons.
 
@@ -416,3 +430,38 @@ No child result, failed or unknown spawn/join, same-context reviewer identity, s
 ### 9.14 REQ-F01-018 Exact Phase evidence recovery
 
 For Issue #63 only, the current approved ADC authorizes `PASES_PHASE_REBASE_INTENT_V3` / `PASES_PHASE_REBASE_APPLIED_V3` for exactly two incomplete historical ADC edges: #6271832228 (SHA-256 `221e62a86a5b682237948abec1ee287d24d3808a9ad4fa22960be2c869fdcd05`) → #6468215907 (SHA-256 `6b2ab1c83aead86efe602b700bdfd33807d1675a56089a6a3ffc29175e2b601a`), then #6468215907 → #6469056354 (SHA-256 `f03465611fda6df485b323beab212f132cb9df2145827d46d0f0525445584efe`). Preserve all V1 and V2 records and bytes. The first V3 edge records and, only if the complete current label state is exactly `phase:execution`, performs at most one label update to `phase:requirements`. The second edge adopts existing `phase:requirements`, records identical before/after labels, and performs zero label updates. Each V3 Intent and Applied record binds the exact ADC predecessor/successor IDs and SHA-256 values, immediately preceding Applied ID and payload digest, Issue body digest, full sorted label state, operation/phases, and authenticated executor. Every mutation is followed by exact readback. Exact retries are read-only; an interrupted write may append only its matching Applied record after proving whether the one permitted label update already took effect. Any other ADC edge, phase, label change, history gap, edited/deleted record, duplicate, actor mismatch, or uncertain API result blocks without a repeated label write. After both exact recovery generations, ordinary later ADC generations use V2.
+
+<a id="req-f01-031"></a>
+### 9.15 REQ-F01-031 Generic Phase restart authorization
+
+The current approved ADC may contain one strict marker block `<!-- PASES_PHASE_RESTART_AUTHORIZATION_V1\n<canonical-json>\n-->` outside fenced code. Its JSON has exactly `schema`, `target_issue`, `from_phase`, `to_phase`, `max_applications`, and `reason`; it must be canonical, unique, and have schema `PASES_PHASE_RESTART_AUTHORIZATION_V1`, `target_issue=self`, `from_phase=execution`, `to_phase=requirements`, and integer `max_applications=1`. `reason` is trimmed non-empty text of at most 500 characters with no control characters. The whole current ADC pointer/SHA and marker digest identify the authority. Prose, CLI flags, local files, assistant text, fixed Issue IDs, or SHA allowlists are not authorization.
+
+<a id="req-f01-032"></a>
+### 9.16 REQ-F01-032 Eligible Issue and Binding
+
+The generic restart accepts only an open non-PR ordinary Issue with exactly one kind label in `{kind:single, kind:child}`, exactly one `phase:execution`, and a fully verified current ExecutionBinding. Repository/Issue IDs, current approved ADC pointer/SHA, frozen base, dedicated branch, worktree, initial HEAD, and Binding generation must all match. Read every label and full ADC/Binding/Phase history before a write. Missing, stale, edited, duplicate, mismatched, incomplete, 401/403/404, 429, or 5xx reads block with zero GitHub writes. Issue #63 remains on its existing specialized path.
+
+<a id="req-f01-033"></a>
+### 9.17 REQ-F01-033 Append-only Phase restart records
+
+Append canonical `PASES_PHASE_RESTART_INTENT_V1` and `PASES_PHASE_RESTART_APPLIED_V1` technical records. Bind repository name/ID, Issue number/stable ID, complete sorted labels before/after, approved ADC comment ID/SHA/length, Binding generation ID/digest, predecessor active Phase generation ID/digest (nullable only when none exists), authorization marker digest, transition, reason, authenticated human executor ID, and canonical UTC timestamps. The predecessor is the latest verified Applied or Phase Decision event before Intent. An incomplete restart Intent from any earlier ADC generation blocks new Phase operations. Read each record direct/list/direct and validate Issue/repository/API/HTML URLs, author, created/updated equality, and exact body. Preserve every predecessor ADC, Binding, Phase Decision/receipt, Gate, and Activation record byte-for-byte.
+
+<a id="req-f01-034"></a>
+### 9.18 REQ-F01-034 One-shot label transition and recovery
+
+After complete read-only preflight, append and verify the exact Intent; re-read the approved ADC, Binding, full labels, and predecessor Phase generation; then perform at most one full-label replacement from the exact `phase:execution` snapshot to the exact `phase:requirements` snapshot and read it back. Append Applied only after exact state readback. On timeout or ambiguous response, reconcile through read-only reads; never resend a possibly applied label write. An exact completed replay is read-only `NOOP`. A competing label change, conflicting record, partial state, or uncertain read blocks. GitHub API label replacement does not provide a repository-wide lock; the runtime enforces one P-ASES writer and rechecks immediately before the write.
+
+<a id="req-f01-035"></a>
+### 9.19 REQ-F01-035 Active Phase generation
+
+The exact Applied record starts the new active Phase generation, bound to the current approved ADC and Binding generation. Normal phase evidence must verify that generation before issuing new receipts. After a restart, new phase receipts use `PASES_PHASE_DECISION_V2`, binding the Applied comment ID and exact body SHA-256; V1 serialization and prior V1 bytes remain unchanged. Existing specification/design/ready/execution receipts remain readable historical evidence but cannot satisfy a transition in the restarted generation. Requirements through later Execution evidence are produced again with the normal validators.
+
+<a id="req-f01-036"></a>
+### 9.20 REQ-F01-036 Issue #63 compatibility
+
+Keep Issue #63's specialized phase-rebaseline implementation, ADC/Owner checks, V1/V2/V3 receipt readers, and recovery semantics unchanged. The generic command rejects Issue #63 and never routes it through the ordinary path. Do not change PR #64, Activation Issue #57 V1, or Issue #63 history.
+
+<a id="req-f01-037"></a>
+### 9.21 REQ-F01-037 ADC is the sole Phase restart approval
+
+The exact approved ADC and its single valid typed authorization are the sole approval for this one phase reset. No separate Owner plan, terminal input, approval comment, or chat confirmation is required. Intent/Applied comments are technical records, not approval. This authority cannot be reused for Ruleset, Activation, review, merge, or Issue closure.

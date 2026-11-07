@@ -44,12 +44,15 @@ class VerifiedOrdinaryIssueContext(NamedTuple):
 
 
 SENTINEL = "PASES_PHASE_DECISION_V1"
+SENTINEL_V2 = "PASES_PHASE_DECISION_V2"
+PHASE_DECISION_SENTINELS = (SENTINEL, SENTINEL_V2)
 READY_REFRESH_SCHEMA = "PASES_PHASE_READY_REFRESH_V1"
 READY_REFRESH_START = f"<!-- {READY_REFRESH_SCHEMA}\n"
 FIELDS = {
     "schema", "repository", "issue_number", "issue_kind", "from_phase", "to_phase",
     "adc_comment_id", "adc_sha256", "branch_ref", "commit_sha40", "documents", "skip_reasons",
 }
+V2_FIELDS = FIELDS | {"phase_generation_comment_id", "phase_generation_sha256"}
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 DOCUMENT_ROLES = {"specification", "design", "test-oracle"}
@@ -59,7 +62,9 @@ DOCUMENT_ROOTS = {
     "test-oracle": "docs/testing/",
 }
 BOOTSTRAP_ISSUES = {26, 27, 28, 29, 30, 31, 32}
-IMPACT_LINE = re.compile(r"(?im)^\s*[-*]\s*(Specification|Design|Testing):\s*(.*?)\s*$")
+IMPACT_LINE = re.compile(
+    r"(?im)^\s*[-*]\s*(Specification|Design|Testing|Test Oracles and traceability):\s*(.*?)\s*$"
+)
 CANONICAL_IMPACT_LINE = re.compile(r"(?im)^\s*Canonical:\s*(.*?)\s*$")
 BRACED_DOC_PATH = re.compile(
     r"(docs/(?:specs|design|testing)/[A-Za-z0-9._/-]*?)\{([^{}]+)\}([A-Za-z0-9._/-]*)"
@@ -81,10 +86,17 @@ def _canonical(payload: dict[str, Any]) -> str:
 
 
 def _validate_payload(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != FIELDS:
+    if not isinstance(value, dict) or value.get("schema") not in PHASE_DECISION_SENTINELS:
+        raise PhaseEvidenceError("phase decision has an unsupported schema")
+    expected_fields = V2_FIELDS if value["schema"] == SENTINEL_V2 else FIELDS
+    if set(value) != expected_fields:
         raise PhaseEvidenceError("phase decision has unknown or missing fields")
-    if value["schema"] != SENTINEL:
-        raise PhaseEvidenceError("phase decision schema is unsupported")
+    if value["schema"] == SENTINEL_V2:
+        if (type(value["phase_generation_comment_id"]) is not int
+                or value["phase_generation_comment_id"] < 1
+                or not isinstance(value["phase_generation_sha256"], str)
+                or not SHA256.fullmatch(value["phase_generation_sha256"])):
+            raise PhaseEvidenceError("Phase Decision V2 generation identity is invalid")
     if not isinstance(value["repository"], str) or not re.fullmatch(
             r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", value["repository"]):
         raise PhaseEvidenceError("phase decision repository is invalid")
@@ -159,14 +171,15 @@ class PhaseDecision:
     payload: dict[str, Any]
 
     def body(self) -> str:
-        return SENTINEL + "\n" + _canonical(_validate_payload(self.payload)) + "\n"
+        payload = _validate_payload(self.payload)
+        return payload["schema"] + "\n" + _canonical(payload) + "\n"
 
     @classmethod
     def from_body(cls, body: Any) -> "PhaseDecision":
         if not isinstance(body, str) or not body.endswith("\n"):
             raise PhaseEvidenceError("phase decision comment must end with LF")
         lines = body.splitlines()
-        if len(lines) != 2 or lines[0] != SENTINEL:
+        if len(lines) != 2 or lines[0] not in PHASE_DECISION_SENTINELS:
             raise PhaseEvidenceError("phase decision comment format is invalid")
         try:
             payload = json.loads(lines[1], object_pairs_hook=_unique_pairs)
@@ -270,7 +283,12 @@ def _artifact_impacts(verified: VerifiedADC) -> tuple[dict[str, tuple[str, ...]]
     text = verified.contract.section("artifact_impact")
     lines: dict[str, str] = {}
     for match in IMPACT_LINE.finditer(text):
-        role = {"Specification": "specification", "Design": "design", "Testing": "test-oracle"}[match.group(1)]
+        role = {
+            "Specification": "specification",
+            "Design": "design",
+            "Testing": "test-oracle",
+            "Test Oracles and traceability": "test-oracle",
+        }[match.group(1)]
         if role in lines:
             raise PhaseEvidenceError(f"approved ADC duplicates its {match.group(1)} artifact impact")
         lines[role] = match.group(2).strip()
@@ -648,11 +666,12 @@ def _check_activation(github: GitHub, issue_number: int) -> None:
 def _receipt_subject(payload: Mapping[str, Any]) -> tuple[Any, ...]:
     return tuple(payload[key] for key in (
         "repository", "issue_number", "from_phase", "to_phase", "adc_comment_id", "adc_sha256",
-    ))
+    )) + (payload.get("phase_generation_comment_id"), payload.get("phase_generation_sha256"))
 
 
 def _find_receipt(github: GitHub, issue_number: int, *, source: Phase, target: Phase,
-                  adc_comment_id: int, adc_sha256: str) -> tuple[int, PhaseDecision]:
+                  adc_comment_id: int, adc_sha256: str,
+                  phase_generation: tuple[int, str] | None = None) -> tuple[int, PhaseDecision]:
     try:
         comments = github.issue_comments(issue_number)
     except GitHubError as exc:
@@ -660,10 +679,11 @@ def _find_receipt(github: GitHub, issue_number: int, *, source: Phase, target: P
     matches: list[dict[str, Any]] = []
     for row in comments:
         body = row.get("body") if isinstance(row, dict) else None
-        if isinstance(body, str) and body.startswith(SENTINEL + "\n"):
+        if isinstance(body, str) and body.startswith(tuple(f"{item}\n" for item in PHASE_DECISION_SENTINELS)):
             candidate = PhaseDecision.from_body(body)
             if _receipt_subject(candidate.payload) == (
-                    github.repo, issue_number, source.value, target.value, adc_comment_id, adc_sha256):
+                    github.repo, issue_number, source.value, target.value, adc_comment_id, adc_sha256,
+                    *(phase_generation if phase_generation is not None else (None, None))):
                 matches.append(row)
     if len(matches) != 1:
         reason = "missing" if not matches else "duplicated"
@@ -698,11 +718,13 @@ def _verify_predecessor_receipt(github: GitHub, root: Path, issue_number: int,
                                 declared_paths: Mapping[str, tuple[str, ...]],
                                 adc_reasons: Mapping[str, str],
                                 documents_by_path: Mapping[str, Mapping[str, str]],
-                                previous_sha: str | None) -> tuple[PhaseDecision, str]:
+                                previous_sha: str | None,
+                                phase_generation: tuple[int, str] | None) -> tuple[PhaseDecision, str]:
     source, target = edge
     _comment_id, prior = _find_receipt(
         github, issue_number, source=source, target=target,
         adc_comment_id=verified.pointer.comment_id, adc_sha256=verified.contract.sha256,
+        phase_generation=phase_generation,
     )
     payload = prior.payload
     if (payload["branch_ref"] != branch_ref or payload["issue_kind"] != kind.value
@@ -759,6 +781,12 @@ def _collect_payload(github: GitHub, root: Path, issue_number: int, source: Phas
     if check_source_phase and parse_phase_labels(labels) is not source:
         raise PhaseEvidenceError("Issue phase label differs from the requested evidence source phase")
     declared_paths, adc_reasons = _artifact_impacts(verified)
+    try:
+        from .phase_restart import PhaseRestartError, current_phase_generation
+        active_generation = current_phase_generation(github, root, issue_number, verified)
+    except PhaseRestartError as exc:
+        raise PhaseEvidenceError(f"active Phase generation is invalid: {exc}") from exc
+    generation_subject = (active_generation.comment_id, active_generation.sha256) if active_generation else None
     skip_reasons = _expected_skip_reasons(source, target, skips, adc_reasons)
     if source is Phase.REQUIREMENTS and target is Phase.DESIGN and "specification" not in skip_reasons:
         raise PhaseEvidenceError("requirements to design requires an approved specification skip reason")
@@ -820,12 +848,12 @@ def _collect_payload(github: GitHub, root: Path, issue_number: int, source: Phas
     for edge in _predecessor_chain(source, target, adc_reasons):
         _prior, previous_sha = _verify_predecessor_receipt(
             github, Path(root), issue_number, edge, verified, kind, branch_ref, local_sha,
-            declared_paths, adc_reasons, documents_by_path, previous_sha,
+            declared_paths, adc_reasons, documents_by_path, previous_sha, generation_subject,
         )
 
     documents = sorted(documents_by_path.values(), key=lambda row: row["path"])
     payload = {
-        "schema": SENTINEL,
+        "schema": SENTINEL_V2 if active_generation else SENTINEL,
         "repository": github.repo,
         "issue_number": issue_number,
         "issue_kind": kind.value,
@@ -838,6 +866,9 @@ def _collect_payload(github: GitHub, root: Path, issue_number: int, source: Phas
         "documents": documents,
         "skip_reasons": skip_reasons,
     }
+    if active_generation is not None:
+        payload["phase_generation_comment_id"] = active_generation.comment_id
+        payload["phase_generation_sha256"] = active_generation.sha256
     decision = PhaseDecision(_validate_payload(payload))
     return decision, issue, verified, branch_ref, local_sha
 
@@ -867,10 +898,16 @@ def _ready_labels(issue: Mapping[str, Any], issue_kind: IssueKind) -> list[str]:
 
 def _validate_ready_decision_continuation(root: Path, ready_decision: PhaseDecision,
                                          current_decision: PhaseDecision) -> None:
-    immutable_fields = (
+    immutable_fields = [
         "repository", "issue_number", "issue_kind", "from_phase", "to_phase",
         "adc_comment_id", "adc_sha256", "branch_ref", "documents", "skip_reasons",
-    )
+    ]
+    if (ready_decision.payload.get("schema") == SENTINEL_V2
+            or current_decision.payload.get("schema") == SENTINEL_V2):
+        immutable_fields.extend(("phase_generation_comment_id", "phase_generation_sha256"))
+        if (ready_decision.payload.get("schema") != SENTINEL_V2
+                or current_decision.payload.get("schema") != SENTINEL_V2):
+            raise PhaseEvidenceError("READY generation changed between Phase Decision versions")
     if (any(ready_decision.payload[key] != current_decision.payload[key] for key in immutable_fields)
             or not is_ancestor(root, ready_decision.payload["commit_sha40"],
                                current_decision.payload["commit_sha40"])):
@@ -1233,7 +1270,7 @@ def _readback(github: GitHub, issue_number: int, comment_id: int, expected_body:
             subjects: list[int] = []
             for row in comments:
                 body = row.get("body") if isinstance(row, dict) else None
-                if isinstance(body, str) and body.startswith(SENTINEL + "\n"):
+                if isinstance(body, str) and body.startswith(tuple(f"{item}\n" for item in PHASE_DECISION_SENTINELS)):
                     candidate = PhaseDecision.from_body(body)
                     if _receipt_subject(candidate.payload) == _receipt_subject(parsed.payload):
                         subjects.append(row.get("id"))
@@ -1261,7 +1298,7 @@ def publish_phase_evidence(github: GitHub, root: Path, issue_number: int,
     matching: list[tuple[dict[str, Any], PhaseDecision]] = []
     for row in comments:
         text = row.get("body") if isinstance(row, dict) else None
-        if isinstance(text, str) and text.startswith(SENTINEL + "\n"):
+        if isinstance(text, str) and text.startswith(tuple(f"{item}\n" for item in PHASE_DECISION_SENTINELS)):
             existing = PhaseDecision.from_body(text)
             if _receipt_subject(existing.payload) == _receipt_subject(decision.payload):
                 matching.append((row, existing))
