@@ -1003,6 +1003,24 @@ class PhaseEvidenceCollectionTests(unittest.TestCase):
         })
         self.assertEqual(reasons, {})
 
+    def test_artifact_impact_parser_accepts_test_oracle_heading(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repository, verified = self.make_repository(Path(temporary))
+            original = (
+                b"- Specification: docs/specs/product.md\n"
+                b"- Design: docs/design/system.md\n"
+                b"- Testing: docs/testing/oracle.md, docs/testing/traceability.md"
+            )
+            compatible = original.replace(b"- Testing:", b"- Test Oracles and traceability:")
+            content = verified.contract.content.replace(original, compatible)
+            contract = parse_adc(content, repository, 40)
+            candidate = VerifiedADC(
+                contract, ADCPointer(88, contract.sha256, len(content), "approved"),
+            )
+            paths, reasons = _artifact_impacts(candidate)
+        self.assertEqual(paths["test-oracle"], ("docs/testing/oracle.md", "docs/testing/traceability.md"))
+        self.assertEqual(reasons, {})
+
     def test_phase_evidence_accepts_incremental_spec_design_then_ready_documents(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

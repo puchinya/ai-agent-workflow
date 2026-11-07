@@ -59,7 +59,9 @@ DOCUMENT_ROOTS = {
     "test-oracle": "docs/testing/",
 }
 BOOTSTRAP_ISSUES = {26, 27, 28, 29, 30, 31, 32}
-IMPACT_LINE = re.compile(r"(?im)^\s*[-*]\s*(Specification|Design|Testing):\s*(.*?)\s*$")
+IMPACT_LINE = re.compile(
+    r"(?im)^\s*[-*]\s*(Specification|Design|Testing|Test Oracles and traceability):\s*(.*?)\s*$"
+)
 CANONICAL_IMPACT_LINE = re.compile(r"(?im)^\s*Canonical:\s*(.*?)\s*$")
 BRACED_DOC_PATH = re.compile(
     r"(docs/(?:specs|design|testing)/[A-Za-z0-9._/-]*?)\{([^{}]+)\}([A-Za-z0-9._/-]*)"
@@ -270,7 +272,12 @@ def _artifact_impacts(verified: VerifiedADC) -> tuple[dict[str, tuple[str, ...]]
     text = verified.contract.section("artifact_impact")
     lines: dict[str, str] = {}
     for match in IMPACT_LINE.finditer(text):
-        role = {"Specification": "specification", "Design": "design", "Testing": "test-oracle"}[match.group(1)]
+        role = {
+            "Specification": "specification",
+            "Design": "design",
+            "Testing": "test-oracle",
+            "Test Oracles and traceability": "test-oracle",
+        }[match.group(1)]
         if role in lines:
             raise PhaseEvidenceError(f"approved ADC duplicates its {match.group(1)} artifact impact")
         lines[role] = match.group(2).strip()
