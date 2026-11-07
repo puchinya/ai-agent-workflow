@@ -634,6 +634,26 @@ class PasesCLITests(unittest.TestCase):
             "--phase-evidence-comment-id", "99", "--root", str(ROOT), "--repo", "octo/repo",
         ])
         self.assertEqual((advance.phase_evidence_comment_id, advance.root), (99, ROOT))
+        restart = _parser().parse_args([
+            "issue", "phase-restart", "72", "--repo", "puchinya/ai-agent-workflow", "--root", str(ROOT),
+        ])
+        self.assertEqual((restart.namespace, restart.verb, restart.issue), ("issue", "phase-restart", 72))
+
+    def test_phase_restart_cli_dispatches_to_generic_authorized_route(self):
+        expected = {"status": "APPLIED", "issue": 72, "label_write_count": 1}
+        github = SimpleNamespace(repo="puchinya/ai-agent-workflow")
+        with patch("p_ases.cli._repo_root", return_value=ROOT), \
+                patch("p_ases.cli.discover_repository", return_value=github.repo), \
+                patch("p_ases.cli.GitHub", return_value=github) as make_github, \
+                patch("p_ases.cli.restart_issue_phase", return_value=expected) as restart, \
+                patch("p_ases.cli._json") as emit:
+            status = main([
+                "issue", "phase-restart", "72", "--repo", github.repo, "--root", str(ROOT),
+            ])
+        self.assertEqual(status, 0)
+        restart.assert_called_once_with(github, ROOT.resolve(), 72)
+        make_github.assert_called_once_with(github.repo)
+        emit.assert_called_once_with(expected)
 
     def test_phase_refresh_ready_cli_is_generic_and_reports_current_receipt(self):
         args = _parser().parse_args([

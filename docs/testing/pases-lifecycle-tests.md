@@ -65,6 +65,8 @@
     - [2.27.1 ORA-F01-017 Expected result](#2271-ora-f01-017-expected-result)
   - [2.28 TST-F01-018 Exact Phase evidence recovery](#228-tst-f01-018-exact-phase-evidence-recovery)
     - [2.28.1 ORA-F01-018 Expected result](#2281-ora-f01-018-expected-result)
+  - [2.29 TST-F01-031 Generic ADC-authorized Phase restart](#229-tst-f01-031-generic-adc-authorized-phase-restart)
+    - [2.29.1 ORA-F01-031 Expected result](#2291-ora-f01-031-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -125,6 +127,8 @@
 - [ORA-F01-017](#ora-f01-017) — 2.27.1 ORA-F01-017 Expected result
 - [TST-F01-018](#tst-f01-018) — 2.28 TST-F01-018 Exact Phase evidence recovery
 - [ORA-F01-018](#ora-f01-018) — 2.28.1 ORA-F01-018 Expected result
+- [TST-F01-031](#tst-f01-031) — 2.29 TST-F01-031 Generic ADC-authorized Phase restart
+- [ORA-F01-031](#ora-f01-031) — 2.29.1 ORA-F01-031 Expected result
 <!-- heading-map:end -->
 
 
@@ -466,3 +470,13 @@ The existing adoption remains immutable and is never repeated. The successor ADC
 #### 2.28.1 ORA-F01-018 Expected result
 
 Only the exact two approved edges accept V3. The first records `execution -> requirements` and updates the label at most once; recovery after a lost response reads the full Issue state and never repeats an applied PUT. The second records `requirements -> requirements` with identical complete labels and zero label writes. Both V3 Applied records link to the immediately preceding Applied payload, and a later current ADC generation records with V2. Exact retry is read-only. Any edge/order/history/actor/Issue mismatch, incomplete read, changed label/body state, duplicate, edit, or deletion blocks without broadening recovery or rewriting history. Existing V1/V2 bytes remain unchanged; Phase recovery needs no additional Owner approval.
+
+<a id="tst-f01-031"></a>
+### 2.29 TST-F01-031 Generic ADC-authorized Phase restart
+
+**Setup and action:** Exercise a separate ordinary Phase restart module and CLI with `kind:single` and `kind:child` fixtures. Accept exactly one canonical authorization marker outside fences. Reject missing, duplicate, fenced-only, noncanonical JSON, extra/missing fields, wrong schema/target/phases/count, malformed or overlong reason, stale/draft ADC pointer, wrong Issue/repository, closed Issue/PR, wrong/multiple kind or phase labels, stale/missing/mismatched Binding, incomplete predecessor history, and Issue #63. Assert zero remote writes for every failed preflight. For the valid subject, assert Intent POST/readback, one exact complete-label PUT, Applied POST/readback, full direct/list/direct comparisons, and a new active Phase generation bound to the current ADC and Binding. Inject races after preflight and after Intent, a lost label PUT response before and after server application, an Applied POST loss, duplicate/conflicting records, edited/deleted comments, incomplete pagination, author/URL/time mismatch, and concurrent Intent publication; verify read-only recovery, an incomplete Intent from a superseded ADC blocking later generations, and never more than one confirmed label write. Preserve prior ADC, Binding, Phase, Gate, and Activation snapshots byte-for-byte. Assert V1 phase-decision bytes remain unchanged and every post-restart receipt uses V2 with the current Applied comment ID/body digest; old V1 decisions cannot satisfy the new generation. Issue #63 remains on its existing implementation.
+
+<a id="ora-f01-031"></a>
+#### 2.29.1 ORA-F01-031 Expected result
+
+Only a current approved ADC with one exact canonical typed authorization permits an eligible ordinary Issue's `execution -> requirements` restart. Valid execution appends one Intent/Applied pair, updates the complete label set at most once, and establishes the current ADC/Binding/Applied phase generation. Exact completed replay is read-only. Invalid, stale, duplicated, edited, raced, incomplete, or uncertain evidence blocks; no blind label retry occurs. A later Phase Decision supersedes an older Applied record as the next restart's immediate predecessor; an incomplete Intent from any ADC generation blocks further Phase work. Predecessor bytes remain identical, old receipts cannot pass current-generation checks, and Issue #63 behavior is unchanged.
