@@ -15,12 +15,14 @@ sys.path.insert(0, str(ROOT / "runtime"))
 from p_ases.adc import ADC, ADCPointer, VerifiedADC
 from p_ases.execution import ExecutionBinding, binding_digest, write_binding
 from p_ases.github import GitHubError
+from p_ases.phase_evidence import PhaseDecision, PhaseEvidenceError, _find_receipt
 from p_ases.phase_restart import (
     APPLIED_SCHEMA,
     AUTH_SCHEMA,
     INTENT_SCHEMA,
     _History,
     _active_generation_before,
+    _read_history,
     PhaseRestartError,
     RestartAuthorization,
     RestartRecord,
@@ -29,6 +31,7 @@ from p_ases.phase_restart import (
     parse_authorization,
     restart_issue_phase,
 )
+from p_ases.phases import Phase
 from p_ases.work import execution_binding_path
 
 
@@ -195,6 +198,34 @@ class PhaseRestartTests(unittest.TestCase):
                 patch("p_ases.phase_restart.verify_adc_generation", return_value=self.verified):
             return restart_issue_phase(self.github, self.root, self.issue_number)
 
+    def phase_decision(self, *, v2_generation: tuple[int, str] | None = None,
+                       from_phase: str = "requirements", to_phase: str = "specification",
+                       adc_sha256: str | None = None) -> PhaseDecision:
+        documents = ([{"role": "test-oracle", "path": "docs/testing/traceability.md", "sha256": "f" * 64}]
+                     if to_phase == "ready" else
+                     [{"role": "design", "path": "docs/design/workflow.md", "sha256": "f" * 64}]
+                     if to_phase == "design" else
+                     [{"role": "specification", "path": "docs/specs/workflow.md", "sha256": "f" * 64}])
+        skips = ({"specification": "unchanged", "design": "unchanged"}
+                 if to_phase == "ready" and from_phase == "requirements" else {})
+        payload = {
+            "schema": "PASES_PHASE_DECISION_V2" if v2_generation else "PASES_PHASE_DECISION_V1",
+            "repository": self.github.repo,
+            "issue_number": self.issue_number,
+            "issue_kind": "single",
+            "from_phase": from_phase,
+            "to_phase": to_phase,
+            "adc_comment_id": self.verified.pointer.comment_id,
+            "adc_sha256": adc_sha256 or self.verified.contract.sha256,
+            "branch_ref": self.binding.branch_ref,
+            "commit_sha40": self.head,
+            "documents": documents,
+            "skip_reasons": skips,
+        }
+        if v2_generation:
+            payload["phase_generation_comment_id"], payload["phase_generation_sha256"] = v2_generation
+        return PhaseDecision(payload)
+
     def test_authorization_accepts_one_canonical_unfenced_marker(self):
         parsed = parse_authorization(self.adc_content, self.issue_number)
         self.assertIsInstance(parsed, RestartAuthorization)
@@ -262,6 +293,126 @@ class PhaseRestartTests(unittest.TestCase):
         self.assertEqual(generation.comment_id, result["applied_comment_id"])
         self.assertEqual(generation.sha256, result["phase_generation_sha256"])
 
+    def test_valid_restart_accepts_kind_child(self):
+        self.github.issue_row["labels"] = [
+            {"name": "enhancement"}, {"name": "kind:child"}, {"name": "phase:execution"},
+        ]
+        result = self.run_restart()
+        self.assertEqual(result["status"], "APPLIED")
+        self.assertEqual(self.github.label_writes, 1)
+
+    def test_real_phase_decision_v1_is_read_direct_list_direct_and_binds_intent_predecessor(self):
+        decision = self.phase_decision()
+        self.assertEqual(decision.body().splitlines()[0], "PASES_PHASE_DECISION_V1")
+        created = self.github.create_issue_comment(self.issue_number, decision.body())
+        history = _read_history(self.github, self.issue_number)
+        self.assertEqual(len(history.decisions), 1)
+        self.assertEqual(history.decisions[0][0], created["id"])
+        self.assertEqual(history.decisions[0][1], decision)
+
+        result = self.run_restart()
+        intent = self.github.comments[1]
+        payload = json.loads(intent["body"].splitlines()[1])
+        self.assertEqual(payload["predecessor_phase_generation_comment_id"], created["id"])
+        self.assertEqual(payload["predecessor_phase_generation_sha256"],
+                         hashlib.sha256(decision.body().encode()).hexdigest())
+        self.assertEqual(result["status"], "APPLIED")
+
+    def test_real_v2_decision_chain_allows_only_its_exact_advanced_label_state(self):
+        applied = self.run_restart()
+        applied_record = self.github.comments[1]
+        generation = (applied["applied_comment_id"], hashlib.sha256(applied_record["body"].encode()).hexdigest())
+        decision = self.phase_decision(v2_generation=generation)
+        self.assertEqual(decision.body().splitlines()[0], "PASES_PHASE_DECISION_V2")
+        self.github.create_issue_comment(self.issue_number, decision.body())
+        self.github.issue_row["labels"] = [
+            {"name": "enhancement"}, {"name": "kind:single"}, {"name": "phase:specification"},
+        ]
+
+        replay = self.run_restart()
+        self.assertEqual(replay["status"], "NOOP")
+        self.assertEqual(replay["label_write_count"], 0)
+        self.assertEqual(self.github.label_writes, 1)
+
+    def test_phase_receipt_reader_requires_the_exact_v2_generation(self):
+        generation = (88, "a" * 64)
+        decision = self.phase_decision(v2_generation=generation)
+        created = self.github.create_issue_comment(self.issue_number, decision.body())
+        comment_id, receipt = _find_receipt(
+            self.github, self.issue_number, source=Phase.REQUIREMENTS, target=Phase.SPECIFICATION,
+            adc_comment_id=self.verified.pointer.comment_id, adc_sha256=self.verified.contract.sha256,
+            phase_generation=generation,
+        )
+        self.assertEqual(comment_id, created["id"])
+        self.assertEqual(receipt, decision)
+        with self.assertRaisesRegex(PhaseEvidenceError, "missing"):
+            _find_receipt(
+                self.github, self.issue_number, source=Phase.REQUIREMENTS, target=Phase.SPECIFICATION,
+                adc_comment_id=self.verified.pointer.comment_id, adc_sha256=self.verified.contract.sha256,
+            )
+
+    def test_execution_label_requires_same_generation_ready_chain(self):
+        applied = self.run_restart()
+        applied_record = self.github.comments[1]
+        generation = (applied["applied_comment_id"], hashlib.sha256(applied_record["body"].encode()).hexdigest())
+        decision = self.phase_decision(v2_generation=generation, to_phase="ready")
+        self.github.create_issue_comment(self.issue_number, decision.body())
+        self.github.issue_row["labels"] = [
+            {"name": "enhancement"}, {"name": "kind:single"}, {"name": "phase:execution"},
+        ]
+        with patch("p_ases.phase_restart._verify_ready_before_execution") as verify_ready:
+            replay = self.run_restart()
+        self.assertEqual(replay["status"], "NOOP")
+        self.assertEqual(self.github.label_writes, 1)
+        verify_ready.assert_called_once()
+
+    def test_stale_adc_decision_cannot_explain_a_live_advanced_phase(self):
+        applied = self.run_restart()
+        applied_record = self.github.comments[1]
+        generation = (applied["applied_comment_id"], hashlib.sha256(applied_record["body"].encode()).hexdigest())
+        decision = self.phase_decision(v2_generation=generation, adc_sha256="0" * 64)
+        self.github.create_issue_comment(self.issue_number, decision.body())
+        self.github.issue_row["labels"] = [
+            {"name": "enhancement"}, {"name": "kind:single"}, {"name": "phase:specification"},
+        ]
+        with self.assertRaisesRegex(PhaseRestartError, "does not match the current Applied"):
+            self.run_restart()
+        self.assertEqual(self.github.label_writes, 1)
+
+    def test_stale_current_adc_pointer_cannot_use_an_existing_binding(self):
+        stale = VerifiedADC(
+            self.verified.contract,
+            ADCPointer(51, self.verified.contract.sha256, self.verified.contract.byte_length, "approved"),
+        )
+        with patch("p_ases.phase_restart.verify_adc", return_value=stale):
+            with self.assertRaisesRegex(PhaseRestartError, "Binding do not match"):
+                restart_issue_phase(self.github, self.root, self.issue_number)
+        self.assertEqual(self.github.label_writes, 0)
+        self.assertEqual(self.github.comments, [])
+
+    def test_orphan_duplicate_and_edited_phase_decisions_block_before_restart_writes(self):
+        orphan = self.phase_decision(v2_generation=(88, "a" * 64))
+        self.github.create_issue_comment(self.issue_number, orphan.body())
+        with self.assertRaisesRegex(PhaseRestartError, "does not reference one prior Applied"):
+            self.run_restart()
+        self.assertEqual(self.github.label_writes, 0)
+        self.github.comments.clear()
+
+        decision = self.phase_decision()
+        self.github.create_issue_comment(self.issue_number, decision.body())
+        self.github.create_issue_comment(self.issue_number, decision.body())
+        with self.assertRaisesRegex(PhaseRestartError, "duplicate transition subject"):
+            self.run_restart()
+        self.assertEqual(self.github.label_writes, 0)
+        self.github.comments.clear()
+
+        edited = self.github.create_issue_comment(self.issue_number, decision.body())
+        row = next(row for row in self.github.comments if row["id"] == edited["id"])
+        row["updated_at"] = "2026-11-07T00:00:59Z"
+        with self.assertRaisesRegex(PhaseRestartError, "immutable timestamps"):
+            self.run_restart()
+        self.assertEqual(self.github.label_writes, 0)
+
     def test_exact_replay_is_noop_and_does_not_repeat_label_write(self):
         self.run_restart()
         replay = self.run_restart()
@@ -269,6 +420,22 @@ class PhaseRestartTests(unittest.TestCase):
         self.assertEqual(replay["label_write_count"], 0)
         self.assertEqual(self.github.label_writes, 1)
         self.assertEqual(len(self.github.comments), 2)
+
+    def test_applied_replay_blocks_phase_rollback_and_unrelated_label_edits(self):
+        self.run_restart()
+        self.github.issue_row["labels"] = [
+            {"name": "enhancement"}, {"name": "kind:single"}, {"name": "phase:execution"},
+        ]
+        with self.assertRaisesRegex(PhaseRestartError, "conflicts with the live complete label set"):
+            self.run_restart()
+        self.assertEqual(self.github.label_writes, 1)
+
+        self.github.issue_row["labels"] = [
+            {"name": "unrelated"}, {"name": "kind:single"}, {"name": "phase:requirements"},
+        ]
+        with self.assertRaisesRegex(PhaseRestartError, "conflicts with the live complete label set"):
+            self.run_restart()
+        self.assertEqual(self.github.label_writes, 1)
 
     def test_competing_intent_publication_blocks_before_label_write(self):
         self.github.duplicate_next_intent = True
@@ -283,6 +450,10 @@ class PhaseRestartTests(unittest.TestCase):
         self.assertEqual(result["status"], "APPLIED")
         self.assertEqual(self.github.label_writes, 1)
         self.assertEqual(len(self.github.comments), 2)
+        replay = self.run_restart()
+        self.assertEqual(replay["status"], "NOOP")
+        self.assertEqual(replay["label_write_count"], 0)
+        self.assertEqual(self.github.label_writes, 1)
 
     def test_lost_label_response_before_apply_is_never_retried(self):
         self.github.fail_label_before_apply = True

@@ -696,6 +696,13 @@ def _find_receipt(github: GitHub, issue_number: int, *, source: Phase, target: P
     return comment_id, parsed
 
 
+def _decision_phase_generation(decision: PhaseDecision) -> tuple[int, str] | None:
+    if decision.payload["schema"] != SENTINEL_V2:
+        return None
+    return (decision.payload["phase_generation_comment_id"],
+            decision.payload["phase_generation_sha256"])
+
+
 def _predecessor_chain(source: Phase, target: Phase, adc_reasons: Mapping[str, str]
                        ) -> tuple[tuple[Phase, Phase], ...]:
     if source is Phase.SPECIFICATION and target is Phase.DESIGN:
@@ -1099,6 +1106,7 @@ def verify_ready_preparation(github: GitHub, root: Path, issue_number: int,
     decision_comment_id, stored = _find_receipt(
         github, issue_number, source=source, target=Phase.READY,
         adc_comment_id=verified.pointer.comment_id, adc_sha256=verified.contract.sha256,
+        phase_generation=_decision_phase_generation(decision),
     )
     _validate_ready_decision_continuation(root, stored, decision)
     history = _read_ready_refresh_history(github, issue_number)
@@ -1125,6 +1133,7 @@ def refresh_ready_phase_evidence(github: GitHub, root: Path, issue_number: int
     decision_comment_id, ready_decision = _find_receipt(
         github, issue_number, source=source, target=Phase.READY,
         adc_comment_id=verified.pointer.comment_id, adc_sha256=verified.contract.sha256,
+        phase_generation=_decision_phase_generation(decision),
     )
     _validate_ready_decision_continuation(root, ready_decision, decision)
     history = _read_ready_refresh_history(github, issue_number)

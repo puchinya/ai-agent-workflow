@@ -16,18 +16,22 @@ from .execution import ExecutionBinding, ExecutionError, binding_digest, read_bi
 from .github import GitHub, GitHubError
 from .git import GitError, current_branch, head_sha40, is_ancestor
 from .phases import IssueKind, Phase, PhaseError, parse_phase_labels
+from .phase_evidence import (
+    PHASE_DECISION_SENTINELS,
+    PhaseDecision,
+    SENTINEL as DECISION_V1_SCHEMA,
+    SENTINEL_V2 as DECISION_V2_SCHEMA,
+)
 from .work import execution_binding_path
 
 
 AUTH_SCHEMA = "PASES_PHASE_RESTART_AUTHORIZATION_V1"
 INTENT_SCHEMA = "PASES_PHASE_RESTART_INTENT_V1"
 APPLIED_SCHEMA = "PASES_PHASE_RESTART_APPLIED_V1"
-DECISION_V1_SCHEMA = "PASES_PHASE_DECISION_V1"
-DECISION_V2_SCHEMA = "PASES_PHASE_DECISION_V2"
 AUTH_OPEN = f"<!-- {AUTH_SCHEMA}"
 INTENT_OPEN = f"<!-- {INTENT_SCHEMA}\n"
 APPLIED_OPEN = f"<!-- {APPLIED_SCHEMA}\n"
-DECISION_PREFIXES = (f"<!-- {DECISION_V1_SCHEMA}\n", f"<!-- {DECISION_V2_SCHEMA}\n")
+DECISION_PREFIXES = tuple(f"{schema}\n" for schema in PHASE_DECISION_SENTINELS)
 RESTART_PREFIX = "<!-- PASES_PHASE_RESTART_"
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 SHA40 = re.compile(r"[0-9a-f]{40}\Z")
@@ -365,7 +369,6 @@ def _read_history(github: GitHub, issue_number: int) -> _History:
                 raise PhaseRestartError("unknown or malformed Phase restart marker")
             restarts.append(_parse_record(before[comment_id], schema))
         else:
-            from .phase_evidence import PhaseDecision
             decision = PhaseDecision.from_body(body)
             decisions.append((comment_id, decision, body, before[comment_id]["user"]["id"]))
     return _History(tuple(restarts), tuple(decisions))
@@ -702,7 +705,7 @@ def current_phase_generation(github: GitHub, root: Path, issue_number: int,
     markers = [row for row in comments if isinstance(row, dict) and isinstance(row.get("body"), str)
                and row["body"].startswith(RESTART_PREFIX)]
     v2_decisions = [row for row in comments if isinstance(row, dict) and isinstance(row.get("body"), str)
-                    and row["body"].startswith(f"<!-- {DECISION_V2_SCHEMA}\n")]
+                    and row["body"].startswith(f"{DECISION_V2_SCHEMA}\n")]
     if not markers:
         if v2_decisions:
             raise PhaseRestartError("Phase Decision V2 exists without its Applied generation history")
@@ -749,6 +752,79 @@ def _verify_generation_history(github: GitHub, subject: _LiveSubject, history: _
     return rows
 
 
+def _labels_for_phase(labels: list[str] | tuple[str, ...], phase: Phase) -> tuple[str, ...]:
+    return tuple(sorted([label for label in labels if not label.startswith("phase:")]
+                        + [f"phase:{phase.value}"]))
+
+
+def _verified_phase_after_restart(subject: _LiveSubject, applied: RestartRecord,
+                                  history: _History, root: Path) -> Phase:
+    """Validate the same-generation Phase Decision chain after an Applied record."""
+    phase = Phase.REQUIREMENTS
+    previous_commit: str | None = None
+    allowed_edges = {
+        (Phase.REQUIREMENTS, Phase.SPECIFICATION),
+        (Phase.REQUIREMENTS, Phase.DESIGN),
+        (Phase.REQUIREMENTS, Phase.READY),
+        (Phase.SPECIFICATION, Phase.DESIGN),
+        (Phase.SPECIFICATION, Phase.READY),
+        (Phase.DESIGN, Phase.READY),
+    }
+    later = [row for row in history.decisions if row[0] > applied.comment_id]
+    for comment_id, decision, _body, _actor_id in later:
+        payload = decision.payload
+        if payload.get("schema") != DECISION_V2_SCHEMA:
+            raise PhaseRestartError("Phase Decision after Applied is not generation-bound V2")
+        if (payload.get("phase_generation_comment_id") != applied.comment_id
+                or payload.get("phase_generation_sha256") != applied.body_sha256
+                or payload.get("adc_comment_id") != applied.payload["adc_comment_id"]
+                or payload.get("adc_sha256") != applied.payload["adc_sha256"]
+                or payload.get("repository", "").casefold() != subject.repository.casefold()
+                or payload.get("issue_number") != subject.issue_number
+                or payload.get("issue_kind") != next(
+                    label.removeprefix("kind:") for label in subject.labels if label.startswith("kind:")
+                )
+                or payload.get("branch_ref") != subject.branch_ref):
+            raise PhaseRestartError("Phase Decision does not match the current Applied ADC/Binding generation")
+        source = Phase(payload["from_phase"])
+        target = Phase(payload["to_phase"])
+        if source is not phase or (source, target) not in allowed_edges:
+            raise PhaseRestartError("same-generation Phase Decision chain is discontinuous or not forward-only")
+        commit = payload["commit_sha40"]
+        try:
+            if (not is_ancestor(root, commit, subject.head_sha40)
+                    or (previous_commit is not None and not is_ancestor(root, previous_commit, commit))):
+                raise PhaseRestartError("Phase Decision commit is stale or out of chain order")
+        except GitError as exc:
+            raise PhaseRestartError(f"Phase Decision commit ancestry cannot be verified: {exc}") from exc
+        phase = target
+        previous_commit = commit
+    return phase
+
+
+def _verify_ready_before_execution(github: GitHub, root: Path, subject: _LiveSubject,
+                                   applied: RestartRecord) -> None:
+    """Revalidate the same-generation READY proof for a later execution label."""
+    try:
+        from .phase_evidence import (
+            PhaseEvidenceError, VerifiedOrdinaryIssueContext, verify_ready_preparation,
+        )
+
+        labels = list(applied.payload["labels_after"])
+        ready_labels = list(_labels_for_phase(labels, Phase.READY))
+        ready_issue = dict(subject.issue)
+        ready_issue["labels"] = [{"name": label} for label in ready_labels]
+        kind_label = next(label for label in ready_labels if label.startswith("kind:"))
+        kind = IssueKind(kind_label.removeprefix("kind:"))
+        context = VerifiedOrdinaryIssueContext(
+            ready_issue, subject.verified_adc, kind, subject.branch_ref,
+            subject.head_sha40, True,
+        )
+        verify_ready_preparation(github, root, subject.issue_number, kind, verified_context=context)
+    except PhaseEvidenceError as exc:
+        raise PhaseRestartError(f"same-generation READY proof is not valid for execution: {exc}") from exc
+
+
 def restart_issue_phase(github: GitHub, root: Path, issue_number: int) -> dict[str, Any]:
     """Apply or read-only recover one ADC-authorized ordinary Issue phase restart."""
     subject = _live_subject(github, root, issue_number, require_execution_phase=False)
@@ -771,6 +847,23 @@ def restart_issue_phase(github: GitHub, root: Path, issue_number: int) -> dict[s
         if not intents:
             raise PhaseRestartError("current ADC Applied record has no Intent")
         record = applied[0]
+        forward_phase = _verified_phase_after_restart(subject, record, history, root)
+        exact_after = tuple(record.payload["labels_after"])
+        live_phase = parse_phase_labels(subject.labels)
+        exact_forward_labels = _labels_for_phase(exact_after, forward_phase)
+        execution_labels = _labels_for_phase(exact_after, Phase.EXECUTION)
+        if subject.labels == exact_after:
+            pass
+        elif subject.labels == exact_forward_labels and live_phase is forward_phase:
+            pass
+        elif (forward_phase is Phase.READY and live_phase is Phase.EXECUTION
+              and subject.labels == execution_labels):
+            _verify_ready_before_execution(github, root, subject, record)
+        else:
+            raise PhaseRestartError(
+                "Applied restart conflicts with the live complete label set; "
+                "no verified same-generation Phase chain explains the current phase"
+            )
         return {"status": "NOOP", "issue": issue_number,
                 "intent_comment_id": intents[0].comment_id, "applied_comment_id": record.comment_id,
                 "phase_generation_sha256": record.body_sha256, "label_write_count": 0}
