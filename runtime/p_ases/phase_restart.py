@@ -17,10 +17,10 @@ from .github import GitHub, GitHubError
 from .git import GitError, current_branch, head_sha40, is_ancestor
 from .phases import IssueKind, Phase, PhaseError, parse_phase_labels
 from .phase_evidence import (
-    PHASE_DECISION_SENTINELS,
     PhaseDecision,
-    SENTINEL as DECISION_V1_SCHEMA,
+    PhaseEvidenceError,
     SENTINEL_V2 as DECISION_V2_SCHEMA,
+    verify_historical_phase_decision,
 )
 from .work import execution_binding_path
 
@@ -31,7 +31,7 @@ APPLIED_SCHEMA = "PASES_PHASE_RESTART_APPLIED_V1"
 AUTH_OPEN = f"<!-- {AUTH_SCHEMA}"
 INTENT_OPEN = f"<!-- {INTENT_SCHEMA}\n"
 APPLIED_OPEN = f"<!-- {APPLIED_SCHEMA}\n"
-DECISION_PREFIXES = tuple(f"{schema}\n" for schema in PHASE_DECISION_SENTINELS)
+DECISION_MARKER_FAMILY = "PASES_PHASE_DECISION_V"
 RESTART_PREFIX = "<!-- PASES_PHASE_RESTART_"
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 SHA40 = re.compile(r"[0-9a-f]{40}\Z")
@@ -315,6 +315,12 @@ def _row_fingerprint(row: Any, repository: str, issue_number: int) -> tuple[Any,
     return (row["id"], body, created, updated, user["id"], user["login"].casefold(), user["type"], *actual)
 
 
+def _is_phase_decision_candidate(body: str) -> bool:
+    """Treat malformed edits of a reserved decision header as history, then fail closed."""
+    first_line = body.split("\n", 1)[0].lstrip()
+    return first_line.startswith(DECISION_MARKER_FAMILY)
+
+
 @dataclass(frozen=True)
 class _History:
     restarts: tuple[RestartRecord, ...]
@@ -327,8 +333,8 @@ def _read_history(github: GitHub, issue_number: int) -> _History:
         first = github.issue_comments(issue_number)
         first_rows = [row for row in first if isinstance(row, dict)
                       and isinstance(row.get("body"), str)
-                      and (row["body"].startswith(RESTART_PREFIX) or any(
-                          row["body"].startswith(prefix) for prefix in DECISION_PREFIXES))]
+                      and (row["body"].startswith(RESTART_PREFIX)
+                           or _is_phase_decision_candidate(row["body"]))]
         ids = [row.get("id") for row in first_rows]
         if (any(type(value) is not int or value < 1 for value in ids)
                 or ids != sorted(ids) or len(ids) != len(set(ids))):
@@ -343,8 +349,8 @@ def _read_history(github: GitHub, issue_number: int) -> _History:
         second = github.issue_comments(issue_number)
         second_rows = [row for row in second if isinstance(row, dict)
                        and isinstance(row.get("body"), str)
-                       and (row["body"].startswith(RESTART_PREFIX) or any(
-                           row["body"].startswith(prefix) for prefix in DECISION_PREFIXES))]
+                       and (row["body"].startswith(RESTART_PREFIX)
+                            or _is_phase_decision_candidate(row["body"]))]
         second_ids = [row.get("id") for row in second_rows]
         if second_ids != ids:
             raise PhaseRestartError("Phase history changed during direct/list/direct readback")
@@ -354,6 +360,13 @@ def _read_history(github: GitHub, issue_number: int) -> _History:
 
     restarts: list[RestartRecord] = []
     decisions: list[tuple[int, Any, str, int]] = []
+    needs_authenticated_decision_author = any(
+        _is_phase_decision_candidate(row["body"]) for row in first_rows
+    )
+    try:
+        authenticated = github.authenticated_user() if needs_authenticated_decision_author else None
+    except GitHubError as exc:
+        raise PhaseRestartError(f"Phase decision author identity is unavailable: {exc}") from exc
     for listed, second_row in zip(first_rows, second_rows, strict=True):
         comment_id = listed["id"]
         triples = tuple(_row_fingerprint(row, github.repo, issue_number)
@@ -369,7 +382,18 @@ def _read_history(github: GitHub, issue_number: int) -> _History:
                 raise PhaseRestartError("unknown or malformed Phase restart marker")
             restarts.append(_parse_record(before[comment_id], schema))
         else:
-            decision = PhaseDecision.from_body(body)
+            try:
+                decision = PhaseDecision.from_body(body)
+            except PhaseEvidenceError as exc:
+                raise PhaseRestartError(f"Phase Decision reserved marker is malformed: {exc}") from exc
+            author = before[comment_id].get("user")
+            if (not isinstance(authenticated, dict) or not isinstance(author, dict)
+                    or author.get("id") != authenticated.get("id")
+                    or not isinstance(author.get("login"), str)
+                    or not isinstance(authenticated.get("login"), str)
+                    or author["login"].casefold() != authenticated["login"].casefold()
+                    or author.get("type") != "User" or authenticated.get("type") != "User"):
+                raise PhaseRestartError("Phase Decision author is not the authenticated GitHub User")
             decisions.append((comment_id, decision, body, before[comment_id]["user"]["id"]))
     return _History(tuple(restarts), tuple(decisions))
 
@@ -757,7 +781,7 @@ def _labels_for_phase(labels: list[str] | tuple[str, ...], phase: Phase) -> tupl
                         + [f"phase:{phase.value}"]))
 
 
-def _verified_phase_after_restart(subject: _LiveSubject, applied: RestartRecord,
+def _verified_phase_after_restart(github: GitHub, subject: _LiveSubject, applied: RestartRecord,
                                   history: _History, root: Path) -> Phase:
     """Validate the same-generation Phase Decision chain after an Applied record."""
     phase = Phase.REQUIREMENTS
@@ -797,6 +821,16 @@ def _verified_phase_after_restart(subject: _LiveSubject, applied: RestartRecord,
                 raise PhaseRestartError("Phase Decision commit is stale or out of chain order")
         except GitError as exc:
             raise PhaseRestartError(f"Phase Decision commit ancestry cannot be verified: {exc}") from exc
+        try:
+            kind_label = next(label for label in subject.labels if label.startswith("kind:"))
+            verify_historical_phase_decision(
+                github, root, subject.issue_number, decision,
+                verified_adc=subject.verified_adc, issue_kind=IssueKind(kind_label.removeprefix("kind:")),
+                branch_ref=subject.branch_ref, current_sha40=subject.head_sha40,
+                phase_generation=(applied.comment_id, applied.body_sha256),
+            )
+        except PhaseEvidenceError as exc:
+            raise PhaseRestartError(f"same-generation Phase Decision is not valid: {exc}") from exc
         phase = target
         previous_commit = commit
     return phase
@@ -847,7 +881,7 @@ def restart_issue_phase(github: GitHub, root: Path, issue_number: int) -> dict[s
         if not intents:
             raise PhaseRestartError("current ADC Applied record has no Intent")
         record = applied[0]
-        forward_phase = _verified_phase_after_restart(subject, record, history, root)
+        forward_phase = _verified_phase_after_restart(github, subject, record, history, root)
         exact_after = tuple(record.payload["labels_after"])
         live_phase = parse_phase_labels(subject.labels)
         exact_forward_labels = _labels_for_phase(exact_after, forward_phase)

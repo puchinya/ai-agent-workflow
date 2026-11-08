@@ -6,6 +6,7 @@ import hashlib
 import json
 import posixpath
 import re
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -878,6 +879,127 @@ def _collect_payload(github: GitHub, root: Path, issue_number: int, source: Phas
         payload["phase_generation_sha256"] = active_generation.sha256
     decision = PhaseDecision(_validate_payload(payload))
     return decision, issue, verified, branch_ref, local_sha
+
+
+def verify_historical_phase_decision(github: GitHub, root: Path, issue_number: int,
+                                     decision: PhaseDecision, *, verified_adc: VerifiedADC,
+                                     issue_kind: IssueKind, branch_ref: str, current_sha40: str,
+                                     phase_generation: tuple[int, str]) -> None:
+    """Validate an immutable historical receipt without relying on the Issue's current phase label.
+
+    This deliberately rechecks the same ADC artifact allowlist, skip rules, committed blobs,
+    and READY traceability accepted by _collect_payload. The historical commit is used for all
+    blob reads so a later working-tree state cannot manufacture or invalidate past evidence.
+    """
+    payload = decision.payload
+    source, target = Phase(payload["from_phase"]), Phase(payload["to_phase"])
+    if (payload.get("schema") != SENTINEL_V2
+            or payload.get("phase_generation_comment_id") != phase_generation[0]
+            or payload.get("phase_generation_sha256") != phase_generation[1]
+            or payload.get("repository", "").casefold() != github.repo.casefold()
+            or payload.get("issue_number") != issue_number
+            or payload.get("issue_kind") != issue_kind.value
+            or payload.get("adc_comment_id") != verified_adc.pointer.comment_id
+            or payload.get("adc_sha256") != verified_adc.contract.sha256
+            or payload.get("branch_ref") != branch_ref):
+        raise PhaseEvidenceError("historical Phase Decision is outside the current ADC/Binding/Applied generation")
+    try:
+        if not is_ancestor(root, payload["commit_sha40"], current_sha40):
+            raise PhaseEvidenceError("historical Phase Decision commit is not an ancestor of the current branch")
+    except GitError as exc:
+        raise PhaseEvidenceError(f"historical Phase Decision commit ancestry cannot be verified: {exc}") from exc
+
+    declared_paths, adc_reasons = _artifact_impacts(verified_adc)
+    expected_skips = _expected_skip_reasons(source, target, payload["skip_reasons"], adc_reasons)
+    if payload["skip_reasons"] != expected_skips:
+        raise PhaseEvidenceError("historical Phase Decision skip reasons differ from the approved ADC")
+
+    required_roles: set[str] = set()
+    if target is Phase.SPECIFICATION:
+        required_roles.add("specification")
+    elif target is Phase.DESIGN:
+        required_roles.add("design")
+        if source is Phase.SPECIFICATION:
+            required_roles.add("specification")
+    elif target is Phase.READY:
+        required_roles.add("test-oracle")
+        if source is Phase.SPECIFICATION:
+            required_roles.add("specification")
+        elif source is Phase.DESIGN:
+            required_roles.add("design")
+            if declared_paths.get("specification"):
+                required_roles.add("specification")
+
+    roles = {role: declared_paths[role] for role in required_roles if declared_paths.get(role)}
+    for role in required_roles:
+        if not roles.get(role):
+            raise PhaseEvidenceError(f"approved ADC has no {role} artifacts for historical {target.value} evidence")
+    if target is Phase.READY and "docs/testing/traceability.md" not in roles.get("test-oracle", ()):
+        raise PhaseEvidenceError("historical READY evidence lacks the canonical ADC-bound traceability matrix")
+
+    commit_sha = payload["commit_sha40"]
+    documents_by_path: dict[str, dict[str, str]] = {}
+    contents: dict[str, bytes] = {}
+    try:
+        for role, paths in roles.items():
+            for path in paths:
+                content = github.regular_content_at_ref(path, commit_sha)
+                contents[path] = content
+                documents_by_path[path] = {"role": role, "path": path,
+                                           "sha256": hashlib.sha256(content).hexdigest()}
+    except GitHubError as exc:
+        raise PhaseEvidenceError(f"historical Phase Decision artifact is unavailable: {exc}") from exc
+
+    if target is Phase.READY:
+        matrix = contents["docs/testing/traceability.md"]
+        with tempfile.TemporaryDirectory(prefix="pases-historical-phase-") as temporary:
+            historical_root = Path(temporary)
+            for path, content in contents.items():
+                destination = historical_root / path
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(content)
+            try:
+                matrix_text = matrix.decode("utf-8", errors="strict")
+            except UnicodeDecodeError as exc:
+                raise PhaseEvidenceError("historical READY traceability matrix is not valid UTF-8") from exc
+            for line in matrix_text.splitlines():
+                if not line.lstrip().startswith("|"):
+                    continue
+                for _label, destination in re.findall(r"\[([^]]+)\]\(([^)]+)\)", line):
+                    if not destination.startswith("../../tests/") or any(
+                            char in destination for char in "\\\x00\r\n?#:%"):
+                        continue
+                    normalized = posixpath.normpath(posixpath.join("docs/testing", destination))
+                    if not normalized.startswith("tests/") or normalized.startswith("../"):
+                        continue
+                    local_test = historical_root / normalized
+                    if local_test.exists():
+                        continue
+                    try:
+                        test_content = github.regular_content_at_ref(normalized, commit_sha)
+                    except GitHubError as exc:
+                        raise PhaseEvidenceError(
+                            f"historical READY executable test is unavailable: {normalized}: {exc}"
+                        ) from exc
+                    local_test.parent.mkdir(parents=True, exist_ok=True)
+                    local_test.write_bytes(test_content)
+            try:
+                trace_targets = _validate_ready_traceability(
+                    historical_root, "docs/testing/traceability.md", matrix, github, commit_sha,
+                    verified_adc.contract.requirement_ids, declared_paths,
+                    {role: reason for role, reason in adc_reasons.items() if not declared_paths.get(role)},
+                )
+            except (GitHubError, OSError) as exc:
+                raise PhaseEvidenceError(f"historical READY traceability validation failed: {exc}") from exc
+            for path, (role, content) in trace_targets.items():
+                documents_by_path[path] = {"role": role, "path": path,
+                                           "sha256": hashlib.sha256(content).hexdigest()}
+
+    expected_documents = sorted(documents_by_path.values(), key=lambda row: row["path"])
+    if payload["documents"] != expected_documents:
+        raise PhaseEvidenceError(
+            "historical Phase Decision documents do not match the approved paths and committed blob SHA-256 values"
+        )
 
 
 def _ready_source_and_skips(verified: VerifiedADC) -> tuple[Phase, dict[str, str]]:

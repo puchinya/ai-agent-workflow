@@ -31,13 +31,15 @@ from p_ases.phase_restart import (
     parse_authorization,
     restart_issue_phase,
 )
-from p_ases.phases import Phase
+from p_ases.phases import IssueKind, Phase
+from p_ases.phase_evidence import verify_historical_phase_decision
 from p_ases.work import execution_binding_path
 
 
 def authorization_bytes(*, target: str = "self", from_phase: str = "execution",
                         to_phase: str = "requirements", max_applications: int = 1,
-                        reason: str = "Reopen requirements for the approved successor") -> bytes:
+                        reason: str = "Reopen requirements for the approved successor",
+                        specification_path: str = "docs/specs/workflow.md") -> bytes:
     payload = {
         "schema": AUTH_SCHEMA,
         "target_issue": target,
@@ -47,14 +49,23 @@ def authorization_bytes(*, target: str = "self", from_phase: str = "execution",
         "reason": reason,
     }
     compact = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-    return ("# ADC\n\n<!-- " + AUTH_SCHEMA + "\n" + compact + "\n-->\n").encode()
+    impact = (
+        "# ADC\n\n"
+        "## Artifact impact\n"
+        f"- Specification: {specification_path}\n"
+        "- Design: docs/design/workflow.md\n"
+        "- Testing: docs/testing/traceability.md, docs/testing/pases-lifecycle-tests.md\n\n"
+    )
+    return (impact + "<!-- " + AUTH_SCHEMA + "\n" + compact + "\n-->\n").encode()
 
 
 class FakeGitHub:
     def __init__(self, *, issue_number: int, issue_id: int, labels: list[str], branch: str, head: str,
+                 root: Path,
                  repository: str = "puchinya/ai-agent-workflow", repository_id: int = 1401910271):
         self.repo = repository
         self.repository_id = repository_id
+        self.root = root
         self.branch_name = branch
         self.head = head
         self.issue_row = {
@@ -92,6 +103,13 @@ class FakeGitHub:
 
     def branch(self, branch: str):
         return {"name": branch, "commit": {"sha": self.head}}
+
+    def regular_content_at_ref(self, path: str, ref: str):
+        result = subprocess.run(["git", "show", f"{ref}:{path}"], cwd=self.root,
+                                capture_output=True, check=False)
+        if result.returncode:
+            raise GitHubError(f"committed path is unavailable: {path}")
+        return result.stdout
 
     def authenticated_user(self):
         return {"id": 77, "login": "owner", "type": "User"}
@@ -164,7 +182,28 @@ class PhaseRestartTests(unittest.TestCase):
         subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=self.root, check=True)
         subprocess.run(["git", "config", "user.name", "Phase Test"], cwd=self.root, check=True)
         (self.root / "README.md").write_text("phase test\n", encoding="utf-8")
-        subprocess.run(["git", "add", "README.md"], cwd=self.root, check=True)
+        files = {
+            "docs/specs/workflow.md": "# REQ-F01-031\nApproved specification.\n",
+            "docs/design/workflow.md": "# DES-F01-031\nApproved design.\n",
+            "docs/testing/pases-lifecycle-tests.md": (
+                "# ORA-F01-031\nIndependent oracle.\n\n# TST-F01-031\nTest case.\n"
+            ),
+            "docs/testing/traceability.md": (
+                "| REQ | DES | Oracle | Test | Evidence |\n"
+                "|---|---|---|---|---|\n"
+                "| [REQ-F01-031](../specs/workflow.md#req-f01-031) | "
+                "[DES-F01-031](../design/workflow.md#des-f01-031) | "
+                "[ORA-F01-031](pases-lifecycle-tests.md#ora-f01-031) | "
+                "[TST-F01-031](pases-lifecycle-tests.md#tst-f01-031) | "
+                "[test source](../../tests/test_phase_restart.py) |\n"
+            ),
+            "tests/test_phase_restart.py": "# committed historical test source\n",
+        }
+        for path, content in files.items():
+            destination = self.root / path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_text(content, encoding="utf-8")
+        subprocess.run(["git", "add", "README.md", "docs", "tests"], cwd=self.root, check=True)
         subprocess.run(["git", "commit", "-m", "initial"], cwd=self.root, check=True,
                        capture_output=True, text=True)
         subprocess.run(["git", "checkout", "-b", "feature/issue-40"], cwd=self.root, check=True,
@@ -176,7 +215,11 @@ class PhaseRestartTests(unittest.TestCase):
         self.adc_sha = hashlib.sha256(self.adc_content).hexdigest()
         self.verified = VerifiedADC(
             ADC("puchinya/ai-agent-workflow", self.issue_number, self.adc_content, self.adc_sha,
-                len(self.adc_content), (), ("REQ-F01-031",)),
+                len(self.adc_content), (("artifact_impact", (
+                    "- Specification: docs/specs/workflow.md\n"
+                    "- Design: docs/design/workflow.md\n"
+                    "- Testing: docs/testing/traceability.md, docs/testing/pases-lifecycle-tests.md"
+                )),), ("REQ-F01-031",)),
             ADCPointer(50, self.adc_sha, len(self.adc_content), "approved"),
         )
         self.binding = ExecutionBinding(
@@ -187,7 +230,7 @@ class PhaseRestartTests(unittest.TestCase):
         self.github = FakeGitHub(
             issue_number=self.issue_number, issue_id=4040,
             labels=["enhancement", "kind:single", "phase:execution"],
-            branch="feature/issue-40", head=self.head,
+            branch="feature/issue-40", head=self.head, root=self.root,
         )
 
     def tearDown(self):
@@ -200,14 +243,35 @@ class PhaseRestartTests(unittest.TestCase):
 
     def phase_decision(self, *, v2_generation: tuple[int, str] | None = None,
                        from_phase: str = "requirements", to_phase: str = "specification",
-                       adc_sha256: str | None = None) -> PhaseDecision:
-        documents = ([{"role": "test-oracle", "path": "docs/testing/traceability.md", "sha256": "f" * 64}]
-                     if to_phase == "ready" else
-                     [{"role": "design", "path": "docs/design/workflow.md", "sha256": "f" * 64}]
-                     if to_phase == "design" else
-                     [{"role": "specification", "path": "docs/specs/workflow.md", "sha256": "f" * 64}])
+                       adc_sha256: str | None = None, verified_adc: VerifiedADC | None = None,
+                       documents_override: list[dict[str, str]] | None = None,
+                       skip_reasons_override: dict[str, str] | None = None) -> PhaseDecision:
+        selected_adc = verified_adc or self.verified
+        if to_phase == "specification":
+            paths = [("specification", "docs/specs/workflow.md")]
+        elif to_phase == "design":
+            paths = [("design", "docs/design/workflow.md")]
+            if from_phase == "specification":
+                paths.append(("specification", "docs/specs/workflow.md"))
+        else:
+            paths = [
+                ("specification", "docs/specs/workflow.md"),
+                ("design", "docs/design/workflow.md"),
+                ("test-oracle", "docs/testing/pases-lifecycle-tests.md"),
+                ("test-oracle", "docs/testing/traceability.md"),
+            ]
+        documents = documents_override or [
+            {"role": role, "path": path,
+             "sha256": hashlib.sha256(self.github.regular_content_at_ref(path, self.head)).hexdigest()}
+            for role, path in paths
+        ]
+        documents = sorted(documents, key=lambda row: row["path"])
         skips = ({"specification": "unchanged", "design": "unchanged"}
                  if to_phase == "ready" and from_phase == "requirements" else {})
+        if to_phase == "design" and from_phase == "requirements":
+            skips = {"specification": "unchanged"}
+        if skip_reasons_override is not None:
+            skips = skip_reasons_override
         payload = {
             "schema": "PASES_PHASE_DECISION_V2" if v2_generation else "PASES_PHASE_DECISION_V1",
             "repository": self.github.repo,
@@ -215,8 +279,8 @@ class PhaseRestartTests(unittest.TestCase):
             "issue_kind": "single",
             "from_phase": from_phase,
             "to_phase": to_phase,
-            "adc_comment_id": self.verified.pointer.comment_id,
-            "adc_sha256": adc_sha256 or self.verified.contract.sha256,
+            "adc_comment_id": selected_adc.pointer.comment_id,
+            "adc_sha256": adc_sha256 or selected_adc.contract.sha256,
             "branch_ref": self.binding.branch_ref,
             "commit_sha40": self.head,
             "documents": documents,
@@ -225,6 +289,19 @@ class PhaseRestartTests(unittest.TestCase):
         if v2_generation:
             payload["phase_generation_comment_id"], payload["phase_generation_sha256"] = v2_generation
         return PhaseDecision(payload)
+
+    def verified_adc_with_specification(self, path: str) -> VerifiedADC:
+        content = authorization_bytes(specification_path=path)
+        digest = hashlib.sha256(content).hexdigest()
+        return VerifiedADC(
+            ADC("puchinya/ai-agent-workflow", self.issue_number, content, digest,
+                len(content), (("artifact_impact", (
+                    f"- Specification: {path}\n"
+                    "- Design: docs/design/workflow.md\n"
+                    "- Testing: docs/testing/traceability.md, docs/testing/pases-lifecycle-tests.md"
+                )),), ("REQ-F01-031",)),
+            ADCPointer(50, digest, len(content), "approved"),
+        )
 
     def test_authorization_accepts_one_canonical_unfenced_marker(self):
         parsed = parse_authorization(self.adc_content, self.issue_number)
@@ -355,8 +432,13 @@ class PhaseRestartTests(unittest.TestCase):
         applied = self.run_restart()
         applied_record = self.github.comments[1]
         generation = (applied["applied_comment_id"], hashlib.sha256(applied_record["body"].encode()).hexdigest())
-        decision = self.phase_decision(v2_generation=generation, to_phase="ready")
-        self.github.create_issue_comment(self.issue_number, decision.body())
+        for source, target in (
+                ("requirements", "specification"),
+                ("specification", "design"),
+                ("design", "ready")):
+            decision = self.phase_decision(
+                v2_generation=generation, from_phase=source, to_phase=target)
+            self.github.create_issue_comment(self.issue_number, decision.body())
         self.github.issue_row["labels"] = [
             {"name": "enhancement"}, {"name": "kind:single"}, {"name": "phase:execution"},
         ]
@@ -365,6 +447,69 @@ class PhaseRestartTests(unittest.TestCase):
         self.assertEqual(replay["status"], "NOOP")
         self.assertEqual(self.github.label_writes, 1)
         verify_ready.assert_called_once()
+
+    def test_historical_phase_receipt_rejects_nonexistent_declared_artifact(self):
+        missing_adc = self.verified_adc_with_specification("docs/specs/missing.md")
+        generation = (88, "a" * 64)
+        decision = self.phase_decision(
+            v2_generation=generation, verified_adc=missing_adc,
+            documents_override=[{"role": "specification", "path": "docs/specs/missing.md",
+                                 "sha256": "f" * 64}],
+        )
+        with self.assertRaisesRegex(PhaseEvidenceError, "artifact is unavailable"):
+            verify_historical_phase_decision(
+                self.github, self.root, self.issue_number, decision, verified_adc=missing_adc,
+                issue_kind=IssueKind.SINGLE, branch_ref=self.binding.branch_ref,
+                current_sha40=self.head, phase_generation=generation,
+            )
+
+    def test_historical_phase_receipt_rejects_incorrect_committed_sha(self):
+        generation = (88, "a" * 64)
+        decision = self.phase_decision(
+            v2_generation=generation,
+            documents_override=[{"role": "specification", "path": "docs/specs/workflow.md",
+                                 "sha256": "f" * 64}],
+        )
+        with self.assertRaisesRegex(PhaseEvidenceError, "committed blob SHA-256"):
+            verify_historical_phase_decision(
+                self.github, self.root, self.issue_number, decision, verified_adc=self.verified,
+                issue_kind=IssueKind.SINGLE, branch_ref=self.binding.branch_ref,
+                current_sha40=self.head, phase_generation=generation,
+            )
+
+    def test_historical_phase_receipt_rejects_skip_not_authorized_by_adc(self):
+        generation = (88, "a" * 64)
+        decision = self.phase_decision(
+            v2_generation=generation, from_phase="requirements", to_phase="design",
+            skip_reasons_override={"specification": "not applicable"},
+        )
+        with self.assertRaisesRegex(PhaseEvidenceError, "does not match the approved ADC"):
+            verify_historical_phase_decision(
+                self.github, self.root, self.issue_number, decision, verified_adc=self.verified,
+                issue_kind=IssueKind.SINGLE, branch_ref=self.binding.branch_ref,
+                current_sha40=self.head, phase_generation=generation,
+            )
+
+    def test_unrelated_phase_decision_author_blocks_before_restart_writes(self):
+        decision = self.phase_decision()
+        created = self.github.create_issue_comment(self.issue_number, decision.body())
+        row = next(item for item in self.github.comments if item["id"] == created["id"])
+        row["user"] = {"id": 88, "login": "other-user", "type": "User"}
+        with self.assertRaisesRegex(PhaseRestartError, "author is not the authenticated"):
+            self.run_restart()
+        self.assertEqual(self.github.label_writes, 0)
+        self.assertEqual(len(self.github.comments), 1)
+
+    def test_edited_phase_decision_marker_is_reserved_history_and_blocks(self):
+        decision = self.phase_decision()
+        row = self.github.create_issue_comment(self.issue_number, decision.body())
+        carrier = next(item for item in self.github.comments if item["id"] == row["id"])
+        carrier["body"] = carrier["body"].replace(
+            "PASES_PHASE_DECISION_V1\n", "PASES_PHASE_DECISION_V1 \n", 1)
+        with self.assertRaisesRegex(PhaseRestartError, "reserved marker is malformed"):
+            self.run_restart()
+        self.assertEqual(self.github.label_writes, 0)
+        self.assertEqual(len(self.github.comments), 1)
 
     def test_stale_adc_decision_cannot_explain_a_live_advanced_phase(self):
         applied = self.run_restart()
