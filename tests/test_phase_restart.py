@@ -39,7 +39,8 @@ from p_ases.work import execution_binding_path
 def authorization_bytes(*, target: str = "self", from_phase: str = "execution",
                         to_phase: str = "requirements", max_applications: int = 1,
                         reason: str = "Reopen requirements for the approved successor",
-                        specification_path: str = "docs/specs/workflow.md") -> bytes:
+                        specification_impact: str = "docs/specs/workflow.md",
+                        design_impact: str = "docs/design/workflow.md") -> bytes:
     payload = {
         "schema": AUTH_SCHEMA,
         "target_issue": target,
@@ -52,11 +53,20 @@ def authorization_bytes(*, target: str = "self", from_phase: str = "execution",
     impact = (
         "# ADC\n\n"
         "## Artifact impact\n"
-        f"- Specification: {specification_path}\n"
-        "- Design: docs/design/workflow.md\n"
+        f"- Specification: {specification_impact}\n"
+        f"- Design: {design_impact}\n"
         "- Testing: docs/testing/traceability.md, docs/testing/pases-lifecycle-tests.md\n\n"
     )
     return (impact + "<!-- " + AUTH_SCHEMA + "\n" + compact + "\n-->\n").encode()
+
+
+def artifact_impact_section(*, specification: str = "docs/specs/workflow.md",
+                            design: str = "docs/design/workflow.md") -> str:
+    return (
+        f"- Specification: {specification}\n"
+        f"- Design: {design}\n"
+        "- Testing: docs/testing/traceability.md, docs/testing/pases-lifecycle-tests.md"
+    )
 
 
 class FakeGitHub:
@@ -66,6 +76,7 @@ class FakeGitHub:
         self.repo = repository
         self.repository_id = repository_id
         self.root = root
+        self.content_reads: list[tuple[str, str]] = []
         self.branch_name = branch
         self.head = head
         self.issue_row = {
@@ -89,6 +100,8 @@ class FakeGitHub:
         self.history_reads = 0
         self.issue_reads = 0
         self.race_on_third_issue_read = False
+        self.unavailable_content_paths: set[str] = set()
+        self.content_responses: dict[str, list[bytes]] = {}
 
     def repository_metadata(self):
         return {"id": self.repository_id, "full_name": self.repo, "default_branch": "main"}
@@ -105,6 +118,12 @@ class FakeGitHub:
         return {"name": branch, "commit": {"sha": self.head}}
 
     def regular_content_at_ref(self, path: str, ref: str):
+        self.content_reads.append((path, ref))
+        if path in self.unavailable_content_paths:
+            raise GitHubError(f"committed path is unavailable: {path}")
+        responses = self.content_responses.get(path)
+        if responses:
+            return responses.pop(0)
         result = subprocess.run(["git", "show", f"{ref}:{path}"], cwd=self.root,
                                 capture_output=True, check=False)
         if result.returncode:
@@ -196,6 +215,11 @@ class PhaseRestartTests(unittest.TestCase):
                 "[ORA-F01-031](pases-lifecycle-tests.md#ora-f01-031) | "
                 "[TST-F01-031](pases-lifecycle-tests.md#tst-f01-031) | "
                 "[test source](../../tests/test_phase_restart.py) |\n"
+                "| [REQ-F01-999](../specs/unrelated.md#req-f01-999) | "
+                "[DES-F01-999](../design/unrelated.md#des-f01-999) | "
+                "[ORA-F01-999](pases-lifecycle-tests.md#ora-f01-999) | "
+                "[TST-F01-999](pases-lifecycle-tests.md#tst-f01-999) | "
+                "[unrelated source](../../tests/test_unrelated_missing.py) |\n"
             ),
             "tests/test_phase_restart.py": "# committed historical test source\n",
         }
@@ -215,11 +239,8 @@ class PhaseRestartTests(unittest.TestCase):
         self.adc_sha = hashlib.sha256(self.adc_content).hexdigest()
         self.verified = VerifiedADC(
             ADC("puchinya/ai-agent-workflow", self.issue_number, self.adc_content, self.adc_sha,
-                len(self.adc_content), (("artifact_impact", (
-                    "- Specification: docs/specs/workflow.md\n"
-                    "- Design: docs/design/workflow.md\n"
-                    "- Testing: docs/testing/traceability.md, docs/testing/pases-lifecycle-tests.md"
-                )),), ("REQ-F01-031",)),
+                len(self.adc_content), (("artifact_impact", artifact_impact_section()),),
+                ("REQ-F01-031",)),
             ADCPointer(50, self.adc_sha, len(self.adc_content), "approved"),
         )
         self.binding = ExecutionBinding(
@@ -266,10 +287,29 @@ class PhaseRestartTests(unittest.TestCase):
             for role, path in paths
         ]
         documents = sorted(documents, key=lambda row: row["path"])
-        skips = ({"specification": "unchanged", "design": "unchanged"}
-                 if to_phase == "ready" and from_phase == "requirements" else {})
-        if to_phase == "design" and from_phase == "requirements":
-            skips = {"specification": "unchanged"}
+        skips: dict[str, str] = {}
+        impact_lines = selected_adc.contract.section("artifact_impact").splitlines()
+        impacts = {}
+        for line in impact_lines:
+            if line.startswith("- ") and ":" in line:
+                role, value = line[2:].split(":", 1)
+                impacts[role.casefold()] = value.strip()
+
+        def skip_reason(role: str) -> str | None:
+            value = impacts.get(role, "")
+            lowered = value.casefold()
+            if lowered.startswith("unchanged:") or lowered.startswith("not applicable:"):
+                return value.split(":", 1)[1].strip()
+            return None
+
+        if from_phase == "requirements" and to_phase in {"design", "ready"}:
+            specification_reason = skip_reason("specification")
+            if specification_reason is not None:
+                skips["specification"] = specification_reason
+        if from_phase == "requirements" and to_phase == "ready":
+            design_reason = skip_reason("design")
+            if design_reason is not None:
+                skips["design"] = design_reason
         if skip_reasons_override is not None:
             skips = skip_reasons_override
         payload = {
@@ -290,18 +330,33 @@ class PhaseRestartTests(unittest.TestCase):
             payload["phase_generation_comment_id"], payload["phase_generation_sha256"] = v2_generation
         return PhaseDecision(payload)
 
-    def verified_adc_with_specification(self, path: str) -> VerifiedADC:
-        content = authorization_bytes(specification_path=path)
+    def verified_adc_with_impacts(self, *, specification: str = "docs/specs/workflow.md",
+                                  design: str = "docs/design/workflow.md") -> VerifiedADC:
+        content = authorization_bytes(specification_impact=specification, design_impact=design)
         digest = hashlib.sha256(content).hexdigest()
         return VerifiedADC(
             ADC("puchinya/ai-agent-workflow", self.issue_number, content, digest,
-                len(content), (("artifact_impact", (
-                    f"- Specification: {path}\n"
-                    "- Design: docs/design/workflow.md\n"
-                    "- Testing: docs/testing/traceability.md, docs/testing/pases-lifecycle-tests.md"
+                len(content), (("artifact_impact", artifact_impact_section(
+                    specification=specification, design=design,
                 )),), ("REQ-F01-031",)),
             ADCPointer(50, digest, len(content), "approved"),
         )
+
+    def use_verified_adc(self, verified: VerifiedADC) -> None:
+        self.verified = verified
+        self.adc_content = verified.contract.content
+        self.adc_sha = verified.contract.sha256
+        self.binding = ExecutionBinding(
+            self.binding.repository, self.binding.issue_number, verified.pointer.comment_id,
+            verified.contract.sha256, self.binding.base_ref, self.binding.base_sha,
+            self.binding.branch_ref, self.binding.work_directory, self.binding.initial_head_sha,
+        )
+        # Each test starts with a fresh temporary workspace. Replace its fixture
+        # Binding generation explicitly so the production append-only writer is
+        # still exercised for the new generation.
+        binding_path = execution_binding_path(self.root, self.issue_number)
+        binding_path.unlink()
+        write_binding(binding_path, self.binding)
 
     def test_authorization_accepts_one_canonical_unfenced_marker(self):
         parsed = parse_authorization(self.adc_content, self.issue_number)
@@ -448,8 +503,100 @@ class PhaseRestartTests(unittest.TestCase):
         self.assertEqual(self.github.label_writes, 1)
         verify_ready.assert_called_once()
 
+    def test_skipped_specification_design_ready_chain_replays_with_historical_traceability(self):
+        self.use_verified_adc(self.verified_adc_with_impacts(
+            specification="unchanged: approved specification remains current",
+        ))
+        applied = self.run_restart()
+        applied_record = self.github.comments[1]
+        generation = (applied["applied_comment_id"], hashlib.sha256(applied_record["body"].encode()).hexdigest())
+        for source, target in (("requirements", "design"), ("design", "ready")):
+            decision = self.phase_decision(v2_generation=generation, from_phase=source, to_phase=target)
+            self.github.create_issue_comment(self.issue_number, decision.body())
+        self.github.issue_row["labels"] = [
+            {"name": "enhancement"}, {"name": "kind:single"}, {"name": "phase:ready"},
+        ]
+        self.github.content_reads.clear()
+
+        replay = self.run_restart()
+
+        self.assertEqual(replay["status"], "NOOP")
+        self.assertEqual(self.github.label_writes, 1)
+        self.assertNotIn("tests/test_unrelated_missing.py",
+                         [path for path, _ref in self.github.content_reads])
+
+    def test_missing_skipped_traceability_target_blocks_historical_ready_replay(self):
+        self.use_verified_adc(self.verified_adc_with_impacts(
+            specification="unchanged: approved specification remains current",
+        ))
+        applied = self.run_restart()
+        applied_record = self.github.comments[1]
+        generation = (applied["applied_comment_id"], hashlib.sha256(applied_record["body"].encode()).hexdigest())
+        for source, target in (("requirements", "design"), ("design", "ready")):
+            decision = self.phase_decision(v2_generation=generation, from_phase=source, to_phase=target)
+            self.github.create_issue_comment(self.issue_number, decision.body())
+        self.github.issue_row["labels"] = [
+            {"name": "enhancement"}, {"name": "kind:single"}, {"name": "phase:ready"},
+        ]
+        self.github.unavailable_content_paths.add("docs/specs/workflow.md")
+
+        with self.assertRaisesRegex(PhaseRestartError, "historical READY traceability target is unavailable"):
+            self.run_restart()
+        self.assertEqual(self.github.label_writes, 1)
+
+    def test_tampered_skipped_traceability_target_blocks_historical_ready_replay(self):
+        self.use_verified_adc(self.verified_adc_with_impacts(
+            specification="unchanged: approved specification remains current",
+        ))
+        applied = self.run_restart()
+        applied_record = self.github.comments[1]
+        generation = (applied["applied_comment_id"], hashlib.sha256(applied_record["body"].encode()).hexdigest())
+        for source, target in (("requirements", "design"), ("design", "ready")):
+            decision = self.phase_decision(v2_generation=generation, from_phase=source, to_phase=target)
+            self.github.create_issue_comment(self.issue_number, decision.body())
+        self.github.issue_row["labels"] = [
+            {"name": "enhancement"}, {"name": "kind:single"}, {"name": "phase:ready"},
+        ]
+        committed = subprocess.run(
+            ["git", "show", f"{self.head}:docs/specs/workflow.md"], cwd=self.root,
+            capture_output=True, check=True,
+        ).stdout
+        self.github.content_responses["docs/specs/workflow.md"] = [
+            committed, b"# REQ-F01-031\nTampered historical specification.\n",
+        ]
+
+        with self.assertRaisesRegex(PhaseRestartError, "differs from the branch commit"):
+            self.run_restart()
+        self.assertEqual(self.github.label_writes, 1)
+
+    def test_skipped_specification_and_design_direct_ready_chain_replays(self):
+        self.use_verified_adc(self.verified_adc_with_impacts(
+            specification="unchanged: approved specification remains current",
+            design="unchanged: approved design remains current",
+        ))
+        applied = self.run_restart()
+        applied_record = self.github.comments[1]
+        generation = (applied["applied_comment_id"], hashlib.sha256(applied_record["body"].encode()).hexdigest())
+        decision = self.phase_decision(
+            v2_generation=generation, from_phase="requirements", to_phase="ready",
+        )
+        self.github.create_issue_comment(self.issue_number, decision.body())
+        self.github.issue_row["labels"] = [
+            {"name": "enhancement"}, {"name": "kind:single"}, {"name": "phase:ready"},
+        ]
+        self.github.content_reads.clear()
+
+        replay = self.run_restart()
+
+        self.assertEqual(replay["status"], "NOOP")
+        self.assertEqual(self.github.label_writes, 1)
+        self.assertIn(("docs/specs/workflow.md", self.head), self.github.content_reads)
+        self.assertIn(("docs/design/workflow.md", self.head), self.github.content_reads)
+        self.assertNotIn("tests/test_unrelated_missing.py",
+                         [path for path, _ref in self.github.content_reads])
+
     def test_historical_phase_receipt_rejects_nonexistent_declared_artifact(self):
-        missing_adc = self.verified_adc_with_specification("docs/specs/missing.md")
+        missing_adc = self.verified_adc_with_impacts(specification="docs/specs/missing.md")
         generation = (88, "a" * 64)
         decision = self.phase_decision(
             v2_generation=generation, verified_adc=missing_adc,
@@ -581,6 +728,36 @@ class PhaseRestartTests(unittest.TestCase):
         with self.assertRaisesRegex(PhaseRestartError, "conflicts with the live complete label set"):
             self.run_restart()
         self.assertEqual(self.github.label_writes, 1)
+
+    def test_edited_applied_marker_blocks_restart_replay_and_generation_read(self):
+        self.run_restart()
+        applied = self.github.comments[1]
+        applied["body"] = applied["body"].replace(
+            f"<!-- {APPLIED_SCHEMA}", f" <!-- {APPLIED_SCHEMA}", 1)
+        applied["updated_at"] = "2026-11-07T01:00:00Z"
+
+        with self.assertRaisesRegex(PhaseRestartError, "immutable timestamps"):
+            self.run_restart()
+        with self.assertRaisesRegex(PhaseRestartError, "immutable timestamps"):
+            current_phase_generation(self.github, self.root, self.issue_number, self.verified)
+        self.assertEqual(self.github.label_writes, 1)
+        self.assertEqual(len(self.github.comments), 2)
+
+    def test_edited_intent_marker_blocks_pending_restart_and_generation_read(self):
+        self.github.fail_label_before_apply = True
+        with self.assertRaisesRegex(PhaseRestartError, "not repeated"):
+            self.run_restart()
+        intent = self.github.comments[0]
+        intent["body"] = intent["body"].replace(
+            f"<!-- {INTENT_SCHEMA}", f"<!- {INTENT_SCHEMA}", 1)
+        intent["updated_at"] = "2026-11-07T01:00:00Z"
+
+        with self.assertRaisesRegex(PhaseRestartError, "immutable timestamps"):
+            self.run_restart()
+        with self.assertRaisesRegex(PhaseRestartError, "immutable timestamps"):
+            current_phase_generation(self.github, self.root, self.issue_number, self.verified)
+        self.assertEqual(self.github.label_writes, 1)
+        self.assertEqual(len(self.github.comments), 1)
 
     def test_competing_intent_publication_blocks_before_label_write(self):
         self.github.duplicate_next_intent = True

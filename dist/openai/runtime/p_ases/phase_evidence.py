@@ -568,6 +568,39 @@ def _traceability_target(root: Path, github: GitHub, commit_sha: str, source_pat
     return target, cache[target]
 
 
+def _historical_ready_inputs(matrix_text: str, requirements: tuple[str, ...]
+                             ) -> tuple[tuple[str, str, str, str], tuple[str, ...]]:
+    """Select the exact document/test links the ordinary READY validator will inspect."""
+    rows = [line.strip() for line in matrix_text.splitlines() if line.lstrip().startswith("|")]
+    identities = (
+        ("specification", "docs/specs/", lambda label: label.startswith("REQ-")),
+        ("design", "docs/design/", lambda label: re.fullmatch(r"DES-[A-Z0-9-]+", label) is not None),
+        ("test-oracle", "docs/testing/",
+         lambda label: re.fullmatch(r"(?:ORA|ORACLE|TST|TEST)-[A-Z0-9._-]+", label) is not None),
+    )
+    targets: list[tuple[str, str, str, str]] = []
+    sources: list[str] = []
+    for requirement in requirements:
+        matches = [row for row in rows if re.search(rf"\[{re.escape(requirement)}\]", row)]
+        for row in matches:
+            links = re.findall(r"\[([^]]+)\]\(([^)]+)\)", row)
+            for role, expected_root, accepts in identities:
+                selected = [(label, destination) for label, destination in links if accepts(label)]
+                if role == "specification":
+                    selected = [(label, destination) for label, destination in selected if label == requirement]
+                elif role == "test-oracle":
+                    oracles = [(label, destination) for label, destination in selected
+                               if label.startswith(("ORA-", "ORACLE-"))]
+                    tests = [(label, destination) for label, destination in selected
+                             if label.startswith(("TST-", "TEST-"))]
+                    selected = [*oracles, *tests]
+                targets.extend((role, expected_root, label, destination)
+                               for label, destination in selected)
+            sources.extend(destination for _label, destination in links
+                           if destination.startswith("../../tests/"))
+    return tuple(targets), tuple(sources)
+
+
 def _validate_ready_traceability(root: Path, path: str, content: bytes, github: GitHub,
                                  commit_sha: str, requirements: tuple[str, ...],
                                  declared_paths: Mapping[str, tuple[str, ...]],
@@ -962,27 +995,50 @@ def verify_historical_phase_decision(github: GitHub, root: Path, issue_number: i
                 matrix_text = matrix.decode("utf-8", errors="strict")
             except UnicodeDecodeError as exc:
                 raise PhaseEvidenceError("historical READY traceability matrix is not valid UTF-8") from exc
-            for line in matrix_text.splitlines():
-                if not line.lstrip().startswith("|"):
+            target_links, source_links = _historical_ready_inputs(
+                matrix_text, verified_adc.contract.requirement_ids,
+            )
+            for _role, expected_root, _label, destination in target_links:
+                if (not isinstance(destination, str) or not destination or "\\" in destination
+                        or any(char in destination for char in "\x00\r\n?:%")):
                     continue
-                for _label, destination in re.findall(r"\[([^]]+)\]\(([^)]+)\)", line):
-                    if not destination.startswith("../../tests/") or any(
-                            char in destination for char in "\\\x00\r\n?#:%"):
-                        continue
-                    normalized = posixpath.normpath(posixpath.join("docs/testing", destination))
-                    if not normalized.startswith("tests/") or normalized.startswith("../"):
-                        continue
-                    local_test = historical_root / normalized
-                    if local_test.exists():
-                        continue
-                    try:
-                        test_content = github.regular_content_at_ref(normalized, commit_sha)
-                    except GitHubError as exc:
-                        raise PhaseEvidenceError(
-                            f"historical READY executable test is unavailable: {normalized}: {exc}"
-                        ) from exc
-                    local_test.parent.mkdir(parents=True, exist_ok=True)
-                    local_test.write_bytes(test_content)
+                parts = urlsplit(destination)
+                linked_path, marker, fragment = destination.partition("#")
+                if (parts.scheme or parts.netloc or parts.query or parts.path.startswith("/")
+                        or not marker or not fragment or parts.fragment != fragment):
+                    continue
+                normalized = posixpath.normpath(posixpath.join("docs/testing", linked_path))
+                if (normalized.startswith("../") or normalized == ".."
+                        or not normalized.startswith(expected_root)):
+                    continue
+                local_target = historical_root / normalized
+                if local_target.exists():
+                    continue
+                try:
+                    target_content = github.regular_content_at_ref(normalized, commit_sha)
+                except GitHubError as exc:
+                    raise PhaseEvidenceError(
+                        f"historical READY traceability target is unavailable: {normalized}: {exc}"
+                    ) from exc
+                local_target.parent.mkdir(parents=True, exist_ok=True)
+                local_target.write_bytes(target_content)
+            for source_link in source_links:
+                if any(char in source_link for char in "\\\x00\r\n?#:%"):
+                    continue
+                normalized = posixpath.normpath(posixpath.join("docs/testing", source_link))
+                if not normalized.startswith("tests/") or normalized.startswith("../"):
+                    continue
+                local_test = historical_root / normalized
+                if local_test.exists():
+                    continue
+                try:
+                    test_content = github.regular_content_at_ref(normalized, commit_sha)
+                except GitHubError as exc:
+                    raise PhaseEvidenceError(
+                        f"historical READY executable test is unavailable: {normalized}: {exc}"
+                    ) from exc
+                local_test.parent.mkdir(parents=True, exist_ok=True)
+                local_test.write_bytes(test_content)
             try:
                 trace_targets = _validate_ready_traceability(
                     historical_root, "docs/testing/traceability.md", matrix, github, commit_sha,

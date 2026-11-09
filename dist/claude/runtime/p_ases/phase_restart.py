@@ -321,6 +321,14 @@ def _is_phase_decision_candidate(body: str) -> bool:
     return first_line.startswith(DECISION_MARKER_FAMILY)
 
 
+def _is_restart_candidate(body: str) -> bool:
+    """Keep malformed edits of Intent/Applied markers visible to every journal reader."""
+    first_line = body.split("\n", 1)[0].lstrip()
+    if first_line.startswith("PASES_PHASE_RESTART_"):
+        return True
+    return re.match(r"^<\s*!\s*-{1,2}\s*PASES_PHASE_RESTART", first_line) is not None
+
+
 @dataclass(frozen=True)
 class _History:
     restarts: tuple[RestartRecord, ...]
@@ -333,7 +341,7 @@ def _read_history(github: GitHub, issue_number: int) -> _History:
         first = github.issue_comments(issue_number)
         first_rows = [row for row in first if isinstance(row, dict)
                       and isinstance(row.get("body"), str)
-                      and (row["body"].startswith(RESTART_PREFIX)
+                      and (_is_restart_candidate(row["body"])
                            or _is_phase_decision_candidate(row["body"]))]
         ids = [row.get("id") for row in first_rows]
         if (any(type(value) is not int or value < 1 for value in ids)
@@ -349,7 +357,7 @@ def _read_history(github: GitHub, issue_number: int) -> _History:
         second = github.issue_comments(issue_number)
         second_rows = [row for row in second if isinstance(row, dict)
                        and isinstance(row.get("body"), str)
-                       and (row["body"].startswith(RESTART_PREFIX)
+                       and (_is_restart_candidate(row["body"])
                             or _is_phase_decision_candidate(row["body"]))]
         second_ids = [row.get("id") for row in second_rows]
         if second_ids != ids:
@@ -374,7 +382,7 @@ def _read_history(github: GitHub, issue_number: int) -> _History:
         if triples[0] != triples[1] or triples[1] != triples[2]:
             raise PhaseRestartError("Phase history identity changed during direct/list/direct readback")
         body = listed["body"]
-        if body.startswith(RESTART_PREFIX):
+        if _is_restart_candidate(body):
             schema = INTENT_SCHEMA if body.startswith(INTENT_OPEN) else (
                 APPLIED_SCHEMA if body.startswith(APPLIED_OPEN) else None
             )
@@ -727,7 +735,7 @@ def current_phase_generation(github: GitHub, root: Path, issue_number: int,
     except GitHubError as exc:
         raise PhaseRestartError(f"Phase restart generation history is unavailable: {exc}") from exc
     markers = [row for row in comments if isinstance(row, dict) and isinstance(row.get("body"), str)
-               and row["body"].startswith(RESTART_PREFIX)]
+               and _is_restart_candidate(row["body"])]
     v2_decisions = [row for row in comments if isinstance(row, dict) and isinstance(row.get("body"), str)
                     and row["body"].startswith(f"{DECISION_V2_SCHEMA}\n")]
     if not markers:
