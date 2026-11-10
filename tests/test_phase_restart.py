@@ -733,7 +733,7 @@ class PhaseRestartTests(unittest.TestCase):
         self.run_restart()
         applied = self.github.comments[1]
         applied["body"] = applied["body"].replace(
-            f"<!-- {APPLIED_SCHEMA}", f" <!-- {APPLIED_SCHEMA}", 1)
+            f"<!-- {APPLIED_SCHEMA}", f"<!- - {APPLIED_SCHEMA}", 1)
         applied["updated_at"] = "2026-11-07T01:00:00Z"
 
         with self.assertRaisesRegex(PhaseRestartError, "immutable timestamps"):
@@ -749,7 +749,7 @@ class PhaseRestartTests(unittest.TestCase):
             self.run_restart()
         intent = self.github.comments[0]
         intent["body"] = intent["body"].replace(
-            f"<!-- {INTENT_SCHEMA}", f"<!- {INTENT_SCHEMA}", 1)
+            f"<!-- {INTENT_SCHEMA}", f"<!- - {INTENT_SCHEMA}", 1)
         intent["updated_at"] = "2026-11-07T01:00:00Z"
 
         with self.assertRaisesRegex(PhaseRestartError, "immutable timestamps"):
@@ -758,6 +758,38 @@ class PhaseRestartTests(unittest.TestCase):
             current_phase_generation(self.github, self.root, self.issue_number, self.verified)
         self.assertEqual(self.github.label_writes, 1)
         self.assertEqual(len(self.github.comments), 1)
+
+    def test_restart_candidate_does_not_treat_ordinary_prose_as_a_marker(self):
+        self.github.create_issue_comment(
+            self.issue_number, "Ordinary prose mentions PASES_PHASE_RESTART_APPLIED_V1 in passing.\n",
+        )
+        result = self.run_restart()
+        self.assertEqual(result["status"], "APPLIED")
+        self.assertEqual(self.github.label_writes, 1)
+        self.assertEqual(len(self.github.comments), 3)
+
+    def test_current_phase_generation_rejects_orphan_v2_and_malformed_v2_without_restart(self):
+        canonical = self.phase_decision(v2_generation=(88, "a" * 64))
+        self.github.create_issue_comment(self.issue_number, canonical.body())
+        with self.assertRaisesRegex(PhaseRestartError, "without its Applied generation"):
+            current_phase_generation(self.github, self.root, self.issue_number, self.verified)
+        self.assertEqual(self.github.label_writes, 0)
+        self.github.comments.clear()
+
+        self.github.create_issue_comment(self.issue_number, " " + canonical.body())
+        with self.assertRaisesRegex(PhaseRestartError, "reserved marker is malformed"):
+            current_phase_generation(self.github, self.root, self.issue_number, self.verified)
+        self.assertEqual(self.github.label_writes, 0)
+
+    def test_current_phase_generation_preserves_valid_v1_only_history(self):
+        decision = self.phase_decision()
+        self.assertEqual(decision.payload["schema"], "PASES_PHASE_DECISION_V1")
+        self.github.create_issue_comment(self.issue_number, decision.body())
+
+        generation = current_phase_generation(self.github, self.root, self.issue_number, self.verified)
+
+        self.assertIsNone(generation)
+        self.assertEqual(self.github.label_writes, 0)
 
     def test_competing_intent_publication_blocks_before_label_write(self):
         self.github.duplicate_next_intent = True

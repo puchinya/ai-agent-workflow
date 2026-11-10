@@ -326,7 +326,7 @@ def _is_restart_candidate(body: str) -> bool:
     first_line = body.split("\n", 1)[0].lstrip()
     if first_line.startswith("PASES_PHASE_RESTART_"):
         return True
-    return re.match(r"^<\s*!\s*-{1,2}\s*PASES_PHASE_RESTART", first_line) is not None
+    return re.match(r"^<[\s!\-]{0,12}PASES_PHASE_RESTART_", first_line) is not None
 
 
 @dataclass(frozen=True)
@@ -736,11 +736,20 @@ def current_phase_generation(github: GitHub, root: Path, issue_number: int,
         raise PhaseRestartError(f"Phase restart generation history is unavailable: {exc}") from exc
     markers = [row for row in comments if isinstance(row, dict) and isinstance(row.get("body"), str)
                and _is_restart_candidate(row["body"])]
-    v2_decisions = [row for row in comments if isinstance(row, dict) and isinstance(row.get("body"), str)
-                    and row["body"].startswith(f"{DECISION_V2_SCHEMA}\n")]
+    decision_candidates = [row for row in comments
+                           if isinstance(row, dict) and isinstance(row.get("body"), str)
+                           and _is_phase_decision_candidate(row["body"])]
     if not markers:
-        if v2_decisions:
-            raise PhaseRestartError("Phase Decision V2 exists without its Applied generation history")
+        if decision_candidates:
+            history = _read_history(github, issue_number)
+            expected_decisions = [(row.get("id"), row["body"]) for row in decision_candidates]
+            observed_decisions = [(comment_id, body)
+                                  for comment_id, _decision, body, _actor_id in history.decisions]
+            if history.restarts or observed_decisions != expected_decisions:
+                raise PhaseRestartError("Phase history changed during generation read")
+            if any(decision.payload.get("schema") == DECISION_V2_SCHEMA
+                   for _comment_id, decision, _body, _actor_id in history.decisions):
+                raise PhaseRestartError("Phase Decision V2 exists without its Applied generation history")
         return None
     issue = github.issue(issue_number)
     metadata = github.repository_metadata()
