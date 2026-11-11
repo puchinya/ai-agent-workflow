@@ -740,16 +740,15 @@ def current_phase_generation(github: GitHub, root: Path, issue_number: int,
                            if isinstance(row, dict) and isinstance(row.get("body"), str)
                            and _is_phase_decision_candidate(row["body"])]
     if not markers:
-        if decision_candidates:
-            history = _read_history(github, issue_number)
-            expected_decisions = [(row.get("id"), row["body"]) for row in decision_candidates]
-            observed_decisions = [(comment_id, body)
-                                  for comment_id, _decision, body, _actor_id in history.decisions]
-            if history.restarts or observed_decisions != expected_decisions:
-                raise PhaseRestartError("Phase history changed during generation read")
-            if any(decision.payload.get("schema") == DECISION_V2_SCHEMA
-                   for _comment_id, decision, _body, _actor_id in history.decisions):
-                raise PhaseRestartError("Phase Decision V2 exists without its Applied generation history")
+        history = _read_history(github, issue_number)
+        expected_decisions = [(row.get("id"), row["body"]) for row in decision_candidates]
+        observed_decisions = [(comment_id, body)
+                              for comment_id, _decision, body, _actor_id in history.decisions]
+        if history.restarts or observed_decisions != expected_decisions:
+            raise PhaseRestartError("Phase history changed during generation read")
+        if any(decision.payload.get("schema") == DECISION_V2_SCHEMA
+               for _comment_id, decision, _body, _actor_id in history.decisions):
+            raise PhaseRestartError("Phase Decision V2 exists without its Applied generation history")
         return None
     issue = github.issue(issue_number)
     metadata = github.repository_metadata()

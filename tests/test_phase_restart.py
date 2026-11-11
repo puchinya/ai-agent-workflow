@@ -103,6 +103,7 @@ class FakeGitHub:
         self.unavailable_content_paths: set[str] = set()
         self.content_responses: dict[str, list[bytes]] = {}
         self.mutate_comments_on_history_read: dict[int, dict[int, str]] = {}
+        self.add_comments_on_history_read: dict[int, list[str]] = {}
 
     def repository_metadata(self):
         return {"id": self.repository_id, "full_name": self.repo, "default_branch": "main"}
@@ -140,6 +141,8 @@ class FakeGitHub:
             row = next(item for item in self.comments if item["id"] == comment_id)
             row["body"] = body
             row["updated_at"] = "2026-11-07T01:00:00Z"
+        for body in self.add_comments_on_history_read.get(self.history_reads, []):
+            self.create_issue_comment(number, body)
         rows = json.loads(json.dumps(self.comments))
         if self.omit_second_history_snapshot and self.history_reads == 3:
             return []
@@ -809,6 +812,39 @@ class PhaseRestartTests(unittest.TestCase):
 
         self.assertEqual(self.github.label_writes, 1)
         self.assertEqual(len(self.github.comments), 2)
+
+    def test_current_generation_rechecks_stable_empty_history(self):
+        generation = current_phase_generation(self.github, self.root, self.issue_number, self.verified)
+
+        self.assertIsNone(generation)
+        self.assertEqual(self.github.history_reads, 3)
+        self.assertEqual(self.github.label_writes, 0)
+
+    def test_current_generation_blocks_intent_published_after_empty_first_snapshot(self):
+        self.run_restart()
+        intent_body = self.github.comments[0]["body"]
+        self.github.comments.clear()
+        self.github.issue_row["labels"] = [
+            {"name": "enhancement"}, {"name": "kind:single"}, {"name": "phase:execution"},
+        ]
+        self.github.history_reads = 0
+        self.github.add_comments_on_history_read[2] = [intent_body]
+
+        with self.assertRaisesRegex(PhaseRestartError, "Phase history changed during generation read"):
+            current_phase_generation(self.github, self.root, self.issue_number, self.verified)
+
+        self.assertEqual(self.github.label_writes, 1)
+        self.assertEqual(len(self.github.comments), 1)
+
+    def test_current_generation_blocks_orphan_v2_published_after_empty_first_snapshot(self):
+        decision = self.phase_decision(v2_generation=(88, "a" * 64))
+        self.github.add_comments_on_history_read[2] = [decision.body()]
+
+        with self.assertRaisesRegex(PhaseRestartError, "Phase history changed during generation read"):
+            current_phase_generation(self.github, self.root, self.issue_number, self.verified)
+
+        self.assertEqual(self.github.label_writes, 0)
+        self.assertEqual(len(self.github.comments), 1)
 
     def test_competing_intent_publication_blocks_before_label_write(self):
         self.github.duplicate_next_intent = True
