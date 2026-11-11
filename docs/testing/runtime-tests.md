@@ -57,18 +57,8 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
     - [2.22.1 ORA-RT-022 Expected result](#2221-ora-rt-022-expected-result)
   - [2.23 TST-RT-023 Independent Review result ingestion with optional host IDs](#223-tst-rt-023-independent-review-result-ingestion-with-optional-host-ids)
     - [2.23.1 ORA-RT-023 Expected result](#2231-ora-rt-023-expected-result)
-  - [2.24 TST-RT-024 Cloud Network-secret mode validation](#224-tst-rt-024-cloud-network-secret-mode-validation)
+  - [2.24 TST-RT-024 Strict Phase restart authorization parsing](#224-tst-rt-024-strict-phase-restart-authorization-parsing)
     - [2.24.1 ORA-RT-024 Expected result](#2241-ora-rt-024-expected-result)
-  - [2.25 TST-RT-025 Admin gh child credential isolation](#225-tst-rt-025-admin-gh-child-credential-isolation)
-    - [2.25.1 ORA-RT-025 Expected result](#2251-ora-rt-025-expected-result)
-  - [2.26 TST-RT-026 Complete policy snapshot and HTTP status semantics](#226-tst-rt-026-complete-policy-snapshot-and-http-status-semantics)
-    - [2.26.1 ORA-RT-026 Expected result](#2261-ora-rt-026-expected-result)
-  - [2.27 TST-RT-027 Exact-plan authorization and ambiguous write recovery](#227-tst-rt-027-exact-plan-authorization-and-ambiguous-write-recovery)
-    - [2.27.1 ORA-RT-027 Expected result](#2271-ora-rt-027-expected-result)
-  - [2.28 TST-RT-028 Cloud Activation CLI gate propagation](#228-tst-rt-028-cloud-activation-cli-gate-propagation)
-    - [2.28.1 ORA-RT-028 Expected result](#2281-ora-rt-028-expected-result)
-  - [2.29 TST-RT-029 Distribution and compatibility regression](#229-tst-rt-029-distribution-and-compatibility-regression)
-    - [2.29.1 ORA-RT-029 Expected result](#2291-ora-rt-029-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -119,18 +109,8 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
 - [ORA-RT-022](#ora-rt-022) — 2.22.1 ORA-RT-022 Expected result
 - [TST-RT-023](#tst-rt-023) — 2.23 TST-RT-023 Independent Review result ingestion with optional host IDs
 - [ORA-RT-023](#ora-rt-023) — 2.23.1 ORA-RT-023 Expected result
-- [TST-RT-024](#tst-rt-024) — 2.24 TST-RT-024 Cloud Network-secret mode validation
+- [TST-RT-024](#tst-rt-024) — 2.24 TST-RT-024 Strict Phase restart authorization parsing
 - [ORA-RT-024](#ora-rt-024) — 2.24.1 ORA-RT-024 Expected result
-- [TST-RT-025](#tst-rt-025) — 2.25 TST-RT-025 Admin gh child credential isolation
-- [ORA-RT-025](#ora-rt-025) — 2.25.1 ORA-RT-025 Expected result
-- [TST-RT-026](#tst-rt-026) — 2.26 TST-RT-026 Complete policy snapshot and HTTP status semantics
-- [ORA-RT-026](#ora-rt-026) — 2.26.1 ORA-RT-026 Expected result
-- [TST-RT-027](#tst-rt-027) — 2.27 TST-RT-027 Exact-plan authorization and ambiguous write recovery
-- [ORA-RT-027](#ora-rt-027) — 2.27.1 ORA-RT-027 Expected result
-- [TST-RT-028](#tst-rt-028) — 2.28 TST-RT-028 Cloud Activation CLI gate propagation
-- [ORA-RT-028](#ora-rt-028) — 2.28.1 ORA-RT-028 Expected result
-- [TST-RT-029](#tst-rt-029) — 2.29 TST-RT-029 Distribution and compatibility regression
-- [ORA-RT-029](#ora-rt-029) — 2.29.1 ORA-RT-029 Expected result
 <!-- heading-map:end -->
 
 
@@ -415,61 +395,13 @@ V1/V2 records round-trip with their original schema, digest, and bytes. A valid 
 For a valid joined-child result, runtime ingestion accepts missing optional host IDs, preserves the raw result unchanged, stores `PASES_INDEPENDENT_REVIEW_V3` with `LIMITED` confidence and the complete child-authored review-unit set, and reports each missing ID. A complete matching set yields `HIGH`. Missing IDs do not mean the review was skipped; the host must still perform and verify the actual spawn, join, and child-result handoff as required by TST-UR-007/008. With all other exact-subject gates passing, `LIMITED` alone does not block Readiness. No result, failed or unknown spawn/join, known same-context identity, mismatch, stale or malformed evidence, incomplete review-unit coverage, failed unit, unresolved blocking finding, or non-PASS verdict remains non-passing and cannot advance the lifecycle.
 
 <a id="tst-rt-024"></a>
-### 2.24 TST-RT-024 Cloud Network-secret mode validation
+### 2.24 TST-RT-024 Strict Phase restart authorization parsing
 
-**Setup and action:** Exercise `cloud-network-secret` with Cloud runtime markers and the configured host/secret binding present, absent, unready, invalid, and outside Cloud. Verify existing local `pat` and `isolated-gh-device` modes remain unchanged and reject conflicting mode selection.
+**Setup and action:** Parse the exact marker block from approved ADC byte fixtures. Exercise one valid canonical block and fenced, missing, duplicated, extra-field, duplicate-key, reordered/noncanonical JSON, wrong schema, wrong target, wrong transition, wrong application count, empty/overlong/control-character reason, stale pointer, and invalid UTF-8 cases. Confirm the parser binds the payload digest to the complete ADC digest and never scans technical Issue comments or arbitrary English prose for permission. Verify the artifact-impact parser maps `Test Oracles and traceability:` to the same constrained test-oracle path validation as `Testing:`. Verify Phase Decision V1 bytes remain unchanged; history collection recognizes reserved V1/V2 decision markers and malformed restart marker candidates, including separated comment hyphens, blocks edited bodies, authenticates comment authors, and uses exact serializer bodies. With no restart marker, test that malformed reserved V1/V2 blocks fail, canonical orphan V2 fails, and valid V1-only history remains on the ordinary generation. Historical V2 replay verification must reject nonexistent declared blobs, incorrect committed SHA-256 values, unauthorized skip reasons, and invalid READY traceability; load authorized skipped spec/design targets from the receipt commit; ignore unrelated test source links outside current requirement rows; and accept a genuine current-generation receipt chain.
 
 <a id="ora-rt-024"></a>
 #### 2.24.1 ORA-RT-024 Expected result
 
-Only a supported Cloud runtime with a ready configured binding enters the new Admin mode. All invalid states produce the explicit Cloud-secret-unavailable result, never start browser login, and never fall back to ambient credentials or local PAT.
+Only one unique canonical marker outside fenced code in the current approved ADC yields a typed authorization. All malformed, ambiguous, stale, out-of-scope, or prose-only inputs fail closed before any GitHub write.
 
-<a id="tst-rt-025"></a>
-### 2.25 TST-RT-025 Admin gh child credential isolation
-
-**Setup and action:** Inspect the environment passed to ordinary and Admin `gh api` subprocesses. Test conflicting `GH_TOKEN`, `GITHUB_TOKEN`, enterprise token variables, private temporary config creation, secret placeholder pass-through, and cleanup after success, exception, and interruption. Scan captured argv and logs for a synthetic secret sentinel.
-
-<a id="ora-rt-025"></a>
-#### 2.25.1 ORA-RT-025 Expected result
-
-Only the selected Admin child receives the host placeholder and isolated config. Ordinary clients are unchanged. No credential value appears in argv, logs, temporary files, or returned diagnostics; temporary config is removed best-effort on every tested exit.
-
-<a id="tst-rt-026"></a>
-### 2.26 TST-RT-026 Complete policy snapshot and HTTP status semantics
-
-**Setup and action:** Unit-test complete owner/repository/permission and policy snapshots. Inject HTTP 401, 403, eligible and ineligible 404, 429, 5xx, invalid JSON, pagination gaps, and inconsistent branch/ruleset views. Assert whether a plan can be built and count Ruleset and Setup PR writes.
-
-<a id="ora-rt-026"></a>
-#### 2.26.1 ORA-RT-026 Expected result
-
-Only complete readback permits a plan. Incomplete or failed identity/protection/rule reads are `UNAVAILABLE`, with zero policy/PR/record writes. A protection 404 means `NOT_CONFIGURED` only when every other required read passes.
-
-<a id="tst-rt-027"></a>
-### 2.27 TST-RT-027 Exact-plan authorization and ambiguous write recovery
-
-**Setup and action:** Exercise exact digest approvals, stale plan/subject detection, durable intent, create/update/NOOP, lost writer responses, resume, and duplicate/conflicting policy state. Mock transport to count POST/PUT and merge calls.
-
-<a id="ora-rt-027"></a>
-#### 2.27.1 ORA-RT-027 Expected result
-
-Create/update writes occur only once after exact approval; NOOP does not request a write approval. Stale subjects and conflicting policies block. A lost response triggers read-only recovery and never blind replay; exact completed repeat is a zero-write NOOP.
-
-<a id="tst-rt-028"></a>
-### 2.28 TST-RT-028 Cloud Activation CLI gate propagation
-
-**Setup and action:** Exercise plan/apply CLI commands with Cloud mode and eligible/ineligible checkpoints, complete/incomplete policy snapshots, exact chat provenance, missing chat event, Setup PR, V2 record, and #63 finalization. Verify no CLI flag, file, stdin, Issue comment, or assistant text can stand in for the in-process owner event.
-
-<a id="ora-rt-028"></a>
-#### 2.28.1 ORA-RT-028 Expected result
-
-All results preserve typed blocker status and checkpoint. Ruleset writes, Setup PR creation/merge, V2 record, and #63 close remain zero until their respective gates pass. `CHAT_PROVENANCE_UNAVAILABLE` and `ADMIN_POLICY_UNAVAILABLE` remain distinguishable; no earlier V1/ADC/Phase/Binding history changes.
-
-<a id="tst-rt-029"></a>
-### 2.29 TST-RT-029 Distribution and compatibility regression
-
-**Setup and action:** Build all supported distribution targets from canonical sources, run the deterministic check, validate packaged imports and 16-Skill acceptance, and compare legacy admin/auth/activation behavior with pre-change fixtures.
-
-<a id="ora-rt-029"></a>
-#### 2.29.1 ORA-RT-029 Expected result
-
-Generated distributions are deterministic, imports and acceptance pass, and existing `pat`, device, V1 Activation, and historical record semantics remain unchanged. Generated output is never hand edited.
+The existing phase artifact-impact parser also accepts `Test Oracles and traceability:` as the test-oracle role label. It maps to the same exact `docs/testing/` path validation as `Testing:` and does not alter document-role semantics. A restart Applied record activates `PASES_PHASE_DECISION_V2`; history collection recognizes reserved V1/V2 decision candidates and malformed restart marker candidates through direct/list/direct readback, including leading whitespace and separated comment hyphens, and rejects malformed, edited, or unauthored records. Current-generation lookup performs the verified read even when its initial candidate set is empty, compares the initially enumerated candidate IDs/bodies with its verified readback, and blocks if evidence appears or disappears between those reads. With no restart record, malformed decision candidates and canonical orphan V2 fail closed while valid V1-only history remains compatible. Before a later phase label can produce NOOP, every historical V2 receipt is rechecked against ADC-declared artifacts, the recorded commit's regular blobs and SHA-256 values, ADC skip reasons, and the READY traceability validator. Authorized skipped spec/design targets are read from that receipt commit; executable sources are fetched only for current ADC requirement rows. READY lookup binds V2 to the Applied ID and digest. The preceding V1 serializer remains byte-for-byte unchanged.

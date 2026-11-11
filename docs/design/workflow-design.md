@@ -23,12 +23,7 @@
   - [5.8 DES-F01-015 Chat-confirmed decisions and separated operations](#58-des-f01-015-chat-confirmed-decisions-and-separated-operations)
   - [5.9 DES-F01-016 Native Independent Review execution and confidence](#59-des-f01-016-native-independent-review-execution-and-confidence)
   - [5.10 DES-F01-018 Exact Phase evidence recovery](#510-des-f01-018-exact-phase-evidence-recovery)
-  - [5.11 DES-F01-019 Cloud Network-secret Admin authentication](#511-des-f01-019-cloud-network-secret-admin-authentication)
-  - [5.12 DES-F01-020 Complete Cloud Admin policy readback](#512-des-f01-020-complete-cloud-admin-policy-readback)
-  - [5.13 DES-F01-021 Separate approvals and resumable Activation](#513-des-f01-021-separate-approvals-and-resumable-activation)
-  - [5.14 DES-F01-022 Direct chat provenance for owner decisions](#514-des-f01-022-direct-chat-provenance-for-owner-decisions)
-  - [5.15 DES-F01-023 Issue #63 lifecycle preservation](#515-des-f01-023-issue-63-lifecycle-preservation)
-  - [5.16 DES-F01-024 Cloud transport regression and distribution coverage](#516-des-f01-024-cloud-transport-regression-and-distribution-coverage)
+  - [5.11 DES-F01-031 Generic ADC-authorized Phase rebaseline](#511-des-f01-031-generic-adc-authorized-phase-rebaseline)
 - [6 DES-WF-003 Workspace execution flow](#6-des-wf-003-workspace-execution-flow)
 - [7 DES-WF-004 Failure handling](#7-des-wf-004-failure-handling)
 - [8 DES-WF-005 Authorization boundary and PR handoff](#8-des-wf-005-authorization-boundary-and-pr-handoff)
@@ -51,12 +46,7 @@
 - [DES-F01-015](#des-f01-015) — 5.8 DES-F01-015 Chat-confirmed decisions and separated operations
 - [DES-F01-016](#des-f01-016) — 5.9 DES-F01-016 Native Independent Review execution and confidence
 - [DES-F01-018](#des-f01-018) — 5.10 DES-F01-018 Exact Phase evidence recovery
-- [DES-F01-019](#des-f01-019) — 5.11 DES-F01-019 Cloud Network-secret Admin authentication
-- [DES-F01-020](#des-f01-020) — 5.12 DES-F01-020 Complete Cloud Admin policy readback
-- [DES-F01-021](#des-f01-021) — 5.13 DES-F01-021 Separate approvals and resumable Activation
-- [DES-F01-022](#des-f01-022) — 5.14 DES-F01-022 Direct chat provenance for owner decisions
-- [DES-F01-023](#des-f01-023) — 5.15 DES-F01-023 Issue #63 lifecycle preservation
-- [DES-F01-024](#des-f01-024) — 5.16 DES-F01-024 Cloud transport regression and distribution coverage
+- [DES-F01-031](#des-f01-031) — 5.11 DES-F01-031 Generic ADC-authorized Phase rebaseline
 - [DES-WF-003](#des-wf-003) — 6 DES-WF-003 Workspace execution flow
 - [DES-WF-004](#des-wf-004) — 7 DES-WF-004 Failure handling
 - [DES-WF-005](#des-wf-005) — 8 DES-WF-005 Authorization boundary and PR handoff
@@ -226,35 +216,16 @@ The child's result must bind the current repository, Issue, PR, approved ADC, HE
 
 The V3 Phase receipt path is a one-time recovery for exactly the two approved #63 ADC edges enumerated by REQ-F01-018. V1 and V2 histories remain immutable and retain their original validation rules. Each V3 pair is chained to the immediately preceding Applied comment ID and canonical payload digest, and binds the exact predecessor/successor ADC IDs and digests, Issue body digest, complete sorted labels, operation, phases, and authenticated executor. The `execution -> requirements` edge may issue one label PUT only when the live phase is exactly `execution`; the following `requirements -> requirements` edge records the existing full label set and performs no label write. The current ADC generation and every later ordinary successor use V2. Before and after each append or label mutation, the runtime verifies exact Issue/ADC/history state. Lost responses are resolved by readback, never by replaying a confirmed label write; out-of-scope edges, gaps, mismatches, duplicates, or edits block.
 
-<a id="des-f01-019"></a>
-### 5.11 DES-F01-019 Cloud Network-secret Admin authentication
+<a id="des-f01-031"></a>
+### 5.11 DES-F01-031 Generic ADC-authorized Phase rebaseline
 
-The Admin transport is a scoped child of the existing `GitHub` adapter. In Cloud mode it reads only the configured platform Network-secret placeholder and provides it as `GH_TOKEN` to the Admin `gh api` child; the platform proxy substitutes the secret for HTTPS requests to `api.github.com:443`. The child receives a newly created private empty `GH_CONFIG_DIR` and no competing ambient GitHub credentials. The ordinary GitHub client, shell environment, and saved user configuration remain unchanged. The token is never read into application data, written to disk, placed in argv, or included in diagnostics. Missing Cloud bindings, a non-Cloud runtime, invalid credentials, missing permissions, or failed proxy substitution produce a typed unavailable result and do not fall back to PAT or device login. Existing explicit local PAT and isolated device-login modes retain their prior contracts.
+The ordinary restart path is separate from `phase_rebaseline.py`'s Issue #63 flow. `issue phase-restart ISSUE` verifies the exact current approved ADC and parses one canonical `PASES_PHASE_RESTART_AUTHORIZATION_V1` block outside code fences. It accepts only an open `kind:single` or `kind:child` Issue at `phase:execution`, with a matching current ExecutionBinding generation and the exact `execution -> requirements` declaration. No Issue number, SHA, title, or prose sentence is embedded in the generic policy.
 
-<a id="des-f01-020"></a>
-### 5.12 DES-F01-020 Complete Cloud Admin policy readback
+The operation serializes canonical Intent and Applied comment records. Intent is persisted and read back before the final live-state recheck. The sole full-label update is permitted only while the complete label set still matches the planned before-state. Applied is written only after exact after-state readback. Each carrier is verified by complete direct/list/direct snapshots, stable GitHub User identity, exact Issue/repository URLs, immutable created/updated timestamp, and byte-identical body. Restart history discovery retains malformed/edited reserved marker candidates even when bounded comment punctuation/whitespace edits (including separated hyphens) change their first line; ordinary prose mentions outside a header are ignored. These candidates block rather than disappear from the journal. Lost responses are reconciled by reads and cannot cause a second update. There is no atomic GitHub ETag/CAS guarantee for the label endpoint; the workflow assumes one P-ASES writer and blocks on any observed competing state.
 
-Policy planning begins only after the same Admin-scoped client verifies the configured owner User, stable repository ID, repository admin permission, and collaborator admin permission. It then reads the default branch, legacy branch protection, effective branch rules, Ruleset inventory, selected Ruleset details, and impacted open PRs. The reader distinguishes a complete legacy-protection 404 from an inaccessible 403; an incomplete or failed read is `UNAVAILABLE`, never `NOT_CONFIGURED`. Empty Ruleset results or `protected=false` cannot fill a missing read. Planning and all policy-dependent side effects remain blocked until the complete snapshot is available and bound into the canonical plan.
+An Applied record defines the active Phase generation for its exact ADC and Binding. Existing V1 phase decisions need no schema rewrite. While a restart Applied record is active, new phase receipts use `PASES_PHASE_DECISION_V2` and bind the Applied comment ID and exact body digest; V1 serialization stays byte-identical. The reader recognizes the reserved plain-text `PASES_PHASE_DECISION_V*` marker family, parses only canonical V1/V2 bodies, and verifies recognized history direct/list/direct against the authenticated GitHub User. A malformed edited header remains a history candidate and blocks the operation. Generation lookup compares the initial candidate IDs/bodies with the later verified history, blocking an edit or deletion between reads. With no restart marker, generation lookup parses every reserved Decision candidate before returning: malformed candidates and canonical V2 without an Applied predecessor block, while valid V1-only history preserves the pre-restart route. The current approved ADC, current Binding, and matching restart Applied record are revalidated at each later phase transition. Old decisions remain historical and cannot satisfy the restarted generation even when they name the same ADC. A completed restart replay is a NOOP only at its exact after-label snapshot or when an unbroken same-generation V2 chain explains the live labels. Each receipt in that chain is revalidated read-only against ADC-declared paths, authorized skip reasons, regular branch blobs and SHA-256 values at the receipt commit, and normal READY traceability constraints; linked documents for authorized skipped specification/design roles are fetched from that same historical commit, while executable sources are loaded only for current ADC requirement rows. Existing path, anchor, skip, allowlist, committed-blob, digest, and source checks remain authoritative; later working-tree state is not used to invent historical evidence. A later execution label also requires READY proof revalidation. For a later authorized restart, the predecessor is the newest valid Applied or Phase Decision event; a later decision therefore supersedes an older Applied event as the immediate predecessor. An incomplete restart Intent from any prior ADC generation blocks all further Phase operations. If no restart record exists for a normal execution, the ordinary ADC/Binding generation remains active. A later successor ADC requires its own authorized generation and cannot inherit the prior restart authority.
 
-<a id="des-f01-021"></a>
-### 5.13 DES-F01-021 Separate approvals and resumable Activation
-
-Activation reuses its durable checkpoint and canonical plan. A create/update plan is approved independently for its exact digest before the single existing Ruleset writer runs. A Setup PR merge uses a second decision bound to that PR's exact current HEAD. Existing intent, idempotency, ownership, and post-write readback order remain authoritative. An ambiguous write or merge response enters read-only recovery; retry is allowed only when readback proves the operation did not occur and the durable state permits a new attempt. A verified no-op requires no policy-write approval. Admin credential possession never implies either decision.
-
-<a id="des-f01-022"></a>
-### 5.14 DES-F01-022 Direct chat provenance for owner decisions
-
-The host forwards the actual same-conversation user-role event into the existing in-process owner authorization boundary. The runtime binds that event to the operation's displayed plan or PR subject and emits a decision only after the exact-subject check succeeds. CLI flags, files, stdin, Issue comments, assistant text, or inferred identity cannot construct this input. When the host cannot supply the event, the authorization result is `CHAT_PROVENANCE_UNAVAILABLE`, and dependent writes remain at zero. The resulting evidence describes operator-reported chat confirmation, not a cryptographic chat signature.
-
-<a id="des-f01-023"></a>
-### 5.15 DES-F01-023 Issue #63 lifecycle preservation
-
-Issue #71 implementation is isolated from the historical Activation V1, #63 ADC and binding chain, and merged PR #64. The runtime uses the existing #57 V2 Activation record as an append-only successor. Issue #63 remains open until that record is verified `ACTIVE`, is later than the #64 merge time, and matches the current effective policy. Only the existing `delivery finalize 63 64` route may then close #63, with its normal durable intent and exact readback. Incomplete policy evidence or a pending Setup PR cannot produce an ACTIVE record or close the Issue.
-
-<a id="des-f01-024"></a>
-### 5.16 DES-F01-024 Cloud transport regression and distribution coverage
-
-Tests exercise secret readiness, process isolation, identity checks, status-code distinctions, partial reads, denial before approval, no ambient-credential fallback, cleanup, recovery, and lifecycle ordering. Specification, design, lifecycle and runtime oracles, traceability, canonical Skills, and adapter documentation form one source set. Distribution packages are projections built and checked with `tools/build_dist.py`; generated files are not hand edited.
+The exact approved ADC is the only authorization for a single rebaseline. Intent/Applied receipts are technical records. The typed authorization marker is one-shot, current-pointer-bound, and has a fixed transition pair and `max_applications=1`; absent, duplicate, edited, stale, malformed, or mismatched markers block before writes. Issue #63 remains routed to its specialized V1/V2/V3 implementation unchanged.
 
 <a id="des-wf-003"></a>
 <a id="des-wf-003-workspace-execution-flow"></a>
