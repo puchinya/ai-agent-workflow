@@ -59,6 +59,19 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
     - [2.23.1 ORA-RT-023 Expected result](#2231-ora-rt-023-expected-result)
   - [2.24 TST-RT-024 Strict Phase restart authorization parsing](#224-tst-rt-024-strict-phase-restart-authorization-parsing)
     - [2.24.1 ORA-RT-024 Expected result](#2241-ora-rt-024-expected-result)
+- [3 Issue #71 Admin runtime Oracles](#3-issue-71-admin-runtime-oracles)
+  - [3.1 TST-RT-025 Isolated device Admin authentication](#31-tst-rt-025-isolated-device-admin-authentication)
+    - [3.1.1 ORA-RT-025 Expected result](#311-ora-rt-025-expected-result)
+  - [3.2 TST-RT-026 Complete Admin policy snapshot](#32-tst-rt-026-complete-admin-policy-snapshot)
+    - [3.2.1 ORA-RT-026 Expected result](#321-ora-rt-026-expected-result)
+  - [3.3 TST-RT-027 No cross-credential fallback](#33-tst-rt-027-no-cross-credential-fallback)
+    - [3.3.1 ORA-RT-027 Expected result](#331-ora-rt-027-expected-result)
+  - [3.4 TST-RT-028 Typed Phase restart authorization](#34-tst-rt-028-typed-phase-restart-authorization)
+    - [3.4.1 ORA-RT-028 Expected result](#341-ora-rt-028-expected-result)
+  - [3.5 TST-RT-029 Phase restart durable recovery](#35-tst-rt-029-phase-restart-durable-recovery)
+    - [3.5.1 ORA-RT-029 Expected result](#351-ora-rt-029-expected-result)
+  - [3.6 TST-RT-030 Activation and Issue #63 gates](#36-tst-rt-030-activation-and-issue-63-gates)
+    - [3.6.1 ORA-RT-030 Expected result](#361-ora-rt-030-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -111,6 +124,18 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
 - [ORA-RT-023](#ora-rt-023) — 2.23.1 ORA-RT-023 Expected result
 - [TST-RT-024](#tst-rt-024) — 2.24 TST-RT-024 Strict Phase restart authorization parsing
 - [ORA-RT-024](#ora-rt-024) — 2.24.1 ORA-RT-024 Expected result
+- [TST-RT-025](#tst-rt-025) — 3.1 TST-RT-025 Isolated device Admin authentication
+- [ORA-RT-025](#ora-rt-025) — 3.1.1 ORA-RT-025 Expected result
+- [TST-RT-026](#tst-rt-026) — 3.2 TST-RT-026 Complete Admin policy snapshot
+- [ORA-RT-026](#ora-rt-026) — 3.2.1 ORA-RT-026 Expected result
+- [TST-RT-027](#tst-rt-027) — 3.3 TST-RT-027 No cross-credential fallback
+- [ORA-RT-027](#ora-rt-027) — 3.3.1 ORA-RT-027 Expected result
+- [TST-RT-028](#tst-rt-028) — 3.4 TST-RT-028 Typed Phase restart authorization
+- [ORA-RT-028](#ora-rt-028) — 3.4.1 ORA-RT-028 Expected result
+- [TST-RT-029](#tst-rt-029) — 3.5 TST-RT-029 Phase restart durable recovery
+- [ORA-RT-029](#ora-rt-029) — 3.5.1 ORA-RT-029 Expected result
+- [TST-RT-030](#tst-rt-030) — 3.6 TST-RT-030 Activation and Issue #63 gates
+- [ORA-RT-030](#ora-rt-030) — 3.6.1 ORA-RT-030 Expected result
 <!-- heading-map:end -->
 
 
@@ -405,3 +430,65 @@ For a valid joined-child result, runtime ingestion accepts missing optional host
 Only one unique canonical marker outside fenced code in the current approved ADC yields a typed authorization. All malformed, ambiguous, stale, out-of-scope, or prose-only inputs fail closed before any GitHub write.
 
 The existing phase artifact-impact parser also accepts `Test Oracles and traceability:` as the test-oracle role label. It maps to the same exact `docs/testing/` path validation as `Testing:` and does not alter document-role semantics. A restart Applied record activates `PASES_PHASE_DECISION_V2`; history collection recognizes reserved V1/V2 decision candidates and malformed restart marker candidates through direct/list/direct readback, including leading whitespace and separated comment hyphens, and rejects malformed, edited, or unauthored records. Current-generation lookup performs the verified read even when its initial candidate set is empty, compares the initially enumerated candidate IDs/bodies with its verified readback, and blocks if evidence appears or disappears between those reads. With no restart record, malformed decision candidates and canonical orphan V2 fail closed while valid V1-only history remains compatible. Before a later phase label can produce NOOP, every historical V2 receipt is rechecked against ADC-declared artifacts, the recorded commit's regular blobs and SHA-256 values, ADC skip reasons, and the READY traceability validator. Authorized skipped spec/design targets are read from that receipt commit; executable sources are fetched only for current ADC requirement rows. READY lookup binds V2 to the Applied ID and digest. The preceding V1 serializer remains byte-for-byte unchanged.
+
+## 3 Issue #71 Admin runtime Oracles
+
+<a id="tst-rt-025"></a>
+### 3.1 TST-RT-025 Isolated device Admin authentication
+
+Capture each `gh auth login` argv, environment, stdout, private config mode, API child config selection, signal cleanup, and object representation. Cover browser-start success and no-browser retry. Never capture a secret value.
+
+<a id="ora-rt-025"></a>
+#### 3.1.1 ORA-RT-025 Expected result
+
+Admin auth is isolated to its temporary config and never alters normal auth. The complete no-browser login stdout is available to the owner. Failures block without a credential fallback.
+
+<a id="tst-rt-026"></a>
+### 3.2 TST-RT-026 Complete Admin policy snapshot
+
+Mock all identity and policy endpoints, including pagination and endpoint-specific errors. Verify the snapshot is complete before plan construction.
+
+<a id="ora-rt-026"></a>
+#### 3.2.1 ORA-RT-026 Expected result
+
+401/403/429/5xx, partial JSON, or missing pages return unavailable. A protection 404 is accepted only with complete successful companion reads. No policy mutation occurs from an incomplete snapshot.
+
+<a id="tst-rt-027"></a>
+### 3.3 TST-RT-027 No cross-credential fallback
+
+Populate normal GH token/config values, then execute both ordinary and Admin clients with success and authentication failure. Inspect child environments and parent state.
+
+<a id="ora-rt-027"></a>
+#### 3.3.1 ORA-RT-027 Expected result
+
+Each child gets only its selected auth path. Failure is returned within that path; Admin and ordinary credentials are never copied or used as fallback for each other.
+
+<a id="tst-rt-028"></a>
+### 3.4 TST-RT-028 Typed Phase restart authorization
+
+Run the generic Phase restart parser and evaluator against valid, missing, duplicate, malformed, stale, and unrelated ADC markers using a fake GitHub history.
+
+<a id="ora-rt-028"></a>
+#### 3.4.1 ORA-RT-028 Expected result
+
+Only the canonical current ADC marker is accepted. Hard-coded Issue IDs, ADC hashes, prose matching, or CLI approval flags cannot authorize a restart.
+
+<a id="tst-rt-029"></a>
+### 3.5 TST-RT-029 Phase restart durable recovery
+
+Inject lost Intent/Applied and label responses, full/partial history pages, actor mismatch, label drift, and repeated invocation; count every append and label write.
+
+<a id="ora-rt-029"></a>
+#### 3.5.1 ORA-RT-029 Expected result
+
+The exact Intent/Applied pair and label transition are idempotent. Read-only recovery resolves ambiguity; no blind duplicate POST/PUT occurs and prior history remains unchanged.
+
+<a id="tst-rt-030"></a>
+### 3.6 TST-RT-030 Activation and Issue #63 gates
+
+Attempt Admin planning, Ruleset apply, Setup PR merge, V2 record, and final Issue #63 closure with incomplete readback, stale exact subjects, and missing approvals.
+
+<a id="ora-rt-030"></a>
+#### 3.6.1 ORA-RT-030 Expected result
+
+Incomplete Admin data and missing/stale approvals block their dependent action. Issue #63 remains open until V2 ACTIVE, effective policy, and time-order readbacks succeed.

@@ -46,6 +46,19 @@
   - [9.19 REQ-F01-035 Active Phase generation](#919-req-f01-035-active-phase-generation)
   - [9.20 REQ-F01-036 Issue #63 compatibility](#920-req-f01-036-issue-63-compatibility)
   - [9.21 REQ-F01-037 ADC is the sole Phase restart approval](#921-req-f01-037-adc-is-the-sole-phase-restart-approval)
+- [10 Issue #71 Cloud Admin and Activation continuation](#10-issue-71-cloud-admin-and-activation-continuation)
+  - [10.1 REQ-F01-019 Temporary Admin authentication](#101-req-f01-019-temporary-admin-authentication)
+  - [10.2 REQ-F01-020 Complete Admin policy readback](#102-req-f01-020-complete-admin-policy-readback)
+  - [10.3 REQ-F01-021 Separate approvals and resumable Activation](#103-req-f01-021-separate-approvals-and-resumable-activation)
+  - [10.4 REQ-F01-022 Direct chat provenance](#104-req-f01-022-direct-chat-provenance)
+  - [10.5 REQ-F01-023 Historical Issue preservation](#105-req-f01-023-historical-issue-preservation)
+  - [10.6 REQ-F01-024 Regression and distribution coverage](#106-req-f01-024-regression-and-distribution-coverage)
+  - [10.7 REQ-F01-025 Child-process authentication separation](#107-req-f01-025-child-process-authentication-separation)
+  - [10.8 REQ-F01-026 Accepted isolation boundary](#108-req-f01-026-accepted-isolation-boundary)
+  - [10.9 REQ-F01-027 Read-only Admin capability proof](#109-req-f01-027-read-only-admin-capability-proof)
+  - [10.10 REQ-F01-028 Generic ADC-authorized Phase recovery](#1010-req-f01-028-generic-adc-authorized-phase-recovery)
+  - [10.11 REQ-F01-029 Append-only Phase restart history](#1011-req-f01-029-append-only-phase-restart-history)
+  - [10.12 REQ-F01-030 Activation completion gates](#1012-req-f01-030-activation-completion-gates)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -81,6 +94,18 @@
 - [REQ-F01-035](#req-f01-035) — 9.19 REQ-F01-035 Active Phase generation
 - [REQ-F01-036](#req-f01-036) — 9.20 REQ-F01-036 Issue #63 compatibility
 - [REQ-F01-037](#req-f01-037) — 9.21 REQ-F01-037 ADC is the sole Phase restart approval
+- [REQ-F01-019](#req-f01-019) — 10.1 REQ-F01-019 Temporary Admin authentication
+- [REQ-F01-020](#req-f01-020) — 10.2 REQ-F01-020 Complete Admin policy readback
+- [REQ-F01-021](#req-f01-021) — 10.3 REQ-F01-021 Separate approvals and resumable Activation
+- [REQ-F01-022](#req-f01-022) — 10.4 REQ-F01-022 Direct chat provenance
+- [REQ-F01-023](#req-f01-023) — 10.5 REQ-F01-023 Historical Issue preservation
+- [REQ-F01-024](#req-f01-024) — 10.6 REQ-F01-024 Regression and distribution coverage
+- [REQ-F01-025](#req-f01-025) — 10.7 REQ-F01-025 Child-process authentication separation
+- [REQ-F01-026](#req-f01-026) — 10.8 REQ-F01-026 Accepted isolation boundary
+- [REQ-F01-027](#req-f01-027) — 10.9 REQ-F01-027 Read-only Admin capability proof
+- [REQ-F01-028](#req-f01-028) — 10.10 REQ-F01-028 Generic ADC-authorized Phase recovery
+- [REQ-F01-029](#req-f01-029) — 10.11 REQ-F01-029 Append-only Phase restart history
+- [REQ-F01-030](#req-f01-030) — 10.12 REQ-F01-030 Activation completion gates
 <!-- heading-map:end -->
 
 
@@ -465,3 +490,65 @@ Keep Issue #63's specialized phase-rebaseline implementation, ADC/Owner checks, 
 ### 9.21 REQ-F01-037 ADC is the sole Phase restart approval
 
 The exact approved ADC and its single valid typed authorization are the sole approval for this one phase reset. No separate Owner plan, terminal input, approval comment, or chat confirmation is required. Intent/Applied comments are technical records, not approval. This authority cannot be reused for Ruleset, Activation, review, merge, or Issue closure.
+
+## 10 Issue #71 Cloud Admin and Activation continuation
+
+<a id="req-f01-019"></a>
+### 10.1 REQ-F01-019 Temporary Admin authentication
+
+Consumer Activation V2 MUST use the existing `isolated-gh-device` path for Admin reads and writes. Create a fresh private mode-0700 `GH_CONFIG_DIR`, remove ambient GitHub token variables from every Admin `gh api` child, and keep ordinary GitHub authentication unchanged. Clean up the temporary configuration on normal exit, exception, and handled interruption. Device authentication is not owner approval and MUST NOT fall back to ordinary authentication. If browser launch fails, retry once with browser launch disabled and present the complete `gh auth login` stdout, URL, and one-time code so the owner can finish in a browser. Do not expose or persist credentials or codes outside the login response.
+
+<a id="req-f01-020"></a>
+### 10.2 REQ-F01-020 Complete Admin policy readback
+
+Before producing a Ruleset plan or policy-dependent write, the isolated Admin client MUST verify authenticated GitHub User ID `3744776`, repository ID `1401910271`, repository `permissions.admin=true`, and collaborator admin permission. It MUST read the default branch, branch metadata, legacy branch protection, effective rules, complete Ruleset inventory and relevant details, and impacted open PRs. Any 401, 403, 429, 5xx, malformed response, missing page, or incomplete identity/policy result is `UNAVAILABLE/BLOCKED`. A legacy protection 404 means `NOT_CONFIGURED` only after all other reads succeed. `protected=false` and empty rule inventories do not convert a 403 into success.
+
+<a id="req-f01-021"></a>
+### 10.3 REQ-F01-021 Separate approvals and resumable Activation
+
+A blocker-free Ruleset create/update plan requires its own exact-plan `RULESET_PLAN_APPLY` approval. Setup PR merge requires a separate approval bound to that PR's exact current HEAD. Reuse the existing checkpoint, canonical planner, single Ruleset writer, durable intent, ownership evidence, and readback sequence. On ambiguous responses recover through reads only; do not repeat a write or merge blindly. An exact verified NOOP requires no policy-write approval.
+
+<a id="req-f01-022"></a>
+### 10.4 REQ-F01-022 Direct chat provenance
+
+Approval-dependent writes require a direct same-conversation owner user-role event passed by the host to the existing in-process authorization boundary and bound to the exact displayed subject. CLI flags, files, stdin, Issue comments, assistant text, or inferred identity are not approval. Missing host provenance returns `CHAT_PROVENANCE_UNAVAILABLE` and leaves dependent writes at zero. Approval evidence is operator-reported and MUST NOT be described as cryptographically signed chat evidence.
+
+<a id="req-f01-023"></a>
+### 10.5 REQ-F01-023 Historical Issue preservation
+
+Keep Issue #57 V1, Issue #63 ADC/Binding/Phase/Gate/evidence, the Activation checkpoint, and merged PR #64 immutable. Keep Issue #63 open until Activation V2 is `ACTIVE`, its creation time is later than PR #64's merge time, and current effective policy matches the recorded digest. Only the existing finalization route may close #63 after these readbacks.
+
+<a id="req-f01-024"></a>
+### 10.6 REQ-F01-024 Regression and distribution coverage
+
+Tests MUST cover Admin authentication isolation, identity and policy readback, 401/403/404/429/5xx and incomplete responses, zero writes before exact approval, no credential fallback, cleanup, replay/recovery, and Activation ordering. Keep specification, design, lifecycle/runtime Oracles, traceability, canonical Skills, and adapters synchronized. Generate distribution outputs only with `tools/build_dist.py`.
+
+<a id="req-f01-025"></a>
+### 10.7 REQ-F01-025 Child-process authentication separation
+
+Ordinary GitHub operations use the ordinary GitHub client and its existing least-privilege authentication. Admin operations use only the isolated device-authenticated client. Every Admin `gh api` child removes `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, and `GITHUB_ENTERPRISE_TOKEN` before setting its private `GH_CONFIG_DIR`. Ordinary children never receive Admin authentication. Neither path may fall back to the other after an error.
+
+<a id="req-f01-026"></a>
+### 10.8 REQ-F01-026 Accepted isolation boundary
+
+Authentication separation is enforced at the `gh` child-process environment/configuration boundary. Both processes may share the same task, parent, and OS user. This is not an OS sandbox and does not protect against same-user process inspection, memory inspection, or a compromised parent. Specifications, tests, and reports MUST state this accepted limitation and MUST NOT claim strong isolation.
+
+<a id="req-f01-027"></a>
+### 10.9 REQ-F01-027 Read-only Admin capability proof
+
+Before Issue #71 runtime changes, perform a complete read-only Admin policy inspection with `isolated-gh-device`. Record the authenticated owner/repository identities, branch data, each policy endpoint result, and `X-Accepted-GitHub-Permissions` without recording secrets. A branch-protection 403 requiring `Administration: read`, any incomplete response, or inconsistent snapshot is `UNAVAILABLE/BLOCKED`; do not infer protection absence or proceed to runtime implementation, Ruleset writes, Setup PR, Activation record, or Issue #63 closure.
+
+<a id="req-f01-028"></a>
+### 10.10 REQ-F01-028 Generic ADC-authorized Phase recovery
+
+Use the generic ordinary-Issue Phase recovery delivered by Issue #72 / PR #73. The backward transition `phase:execution -> phase:requirements` is allowed only when the current approved ADC contains exactly one canonical, typed `PASES_PHASE_RESTART_AUTHORIZATION_V1` marker with an exact self-target, transition, one-application limit, and reason. Do not hard-code Issue numbers, ADC SHA values, or prose substrings. Issue #63 remains on its specialized route.
+
+<a id="req-f01-029"></a>
+### 10.11 REQ-F01-029 Append-only Phase restart history
+
+The restart MUST append canonical Intent and Applied records binding repository and Issue identities, complete labels before/after, approved ADC pointer/digest, current Binding generation/digest, predecessor active Phase generation, authorization digest, transition, reason, and authenticated executor. Preserve every prior record and the frozen base/branch/worktree/initial-HEAD tuple. Apply the full label replacement once after a fresh exact-subject read, then verify it. Ambiguous outcomes recover by read-only checks; never retry a possibly applied label write. New Phase evidence belongs to the Applied generation.
+
+<a id="req-f01-030"></a>
+### 10.12 REQ-F01-030 Activation completion gates
+
+Issue #71 implementation may proceed only after the complete Admin readback succeeds. Ruleset mutation requires separate exact-plan approval; Setup PR merge requires separate exact-HEAD approval. Preserve the existing checkpoint and Issue #57 V1 history. Do not claim Activation V2 `ACTIVE` or close Issue #63 before policy, timestamp, and final close readbacks succeed.

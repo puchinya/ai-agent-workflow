@@ -30,6 +30,19 @@
 - [9 Alternatives considered](#9-alternatives-considered)
 - [10 Migration gate routing](#10-migration-gate-routing)
 - [11 DES-WF-006 Human review and final delivery](#11-des-wf-006-human-review-and-final-delivery)
+- [12 Issue #71 Cloud Admin and Activation continuation](#12-issue-71-cloud-admin-and-activation-continuation)
+  - [12.1 DES-F01-019 Temporary Admin authentication](#121-des-f01-019-temporary-admin-authentication)
+  - [12.2 DES-F01-020 Complete Admin policy readback](#122-des-f01-020-complete-admin-policy-readback)
+  - [12.3 DES-F01-021 Separate approvals and resumable Activation](#123-des-f01-021-separate-approvals-and-resumable-activation)
+  - [12.4 DES-F01-022 Direct chat provenance](#124-des-f01-022-direct-chat-provenance)
+  - [12.5 DES-F01-023 Historical Issue preservation](#125-des-f01-023-historical-issue-preservation)
+  - [12.6 DES-F01-024 Regression and distribution coverage](#126-des-f01-024-regression-and-distribution-coverage)
+  - [12.7 DES-F01-025 Child-process authentication separation](#127-des-f01-025-child-process-authentication-separation)
+  - [12.8 DES-F01-026 Accepted isolation boundary](#128-des-f01-026-accepted-isolation-boundary)
+  - [12.9 DES-F01-027 Read-only Admin capability proof](#129-des-f01-027-read-only-admin-capability-proof)
+  - [12.10 DES-F01-028 Generic ADC-authorized Phase recovery](#1210-des-f01-028-generic-adc-authorized-phase-recovery)
+  - [12.11 DES-F01-029 Append-only restart history](#1211-des-f01-029-append-only-restart-history)
+  - [12.12 DES-F01-030 Activation completion gates](#1212-des-f01-030-activation-completion-gates)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -51,6 +64,18 @@
 - [DES-WF-004](#des-wf-004) — 7 DES-WF-004 Failure handling
 - [DES-WF-005](#des-wf-005) — 8 DES-WF-005 Authorization boundary and PR handoff
 - [DES-WF-006](#des-wf-006) — 11 DES-WF-006 Human review and final delivery
+- [DES-F01-019](#des-f01-019) — 12.1 DES-F01-019 Temporary Admin authentication
+- [DES-F01-020](#des-f01-020) — 12.2 DES-F01-020 Complete Admin policy readback
+- [DES-F01-021](#des-f01-021) — 12.3 DES-F01-021 Separate approvals and resumable Activation
+- [DES-F01-022](#des-f01-022) — 12.4 DES-F01-022 Direct chat provenance
+- [DES-F01-023](#des-f01-023) — 12.5 DES-F01-023 Historical Issue preservation
+- [DES-F01-024](#des-f01-024) — 12.6 DES-F01-024 Regression and distribution coverage
+- [DES-F01-025](#des-f01-025) — 12.7 DES-F01-025 Child-process authentication separation
+- [DES-F01-026](#des-f01-026) — 12.8 DES-F01-026 Accepted isolation boundary
+- [DES-F01-027](#des-f01-027) — 12.9 DES-F01-027 Read-only Admin capability proof
+- [DES-F01-028](#des-f01-028) — 12.10 DES-F01-028 Generic ADC-authorized Phase recovery
+- [DES-F01-029](#des-f01-029) — 12.11 DES-F01-029 Append-only restart history
+- [DES-F01-030](#des-f01-030) — 12.12 DES-F01-030 Activation completion gates
 <!-- heading-map:end -->
 
 
@@ -302,3 +327,65 @@ user_review.py owns the subject-bound human decision, immutable session start, a
 `integration.py` owns the fixed parent child set, native dependency DAG, merged PR/Issue readback, main ancestry, and typed Integration Verification/Acceptance evidence. `parent_gate.py` owns shared reconstruction of these evidence bundles from GitHub Actions run, job, step, and Check Run APIs; the #26 comments are discoverable pointers/cache and cannot prove execution on their own. This resolves Git's self-reference conflict by keeping proof outside the named commit, while deletion or edit fails closed. `delivery parent-evidence <issue> <kind> <run-id>` reconstructs new evidence from those API records and requires the latest matching run and attempt on exact main. New Verification requires all four configured matrix jobs, App ID 15368, and successful compile, committed/generated distribution checks, unit tests, documentation validation, distribution build/validation, generated-path stability, and committed-diff whitespace steps. New Acceptance requires the latest exact-main `parent-integration.yml` workflow_dispatch run and successful specification/design/test-oracle traceability, exact 16-Skill package, generated-distribution consistency, and distribution validation. Each referenced job Check Run URL must name the same repository and resolve to that App's completed/success Check Run on the exact SHA. The reader rejects caller-supplied PASS JSON even when all supplied artifact hashes match. When validating an already-issued Activation, `parent_gate.py` uses the exact run ID/attempt embedded in the referenced V2 evidence comment and the attempt-specific GitHub Actions run/jobs APIs; it verifies that attempt's workflow, event, branch, repository, SHA, jobs, steps, and Check Runs without comparing it to the latest attempt. If the historical attempt cannot be fetched or any API provenance is incomplete, it blocks with no comment/cache fallback. Thus retries do not erase valid historical evidence while issuance still rejects stale results. Each Activation read emits a debug diagnostic with the GitHub API request count and cumulative client-observed latency; these metrics do not affect or skip evidence checks. Since parent #26 predates ADC pointer journals, the shared module obtains its pinned ADC digest and source declaration from the approved child #31 ADC and verifies the pinned migration-contract source. The Issue evidence comment remains editable/deletable GitHub storage: exact comment ID/body/actor/repository/subject are double-read, detected mutation blocks, and no intrinsic immutability is claimed. The dedicated parent-label migration remains read-only by default and mutates labels only under explicit `--apply`; parent delivery never applies it implicitly. After Integration PASS, parent User Review binds the ADC, six child merge pairs, and Integration result digest; approval never activates, closes, or merges the parent.
 
 The CLI performs phase transitions only after re-reading the Issue and confirming its current labels. An in-scope request returns the same Issue to execution; an explicitly triaged new scope returns it to requirements. Finalize is a readback command and has no merge or close mutation. Parent final delivery remains blocked until child Integration and the separate parent review/activation gates are satisfied.
+
+## 12 Issue #71 Cloud Admin and Activation continuation
+
+<a id="des-f01-019"></a>
+### 12.1 DES-F01-019 Temporary Admin authentication
+
+The existing Admin context creates a new private mode-0700 `GH_CONFIG_DIR`, removes all ambient GitHub token variables from each Admin API child, and authenticates through `gh auth login --web`. The ordinary GitHub client remains untouched. If browser launch fails, retry once without browser launch and show the complete stdout, URL, and one-time code to the owner. Temporary config cleanup is best-effort on all handled exits; authentication does not grant approval and does not fall back to ordinary credentials.
+
+<a id="des-f01-020"></a>
+### 12.2 DES-F01-020 Complete Admin policy readback
+
+One Admin-scoped reader validates the owner User, stable repository identity, repository/collaborator admin permissions, default branch, legacy protection, effective rules, Ruleset inventory/details, and affected open PRs. It distinguishes an authorized complete protection 404 from 403 or partial reads. No policy plan or dependent side effect is produced from an incomplete snapshot.
+
+<a id="des-f01-021"></a>
+### 12.3 DES-F01-021 Separate approvals and resumable Activation
+
+The existing checkpoint and canonical Ruleset planner feed the single existing Ruleset writer. The exact Ruleset plan and exact Setup PR HEAD have separate chat approvals. Durable intent and readback resolve interruption; an ambiguous response never causes blind replay. Exact NOOP remains read-only.
+
+<a id="des-f01-022"></a>
+### 12.4 DES-F01-022 Direct chat provenance
+
+The host passes the real same-conversation owner user-role event through the in-process authorization boundary. Runtime binds it to the displayed operation subject. Without that event, return `CHAT_PROVENANCE_UNAVAILABLE`. CLI-supplied claims, comments, files, and assistant-generated text cannot create authorization. Persisted evidence is operator-reported, not a chat signature.
+
+<a id="des-f01-023"></a>
+### 12.5 DES-F01-023 Historical Issue preservation
+
+Issue #71 uses an append-only Activation V2 record and does not rewrite Issue #57 V1, Issue #63 history, the Activation checkpoint, or PR #64. Issue #63 closes only after the V2 `ACTIVE` record, effective policy, and time ordering are verified.
+
+<a id="des-f01-024"></a>
+### 12.6 DES-F01-024 Regression and distribution coverage
+
+A single canonical source set covers authentication, policy reads, approval boundaries, restart/recovery, and Activation ordering. Host distributions are generated and checked by `tools/build_dist.py`; generated files are never edited by hand.
+
+<a id="des-f01-025"></a>
+### 12.7 DES-F01-025 Child-process authentication separation
+
+Ordinary and Admin calls share the `GitHub` adapter but use distinct client state. Ordinary `gh` children retain ordinary credentials. Admin children strip every ambient GitHub token variable and use only the temporary private CLI config. An authentication failure remains local to its path; no cross-fallback is allowed.
+
+<a id="des-f01-026"></a>
+### 12.8 DES-F01-026 Accepted isolation boundary
+
+The guarantee is child-process environment/configuration separation. The parent task and same-UID processes are outside this boundary and may inspect process or memory state. Documentation and runtime results must state this limit; they cannot claim OS-level isolation.
+
+<a id="des-f01-027"></a>
+### 12.9 DES-F01-027 Read-only Admin capability proof
+
+A read-only preflight captures owner/repository identity and the complete branch-policy snapshot through the isolated Admin client. It records endpoint status and accepted-permission headers without secret values. Any 403, incomplete page, malformed result, or inconsistent view blocks before Issue #71 implementation or any policy-dependent mutation.
+
+<a id="des-f01-028"></a>
+### 12.10 DES-F01-028 Generic ADC-authorized Phase recovery
+
+The runtime consumes the current ADC's canonical typed marker using the generic phase-restart reader from PR #73. Authorization is resolved from typed fields, not Issue-specific identifiers, prose, or digest allowlists. The generic path rejects Issue #63, which retains its specialized implementation.
+
+<a id="des-f01-029"></a>
+### 12.11 DES-F01-029 Append-only restart history
+
+Phase restart first verifies the complete live subject and current Binding, appends one Intent, rechecks, performs at most one complete-label update, reads it back, then appends Applied. Lost responses are reconciled only through immutable direct/list/direct evidence. Prior records and the frozen execution tuple remain unchanged.
+
+<a id="des-f01-030"></a>
+### 12.12 DES-F01-030 Activation completion gates
+
+A complete Admin readback precedes runtime implementation. Separate exact decisions gate Ruleset writes and Setup PR merge. V2 becomes ACTIVE only after its Setup PR and effective policy are verified. Issue #63 finalization remains downstream and separately read back.

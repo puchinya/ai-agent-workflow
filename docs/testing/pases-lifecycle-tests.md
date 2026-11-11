@@ -67,6 +67,31 @@
     - [2.28.1 ORA-F01-018 Expected result](#2281-ora-f01-018-expected-result)
   - [2.29 TST-F01-031 Generic ADC-authorized Phase restart](#229-tst-f01-031-generic-adc-authorized-phase-restart)
     - [2.29.1 ORA-F01-031 Expected result](#2291-ora-f01-031-expected-result)
+- [3 Issue #71 Cloud Admin and Activation Oracles](#3-issue-71-cloud-admin-and-activation-oracles)
+  - [3.1 TST-F01-019 Temporary Admin authentication](#31-tst-f01-019-temporary-admin-authentication)
+    - [3.1.1 ORA-F01-019 Expected result](#311-ora-f01-019-expected-result)
+  - [3.2 TST-F01-020 Complete Admin policy readback](#32-tst-f01-020-complete-admin-policy-readback)
+    - [3.2.1 ORA-F01-020 Expected result](#321-ora-f01-020-expected-result)
+  - [3.3 TST-F01-021 Separate approvals and resumable Activation](#33-tst-f01-021-separate-approvals-and-resumable-activation)
+    - [3.3.1 ORA-F01-021 Expected result](#331-ora-f01-021-expected-result)
+  - [3.4 TST-F01-022 Direct chat provenance](#34-tst-f01-022-direct-chat-provenance)
+    - [3.4.1 ORA-F01-022 Expected result](#341-ora-f01-022-expected-result)
+  - [3.5 TST-F01-023 Historical Issue preservation](#35-tst-f01-023-historical-issue-preservation)
+    - [3.5.1 ORA-F01-023 Expected result](#351-ora-f01-023-expected-result)
+  - [3.6 TST-F01-024 Regression and distribution coverage](#36-tst-f01-024-regression-and-distribution-coverage)
+    - [3.6.1 ORA-F01-024 Expected result](#361-ora-f01-024-expected-result)
+  - [3.7 TST-F01-025 Child-process authentication separation](#37-tst-f01-025-child-process-authentication-separation)
+    - [3.7.1 ORA-F01-025 Expected result](#371-ora-f01-025-expected-result)
+  - [3.8 TST-F01-026 Accepted isolation boundary](#38-tst-f01-026-accepted-isolation-boundary)
+    - [3.8.1 ORA-F01-026 Expected result](#381-ora-f01-026-expected-result)
+  - [3.9 TST-F01-027 Read-only Admin capability proof](#39-tst-f01-027-read-only-admin-capability-proof)
+    - [3.9.1 ORA-F01-027 Expected result](#391-ora-f01-027-expected-result)
+  - [3.10 TST-F01-028 Generic ADC-authorized Phase recovery](#310-tst-f01-028-generic-adc-authorized-phase-recovery)
+    - [3.10.1 ORA-F01-028 Expected result](#3101-ora-f01-028-expected-result)
+  - [3.11 TST-F01-029 Append-only Phase restart history](#311-tst-f01-029-append-only-phase-restart-history)
+    - [3.11.1 ORA-F01-029 Expected result](#3111-ora-f01-029-expected-result)
+  - [3.12 TST-F01-030 Activation completion gates](#312-tst-f01-030-activation-completion-gates)
+    - [3.12.1 ORA-F01-030 Expected result](#3121-ora-f01-030-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -129,6 +154,30 @@
 - [ORA-F01-018](#ora-f01-018) — 2.28.1 ORA-F01-018 Expected result
 - [TST-F01-031](#tst-f01-031) — 2.29 TST-F01-031 Generic ADC-authorized Phase restart
 - [ORA-F01-031](#ora-f01-031) — 2.29.1 ORA-F01-031 Expected result
+- [TST-F01-019](#tst-f01-019) — 3.1 TST-F01-019 Temporary Admin authentication
+- [ORA-F01-019](#ora-f01-019) — 3.1.1 ORA-F01-019 Expected result
+- [TST-F01-020](#tst-f01-020) — 3.2 TST-F01-020 Complete Admin policy readback
+- [ORA-F01-020](#ora-f01-020) — 3.2.1 ORA-F01-020 Expected result
+- [TST-F01-021](#tst-f01-021) — 3.3 TST-F01-021 Separate approvals and resumable Activation
+- [ORA-F01-021](#ora-f01-021) — 3.3.1 ORA-F01-021 Expected result
+- [TST-F01-022](#tst-f01-022) — 3.4 TST-F01-022 Direct chat provenance
+- [ORA-F01-022](#ora-f01-022) — 3.4.1 ORA-F01-022 Expected result
+- [TST-F01-023](#tst-f01-023) — 3.5 TST-F01-023 Historical Issue preservation
+- [ORA-F01-023](#ora-f01-023) — 3.5.1 ORA-F01-023 Expected result
+- [TST-F01-024](#tst-f01-024) — 3.6 TST-F01-024 Regression and distribution coverage
+- [ORA-F01-024](#ora-f01-024) — 3.6.1 ORA-F01-024 Expected result
+- [TST-F01-025](#tst-f01-025) — 3.7 TST-F01-025 Child-process authentication separation
+- [ORA-F01-025](#ora-f01-025) — 3.7.1 ORA-F01-025 Expected result
+- [TST-F01-026](#tst-f01-026) — 3.8 TST-F01-026 Accepted isolation boundary
+- [ORA-F01-026](#ora-f01-026) — 3.8.1 ORA-F01-026 Expected result
+- [TST-F01-027](#tst-f01-027) — 3.9 TST-F01-027 Read-only Admin capability proof
+- [ORA-F01-027](#ora-f01-027) — 3.9.1 ORA-F01-027 Expected result
+- [TST-F01-028](#tst-f01-028) — 3.10 TST-F01-028 Generic ADC-authorized Phase recovery
+- [ORA-F01-028](#ora-f01-028) — 3.10.1 ORA-F01-028 Expected result
+- [TST-F01-029](#tst-f01-029) — 3.11 TST-F01-029 Append-only Phase restart history
+- [ORA-F01-029](#ora-f01-029) — 3.11.1 ORA-F01-029 Expected result
+- [TST-F01-030](#tst-f01-030) — 3.12 TST-F01-030 Activation completion gates
+- [ORA-F01-030](#ora-f01-030) — 3.12.1 ORA-F01-030 Expected result
 <!-- heading-map:end -->
 
 
@@ -480,3 +529,125 @@ Only the exact two approved edges accept V3. The first records `execution -> req
 #### 2.29.1 ORA-F01-031 Expected result
 
 Only a current approved ADC with one exact canonical typed authorization permits an eligible ordinary Issue's `execution -> requirements` restart. Valid execution appends one Intent/Applied pair, updates the complete label set at most once, and establishes the current ADC/Binding/Applied phase generation. Exact completed replay is read-only only for the exact recorded labels or a fully verified same-generation forward chain; each receipt must pass historical artifact allowlist, authorized skip reason, regular blob digest, and READY traceability checks, with an immutable carrier authored by the authenticated User. Replay hydrates relevant linked skipped specification/design targets from the receipt commit and loads test sources only from current requirement rows; missing/tampered targets block and unrelated missing sources are ignored. Rollback and unrelated label edits block. Malformed edited restart or Phase Decision marker candidates also block instead of disappearing from history. A later Phase Decision supersedes an older Applied record as the next restart's immediate predecessor; an incomplete Intent from any ADC generation blocks further Phase work. V1/V2 Phase Decision bodies are collected using their canonical serializers and direct/list/direct history checks. Predecessor bytes remain identical, old receipts cannot pass current-generation checks, and Issue #63 behavior is unchanged.
+
+## 3 Issue #71 Cloud Admin and Activation Oracles
+
+<a id="tst-f01-019"></a>
+### 3.1 TST-F01-019 Temporary Admin authentication
+
+**Setup and action:** Use fake `gh` children to verify a fresh mode-0700 `GH_CONFIG_DIR`, removal of ambient token variables, preservation of the normal client's auth state, device-login success/failure, browser retry with complete stdout/URL/code, handled interruption, and cleanup. Inspect arguments, environment, and output for secret leakage.
+
+<a id="ora-f01-019"></a>
+#### 3.1.1 ORA-F01-019 Expected result
+
+Admin children authenticate only through the isolated device config; ordinary clients are unchanged. Failed login produces an explicit unavailable result and no Admin API/write fallback. Credentials never appear in argv, persistent files, logs, or unrelated children. Temporary-config cleanup is attempted on all handled exits.
+
+<a id="tst-f01-020"></a>
+### 3.2 TST-F01-020 Complete Admin policy readback
+
+**Setup and action:** Exercise the Admin identity, repository identity and permissions, branch metadata, legacy protection, effective rules, complete Ruleset inventory/details, and open-PR impact reads. Inject 401, 403, 404, 429, 5xx, malformed JSON, missing pages, and inconsistent policy results; count plan/write attempts.
+
+<a id="ora-f01-020"></a>
+#### 3.2.1 ORA-F01-020 Expected result
+
+Only a complete consistent snapshot permits planning. A 403 or partial response is `UNAVAILABLE/BLOCKED`, never absence of protection; an authorized 404 is `NOT_CONFIGURED` only after all other reads succeed. Blocked reads produce zero policy writes, Setup PRs, or V2 records.
+
+<a id="tst-f01-021"></a>
+### 3.3 TST-F01-021 Separate approvals and resumable Activation
+
+**Setup and action:** Exercise exact-plan Ruleset approval, exact-HEAD Setup PR approval, no-op, subject drift, interrupted intent, and lost write/merge responses. Count each mutation and recovery read.
+
+<a id="ora-f01-021"></a>
+#### 3.3.1 ORA-F01-021 Expected result
+
+Ruleset create/update and Setup PR merge require separate exact approvals. A NOOP does not require a write approval. Drift blocks; ambiguous responses use read-only recovery and do not replay a confirmed operation.
+
+<a id="tst-f01-022"></a>
+### 3.4 TST-F01-022 Direct chat provenance
+
+**Setup and action:** Supply an actual direct owner user-role event through the host boundary, then test missing, non-owner, CLI/file/stdin, assistant-generated, and other-conversation inputs. Change the exact subject before mutation.
+
+<a id="ora-f01-022"></a>
+#### 3.4.1 ORA-F01-022 Expected result
+
+Only the direct event bound to the unchanged exact subject authorizes a write. Missing provenance blocks with zero dependent writes and no fabricated decision. Evidence is operator-reported, not cryptographic.
+
+<a id="tst-f01-023"></a>
+### 3.5 TST-F01-023 Historical Issue preservation
+
+**Setup and action:** Snapshot Issue #57 V1, Issue #63 history, PR #64 merge, and Activation checkpoint. Exercise Activation pending, V2 ACTIVE, and finalization preconditions.
+
+<a id="ora-f01-023"></a>
+#### 3.5.1 ORA-F01-023 Expected result
+
+Historical evidence is byte-identical. Issue #63 remains open until V2 ACTIVE, policy digest, and time ordering all pass; incomplete reads or pending Setup PR never close it.
+
+<a id="tst-f01-024"></a>
+### 3.6 TST-F01-024 Regression and distribution coverage
+
+**Setup and action:** Run the relevant Admin, policy, authorization, restart, lifecycle, documentation, traceability, and distribution checks on the exact source revision.
+
+<a id="ora-f01-024"></a>
+#### 3.6.1 ORA-F01-024 Expected result
+
+Required unit and document checks pass; generated distributions match canonical sources. Unavailable Cloud/host capabilities are reported NOT RUN or BLOCKED, never PASS.
+
+<a id="tst-f01-025"></a>
+### 3.7 TST-F01-025 Child-process authentication separation
+
+**Setup and action:** Record ordinary and Admin `gh` child environments with all token variables populated. Exercise successful and failed requests in each client and inspect unrelated children and parent auth state.
+
+<a id="ora-f01-025"></a>
+#### 3.7.1 ORA-F01-025 Expected result
+
+Ordinary children receive no Admin credentials; Admin children remove every ambient token and use only the private config. A 401/403 never triggers cross-credential fallback.
+
+<a id="tst-f01-026"></a>
+### 3.8 TST-F01-026 Accepted isolation boundary
+
+**Setup and action:** Review the canonical specification, design, test Oracle, status report, and completion report for statements about process and OS boundaries.
+
+<a id="ora-f01-026"></a>
+#### 3.8.1 ORA-F01-026 Expected result
+
+All materials describe child-process separation and explicitly state that same-UID process/memory inspection is outside the guarantee. No test or report claims OS-level sandboxing.
+
+<a id="tst-f01-027"></a>
+### 3.9 TST-F01-027 Read-only Admin capability proof
+
+**Setup and action:** Run only read methods through the isolated Admin client; inject permission denial, incomplete pagination, and inconsistent reads. Count POST/PUT, Setup PR, record, and close operations.
+
+<a id="ora-f01-027"></a>
+#### 3.9.1 ORA-F01-027 Expected result
+
+The proof records exact identity and policy read outcomes without credentials. Any 403 or incomplete read blocks and yields zero policy/lifecycle writes. Empty Rulesets do not override a protection 403.
+
+<a id="tst-f01-028"></a>
+### 3.10 TST-F01-028 Generic ADC-authorized Phase recovery
+
+**Setup and action:** Exercise the merged PR #73 implementation with Issue #71's exact approved self-target marker, an absent/duplicate/malformed/stale marker, wrong phase/kind, Issue #63, stale Binding, and current-head/history drift.
+
+<a id="ora-f01-028"></a>
+#### 3.10.1 ORA-F01-028 Expected result
+
+Only the exact current ADC marker permits one eligible `execution -> requirements` operation. Generic runtime contains no Issue #71 hard-coded exception or prose/SHA authorization. Issue #63 remains on its specialized route.
+
+<a id="tst-f01-029"></a>
+### 3.11 TST-F01-029 Append-only Phase restart history
+
+**Setup and action:** Verify the Intent/Applied fields, full pagination and direct/list/direct snapshots, actor and URL identity, frozen Binding tuple, and before/after labels. Simulate lost responses, duplicates, edits, deletions, and exact replay.
+
+<a id="ora-f01-029"></a>
+#### 3.11.1 ORA-F01-029 Expected result
+
+One exact Intent/Applied pair records; label replacement occurs at most once. Exact replay is read-only, prior ADC/Binding/Phase bytes remain unchanged, and ambiguous or conflicting state blocks.
+
+<a id="tst-f01-030"></a>
+### 3.12 TST-F01-030 Activation completion gates
+
+**Setup and action:** Attempt runtime implementation, Ruleset apply, Setup PR merge, V2 record, and Issue #63 close with Admin readback incomplete or each separate decision absent/stale.
+
+<a id="ora-f01-030"></a>
+#### 3.12.1 ORA-F01-030 Expected result
+
+Incomplete Admin readback blocks implementation; missing exact Ruleset or merge approval causes zero corresponding writes. V2 is not ACTIVE and #63 remains OPEN until all prescribed reads succeed.
