@@ -116,11 +116,16 @@ class DistributionMigrationTests(unittest.TestCase):
             "--approval-comment-id 123`",
             "fixture/SKILL.md",
         )
+        accepted_restart = validate_dist.validate_skill_commands(
+            "`python -m p_ases issue phase-restart 72 --repo OWNER/REPO --root WORKTREE`",
+            "fixture/SKILL.md",
+        )
         rejected = validate_dist.validate_skill_commands(
             "`python -m p_ases delivery consumer-activation-admin-unknown`",
             "fixture/SKILL.md",
         )
         self.assertEqual(accepted, [])
+        self.assertEqual(accepted_restart, [])
         self.assertEqual(len(rejected), 1)
 
     def test_canonical_and_all_three_host_skill_and_runtime_sets_are_exact(self):

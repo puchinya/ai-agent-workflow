@@ -57,6 +57,8 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
     - [2.22.1 ORA-RT-022 Expected result](#2221-ora-rt-022-expected-result)
   - [2.23 TST-RT-023 Independent Review result ingestion with optional host IDs](#223-tst-rt-023-independent-review-result-ingestion-with-optional-host-ids)
     - [2.23.1 ORA-RT-023 Expected result](#2231-ora-rt-023-expected-result)
+  - [2.24 TST-RT-024 Strict Phase restart authorization parsing](#224-tst-rt-024-strict-phase-restart-authorization-parsing)
+    - [2.24.1 ORA-RT-024 Expected result](#2241-ora-rt-024-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -107,6 +109,8 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
 - [ORA-RT-022](#ora-rt-022) — 2.22.1 ORA-RT-022 Expected result
 - [TST-RT-023](#tst-rt-023) — 2.23 TST-RT-023 Independent Review result ingestion with optional host IDs
 - [ORA-RT-023](#ora-rt-023) — 2.23.1 ORA-RT-023 Expected result
+- [TST-RT-024](#tst-rt-024) — 2.24 TST-RT-024 Strict Phase restart authorization parsing
+- [ORA-RT-024](#ora-rt-024) — 2.24.1 ORA-RT-024 Expected result
 <!-- heading-map:end -->
 
 
@@ -389,3 +393,15 @@ V1/V2 records round-trip with their original schema, digest, and bytes. A valid 
 #### 2.23.1 ORA-RT-023 Expected result
 
 For a valid joined-child result, runtime ingestion accepts missing optional host IDs, preserves the raw result unchanged, stores `PASES_INDEPENDENT_REVIEW_V3` with `LIMITED` confidence and the complete child-authored review-unit set, and reports each missing ID. A complete matching set yields `HIGH`. Missing IDs do not mean the review was skipped; the host must still perform and verify the actual spawn, join, and child-result handoff as required by TST-UR-007/008. With all other exact-subject gates passing, `LIMITED` alone does not block Readiness. No result, failed or unknown spawn/join, known same-context identity, mismatch, stale or malformed evidence, incomplete review-unit coverage, failed unit, unresolved blocking finding, or non-PASS verdict remains non-passing and cannot advance the lifecycle.
+
+<a id="tst-rt-024"></a>
+### 2.24 TST-RT-024 Strict Phase restart authorization parsing
+
+**Setup and action:** Parse the exact marker block from approved ADC byte fixtures. Exercise one valid canonical block and fenced, missing, duplicated, extra-field, duplicate-key, reordered/noncanonical JSON, wrong schema, wrong target, wrong transition, wrong application count, empty/overlong/control-character reason, stale pointer, and invalid UTF-8 cases. Confirm the parser binds the payload digest to the complete ADC digest and never scans technical Issue comments or arbitrary English prose for permission. Verify the artifact-impact parser maps `Test Oracles and traceability:` to the same constrained test-oracle path validation as `Testing:`. Verify Phase Decision V1 bytes remain unchanged; history collection recognizes reserved V1/V2 decision markers and malformed restart marker candidates, including separated comment hyphens, blocks edited bodies, authenticates comment authors, and uses exact serializer bodies. With no restart marker, test that malformed reserved V1/V2 blocks fail, canonical orphan V2 fails, and valid V1-only history remains on the ordinary generation. Historical V2 replay verification must reject nonexistent declared blobs, incorrect committed SHA-256 values, unauthorized skip reasons, and invalid READY traceability; load authorized skipped spec/design targets from the receipt commit; ignore unrelated test source links outside current requirement rows; and accept a genuine current-generation receipt chain.
+
+<a id="ora-rt-024"></a>
+#### 2.24.1 ORA-RT-024 Expected result
+
+Only one unique canonical marker outside fenced code in the current approved ADC yields a typed authorization. All malformed, ambiguous, stale, out-of-scope, or prose-only inputs fail closed before any GitHub write.
+
+The existing phase artifact-impact parser also accepts `Test Oracles and traceability:` as the test-oracle role label. It maps to the same exact `docs/testing/` path validation as `Testing:` and does not alter document-role semantics. A restart Applied record activates `PASES_PHASE_DECISION_V2`; history collection recognizes reserved V1/V2 decision candidates and malformed restart marker candidates through direct/list/direct readback, including leading whitespace and separated comment hyphens, and rejects malformed, edited, or unauthored records. Current-generation lookup performs the verified read even when its initial candidate set is empty, compares the initially enumerated candidate IDs/bodies with its verified readback, and blocks if evidence appears or disappears between those reads. With no restart record, malformed decision candidates and canonical orphan V2 fail closed while valid V1-only history remains compatible. Before a later phase label can produce NOOP, every historical V2 receipt is rechecked against ADC-declared artifacts, the recorded commit's regular blobs and SHA-256 values, ADC skip reasons, and the READY traceability validator. Authorized skipped spec/design targets are read from that receipt commit; executable sources are fetched only for current ADC requirement rows. READY lookup binds V2 to the Applied ID and digest. The preceding V1 serializer remains byte-for-byte unchanged.

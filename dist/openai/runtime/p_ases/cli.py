@@ -105,6 +105,7 @@ from .phase_evidence import (
     verify_ready_preparation,
     verify_phase_evidence,
 )
+from .phase_restart import PhaseRestartError, restart_issue_phase
 from .oracle_trace import (
     OracleDefinition, OracleTraceError, TestDefinition, validate_plan_oracles,
     validate_plan_tests,
@@ -4394,6 +4395,13 @@ def _parser() -> argparse.ArgumentParser:
     )
     phase_rebaseline.add_argument("issue", type=_positive_number)
     phase_rebaseline.add_argument("--repo", help="repository owner/name; defaults to origin")
+    phase_restart = issue_commands.add_parser(
+        "phase-restart", help="apply/recover an exact-ADC-authorized ordinary Issue phase restart"
+    )
+    phase_restart.add_argument("issue", type=_positive_number)
+    phase_restart.add_argument("--repo", help="repository owner/name; defaults to origin")
+    phase_restart.add_argument("--root", type=Path, required=True,
+                                help="bound Issue worktree containing its current ExecutionBinding history")
     validate_plan = issue_commands.add_parser("validate-split")
     validate_plan.add_argument("plan", type=Path)
     validate_plan.add_argument("--repo", help="repository owner/name; defaults to origin")
@@ -5151,6 +5159,15 @@ def main(argv: list[str] | None = None) -> int:
                     return 2
                 return _blocked_result((str(exc),))
 
+        if args.verb == "phase-restart":
+            root = _repo_root(str(args.root)).resolve()
+            try:
+                result = restart_issue_phase(GitHub(repository), root, args.issue)
+                _json(result)
+                return 0
+            except PhaseRestartError as exc:
+                return _blocked_result((str(exc),))
+
         if args.verb == "phase-evidence":
             root = _repo_root(str(args.root)).resolve()
             github = GitHub(repository)
@@ -5324,7 +5341,7 @@ def main(argv: list[str] | None = None) -> int:
             DocumentError, DocumentFormatError, EvidenceError, GitError, GitHubError,
             IntegrationError, IssueGraphError, OracleTraceError, PhaseError, PlanError, ProfileError,
             PhaseEvidenceError, ReadinessError, UserReviewError, VerificationError,
-            WorkError, CLIError, OSError, UnicodeError, ValueError) as exc:
+            PhaseRestartError, WorkError, CLIError, OSError, UnicodeError, ValueError) as exc:
         if args.namespace in {"verification", "acceptance", "work", "pr", "audit", "delivery", "user-review"}:
             return _blocked_result((str(exc),))
         print(f"p-ases: {exc}", file=sys.stderr)
