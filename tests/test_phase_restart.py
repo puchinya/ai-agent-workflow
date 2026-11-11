@@ -102,6 +102,7 @@ class FakeGitHub:
         self.race_on_third_issue_read = False
         self.unavailable_content_paths: set[str] = set()
         self.content_responses: dict[str, list[bytes]] = {}
+        self.mutate_comments_on_history_read: dict[int, dict[int, str]] = {}
 
     def repository_metadata(self):
         return {"id": self.repository_id, "full_name": self.repo, "default_branch": "main"}
@@ -135,6 +136,10 @@ class FakeGitHub:
 
     def issue_comments(self, number: int):
         self.history_reads += 1
+        for comment_id, body in self.mutate_comments_on_history_read.get(self.history_reads, {}).items():
+            row = next(item for item in self.comments if item["id"] == comment_id)
+            row["body"] = body
+            row["updated_at"] = "2026-11-07T01:00:00Z"
         rows = json.loads(json.dumps(self.comments))
         if self.omit_second_history_snapshot and self.history_reads == 3:
             return []
@@ -790,6 +795,20 @@ class PhaseRestartTests(unittest.TestCase):
 
         self.assertIsNone(generation)
         self.assertEqual(self.github.label_writes, 0)
+
+    def test_current_generation_blocks_restart_history_disappearing_between_snapshots(self):
+        self.run_restart()
+        original = list(self.github.comments)
+        self.github.history_reads = 0
+        self.github.mutate_comments_on_history_read[2] = {
+            row["id"]: "Edited ordinary prose; marker no longer visible.\n" for row in original
+        }
+
+        with self.assertRaisesRegex(PhaseRestartError, "Phase history changed during generation read"):
+            current_phase_generation(self.github, self.root, self.issue_number, self.verified)
+
+        self.assertEqual(self.github.label_writes, 1)
+        self.assertEqual(len(self.github.comments), 2)
 
     def test_competing_intent_publication_blocks_before_label_write(self):
         self.github.duplicate_next_intent = True

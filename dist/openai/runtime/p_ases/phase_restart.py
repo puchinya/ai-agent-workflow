@@ -760,6 +760,13 @@ def current_phase_generation(github: GitHub, root: Path, issue_number: int,
         len(bindings), binding_digest(binding), binding.branch_ref, "0" * 40, 1,
     )
     history = _validated_current_journal(github, subject)
+    expected_restarts = [(row.get("id"), row["body"]) for row in markers]
+    observed_restarts = [(record.comment_id, record.body) for record in history.restarts]
+    expected_decisions = [(row.get("id"), row["body"]) for row in decision_candidates]
+    observed_decisions = [(comment_id, body)
+                          for comment_id, _decision, body, _actor_id in history.decisions]
+    if observed_restarts != expected_restarts or observed_decisions != expected_decisions:
+        raise PhaseRestartError("Phase history changed during generation read")
     intents = [record for record in history.restarts if record.schema == INTENT_SCHEMA
                and record.payload["adc_comment_id"] == verified_adc.pointer.comment_id]
     applied = [record for record in history.restarts if record.schema == APPLIED_SCHEMA
