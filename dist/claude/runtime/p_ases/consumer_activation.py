@@ -638,8 +638,21 @@ def _check_setup_pr(github: GitHub, pr: dict[str, Any], expected: dict[str, Any]
     return pr
 
 
-def verify_setup_pr_ready_to_merge(github: GitHub, pr_number: int) -> dict[str, Any]:
+def verify_setup_pr_ready_to_merge(github: GitHub, pr_number: int, *,
+                                   policy_github: GitHub | None = None) -> dict[str, Any]:
     """Require fresh Activation V2 policy, checks and independent review before merge."""
+    try:
+        require_local_activation_execution()
+        if policy_github is None:
+            raise LocalExecutionError(
+                "ADMIN_DEVICE_AUTH_REQUIRED: Setup PR merge requires isolated-gh-device"
+            )
+        require_isolated_device_admin_client(policy_github)
+    except LocalExecutionError as exc:
+        raise ConsumerActivationError(str(exc)) from exc
+    if policy_github.repo.casefold() != github.repo.casefold():
+        raise ConsumerActivationError("Activation policy reader targets a different repository")
+
     def snapshot() -> dict[str, Any]:
         metadata = github.repository_metadata()
         owner = metadata.get("owner") if isinstance(metadata, dict) else None
@@ -700,7 +713,7 @@ def verify_setup_pr_ready_to_merge(github: GitHub, pr_number: int) -> dict[str, 
             raise ConsumerActivationError("Activation Setup PR profile bytes or Required Checks changed")
         try:
             policy = read_verified_managed_policy(
-                github, default_branch, required_checks, "solo_owner", 57,
+                policy_github, default_branch, required_checks, "solo_owner", 57,
             )
         except RulesetManagementError as exc:
             raise ConsumerActivationError(f"Activation effective policy is not VERIFIED: {exc}") from exc

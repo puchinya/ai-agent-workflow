@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import hashlib
 import os
@@ -9,7 +10,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
@@ -19,10 +20,12 @@ from p_ases.owner_authorization import (
     capture_direct_chat_confirmation, create_authorization_plan, resume_authorization,
     issue63_deferred_merge_details, read_authorization_plan, write_authorization_plan,
 )
+from p_ases.admin_auth import AdminAuthError
 from p_ases.github import GitHubError
 from p_ases.cli import (_create_merge_attempt, _merge_readback, _perform_authorized_merge,
                         _owner_authorization_plan_command, _publish_owner_approved_adc)
-from p_ases.consumer_activation import verify_setup_pr_ready_to_merge
+from p_ases.consumer_activation import ConsumerActivationError, verify_setup_pr_ready_to_merge
+from p_ases.ruleset_management import RulesetManagementError
 
 
 REPOSITORY = "puchinya/ai-agent-workflow"
@@ -739,8 +742,12 @@ class OwnerAuthorizationTests(unittest.TestCase):
                 return []
 
         github = SetupGitHub()
+        admin = SimpleNamespace(repo=REPOSITORY)
         verified_adc = SimpleNamespace(pointer=SimpleNamespace(sha256="a" * 64),
                                        contract=SimpleNamespace(content=b"adc"))
+        policy_read = Mock(return_value={
+            "ruleset_id": 4, "applied_record_id": 18, "effective_policy_sha256": "c" * 64,
+        })
         with patch("p_ases.consumer_activation._decode", side_effect=lambda *_a, **_k: github.payload), \
                 patch("p_ases.consumer_activation._check_setup_pr", return_value=github.pr), \
                 patch("p_ases.consumer_activation.read_consumer_activation_history", return_value=[]), \
@@ -748,12 +755,40 @@ class OwnerAuthorizationTests(unittest.TestCase):
                 patch("p_ases.consumer_activation.verify_adc", return_value=verified_adc), \
                 patch("p_ases.consumer_activation._validate_profile_bytes",
                       return_value=({"final_delivery": {"review_mode": "solo_owner"}}, (("ci", 15368),))), \
-                patch("p_ases.consumer_activation.read_verified_managed_policy", return_value={
-                    "ruleset_id": 4, "applied_record_id": 18, "effective_policy_sha256": "c" * 64,
-                }):
-            result = verify_setup_pr_ready_to_merge(github, 72)
+                patch("p_ases.consumer_activation.require_local_activation_execution"), \
+                patch("p_ases.consumer_activation.require_isolated_device_admin_client"), \
+                patch("p_ases.consumer_activation.read_verified_managed_policy", policy_read):
+            result = verify_setup_pr_ready_to_merge(github, 72, policy_github=admin)
         self.assertEqual(result["status"], "READY")
         self.assertEqual(result["reviewer_ids"], [OWNER_ID + 1])
+        self.assertEqual(policy_read.call_count, 2)
+        self.assertTrue(all(call.args[0] is admin for call in policy_read.call_args_list))
+
+        with patch("p_ases.consumer_activation.require_local_activation_execution"), \
+                self.assertRaisesRegex(ConsumerActivationError, "ADMIN_DEVICE_AUTH_REQUIRED"):
+            verify_setup_pr_ready_to_merge(github, 72)
+
+        for name, policy_result, message in (
+            ("403", RulesetManagementError("403 Resource not accessible by integration"), "403"),
+            ("stale", {"ruleset_id": 4, "applied_record_id": 18,
+                        "effective_policy_sha256": "d" * 64}, "policy binding is stale"),
+        ):
+            with self.subTest(policy_failure=name), \
+                    patch("p_ases.consumer_activation._decode", side_effect=lambda *_a, **_k: github.payload), \
+                    patch("p_ases.consumer_activation._check_setup_pr", return_value=github.pr), \
+                    patch("p_ases.consumer_activation.read_consumer_activation_history", return_value=[]), \
+                    patch("p_ases.consumer_activation.verify_adc_generation", return_value=verified_adc), \
+                    patch("p_ases.consumer_activation.verify_adc", return_value=verified_adc), \
+                    patch("p_ases.consumer_activation._validate_profile_bytes",
+                          return_value=({"final_delivery": {"review_mode": "solo_owner"}}, (("ci", 15368),))), \
+                    patch("p_ases.consumer_activation.require_local_activation_execution"), \
+                    patch("p_ases.consumer_activation.require_isolated_device_admin_client"), \
+                    patch("p_ases.consumer_activation.read_verified_managed_policy",
+                          side_effect=policy_result if isinstance(policy_result, Exception) else None,
+                          return_value=None if isinstance(policy_result, Exception) else policy_result):
+                with self.assertRaisesRegex(ConsumerActivationError, message):
+                    verify_setup_pr_ready_to_merge(github, 72, policy_github=admin)
+
         github.pull_reviews = lambda _number: []
         with patch("p_ases.consumer_activation._decode", side_effect=lambda *_a, **_k: github.payload), \
                 patch("p_ases.consumer_activation._check_setup_pr", return_value=github.pr), \
@@ -762,11 +797,79 @@ class OwnerAuthorizationTests(unittest.TestCase):
                 patch("p_ases.consumer_activation.verify_adc", return_value=verified_adc), \
                 patch("p_ases.consumer_activation._validate_profile_bytes",
                       return_value=({"final_delivery": {"review_mode": "solo_owner"}}, (("ci", 15368),))), \
+                patch("p_ases.consumer_activation.require_local_activation_execution"), \
+                patch("p_ases.consumer_activation.require_isolated_device_admin_client"), \
                 patch("p_ases.consumer_activation.read_verified_managed_policy", return_value={
                     "ruleset_id": 4, "applied_record_id": 18, "effective_policy_sha256": "c" * 64,
                 }):
             with self.assertRaisesRegex(ValueError, "independent human approval"):
-                verify_setup_pr_ready_to_merge(github, 72)
+                verify_setup_pr_ready_to_merge(github, 72, policy_github=admin)
+
+    def test_setup_pr_merge_uses_admin_only_for_policy_and_ordinary_client_for_merge(self):
+        head = "c" * 40
+        ordinary = SimpleNamespace(
+            repo=REPOSITORY,
+            pull_request=Mock(return_value={"state": "open", "merged": False,
+                                            "head": {"sha": head}}),
+            merge_pull_request=Mock(),
+        )
+        admin = SimpleNamespace(repo=REPOSITORY)
+        plan = {"plan_sha256": "f" * 64, "source_head_sha40": PLAN_HEAD,
+                "target_issue_number": 57, "pr_number": 72, "pr_head_sha40": head,
+                "details": {"target_issue_number": 57}}
+        decision = {"status": "AUTHORIZED", "operation": "PR_MERGE",
+                    "evidence_type": "PASES_OWNER_DECISION_V3",
+                    "evidence_channel": "chat_confirmed_gh_v1", "chat_signature": False,
+                    "owner_decision_comment_id": 123}
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch("p_ases.cli.temporary_admin_client", return_value=contextlib.nullcontext(admin)) as open_admin, \
+                patch("p_ases.cli.verify_setup_pr_ready_to_merge", return_value={"status": "READY"}) as verify, \
+                patch("p_ases.cli._merge_readback", return_value={
+                    "pr_number": 72, "head_sha40": head, "merge_commit_sha40": "e" * 40,
+                    "merged_by_id": OWNER_ID,
+                }):
+            result = _perform_authorized_merge(object(), Path(temporary), ordinary, plan, decision)
+        self.assertEqual(result["status"], "MERGED")
+        open_admin.assert_called_once_with(REPOSITORY)
+        verify.assert_called_once_with(ordinary, 72, policy_github=admin)
+        ordinary.merge_pull_request.assert_called_once_with(72, head)
+
+    def test_setup_pr_policy_failures_block_before_merge_api_call(self):
+        head = "c" * 40
+        plan = {"plan_sha256": "e" * 64, "source_head_sha40": PLAN_HEAD,
+                "target_issue_number": 57, "pr_number": 72, "pr_head_sha40": head,
+                "details": {"target_issue_number": 57}}
+        decision = {"status": "AUTHORIZED", "operation": "PR_MERGE",
+                    "evidence_type": "PASES_OWNER_DECISION_V3",
+                    "evidence_channel": "chat_confirmed_gh_v1", "chat_signature": False,
+                    "owner_decision_comment_id": 123}
+        cases = (
+            ("missing device session", AdminAuthError("ADMIN_DEVICE_LOGIN_UNAVAILABLE"), None,
+             OwnerAuthorizationError, "isolated device Admin policy read"),
+            ("policy 403", None, ConsumerActivationError("Activation effective policy is not VERIFIED: 403"),
+             ConsumerActivationError, "403"),
+            ("stale effective policy", None, ConsumerActivationError("policy binding is stale"),
+             ConsumerActivationError, "stale"),
+        )
+        for name, admin_error, policy_error, expected_error, message in cases:
+            with self.subTest(blocker=name), tempfile.TemporaryDirectory() as temporary:
+                ordinary = SimpleNamespace(
+                    repo=REPOSITORY,
+                    pull_request=Mock(return_value={"state": "open", "merged": False,
+                                                    "head": {"sha": head}}),
+                    merge_pull_request=Mock(),
+                )
+                admin = SimpleNamespace(repo=REPOSITORY)
+                context = (contextlib.nullcontext(admin) if admin_error is None else None)
+                with patch("p_ases.cli.temporary_admin_client",
+                           side_effect=admin_error if admin_error is not None else None,
+                           return_value=context), \
+                        patch("p_ases.cli.verify_setup_pr_ready_to_merge",
+                              side_effect=policy_error if policy_error is not None else None,
+                              return_value={"status": "READY"}):
+                    with self.assertRaisesRegex(expected_error, message):
+                        _perform_authorized_merge(object(), Path(temporary), ordinary, plan, decision)
+                ordinary.merge_pull_request.assert_not_called()
 
     def test_authenticated_wrong_owner_is_zero_write(self):
         with tempfile.TemporaryDirectory() as temporary:

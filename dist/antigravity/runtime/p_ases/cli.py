@@ -2847,9 +2847,12 @@ def _merge_readback(github: GitHub, plan: dict[str, Any]) -> dict[str, Any]:
 
 
 def _owner_merge_gate(args: argparse.Namespace, root: Path, github: GitHub,
-                      plan: dict[str, Any]) -> dict[str, Any]:
+                      plan: dict[str, Any], *,
+                      policy_github: GitHub | None = None) -> dict[str, Any]:
     if plan["target_issue_number"] == 57:
-        return verify_setup_pr_ready_to_merge(github, plan["pr_number"])
+        return verify_setup_pr_ready_to_merge(
+            github, plan["pr_number"], policy_github=policy_github,
+        )
     required = ("readiness", "delivery_plan", "verification", "acceptance", "self_audit",
                 "independent_review", "user_review_record")
     missing = [f"--{name.replace('_', '-')}" for name in required if getattr(args, name, None) is None]
@@ -2940,7 +2943,18 @@ def _perform_authorized_merge(args: argparse.Namespace, root: Path, github: GitH
                                          if plan["target_issue_number"] == 63 else "MERGED_READBACK"), **merged,
                 "merge_request_repeated": False, "recovered_from_intent": True}
 
-    gates = _owner_merge_gate(args, root, github, plan)
+    if plan["target_issue_number"] == 57:
+        try:
+            with temporary_admin_client(github.repo) as policy_github:
+                gates = _owner_merge_gate(
+                    args, root, github, plan, policy_github=policy_github,
+                )
+        except AdminAuthError as exc:
+            raise OwnerAuthorizationError(
+                f"Setup PR merge requires isolated device Admin policy read: {exc}"
+            ) from exc
+    else:
+        gates = _owner_merge_gate(args, root, github, plan)
     if plan["target_issue_number"] == 63:
         live_details = issue63_deferred_merge_details(
             github, pr_number=plan["pr_number"], pr_head_sha40=plan["pr_head_sha40"],
