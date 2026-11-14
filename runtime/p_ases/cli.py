@@ -106,6 +106,7 @@ from .phase_evidence import (
     verify_phase_evidence,
 )
 from .phase_restart import PhaseRestartError, restart_issue_phase
+from .execution_epoch import ExecutionEpochError, apply_execution_epoch, inspect_execution_epoch
 from .oracle_trace import (
     OracleDefinition, OracleTraceError, TestDefinition, validate_plan_oracles,
     validate_plan_tests,
@@ -4402,6 +4403,16 @@ def _parser() -> argparse.ArgumentParser:
     phase_restart.add_argument("--repo", help="repository owner/name; defaults to origin")
     phase_restart.add_argument("--root", type=Path, required=True,
                                 help="bound Issue worktree containing its current ExecutionBinding history")
+    epoch_restart = issue_commands.add_parser(
+        "execution-epoch-restart", help="inspect/apply the exact approved Issue #71 V2 execution epoch"
+    )
+    epoch_restart_commands = epoch_restart.add_subparsers(dest="epoch_verb", required=True)
+    for epoch_verb in ("inspect", "apply"):
+        epoch_operation = epoch_restart_commands.add_parser(epoch_verb)
+        epoch_operation.add_argument("issue", type=_positive_number)
+        epoch_operation.add_argument("--repo", help="repository owner/name; defaults to origin")
+        epoch_operation.add_argument("--root", type=Path, required=True,
+                                     help="exact epoch-2 worktree at the approved base branch")
     validate_plan = issue_commands.add_parser("validate-split")
     validate_plan.add_argument("plan", type=Path)
     validate_plan.add_argument("--repo", help="repository owner/name; defaults to origin")
@@ -5166,6 +5177,32 @@ def main(argv: list[str] | None = None) -> int:
                 _json(result)
                 return 0
             except PhaseRestartError as exc:
+                return _blocked_result((str(exc),))
+
+        if args.verb == "execution-epoch-restart":
+            if args.issue != 71 or repository.casefold() != "puchinya/ai-agent-workflow":
+                return _blocked_result(("execution epoch restart is restricted to puchinya/ai-agent-workflow Issue #71",))
+            root = _repo_root(str(args.root)).resolve()
+            github = GitHub(repository)
+            try:
+                if args.epoch_verb == "inspect":
+                    result = inspect_execution_epoch(github, root)
+                    _json(result)
+                    return 0 if result.get("status") in {
+                        "READY_TO_APPLY", "ACTIVE", "ACTIVE_ATTACHMENT_REQUIRED",
+                    } else 2
+                epoch = apply_execution_epoch(github, root)
+                _json({
+                    "status": "APPLIED",
+                    "issue": args.issue,
+                    "epoch_sha256": epoch.sha256,
+                    "intent_comment_id": epoch.intent_comment_id,
+                    "applied_comment_id": epoch.applied_comment_id,
+                    "base_sha40": epoch.base_sha40,
+                    "branch_ref": epoch.branch_ref,
+                })
+                return 0
+            except (ExecutionEpochError, GitError, GitHubError, OSError, ValueError) as exc:
                 return _blocked_result((str(exc),))
 
         if args.verb == "phase-evidence":
