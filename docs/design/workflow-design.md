@@ -24,6 +24,23 @@
   - [5.9 DES-F01-016 Native Independent Review execution and confidence](#59-des-f01-016-native-independent-review-execution-and-confidence)
   - [5.10 DES-F01-018 Exact Phase evidence recovery](#510-des-f01-018-exact-phase-evidence-recovery)
   - [5.11 DES-F01-031 Generic ADC-authorized Phase rebaseline](#511-des-f01-031-generic-adc-authorized-phase-rebaseline)
+  - [5.12 DES-F01-038 Historical Binding provenance](#512-des-f01-038-historical-binding-provenance)
+  - [5.13 DES-F01-039 Single exact epoch authority](#513-des-f01-039-single-exact-epoch-authority)
+  - [5.14 DES-F01-040 Separate append-only journal](#514-des-f01-040-separate-append-only-journal)
+  - [5.15 DES-F01-041 One-shot migration state machine](#515-des-f01-041-one-shot-migration-state-machine)
+  - [5.16 DES-F01-042 Current evidence selection](#516-des-f01-042-current-evidence-selection)
+  - [5.17 DES-F01-043 Shared local eligibility guard](#517-des-f01-043-shared-local-eligibility-guard)
+  - [5.18 DES-F01-044 Scoped device-auth Admin client](#518-des-f01-044-scoped-device-auth-admin-client)
+  - [5.19 DES-F01-045 Separated policy and merge authority](#519-des-f01-045-separated-policy-and-merge-authority)
+  - [5.20 DES-F01-046 Compatibility boundary](#520-des-f01-046-compatibility-boundary)
+  - [5.21 DES-F01-047 Retired first V1 migration](#521-des-f01-047-retired-first-v1-migration)
+  - [5.22 DES-F01-048 Exact V2 marker contents](#522-des-f01-048-exact-v2-marker-contents)
+  - [5.23 DES-F01-049 V2 journal payload](#523-des-f01-049-v2-journal-payload)
+  - [5.24 DES-F01-050 Partial-state recovery](#524-des-f01-050-partial-state-recovery)
+  - [5.25 DES-F01-051 Phase re-entry before product work](#525-des-f01-051-phase-re-entry-before-product-work)
+  - [5.26 DES-F01-052 Reuse existing Activation V2 machinery](#526-des-f01-052-reuse-existing-activation-v2-machinery)
+  - [5.27 DES-F01-053 Canonical artifact generation](#527-des-f01-053-canonical-artifact-generation)
+  - [5.28 DES-F01-054 Failure-oriented verification](#528-des-f01-054-failure-oriented-verification)
 - [6 DES-WF-003 Workspace execution flow](#6-des-wf-003-workspace-execution-flow)
 - [7 DES-WF-004 Failure handling](#7-des-wf-004-failure-handling)
 - [8 DES-WF-005 Authorization boundary and PR handoff](#8-des-wf-005-authorization-boundary-and-pr-handoff)
@@ -47,6 +64,23 @@
 - [DES-F01-016](#des-f01-016) — 5.9 DES-F01-016 Native Independent Review execution and confidence
 - [DES-F01-018](#des-f01-018) — 5.10 DES-F01-018 Exact Phase evidence recovery
 - [DES-F01-031](#des-f01-031) — 5.11 DES-F01-031 Generic ADC-authorized Phase rebaseline
+- [DES-F01-038](#des-f01-038) — 5.12 DES-F01-038 Historical Binding provenance
+- [DES-F01-039](#des-f01-039) — 5.13 DES-F01-039 Single exact epoch authority
+- [DES-F01-040](#des-f01-040) — 5.14 DES-F01-040 Separate append-only journal
+- [DES-F01-041](#des-f01-041) — 5.15 DES-F01-041 One-shot migration state machine
+- [DES-F01-042](#des-f01-042) — 5.16 DES-F01-042 Current evidence selection
+- [DES-F01-043](#des-f01-043) — 5.17 DES-F01-043 Shared local eligibility guard
+- [DES-F01-044](#des-f01-044) — 5.18 DES-F01-044 Scoped device-auth Admin client
+- [DES-F01-045](#des-f01-045) — 5.19 DES-F01-045 Separated policy and merge authority
+- [DES-F01-046](#des-f01-046) — 5.20 DES-F01-046 Compatibility boundary
+- [DES-F01-047](#des-f01-047) — 5.21 DES-F01-047 Retired first V1 migration
+- [DES-F01-048](#des-f01-048) — 5.22 DES-F01-048 Exact V2 marker contents
+- [DES-F01-049](#des-f01-049) — 5.23 DES-F01-049 V2 journal payload
+- [DES-F01-050](#des-f01-050) — 5.24 DES-F01-050 Partial-state recovery
+- [DES-F01-051](#des-f01-051) — 5.25 DES-F01-051 Phase re-entry before product work
+- [DES-F01-052](#des-f01-052) — 5.26 DES-F01-052 Reuse existing Activation V2 machinery
+- [DES-F01-053](#des-f01-053) — 5.27 DES-F01-053 Canonical artifact generation
+- [DES-F01-054](#des-f01-054) — 5.28 DES-F01-054 Failure-oriented verification
 - [DES-WF-003](#des-wf-003) — 6 DES-WF-003 Workspace execution flow
 - [DES-WF-004](#des-wf-004) — 7 DES-WF-004 Failure handling
 - [DES-WF-005](#des-wf-005) — 8 DES-WF-005 Authorization boundary and PR handoff
@@ -226,6 +260,91 @@ The operation serializes canonical Intent and Applied comment records. Intent is
 An Applied record defines the active Phase generation for its exact ADC and Binding. Existing V1 phase decisions need no schema rewrite. While a restart Applied record is active, new phase receipts use `PASES_PHASE_DECISION_V2` and bind the Applied comment ID and exact body digest; V1 serialization stays byte-identical. The reader recognizes the reserved plain-text `PASES_PHASE_DECISION_V*` marker family, parses only canonical V1/V2 bodies, and verifies recognized history direct/list/direct against the authenticated GitHub User. A malformed edited header remains a history candidate and blocks the operation. Generation lookup compares the initial candidate IDs/bodies with the later verified history, blocking an edit or deletion between reads. With no restart marker, generation lookup parses every reserved Decision candidate before returning: malformed candidates and canonical V2 without an Applied predecessor block, while valid V1-only history preserves the pre-restart route. The current approved ADC, current Binding, and matching restart Applied record are revalidated at each later phase transition. Old decisions remain historical and cannot satisfy the restarted generation even when they name the same ADC. A completed restart replay is a NOOP only at its exact after-label snapshot or when an unbroken same-generation V2 chain explains the live labels. Each receipt in that chain is revalidated read-only against ADC-declared paths, authorized skip reasons, regular branch blobs and SHA-256 values at the receipt commit, and normal READY traceability constraints; linked documents for authorized skipped specification/design roles are fetched from that same historical commit, while executable sources are loaded only for current ADC requirement rows. Existing path, anchor, skip, allowlist, committed-blob, digest, and source checks remain authoritative; later working-tree state is not used to invent historical evidence. A later execution label also requires READY proof revalidation. For a later authorized restart, the predecessor is the newest valid Applied or Phase Decision event; a later decision therefore supersedes an older Applied event as the immediate predecessor. An incomplete restart Intent from any prior ADC generation blocks all further Phase operations. If no restart record exists for a normal execution, the ordinary ADC/Binding generation remains active. A later successor ADC requires its own authorized generation and cannot inherit the prior restart authority.
 
 The exact approved ADC is the only authorization for a single rebaseline. Intent/Applied receipts are technical records. The typed authorization marker is one-shot, current-pointer-bound, and has a fixed transition pair and `max_applications=1`; absent, duplicate, edited, stale, malformed, or mismatched markers block before writes. Issue #63 remains routed to its specialized V1/V2/V3 implementation unchanged.
+
+<a id="des-f01-038"></a>
+### 5.12 DES-F01-038 Historical Binding provenance
+
+Treat the missing old ExecutionBinding as an absent capability with a stable BLOCKED_BINDING_PROVENANCE_MISSING result. Preserve the five-generation digest only as an opaque historical reference with provenance UNVERIFIED. The epoch selector has its own schema and cannot insert a fabricated row into execution-binding.json.
+
+<a id="des-f01-039"></a>
+### 5.13 DES-F01-039 Single exact epoch authority
+
+Parse one exact authorization marker only after verifying the current approved ADC pointer and bytes. The marker pins repository/owner/Issue identity, body digest, predecessor ADC and Phase Applied, retired Intent digest, base, branch, reason, direction and one-use limit. All comparisons happen before any migration write.
+
+<a id="des-f01-040"></a>
+### 5.14 DES-F01-040 Separate append-only journal
+
+Store migration lineage in distinct V2 Intent and Applied Issue comments. The local epoch record and attachment reference that complete pair and do not replace it. The journal binds stable IDs, actor, ADC and marker, predecessor generation, retired V1 history, UNVERIFIED provenance, exact branch/base, label snapshots, unique epoch ID and exact body hashes.
+
+<a id="des-f01-041"></a>
+### 5.15 DES-F01-041 One-shot migration state machine
+
+The migration advances through preflight, Intent, one complete-label replacement, Applied, and local attachment. Each boundary has an exact readback. Only a fully paired journal can become ACTIVE; inspection never repairs a GitHub partial state.
+
+<a id="des-f01-042"></a>
+### 5.16 DES-F01-042 Current evidence selection
+
+The Issue 71 selector verifies the complete V2 journal, current approved ADC, immutable attachment, Issue body/labels, branch and remote HEAD. Phase evidence uses Applied ID/body digest as the Phase generation. Generic Issues still use ExecutionBinding and generic Phase restart; Issue 63 retains its adopted-epoch selector. No selector falls back from an invalid Issue 71 epoch to V1.
+
+<a id="des-f01-043"></a>
+### 5.17 DES-F01-043 Shared local eligibility guard
+
+One capability check guards every live Activation and administrative CLI and direct-runtime entrypoint. It combines interactive owner-controlled local execution, explicit operator confirmation, authenticated owner identity and full current Admin readback. Local Codex, local Claude Code and owner-controlled VMs receive the same treatment. Cloud, hosted, CI, remote, noninteractive and unknown-control contexts fail before writes. The host-control statement remains an operational trust assumption, not machine attestation.
+
+<a id="des-f01-044"></a>
+### 5.18 DES-F01-044 Scoped device-auth Admin client
+
+The existing isolated-gh-device route creates a fresh private mode-0700 GH_CONFIG_DIR and strips all four ambient GitHub token variables from Admin children. Admin reads and writes use gh api through the existing GitHub boundary. There is no PAT, App, network-secret, ordinary credential, SDK, direct REST, or alternate writer fallback. Incomplete or denied reads stay unavailable.
+
+<a id="des-f01-045"></a>
+### 5.19 DES-F01-045 Separated policy and merge authority
+
+Keep ruleset_management.py::apply_ruleset_plan as the only Ruleset writer. A newly computed exact plan and separate RULESET_PLAN_APPLY decision are required before it runs; a separate exact-HEAD PR_MERGE decision is required before Setup PR merge. Neither ADC, migration, authentication, CI, nor review substitutes for these authorities. Missing chat provenance produces no approval-dependent write.
+
+<a id="des-f01-046"></a>
+### 5.20 DES-F01-046 Compatibility boundary
+
+The epoch path is isolated by exact repository and Issue number. It does not rewrite Issue 57 V1, Issue 63/PR 64, predecessor ADC/Binding/Phase history, or Issue 72/PR 73. Existing generic V1 binding and Issue 63 adoption tests remain regression gates.
+
+<a id="des-f01-047"></a>
+### 5.21 DES-F01-047 Retired first V1 migration
+
+Treat the first approved successor ADC and its incomplete V1 Intent as immutable retired history. The reader confirms their exact IDs and body digests but never completes, attaches, retries, deletes or selects them. The old branch is also preserved.
+
+<a id="des-f01-048"></a>
+### 5.22 DES-F01-048 Exact V2 marker contents
+
+The successor marker has an exact canonical field set and fixed subject values. Its digest is stored in the V2 journal and local epoch identity. A new ADC SHA or changed branch/base is not substituted during migration.
+
+<a id="des-f01-049"></a>
+### 5.23 DES-F01-049 V2 journal payload
+
+Intent and Applied are separately named schemas with canonical JSON. Applied names the exact Intent comment and body hash; all common subject fields are equal. Comment order, author, issue/repository URLs, list membership, timestamps, labels and exact body bytes are read back before activation.
+
+<a id="des-f01-050"></a>
+### 5.24 DES-F01-050 Partial-state recovery
+
+A partial journal or ambiguous label outcome is an absorbing blocked state for this authorization. The tool reports the exact observed stage and performs only reads. Recovery requires a separately approved successor contract; the caller cannot retry or force labels.
+
+<a id="des-f01-051"></a>
+### 5.25 DES-F01-051 Phase re-entry before product work
+
+After activation, issue fresh current-epoch requirements, specification, design and ready decisions in order while retaining the pinned Issue body. Only after Ready passes may product implementation begin. Old READY receipts have no current generation key and therefore cannot satisfy this sequence.
+
+<a id="des-f01-052"></a>
+### 5.26 DES-F01-052 Reuse existing Activation V2 machinery
+
+Issue 71 changes only the entry guard, authentication/readback semantics and current-epoch plumbing required by the approved contract. Continue through the existing Activation V2, Ruleset plan and setup PR components; do not fork their writer or weaken operation-specific approvals.
+
+<a id="des-f01-053"></a>
+### 5.27 DES-F01-053 Canonical artifact generation
+
+Specifications, design, Oracles, traceability, Skills, adapters and status are hand-authored in their owning trees. The three host packages remain independent projections, regenerated only with the repository distribution builder.
+
+<a id="des-f01-054"></a>
+### 5.28 DES-F01-054 Failure-oriented verification
+
+Test authorization parsing, journal integrity and each write boundary with injected failures and complete write-count assertions. Test both accepted local agents and VM execution plus hosted, remote and unknown denials through CLI and direct-runtime routes. Admin auth and permission failures must be tested with no Ruleset, PR or Activation write.
 
 <a id="des-wf-003"></a>
 <a id="des-wf-003-workspace-execution-flow"></a>
