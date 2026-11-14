@@ -383,6 +383,19 @@ def _kind_from_issue(issue: dict[str, Any]) -> tuple[IssueKind, list[str]]:
 
 def _verify_frozen_binding(github: GitHub, root: Path, issue_number: int, verified: VerifiedADC,
                            branch_ref: str, commit_sha: str) -> None:
+    if issue_number == 71 and github.repo.casefold() == "puchinya/ai-agent-workflow":
+        try:
+            from .phase_epoch_rebaseline import PhaseEpochRebaselineError, read_active_epoch
+            epoch = read_active_epoch(github, root, verified)
+            if (epoch.repository.casefold() != github.repo.casefold()
+                    or epoch.issue_number != issue_number or epoch.branch_ref != branch_ref
+                    or not is_ancestor(root, epoch.base_sha40, commit_sha)):
+                raise PhaseEvidenceError(
+                    "verified Issue #71 epoch-3 identity does not match the current branch and commit"
+                )
+            return
+        except (PhaseEpochRebaselineError, GitError) as exc:
+            raise PhaseEvidenceError(f"a valid verified Issue #71 execution epoch is required: {exc}") from exc
     path = execution_binding_path(root.resolve(), issue_number)
     if not path.exists():
         if issue_number != 63 or not (

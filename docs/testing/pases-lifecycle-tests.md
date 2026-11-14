@@ -67,6 +67,58 @@
     - [2.28.1 ORA-F01-018 Expected result](#2281-ora-f01-018-expected-result)
   - [2.29 TST-F01-031 Generic ADC-authorized Phase restart](#229-tst-f01-031-generic-adc-authorized-phase-restart)
     - [2.29.1 ORA-F01-031 Expected result](#2291-ora-f01-031-expected-result)
+  - [2.30 TST-F01-038 Missing Binding provenance and V2 identity](#230-tst-f01-038-missing-binding-provenance-and-v2-identity)
+    - [2.30.1 ORA-F01-038 Expected result](#2301-ora-f01-038-expected-result)
+  - [2.31 TST-F01-039 Exact V2 authorization marker](#231-tst-f01-039-exact-v2-authorization-marker)
+    - [2.31.1 ORA-F01-039 Expected result](#2311-ora-f01-039-expected-result)
+  - [2.32 TST-F01-040 Append-only V2 journal and attachment](#232-tst-f01-040-append-only-v2-journal-and-attachment)
+    - [2.32.1 ORA-F01-040 Expected result](#2321-ora-f01-040-expected-result)
+  - [2.33 TST-F01-041 One-shot V2 label transition](#233-tst-f01-041-one-shot-v2-label-transition)
+    - [2.33.1 ORA-F01-041 Expected result](#2331-ora-f01-041-expected-result)
+  - [2.34 TST-F01-042 Current-epoch reader isolation](#234-tst-f01-042-current-epoch-reader-isolation)
+    - [2.34.1 ORA-F01-042 Expected result](#2341-ora-f01-042-expected-result)
+  - [2.35 TST-F01-043 Local eligibility parity](#235-tst-f01-043-local-eligibility-parity)
+    - [2.35.1 ORA-F01-043 Expected result](#2351-ora-f01-043-expected-result)
+  - [2.36 TST-F01-044 Isolated device authentication and Admin reads](#236-tst-f01-044-isolated-device-authentication-and-admin-reads)
+    - [2.36.1 ORA-F01-044 Expected result](#2361-ora-f01-044-expected-result)
+  - [2.37 TST-F01-045 Separate Ruleset and PR merge approvals](#237-tst-f01-045-separate-ruleset-and-pr-merge-approvals)
+    - [2.37.1 ORA-F01-045 Expected result](#2371-ora-f01-045-expected-result)
+  - [2.38 TST-F01-046 Cross-Issue and V1 compatibility](#238-tst-f01-046-cross-issue-and-v1-compatibility)
+    - [2.38.1 ORA-F01-046 Expected result](#2381-ora-f01-046-expected-result)
+  - [2.39 TST-F01-047 Retired predecessor V1 migration](#239-tst-f01-047-retired-predecessor-v1-migration)
+    - [2.39.1 ORA-F01-047 Expected result](#2391-ora-f01-047-expected-result)
+  - [2.40 TST-F01-048 Marker identity and one-use enforcement](#240-tst-f01-048-marker-identity-and-one-use-enforcement)
+    - [2.40.1 ORA-F01-048 Expected result](#2401-ora-f01-048-expected-result)
+  - [2.41 TST-F01-049 V2 journal cross-link validation](#241-tst-f01-049-v2-journal-cross-link-validation)
+    - [2.41.1 ORA-F01-049 Expected result](#2411-ora-f01-049-expected-result)
+  - [2.42 TST-F01-050 Interrupted migration recovery](#242-tst-f01-050-interrupted-migration-recovery)
+    - [2.42.1 ORA-F01-050 Expected result](#2421-ora-f01-050-expected-result)
+  - [2.43 TST-F01-051 Fresh Phase sequence on the epoch](#243-tst-f01-051-fresh-phase-sequence-on-the-epoch)
+    - [2.43.1 ORA-F01-051 Expected result](#2431-ora-f01-051-expected-result)
+  - [2.44 TST-F01-052 Activation V2 reuse and operation boundary](#244-tst-f01-052-activation-v2-reuse-and-operation-boundary)
+    - [2.44.1 ORA-F01-052 Expected result](#2441-ora-f01-052-expected-result)
+  - [2.45 TST-F01-053 Synchronized authored and generated artifacts](#245-tst-f01-053-synchronized-authored-and-generated-artifacts)
+    - [2.45.1 ORA-F01-053 Expected result](#2451-ora-f01-053-expected-result)
+  - [2.46 TST-F01-054 Blocked-path zero-write matrix](#246-tst-f01-054-blocked-path-zero-write-matrix)
+    - [2.46.1 ORA-F01-054 Expected result](#2461-ora-f01-054-expected-result)
+  - [2.47 TST-F01-067 Epoch-3 predecessor preservation](#247-tst-f01-067-epoch-3-predecessor-preservation)
+    - [2.47.1 ORA-F01-067 Expected result](#2471-ora-f01-067-expected-result)
+  - [2.48 TST-F01-068 Canonical successor artifact impact](#248-tst-f01-068-canonical-successor-artifact-impact)
+    - [2.48.1 ORA-F01-068 Expected result](#2481-ora-f01-068-expected-result)
+  - [2.49 TST-F01-069 Frozen migration preflight](#249-tst-f01-069-frozen-migration-preflight)
+    - [2.49.1 ORA-F01-069 Expected result](#2491-ora-f01-069-expected-result)
+  - [2.50 TST-F01-070 Typed epoch-3 authorization](#250-tst-f01-070-typed-epoch-3-authorization)
+    - [2.50.1 ORA-F01-070 Expected result](#2501-ora-f01-070-expected-result)
+  - [2.51 TST-F01-071 One-shot migration and read-only recovery](#251-tst-f01-071-one-shot-migration-and-read-only-recovery)
+    - [2.51.1 ORA-F01-071 Expected result](#2511-ora-f01-071-expected-result)
+  - [2.52 TST-F01-072 Fresh Phase evidence sequence](#252-tst-f01-072-fresh-phase-evidence-sequence)
+    - [2.52.1 ORA-F01-072 Expected result](#2521-ora-f01-072-expected-result)
+  - [2.53 TST-F01-073 Readiness identity evidence paths](#253-tst-f01-073-readiness-identity-evidence-paths)
+    - [2.53.1 ORA-F01-073 Expected result](#2531-ora-f01-073-expected-result)
+  - [2.54 TST-F01-074 PR #74 supersession ordering](#254-tst-f01-074-pr-74-supersession-ordering)
+    - [2.54.1 ORA-F01-074 Expected result](#2541-ora-f01-074-expected-result)
+  - [2.55 TST-F01-075 Separate Activation operation gates](#255-tst-f01-075-separate-activation-operation-gates)
+    - [2.55.1 ORA-F01-075 Expected result](#2551-ora-f01-075-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -129,6 +181,58 @@
 - [ORA-F01-018](#ora-f01-018) — 2.28.1 ORA-F01-018 Expected result
 - [TST-F01-031](#tst-f01-031) — 2.29 TST-F01-031 Generic ADC-authorized Phase restart
 - [ORA-F01-031](#ora-f01-031) — 2.29.1 ORA-F01-031 Expected result
+- [TST-F01-038](#tst-f01-038) — 2.30 TST-F01-038 Missing Binding provenance and V2 identity
+- [ORA-F01-038](#ora-f01-038) — 2.30.1 ORA-F01-038 Expected result
+- [TST-F01-039](#tst-f01-039) — 2.31 TST-F01-039 Exact V2 authorization marker
+- [ORA-F01-039](#ora-f01-039) — 2.31.1 ORA-F01-039 Expected result
+- [TST-F01-040](#tst-f01-040) — 2.32 TST-F01-040 Append-only V2 journal and attachment
+- [ORA-F01-040](#ora-f01-040) — 2.32.1 ORA-F01-040 Expected result
+- [TST-F01-041](#tst-f01-041) — 2.33 TST-F01-041 One-shot V2 label transition
+- [ORA-F01-041](#ora-f01-041) — 2.33.1 ORA-F01-041 Expected result
+- [TST-F01-042](#tst-f01-042) — 2.34 TST-F01-042 Current-epoch reader isolation
+- [ORA-F01-042](#ora-f01-042) — 2.34.1 ORA-F01-042 Expected result
+- [TST-F01-043](#tst-f01-043) — 2.35 TST-F01-043 Local eligibility parity
+- [ORA-F01-043](#ora-f01-043) — 2.35.1 ORA-F01-043 Expected result
+- [TST-F01-044](#tst-f01-044) — 2.36 TST-F01-044 Isolated device authentication and Admin reads
+- [ORA-F01-044](#ora-f01-044) — 2.36.1 ORA-F01-044 Expected result
+- [TST-F01-045](#tst-f01-045) — 2.37 TST-F01-045 Separate Ruleset and PR merge approvals
+- [ORA-F01-045](#ora-f01-045) — 2.37.1 ORA-F01-045 Expected result
+- [TST-F01-046](#tst-f01-046) — 2.38 TST-F01-046 Cross-Issue and V1 compatibility
+- [ORA-F01-046](#ora-f01-046) — 2.38.1 ORA-F01-046 Expected result
+- [TST-F01-047](#tst-f01-047) — 2.39 TST-F01-047 Retired predecessor V1 migration
+- [ORA-F01-047](#ora-f01-047) — 2.39.1 ORA-F01-047 Expected result
+- [TST-F01-048](#tst-f01-048) — 2.40 TST-F01-048 Marker identity and one-use enforcement
+- [ORA-F01-048](#ora-f01-048) — 2.40.1 ORA-F01-048 Expected result
+- [TST-F01-049](#tst-f01-049) — 2.41 TST-F01-049 V2 journal cross-link validation
+- [ORA-F01-049](#ora-f01-049) — 2.41.1 ORA-F01-049 Expected result
+- [TST-F01-050](#tst-f01-050) — 2.42 TST-F01-050 Interrupted migration recovery
+- [ORA-F01-050](#ora-f01-050) — 2.42.1 ORA-F01-050 Expected result
+- [TST-F01-051](#tst-f01-051) — 2.43 TST-F01-051 Fresh Phase sequence on the epoch
+- [ORA-F01-051](#ora-f01-051) — 2.43.1 ORA-F01-051 Expected result
+- [TST-F01-052](#tst-f01-052) — 2.44 TST-F01-052 Activation V2 reuse and operation boundary
+- [ORA-F01-052](#ora-f01-052) — 2.44.1 ORA-F01-052 Expected result
+- [TST-F01-053](#tst-f01-053) — 2.45 TST-F01-053 Synchronized authored and generated artifacts
+- [ORA-F01-053](#ora-f01-053) — 2.45.1 ORA-F01-053 Expected result
+- [TST-F01-054](#tst-f01-054) — 2.46 TST-F01-054 Blocked-path zero-write matrix
+- [ORA-F01-054](#ora-f01-054) — 2.46.1 ORA-F01-054 Expected result
+- [TST-F01-067](#tst-f01-067) — 2.47 TST-F01-067 Epoch-3 predecessor preservation
+- [ORA-F01-067](#ora-f01-067) — 2.47.1 ORA-F01-067 Expected result
+- [TST-F01-068](#tst-f01-068) — 2.48 TST-F01-068 Canonical successor artifact impact
+- [ORA-F01-068](#ora-f01-068) — 2.48.1 ORA-F01-068 Expected result
+- [TST-F01-069](#tst-f01-069) — 2.49 TST-F01-069 Frozen migration preflight
+- [ORA-F01-069](#ora-f01-069) — 2.49.1 ORA-F01-069 Expected result
+- [TST-F01-070](#tst-f01-070) — 2.50 TST-F01-070 Typed epoch-3 authorization
+- [ORA-F01-070](#ora-f01-070) — 2.50.1 ORA-F01-070 Expected result
+- [TST-F01-071](#tst-f01-071) — 2.51 TST-F01-071 One-shot migration and read-only recovery
+- [ORA-F01-071](#ora-f01-071) — 2.51.1 ORA-F01-071 Expected result
+- [TST-F01-072](#tst-f01-072) — 2.52 TST-F01-072 Fresh Phase evidence sequence
+- [ORA-F01-072](#ora-f01-072) — 2.52.1 ORA-F01-072 Expected result
+- [TST-F01-073](#tst-f01-073) — 2.53 TST-F01-073 Readiness identity evidence paths
+- [ORA-F01-073](#ora-f01-073) — 2.53.1 ORA-F01-073 Expected result
+- [TST-F01-074](#tst-f01-074) — 2.54 TST-F01-074 PR #74 supersession ordering
+- [ORA-F01-074](#ora-f01-074) — 2.54.1 ORA-F01-074 Expected result
+- [TST-F01-075](#tst-f01-075) — 2.55 TST-F01-075 Separate Activation operation gates
+- [ORA-F01-075](#ora-f01-075) — 2.55.1 ORA-F01-075 Expected result
 <!-- heading-map:end -->
 
 
@@ -362,13 +466,13 @@ Retain the existing Activation-owned base-transition regression as a separate co
 <a id="220-tst-f01-014-activation-admin-session-and-approval-separation"></a>
 ### 2.20 TST-F01-014 Activation admin session and approval separation
 
-**Setup and action:** Run each of the two explicit Admin commands with default `--auth-mode isolated-gh-device`. Fake success, failure, and interruption of the exact `gh auth login --hostname github.com --web --git-protocol https --insecure-storage` call; verify the private mode-0700 `GH_CONFIG_DIR`, runner-managed PTY challenge display without owner-local TTY, ambient token stripping, parent `gh` config preservation, and cleanup. Cover explicit nonstandard `--auth-mode pat` fallback with local interactive TTY, missing/non-interactive TTY, empty input, cancellation, and a repository-limited owner PAT. Exercise correct and incorrect owner/repository identity, admin permission, legacy protection, Ruleset inventory, and effective branch-rule responses; include 403 and incomplete readbacks. Exercise a clean plan, blocked plan, exact and missing Issue #57 plan approvals, plan drift, and separate command invocations. Interrupt apply after POST or PUT and retry with the same plan and approval. Record prompts, output, plan-file creation, API method sequence, and Issue #57 history before and after. If the runner cannot display the browser challenge, record `ADMIN_DEVICE_LOGIN_UNAVAILABLE` and verify zero Admin/Ruleset writes; do not fabricate PTY availability.
+**Setup and action:** Run each of the two explicit Admin commands with default `--auth-mode isolated-gh-device`. Fake success, failure, and interruption of the exact `gh auth login --hostname github.com --web --git-protocol https --insecure-storage` call; verify a local interactive confirmation, private mode-0700 `GH_CONFIG_DIR`, ambient token stripping, parent `gh` config preservation, owner identity readback, and cleanup. Verify PAT and all other auth modes block before login/client creation. Exercise correct and incorrect owner/repository identity, admin permission, legacy protection, Ruleset inventory, and effective branch-rule responses; include 401/403/429/5xx, malformed data, incomplete pages, and complete/incomplete 404 readbacks. Exercise a clean plan, blocked plan, exact and missing Issue #57 plan approvals, plan drift, and separate command invocations. Interrupt apply after POST or PUT and retry with the same plan and approval. Record prompts, output, plan-file creation, API method sequence, and Issue #57 history before and after. Cloud/hosted/CI/SSH/remote/noninteractive/unconfirmed contexts must stop before Admin reads or writes; no credential fallback is permitted.
 
 <a id="ora-f01-014"></a>
 <a id="2201-ora-f01-014-expected-result"></a>
 #### 2.20.1 ORA-F01-014 Expected result
 
-Only the two explicit commands accept Admin authentication. Device mode is the default and uses the human-completed isolated browser challenge with a mode-0700 private config, no inherited token variables, and no change to normal `gh` config; a runner-managed PTY may display the challenge without an owner-local TTY. Explicit PAT fallback reads the owner-created PAT through `getpass` from a trusted owner-local TTY. Unavailable device login, non-TTY PAT fallback, cancellation, identity/admin mismatch, 403, incomplete readback, blocked plan, absent exact approval, or plan drift produces no Ruleset write; a plan file is created only for a blocker-free canonical plan. A valid apply reaches at most the existing single POST or PUT path after exact Issue #57 approval. Interruption recovery performs reads only and does not issue a second write. PAT bytes do not appear in observable output, persisted files, or unrelated command behavior. Device config cleanup does not revoke the GitHub OAuth grant; same-OS-user subprocesses are not a strong sandbox. Authentication, plan approval, User Review, Final Delivery, and merge authorization remain distinct.
+Only the two explicit commands accept Admin authentication, and only through the isolated browser-device route in the owner-confirmed local interactive session. The private config has mode 0700, no inherited token variables, and does not change normal `gh` config. PAT, App, Network-secret, ordinary credentials, SDK, direct REST, and alternate writers are rejected. Unavailable local confirmation/device login, identity/admin mismatch, 401/403/429/5xx, malformed or incomplete readback, blocked plan, absent exact approval, or plan drift produces no Ruleset write; a plan file is created only for a blocker-free canonical plan. A valid apply reaches at most the existing single POST or PUT path after exact Issue #57 approval. Interruption recovery performs reads only and does not issue a second write. Device config cleanup does not revoke the GitHub OAuth grant; same-OS-user subprocesses are not a strong sandbox. Authentication, plan approval, User Review, Final Delivery, and merge authorization remain distinct.
 <a id="tst-f01-015"></a>
 <a id="221-tst-f01-015-owner-decision-relay-and-lifecycle-gates"></a>
 ### 2.21 TST-F01-015 Chat-confirmed authorization and lifecycle gates
@@ -480,3 +584,263 @@ Only the exact two approved edges accept V3. The first records `execution -> req
 #### 2.29.1 ORA-F01-031 Expected result
 
 Only a current approved ADC with one exact canonical typed authorization permits an eligible ordinary Issue's `execution -> requirements` restart. Valid execution appends one Intent/Applied pair, updates the complete label set at most once, and establishes the current ADC/Binding/Applied phase generation. Exact completed replay is read-only only for the exact recorded labels or a fully verified same-generation forward chain; each receipt must pass historical artifact allowlist, authorized skip reason, regular blob digest, and READY traceability checks, with an immutable carrier authored by the authenticated User. Replay hydrates relevant linked skipped specification/design targets from the receipt commit and loads test sources only from current requirement rows; missing/tampered targets block and unrelated missing sources are ignored. Rollback and unrelated label edits block. Malformed edited restart or Phase Decision marker candidates also block instead of disappearing from history. A later Phase Decision supersedes an older Applied record as the next restart's immediate predecessor; an incomplete Intent from any ADC generation blocks further Phase work. V1/V2 Phase Decision bodies are collected using their canonical serializers and direct/list/direct history checks. Predecessor bytes remain identical, old receipts cannot pass current-generation checks, and Issue #63 behavior is unchanged.
+
+<a id="tst-f01-038"></a>
+### 2.30 TST-F01-038 Missing Binding provenance and V2 identity
+
+**Setup and action:** Build the exact Issue 71 subject with no ExecutionBinding file and only the pinned historical digest. Exercise V2 inspect before migration, after Applied, and after attachment tampering. Check that no V1 row is created and that all current identity output labels provenance UNVERIFIED.
+
+<a id="ora-f01-038"></a>
+#### 2.30.1 ORA-F01-038 Expected result
+
+Every valid subject reaches only its authorized result with exact identity and readback. Every stale, malformed, duplicated, unavailable, unauthorized, or partial subject fails closed at the specified boundary. Write counts never exceed the one exact label replacement authorized by the V2 migration, and blocked paths perform zero writes. Earlier Issue, Binding, Phase, Activation, and PR history remains byte-identical.
+
+<a id="tst-f01-039"></a>
+### 2.31 TST-F01-039 Exact V2 authorization marker
+
+**Setup and action:** Use current approved ADC fixtures and mutate each marker field, byte order, duplicate marker, duplicate key, reason, body digest, predecessor pointer, base, branch, and application limit. Count comment and label writes for every blocked case.
+
+<a id="ora-f01-039"></a>
+#### 2.31.1 ORA-F01-039 Expected result
+
+Every valid subject reaches only its authorized result with exact identity and readback. Every stale, malformed, duplicated, unavailable, unauthorized, or partial subject fails closed at the specified boundary. Write counts never exceed the one exact label replacement authorized by the V2 migration, and blocked paths perform zero writes. Earlier Issue, Binding, Phase, Activation, and PR history remains byte-identical.
+
+<a id="tst-f01-040"></a>
+### 2.32 TST-F01-040 Append-only V2 journal and attachment
+
+**Setup and action:** Build canonical Intent/Applied comments and vary IDs, author, URLs, timestamps, order, body bytes, shared fields, Intent hash, duplicates, pagination, local epoch record, and attachment. Exercise direct/list/direct readback and attachment recreation from a complete journal.
+
+<a id="ora-f01-040"></a>
+#### 2.32.1 ORA-F01-040 Expected result
+
+Every valid subject reaches only its authorized result with exact identity and readback. Every stale, malformed, duplicated, unavailable, unauthorized, or partial subject fails closed at the specified boundary. Write counts never exceed the one exact label replacement authorized by the V2 migration, and blocked paths perform zero writes. Earlier Issue, Binding, Phase, Activation, and PR history remains byte-identical.
+
+<a id="tst-f01-041"></a>
+### 2.33 TST-F01-041 One-shot V2 label transition
+
+**Setup and action:** Exercise a complete authorized migration from exact ready labels and base through Intent, one label replacement, Applied, and local attachment. Inject failure before and after every write boundary; count all remote writes and inspect resulting stage.
+
+<a id="ora-f01-041"></a>
+#### 2.33.1 ORA-F01-041 Expected result
+
+Every valid subject reaches only its authorized result with exact identity and readback. Every stale, malformed, duplicated, unavailable, unauthorized, or partial subject fails closed at the specified boundary. Write counts never exceed the one exact label replacement authorized by the V2 migration, and blocked paths perform zero writes. Earlier Issue, Binding, Phase, Activation, and PR history remains byte-identical.
+
+<a id="tst-f01-042"></a>
+### 2.34 TST-F01-042 Current-epoch reader isolation
+
+**Setup and action:** Use an active V2 journal plus old Binding/Phase fixtures. Exercise phase evidence, PR ensure/history, readiness, verification, review, and delivery readers with current V2 receipts and a PRBinding V4/checkpoint V3, old V1 receipts, missing/wrong epoch digest, mixed adoption/binding fields, mismatched generation digest, missing/edited attachment, stale ADC, and wrong branch/base/HEAD. Confirm ordinary work base/branch/bind/recover cannot create or reconstruct the Issue #71 epoch.
+
+<a id="ora-f01-042"></a>
+#### 2.34.1 ORA-F01-042 Expected result
+
+Every valid subject reaches only its authorized result with exact identity and readback. Every stale, malformed, duplicated, unavailable, unauthorized, or partial subject fails closed at the specified boundary. Write counts never exceed the one exact label replacement authorized by the V2 migration, and blocked paths perform zero writes. Earlier Issue, Binding, Phase, Activation, and PR history remains byte-identical.
+
+<a id="tst-f01-043"></a>
+### 2.35 TST-F01-043 Local eligibility parity
+
+**Setup and action:** Run every live Activation and Admin CLI/direct-runtime entrypoint under identical local interactive Codex, Claude Code, and owner-controlled VM fixtures, including the typed operator confirmation. Also vary noninteractive, missing confirmation, Cloud, hosted, CI, SSH/remote, and unknown-control contexts. Do not use agent-name environment markers as proof. Record API methods and writes.
+
+<a id="ora-f01-043"></a>
+#### 2.35.1 ORA-F01-043 Expected result
+
+Every valid subject reaches only its authorized result with exact identity and readback. Every stale, malformed, duplicated, unavailable, unauthorized, or partial subject fails closed at the specified boundary. Write counts never exceed the one exact label replacement authorized by the V2 migration, and blocked paths perform zero writes. Earlier Issue, Binding, Phase, Activation, and PR history remains byte-identical.
+
+<a id="tst-f01-044"></a>
+### 2.36 TST-F01-044 Isolated device authentication and Admin reads
+
+**Setup and action:** Use fake gh children to verify a fresh mode-0700 GH_CONFIG_DIR, ambient-token removal and cleanup. Confirm isolated-gh-device is the only accepted route. Inject owner/repository mismatch, missing admin permission, 401/403/429/5xx, malformed/incomplete pages, and consistent/unavailable 404 reads. Observe credential fallback attempts and all writes.
+
+<a id="ora-f01-044"></a>
+#### 2.36.1 ORA-F01-044 Expected result
+
+Every valid subject reaches only its authorized result with exact identity and readback. Every stale, malformed, duplicated, unavailable, unauthorized, or partial subject fails closed at the specified boundary. Write counts never exceed the one exact label replacement authorized by the V2 migration, and blocked paths perform zero writes. Earlier Issue, Binding, Phase, Activation, and PR history remains byte-identical.
+
+<a id="tst-f01-045"></a>
+### 2.37 TST-F01-045 Separate Ruleset and PR merge approvals
+
+**Setup and action:** Exercise blocker-free and stale Ruleset plans with no, wrong, stale, exact-plan and unavailable-chat provenance decisions. Exercise Setup PR merge with absent, stale and exact-HEAD PR_MERGE decisions. Count Ruleset and merge writes.
+
+<a id="ora-f01-045"></a>
+#### 2.37.1 ORA-F01-045 Expected result
+
+Every valid subject reaches only its authorized result with exact identity and readback. Every stale, malformed, duplicated, unavailable, unauthorized, or partial subject fails closed at the specified boundary. Write counts never exceed the one exact label replacement authorized by the V2 migration, and blocked paths perform zero writes. Earlier Issue, Binding, Phase, Activation, and PR history remains byte-identical.
+
+<a id="tst-f01-046"></a>
+### 2.38 TST-F01-046 Cross-Issue and V1 compatibility
+
+**Setup and action:** Snapshot Issue #57 V1, #63/PR #64, predecessor ADC/Binding/Phase comments, and #72/PR #73. Run ordinary V1 Binding, generic phase restart, Issue #63 adoption, and Activation V2 regression suites around the Issue 71 path.
+
+<a id="ora-f01-046"></a>
+#### 2.38.1 ORA-F01-046 Expected result
+
+Every valid subject reaches only its authorized result with exact identity and readback. Every stale, malformed, duplicated, unavailable, unauthorized, or partial subject fails closed at the specified boundary. Write counts never exceed the one exact label replacement authorized by the V2 migration, and blocked paths perform zero writes. Earlier Issue, Binding, Phase, Activation, and PR history remains byte-identical.
+
+<a id="tst-f01-047"></a>
+### 2.39 TST-F01-047 Retired predecessor V1 migration
+
+**Setup and action:** Present the pinned first successor ADC, V1 Intent and retired branch. Test exact history readback and mutation/duplicate/Applied variants. Assert no V1 writes, no label update, no branch switch and no attachment from V1.
+
+<a id="ora-f01-047"></a>
+#### 2.39.1 ORA-F01-047 Expected result
+
+Every valid subject reaches only its authorized result with exact identity and readback. Every stale, malformed, duplicated, unavailable, unauthorized, or partial subject fails closed at the specified boundary. Write counts never exceed the one exact label replacement authorized by the V2 migration, and blocked paths perform zero writes. Earlier Issue, Binding, Phase, Activation, and PR history remains byte-identical.
+
+<a id="tst-f01-048"></a>
+### 2.40 TST-F01-048 Marker identity and one-use enforcement
+
+**Setup and action:** Change the approved marker's exact subject, including Issue body digest, retired Intent, active Phase generation, repository/owner IDs, base and branch. Duplicate or reorder the marker and retry an already-started migration; inspect writes.
+
+<a id="ora-f01-048"></a>
+#### 2.40.1 ORA-F01-048 Expected result
+
+Every valid subject reaches only its authorized result with exact identity and readback. Every stale, malformed, duplicated, unavailable, unauthorized, or partial subject fails closed at the specified boundary. Write counts never exceed the one exact label replacement authorized by the V2 migration, and blocked paths perform zero writes. Earlier Issue, Binding, Phase, Activation, and PR history remains byte-identical.
+
+<a id="tst-f01-049"></a>
+### 2.41 TST-F01-049 V2 journal cross-link validation
+
+**Setup and action:** Validate canonical V2 Intent/Applied payloads for required fields, actor, exact ADC/marker and predecessor links, complete labels, epoch ID, timestamps, author and comment order. Mutate or duplicate each value and verify fail-closed reads.
+
+<a id="ora-f01-049"></a>
+#### 2.41.1 ORA-F01-049 Expected result
+
+Every valid subject reaches only its authorized result with exact identity and readback. Every stale, malformed, duplicated, unavailable, unauthorized, or partial subject fails closed at the specified boundary. Write counts never exceed the one exact label replacement authorized by the V2 migration, and blocked paths perform zero writes. Earlier Issue, Binding, Phase, Activation, and PR history remains byte-identical.
+
+<a id="tst-f01-050"></a>
+### 2.42 TST-F01-050 Interrupted migration recovery
+
+**Setup and action:** Inject an exception or lost response after Intent POST, label PUT before and after server application, Applied POST before and after persistence, and each local create. Call read-only inspect and any allowed attachment-only recovery; verify label updates and comments are never replayed.
+
+<a id="ora-f01-050"></a>
+#### 2.42.1 ORA-F01-050 Expected result
+
+Every valid subject reaches only its authorized result with exact identity and readback. Every stale, malformed, duplicated, unavailable, unauthorized, or partial subject fails closed at the specified boundary. Write counts never exceed the one exact label replacement authorized by the V2 migration, and blocked paths perform zero writes. Earlier Issue, Binding, Phase, Activation, and PR history remains byte-identical.
+
+<a id="tst-f01-051"></a>
+### 2.43 TST-F01-051 Fresh Phase sequence on the epoch
+
+**Setup and action:** Starting from the complete V2 Applied/attachment, issue current-generation requirements/specification/design/ready receipts in order with the exact Issue body digest. Confirm retired READY and V1 receipts cannot satisfy any edge; mutate a receipt, artifact, ADC or epoch between steps.
+
+<a id="ora-f01-051"></a>
+#### 2.43.1 ORA-F01-051 Expected result
+
+Every valid subject reaches only its authorized result with exact identity and readback. Every stale, malformed, duplicated, unavailable, unauthorized, or partial subject fails closed at the specified boundary. Write counts never exceed the one exact label replacement authorized by the V2 migration, and blocked paths perform zero writes. Earlier Issue, Binding, Phase, Activation, and PR history remains byte-identical.
+
+<a id="tst-f01-052"></a>
+### 2.44 TST-F01-052 Activation V2 reuse and operation boundary
+
+**Setup and action:** Run the existing Activation V2 and Ruleset fixtures through the new Issue 71 eligibility guard. Confirm the existing single Ruleset writer remains called once only after complete Admin readback and exact separate plan authority, and that no duplicate Activation writer exists.
+
+<a id="ora-f01-052"></a>
+#### 2.44.1 ORA-F01-052 Expected result
+
+Every valid subject reaches only its authorized result with exact identity and readback. Every stale, malformed, duplicated, unavailable, unauthorized, or partial subject fails closed at the specified boundary. Write counts never exceed the one exact label replacement authorized by the V2 migration, and blocked paths perform zero writes. Earlier Issue, Binding, Phase, Activation, and PR history remains byte-identical.
+
+<a id="tst-f01-053"></a>
+### 2.45 TST-F01-053 Synchronized authored and generated artifacts
+
+**Setup and action:** Run document validation/format, traceability, each canonical Skill acceptance check, adapter inventory and distribution builder/check/validator. Introduce one drift per authored and generated tree and verify the correct validator reports it.
+
+<a id="ora-f01-053"></a>
+#### 2.45.1 ORA-F01-053 Expected result
+
+Every valid subject reaches only its authorized result with exact identity and readback. Every stale, malformed, duplicated, unavailable, unauthorized, or partial subject fails closed at the specified boundary. Write counts never exceed the one exact label replacement authorized by the V2 migration, and blocked paths perform zero writes. Earlier Issue, Binding, Phase, Activation, and PR history remains byte-identical.
+
+<a id="tst-f01-054"></a>
+### 2.46 TST-F01-054 Blocked-path zero-write matrix
+
+**Setup and action:** For each malformed, stale, unauthorized, unavailable, duplicate, partial, hosted, remote, or unknown subject in TST-F01-038–053, assert zero approval-dependent, Ruleset, PR, Activation, Issue-close, and label writes. Valid migration alone permits one label replacement.
+
+<a id="ora-f01-054"></a>
+#### 2.46.1 ORA-F01-054 Expected result
+
+Every valid subject reaches only its authorized result with exact identity and readback. Every stale, malformed, duplicated, unavailable, unauthorized, or partial subject fails closed at the specified boundary. Write counts never exceed the one exact label replacement authorized by the V2 migration, and blocked paths perform zero writes. Earlier Issue, Binding, Phase, Activation, and PR history remains byte-identical.
+
+<a id="tst-f01-067"></a>
+### 2.47 TST-F01-067 Epoch-3 predecessor preservation
+
+**Setup and action:** Snapshot every predecessor ADC, Binding, epoch, Phase receipt, Issue comment, and PR #74 head/history. Run epoch-3 validation and active-generation reads with the reported historical Binding digest only; verify that no V1 Binding file is created or selected.
+
+<a id="ora-f01-067"></a>
+#### 2.47.1 ORA-F01-067 Expected result
+
+Every predecessor artifact remains byte-identical. Historical Binding provenance stays UNVERIFIED; only the verified epoch-3 journal and attachment identify the active generation.
+
+<a id="tst-f01-068"></a>
+### 2.48 TST-F01-068 Canonical successor artifact impact
+
+**Setup and action:** Validate the exact approved ADC pointer and contract bytes. Exercise the ADC parser and Phase artifact-impact reader with the one Specification row, one Design row, and one Testing row. Remove, duplicate, reorder, add an out-of-tree path, or corrupt a role label in test fixtures.
+
+<a id="ora-f01-068"></a>
+#### 2.48.1 ORA-F01-068 Expected result
+
+The exact declared paths parse to their matching roles. Missing, duplicate, malformed, noncanonical, or out-of-scope rows are rejected before receipt publication.
+
+<a id="tst-f01-069"></a>
+### 2.49 TST-F01-069 Frozen migration preflight
+
+**Setup and action:** Exercise exact-match and drift cases for the approved ADC chain, old epoch/READY/deviation/blocker digests, Issue body and labels, owner/repository IDs, PR #74 head, frozen main SHA, existing local branch HEAD/cleanliness, and absent remote branch.
+
+<a id="ora-f01-069"></a>
+#### 2.49.1 ORA-F01-069 Expected result
+
+The exact pinned tuple passes read-only preflight. Each stale, missing, edited, duplicate, incomplete, or changed value blocks before Intent, label, or Applied writes.
+
+<a id="tst-f01-070"></a>
+### 2.50 TST-F01-070 Typed epoch-3 authorization
+
+**Setup and action:** Parse the exact marker and inject duplicate keys or markers, malformed JSON, reordered fields, wrong ADC/Issue/base/branch, incorrect historical Binding digest, changed predecessor receipt, and a stale authorization pointer.
+
+<a id="ora-f01-070"></a>
+#### 2.50.1 ORA-F01-070 Expected result
+
+Only the exact unique canonical authorization in the current approved ADC produces a typed grant. Every mismatch is rejected without GitHub writes.
+
+<a id="tst-f01-071"></a>
+### 2.51 TST-F01-071 One-shot migration and read-only recovery
+
+**Setup and action:** Fake successful Intent/label/Applied writes and interruption after each boundary, including lost POST/PUT responses, duplicate comments, and readback outage. Record GitHub writes and local attempt files. Retry only through the public recovery command and assert all ambiguous cases make reads only.
+
+<a id="ora-f01-071"></a>
+#### 2.51.1 ORA-F01-071 Expected result
+
+At most one Intent, one complete-label update, and one Applied record are written. Exact completed replay returns a read-only result. An ambiguous or inconsistent state is blocked and never sends a second POST/PUT. The workspace attachment matches the durable journal.
+
+<a id="tst-f01-072"></a>
+### 2.52 TST-F01-072 Fresh Phase evidence sequence
+
+**Setup and action:** After migration, commit the final impacted documents and publish requirements, specification, design, and READY receipts in order. Check each receipt at the exact pushed branch commit. Then attempt normal ready-to-execution; seed prior-generation receipts and altered document blobs as negative controls.
+
+<a id="ora-f01-072"></a>
+#### 2.52.1 ORA-F01-072 Expected result
+
+Each new receipt binds the active epoch-3 Applied ID/digest, current ADC, exact branch commit, and final committed artifact bytes. Predecessor receipts or changed blobs cannot satisfy the new sequence. Execution advances only after valid READY evidence.
+
+<a id="tst-f01-073"></a>
+### 2.53 TST-F01-073 Readiness identity evidence paths
+
+**Setup and action:** Exercise Issue #71 epoch3, ordinary V1 Binding, and Issue #63 adopted-epoch Readiness. Assert every emitted identity reference exists and was validated as the active identity. Remove Issue #71's V1 Binding file, tamper an epoch or attachment, and remove Issue #63's required adoption evidence.
+
+<a id="ora-f01-073"></a>
+#### 2.53.1 ORA-F01-073 Expected result
+
+Issue #71 emits only the verified epoch identity and attachment paths; ordinary V1 emits its validated Binding; Issue #63 emits its validated adopted-epoch sources. Missing or inactive paths make Readiness non-passing and are never replaced with stale references.
+
+<a id="tst-f01-074"></a>
+### 2.54 TST-F01-074 PR #74 supersession ordering
+
+**Setup and action:** Create a fully verified replacement Issue #71 PR, then update PR #74's body with the replacement link and close #74. Inject a replacement PR blocker and prove no #74 mutation occurs before the replacement is verified.
+
+<a id="ora-f01-074"></a>
+#### 2.54.1 ORA-F01-074 Expected result
+
+PR #74 remains unchanged until one open, non-draft exact-head replacement is verified. Then it is identified as superseded and closed; neither PR is merged by this flow.
+
+<a id="tst-f01-075"></a>
+### 2.55 TST-F01-075 Separate Activation operation gates
+
+**Setup and action:** Run the inherited owner-controlled local Admin workflow with incomplete and complete protection reads, device-auth isolation, separate exact Ruleset plan approval, and separate Setup PR merge approval. Inject 403, missing policy sources, stale plans, absent chat provenance, and owner mismatch.
+
+<a id="ora-f01-075"></a>
+#### 2.55.1 ORA-F01-075 Expected result
+
+No activation-dependent write occurs without complete owner-controlled local policy readback and its own exact authorization. A 403/incomplete read blocks; no Ruleset, Setup PR, Activation, Issue #63, or merge write is inferred or performed.

@@ -106,6 +106,7 @@ from .phase_evidence import (
     verify_phase_evidence,
 )
 from .phase_restart import PhaseRestartError, restart_issue_phase
+from .phase_epoch_rebaseline import PhaseEpochRebaselineError, apply_phase_epoch_rebaseline
 from .oracle_trace import (
     OracleDefinition, OracleTraceError, TestDefinition, validate_plan_oracles,
     validate_plan_tests,
@@ -4402,6 +4403,13 @@ def _parser() -> argparse.ArgumentParser:
     phase_restart.add_argument("--repo", help="repository owner/name; defaults to origin")
     phase_restart.add_argument("--root", type=Path, required=True,
                                 help="bound Issue worktree containing its current ExecutionBinding history")
+    phase_epoch_rebaseline = issue_commands.add_parser(
+        "phase-epoch-rebaseline", help="apply/recover the one ADC-authorized Issue #71 epoch-3 rebaseline"
+    )
+    phase_epoch_rebaseline.add_argument("issue", type=_positive_number)
+    phase_epoch_rebaseline.add_argument("--repo", help="repository owner/name; defaults to origin")
+    phase_epoch_rebaseline.add_argument("--root", type=Path, required=True,
+                                        help="the exact authorized Issue #71 epoch-3 worktree")
     validate_plan = issue_commands.add_parser("validate-split")
     validate_plan.add_argument("plan", type=Path)
     validate_plan.add_argument("--repo", help="repository owner/name; defaults to origin")
@@ -5166,6 +5174,15 @@ def main(argv: list[str] | None = None) -> int:
                 _json(result)
                 return 0
             except PhaseRestartError as exc:
+                return _blocked_result((str(exc),))
+
+        if args.verb == "phase-epoch-rebaseline":
+            root = _repo_root(str(args.root)).resolve()
+            try:
+                result = apply_phase_epoch_rebaseline(GitHub(repository), root, args.issue)
+                _json(result)
+                return 0
+            except PhaseEpochRebaselineError as exc:
                 return _blocked_result((str(exc),))
 
         if args.verb == "phase-evidence":
