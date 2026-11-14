@@ -22,6 +22,7 @@ from p_ases.delivery import (
 )
 from p_ases.evidence_store import VerificationSubject
 from p_ases.execution import AdoptedExecutionEpoch, ExecutionBinding, binding_digest
+from p_ases.execution_epoch import IssueExecutionEpoch
 from p_ases.verification import (
     GateResult, RequiredCheckPolicy, VerificationResult, evaluate_required_checks,
 )
@@ -93,6 +94,66 @@ def setup(*, draft=False, fork=False, stale=False, unresolved=False):
 
 
 class WorkReadinessSchemaTests(unittest.TestCase):
+    def test_issue71_requires_the_active_epoch_and_v4_prbinding_bridge(self):
+        repository = "puchinya/ai-agent-workflow"
+        epoch = IssueExecutionEpoch(
+            repository=repository, issue_number=71, adc_comment_id=6874553609,
+            adc_sha256="aa0e69210dec4f2df1b069eafc4f5ce99ca3a71465a7ca59da3a05301fa023a4",
+            base_ref="main", base_sha40="07481c4b451a81750a6c2e1a6a18bdfd4e3459c2",
+            branch_ref="pases/issue-71-local-activation-v2-epoch-2", epoch_id="1" * 64,
+            intent_comment_id=6874824379, intent_body_sha256="2" * 64,
+            applied_comment_id=6874828409, applied_body_sha256="3" * 64,
+            attachment_id="4" * 64,
+            historical_binding_sha256="b828daa98c9cab2c5243019e71158231e43f8c06826c7c31e6ca48ea3f5ac868",
+        ).validate()
+        subject = VerificationSubject(repository, 71, 81, epoch.adc_comment_id, epoch.adc_sha256,
+                                      PLAN_SHA, "e" * 40)
+        binding = PRBinding(
+            repository, 71, epoch.adc_comment_id, epoch.adc_sha256, epoch.base_sha40,
+            epoch.branch_ref, 81, subject.pr_head_sha40, execution_epoch_sha256=epoch.sha256,
+        ).validate()
+        context = WorkContext(epoch, subject.pr_head_sha40, epoch.branch_ref, True, epoch.sha256).validate()
+        self.assertTrue(_identity_adc_matches_subject(epoch, binding, subject))
+        self.assertIsNone(context.execution_binding_sha256)
+        with self.assertRaisesRegex(ValueError, "not a normal ExecutionBinding"):
+            _ = context.execution_binding
+        self.assertFalse(_identity_adc_matches_subject(
+            epoch, PRBinding(
+                repository, 71, epoch.adc_comment_id, epoch.adc_sha256, epoch.base_sha40,
+                epoch.branch_ref, 81, subject.pr_head_sha40,
+            ).validate(), subject,
+        ))
+
+    def test_issue71_rejects_a_v1_binding_even_when_adc_matches(self):
+        repository = "puchinya/ai-agent-workflow"
+        subject = VerificationSubject(
+            repository, 71, 81, 6874553609,
+            "aa0e69210dec4f2df1b069eafc4f5ce99ca3a71465a7ca59da3a05301fa023a4",
+            PLAN_SHA, "e" * 40,
+        )
+        old_binding = ExecutionBinding(
+            repository=repository, issue_number=71, adc_comment_id=subject.adc_comment_id,
+            adc_sha256=subject.adc_sha256, base_ref="main",
+            base_sha="07481c4b451a81750a6c2e1a6a18bdfd4e3459c2",
+            work_directory=str(Path(tempfile.gettempdir()) / "pases-71-old"),
+            branch_ref="pases/issue-71-local-activation-v2-epoch-2",
+            initial_head_sha="07481c4b451a81750a6c2e1a6a18bdfd4e3459c2",
+        ).validate()
+        old_context = WorkContext(old_binding, subject.pr_head_sha40, old_binding.branch_ref, True,
+                                  binding_digest(old_binding)).validate()
+        old_pr_binding = PRBinding(
+            repository, 71, subject.adc_comment_id, subject.adc_sha256, old_binding.base_sha,
+            old_binding.branch_ref, 81, subject.pr_head_sha40,
+        ).validate()
+        self.assertFalse(_identity_adc_matches_subject(old_binding, old_pr_binding, subject))
+        result = evaluate_readiness(
+            subject=subject, pr=None, pr_binding=old_pr_binding, work_context=old_context,
+            verification=None, acceptance=None, self_audit=None, required_item_ids=(),
+            independent_review=None, required_checks_sha256=None,
+        )
+        self.assertEqual(result.status, "BLOCKED")
+        self.assertIn("Issue #71 requires the active V2 execution epoch", result.reasons)
+
     def test_adopted_epoch_uses_current_prbinding_adc_without_mutating_origin(self):
         repository = "puchinya/ai-agent-workflow"
         origin_adc_sha = "1" * 64

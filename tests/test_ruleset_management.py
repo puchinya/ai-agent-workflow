@@ -20,7 +20,7 @@ from p_ases.ruleset_management import (  # noqa: E402
     _canonical, _desired_payload, _managed_body,
     _body_digest, _publish_applied_record, _verify_exact_approval, apply_ruleset_plan,
     build_ruleset_plan,
-    effective_policy_sha256, validate_plan, verify_applied_policy_record, write_plan,
+    effective_policy_sha256, validate_plan, verify_historical_applied_policy_record, write_plan,
 )
 
 
@@ -102,6 +102,15 @@ def make_plan(**updates):
 
 
 class RulesetManagementTests(unittest.TestCase):
+    def setUp(self):
+        # These tests exercise planner/apply semantics with fake GitHub clients.
+        # Locality and device-session gates are covered separately by
+        # test_local_execution.py.
+        for name in ("require_local_activation_execution", "require_isolated_device_admin_client"):
+            patcher = patch(f"p_ases.ruleset_management.{name}")
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     def make_planning_repository(self, root: Path) -> str:
         profile = root / ".agent/project.json"
         profile.parent.mkdir(parents=True)
@@ -140,6 +149,10 @@ class RulesetManagementTests(unittest.TestCase):
                 self.detail_calls = 0
                 self.create_calls = 0
                 self.update_calls = 0
+                self.actor_id = OWNER_ID
+                self.owner_id = OWNER_ID
+                self.repo_admin = True
+                self.permission = "admin"
 
             def regular_content_at_ref(self, path, ref):
                 if path != ".agent/project.json" or ref != head:
@@ -149,9 +162,15 @@ class RulesetManagementTests(unittest.TestCase):
             def repository_metadata(self):
                 return {
                     "id": 1401910271, "full_name": REPOSITORY,
-                    "owner": {"id": OWNER_ID, "type": "User", "login": "puchinya"},
-                    "default_branch": "main",
+                    "owner": {"id": self.owner_id, "type": "User", "login": "puchinya"},
+                    "default_branch": "main", "permissions": {"admin": self.repo_admin},
                 }
+
+            def authenticated_user(self):
+                return {"id": self.actor_id, "login": "puchinya", "type": "User"}
+
+            def collaborator_permission(self, login):
+                return {"permission": self.permission, "user": {"id": self.actor_id, "login": login}}
 
             def repository_rulesets(self):
                 self.inventory_calls += 1
@@ -215,6 +234,10 @@ class RulesetManagementTests(unittest.TestCase):
             ("branch-404", {"branch_status": 404}),
             ("effective-404", {"effective_status": 404}),
             ("inventory-403", {"inventory_status": 403}),
+            ("inventory-401", {"inventory_status": 401}),
+            ("inventory-429", {"inventory_status": 429}),
+            ("inventory-500", {"inventory_status": 500}),
+            ("inventory-503", {"inventory_status": 503}),
         )
         for name, options in cases:
             with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
@@ -264,6 +287,22 @@ class RulesetManagementTests(unittest.TestCase):
         self.assertEqual(plan["diff"]["operation"], "blocked")
         self.assertNotEqual(plan["policy_proof"]["status"], "NOT_CONFIGURED")
         self.assertEqual(github.detail_calls, 1)
+
+    def test_admin_identity_or_permission_mismatch_blocks_before_policy_inventory(self):
+        for name, updates, message in (
+            ("actor", {"actor_id": OWNER_ID + 1}, "not the repository owner"),
+            ("collaborator", {"permission": "write"}, "lacks verified repository admin"),
+            ("repository", {"repo_admin": False}, "does not verify admin access"),
+        ):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                head = self.make_planning_repository(root)
+                github = self.planning_github(head)
+                for key, value in updates.items():
+                    setattr(github, key, value)
+                with self.assertRaisesRegex(RulesetManagementError, message):
+                    build_ruleset_plan(root, github)
+                self.assertEqual(github.inventory_calls, 0)
 
     def test_admin_apply_rechecks_policy_and_writes_nothing_after_403(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -829,8 +868,13 @@ class RulesetManagementTests(unittest.TestCase):
                 return copy.deepcopy(matches[0])
 
         github = HistoricalGitHub()
-        verified = verify_applied_policy_record(github, 57, 20, 11, 17, policy_sha)
+        verified = verify_historical_applied_policy_record(github, 57, 20, 11, 17, policy_sha)
         self.assertEqual(verified, payload)
+        original_approval = comments[0]["body"]
+        comments[0]["body"] = "edited owner approval"
+        with self.assertRaisesRegex(RulesetManagementError, "approval|ownership"):
+            verify_historical_applied_policy_record(github, 57, 20, 11, 17, policy_sha)
+        comments[0]["body"] = original_approval
         from p_ases.ruleset_management import _read_ownership_history
         with self.assertRaisesRegex(RulesetManagementError, "canonical|JSON"):
             _read_ownership_history(github, 1401910271, OWNER_ID, 57)
