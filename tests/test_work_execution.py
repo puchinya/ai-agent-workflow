@@ -11,9 +11,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases.checkpoint import read_checkpoint
-from p_ases.execution import binding_digest, read_binding, read_binding_history
+from p_ases.execution import ExecutionBinding, binding_digest, read_binding, read_binding_history
 from p_ases.git import head_sha40, run_git
-from p_ases.work import WorkError, bind_work, ensure_branch, latest_checkpoint, recover_work
+from p_ases.work import WorkError, bind_work, ensure_branch, ensure_pull_request, latest_checkpoint, recover_work
 
 
 class WorkExecutionTests(unittest.TestCase):
@@ -64,6 +64,40 @@ class WorkExecutionTests(unittest.TestCase):
                 recover_work(
                     work, repository="owner/repo", issue_number=30, adc_comment_id=123,
                     adc_sha256="a" * 64, expected_branch_ref="pases/work",
+                )
+            self.assertFalse(binding_path.exists())
+
+    def test_issue71_generic_bind_and_recover_cannot_create_a_v1_binding(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            work, _bare, base = self._repo(Path(temporary))
+            binding_path = work / ".p_ases/state/71/execution-binding.json"
+            with self.assertRaisesRegex(WorkError, "approved execution-epoch restart"):
+                bind_work(
+                    work, repository="puchinya/ai-agent-workflow", issue_number=71,
+                    adc_comment_id=6874553609,
+                    adc_sha256="aa0e69210dec4f2df1b069eafc4f5ce99ca3a71465a7ca59da3a05301fa023a4",
+                    base_ref="main", branch_ref="pases/issue-71-local-activation-v2-epoch-2",
+                )
+            with self.assertRaisesRegex(WorkError, "active execution epoch"):
+                recover_work(
+                    work, repository="puchinya/ai-agent-workflow", issue_number=71,
+                    adc_comment_id=6874553609,
+                    adc_sha256="aa0e69210dec4f2df1b069eafc4f5ce99ca3a71465a7ca59da3a05301fa023a4",
+                    expected_branch_ref="pases/issue-71-local-activation-v2-epoch-2",
+                )
+            ordinary = ExecutionBinding(
+                repository="puchinya/ai-agent-workflow", issue_number=71,
+                adc_comment_id=6874553609,
+                adc_sha256="aa0e69210dec4f2df1b069eafc4f5ce99ca3a71465a7ca59da3a05301fa023a4",
+                base_ref="main", base_sha=base,
+                work_directory=str(work.resolve()),
+                branch_ref="pases/issue-71-local-activation-v2-epoch-2", initial_head_sha=base,
+            ).validate()
+            with self.assertRaisesRegex(WorkError, "epoch PR ensure"):
+                ensure_pull_request(
+                    work, None, repository="puchinya/ai-agent-workflow", issue_number=71,
+                    binding=ordinary, branch_ref=ordinary.branch_ref, base_ref="main",
+                    title="Issue #71", body="Closes #71",
                 )
             self.assertFalse(binding_path.exists())
 

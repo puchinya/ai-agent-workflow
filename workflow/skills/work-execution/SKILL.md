@@ -4,13 +4,15 @@ description: Execute only a verified approved ADC in the correct frozen work con
 ---
 # Work execution
 
-## Sandboxed GitHub CLI
+## GitHub and live Admin boundary
 
-Run every `gh` command, including `gh auth login`, through the normal sandboxed execution environment. A script that invokes `gh` must itself start inside that sandbox so its child process inherits the sandbox boundary. Do not request sandbox escalation or run `gh` outside the sandbox to work around missing authentication, network access, or permissions. If the sandboxed command cannot complete, report its exact failure and stop that GitHub operation.
+Keep application GitHub API calls in `runtime/p_ases/github.py`; do not add ad hoc API clients or credential routes. Live Issue #71 Admin/Activation requires an owner-controlled local interactive execution outside Codex Cloud/sandbox and hosted/CI/remote contexts. The only Admin path is `isolated-gh-device` with a fresh private `GH_CONFIG_DIR`; if local confirmation, device authentication, owner identity, or complete current policy readback is unavailable, stop before any policy or Activation write.
 
 ## One-time Issue #63 / PR #64 adoption
 
 This exception applies only to `puchinya/ai-agent-workflow` Issue #63 / PR #64. It permits bootstrap implementation and CI while the original Binding is missing; before adoption, do not publish ordinary Phase receipts or claim Verification, Acceptance, Self-Audit, Independent Review, Readiness, or User Review PASS. After the bootstrap is pushed and all five exact-HEAD Required Checks pass, run `work adoption-plan 63` and preserve the complete canonical plan bytes. Show the full plan and digest to the user, then obtain a distinct same-conversation direct user-role `EXECUTION_ADOPTION` approval for that exact plan and PR HEAD. The chat host must provide the actual user event to the in-process V3 authorization hook; the CLI, a file, prior broad permission, old HEAD approval, or vague continuation cannot authorize it. If role provenance is unavailable, stop with `CHAT_PROVENANCE_UNAVAILABLE`. Only then run `work adoption-apply 63` and verify its Intent/Applied readback, epoch, workspace attachment, and adopted PRBinding. The record explicitly marks historical provenance `UNVERIFIED` and does not create a normal V1 Binding. Resume ordinary requirements→specification→design→ready→execution phases and all normal current-HEAD gates after adoption. This approval does not authorize User Review, Ruleset, Activation, or merge. Durable anchor/reattachment for ordinary Issues remains separate follow-up work.
+
+For `puchinya/ai-agent-workflow` Issue #71, do not use the Issue #63 adoption route or normal `work bind`. The exact approved ADC authorizes one dedicated V2 epoch migration; after fresh requirements/specification/design/ready receipts pass, work and later evidence stay on that epoch's branch. The original Binding history is not recreated and remains `UNVERIFIED`.
 
 ### Approved ADC successor on the existing adopted epoch
 

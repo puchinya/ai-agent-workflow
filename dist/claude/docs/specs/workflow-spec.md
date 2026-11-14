@@ -46,6 +46,23 @@
   - [9.19 REQ-F01-035 Active Phase generation](#919-req-f01-035-active-phase-generation)
   - [9.20 REQ-F01-036 Issue #63 compatibility](#920-req-f01-036-issue-63-compatibility)
   - [9.21 REQ-F01-037 ADC is the sole Phase restart approval](#921-req-f01-037-adc-is-the-sole-phase-restart-approval)
+  - [9.22 REQ-F01-038 Missing historical Binding provenance](#922-req-f01-038-missing-historical-binding-provenance)
+  - [9.23 REQ-F01-039 One-time epoch authorization](#923-req-f01-039-one-time-epoch-authorization)
+  - [9.24 REQ-F01-040 Append-only epoch journal](#924-req-f01-040-append-only-epoch-journal)
+  - [9.25 REQ-F01-041 One-shot epoch migration](#925-req-f01-041-one-shot-epoch-migration)
+  - [9.26 REQ-F01-042 V2 current-epoch evidence](#926-req-f01-042-v2-current-epoch-evidence)
+  - [9.27 REQ-F01-043 Agent-neutral local eligibility](#927-req-f01-043-agent-neutral-local-eligibility)
+  - [9.28 REQ-F01-044 Isolated device authentication and complete Admin readback](#928-req-f01-044-isolated-device-authentication-and-complete-admin-readback)
+  - [9.29 REQ-F01-045 Separated Ruleset and merge authority](#929-req-f01-045-separated-ruleset-and-merge-authority)
+  - [9.30 REQ-F01-046 Compatibility and epoch test coverage](#930-req-f01-046-compatibility-and-epoch-test-coverage)
+  - [9.31 REQ-F01-047 Retire the first V1 migration](#931-req-f01-047-retire-the-first-v1-migration)
+  - [9.32 REQ-F01-048 Exact V2 marker binding](#932-req-f01-048-exact-v2-marker-binding)
+  - [9.33 REQ-F01-049 Distinct V2 Intent and Applied records](#933-req-f01-049-distinct-v2-intent-and-applied-records)
+  - [9.34 REQ-F01-050 Partial migration is permanently non-retryable](#934-req-f01-050-partial-migration-is-permanently-non-retryable)
+  - [9.35 REQ-F01-051 Fresh Phase evidence before implementation](#935-req-f01-051-fresh-phase-evidence-before-implementation)
+  - [9.36 REQ-F01-052 Local Activation V2 implementation scope](#936-req-f01-052-local-activation-v2-implementation-scope)
+  - [9.37 REQ-F01-053 Synchronized artifacts and distributions](#937-req-f01-053-synchronized-artifacts-and-distributions)
+  - [9.38 REQ-F01-054 Required focused and regression tests](#938-req-f01-054-required-focused-and-regression-tests)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -81,6 +98,23 @@
 - [REQ-F01-035](#req-f01-035) — 9.19 REQ-F01-035 Active Phase generation
 - [REQ-F01-036](#req-f01-036) — 9.20 REQ-F01-036 Issue #63 compatibility
 - [REQ-F01-037](#req-f01-037) — 9.21 REQ-F01-037 ADC is the sole Phase restart approval
+- [REQ-F01-038](#req-f01-038) — 9.22 REQ-F01-038 Missing historical Binding provenance
+- [REQ-F01-039](#req-f01-039) — 9.23 REQ-F01-039 One-time epoch authorization
+- [REQ-F01-040](#req-f01-040) — 9.24 REQ-F01-040 Append-only epoch journal
+- [REQ-F01-041](#req-f01-041) — 9.25 REQ-F01-041 One-shot epoch migration
+- [REQ-F01-042](#req-f01-042) — 9.26 REQ-F01-042 V2 current-epoch evidence
+- [REQ-F01-043](#req-f01-043) — 9.27 REQ-F01-043 Agent-neutral local eligibility
+- [REQ-F01-044](#req-f01-044) — 9.28 REQ-F01-044 Isolated device authentication and complete Admin readback
+- [REQ-F01-045](#req-f01-045) — 9.29 REQ-F01-045 Separated Ruleset and merge authority
+- [REQ-F01-046](#req-f01-046) — 9.30 REQ-F01-046 Compatibility and epoch test coverage
+- [REQ-F01-047](#req-f01-047) — 9.31 REQ-F01-047 Retire the first V1 migration
+- [REQ-F01-048](#req-f01-048) — 9.32 REQ-F01-048 Exact V2 marker binding
+- [REQ-F01-049](#req-f01-049) — 9.33 REQ-F01-049 Distinct V2 Intent and Applied records
+- [REQ-F01-050](#req-f01-050) — 9.34 REQ-F01-050 Partial migration is permanently non-retryable
+- [REQ-F01-051](#req-f01-051) — 9.35 REQ-F01-051 Fresh Phase evidence before implementation
+- [REQ-F01-052](#req-f01-052) — 9.36 REQ-F01-052 Local Activation V2 implementation scope
+- [REQ-F01-053](#req-f01-053) — 9.37 REQ-F01-053 Synchronized artifacts and distributions
+- [REQ-F01-054](#req-f01-054) — 9.38 REQ-F01-054 Required focused and regression tests
 <!-- heading-map:end -->
 
 
@@ -366,7 +400,7 @@ Policy or locator changes require a new setup PR and merge, append a successor A
 <a id="req-f01-008"></a>
 ### 9.5 REQ-F01-008 Verified V2 Activation policy
 
-The public Consumer Activation setup action MUST orchestrate discovery, safe setup-branch preparation, exact policy planning, any required owner decision and isolated browser-device Admin continuation, effective-policy verification, setup-PR creation, and post-merge V2 recording as one resumable transaction. Admin login uses a private config and may use a runner-managed PTY; it does not require an owner-local TTY. It MUST NOT require the user to run an unrelated manual Ruleset preparation flow before Activation. Before a V2 setup PR exists, the committed setup-branch profile bytes and exact HEAD MUST be bound to the canonical policy plan. The PR marker and V2 record MUST bind the verified setup branch, Ruleset ID, applied-record ID, and effective-policy digest. If current policy differs from an existing immutable setup PR proposal, the runtime MUST prepare a new exact setup generation and plan; it MUST NOT rewrite the old proposal or mark its old policy evidence as current. Before recording V2, the runtime MUST verify the default branch's active effective protection and complete trusted Required Check `(context, App ID)` set, and repeat the readback immediately before publication. It MUST read the branch, effective rules, Ruleset details, and legacy branch-protection endpoint; an HTTP 403 or partial response is `UNAVAILABLE`, never evidence that protection is absent. The Activation result MUST include a complete mode-specific required-setting inventory using `VERIFIED`, `NEEDS_APPLY`, `UNSUPPORTED`, or `BLOCKED`; in `external_reviewer`, V1 does not require the solo-owner managed Ruleset, so its inventory reports that setting as `UNSUPPORTED` without treating it as unmet. It MUST NOT claim `ACTIVE` while a mode-required setting is unmet.
+The public Consumer Activation setup action MUST orchestrate discovery, safe setup-branch preparation, exact policy planning, any required owner decision and isolated device-auth Admin continuation, effective-policy verification, setup-PR creation, and post-merge V2 recording as one resumable transaction. Live Admin and Activation V2 operations MUST run only from an owner-controlled local interactive host (local Codex, local Claude Code, or owner-controlled local VM), pass the shared host-control guard, and use `isolated-gh-device`. Cloud, hosted, CI, remote, noninteractive, and unconfirmed contexts MUST block before live writes. The guard is an operational trust check, not cryptographic host attestation. The command MUST NOT require the user to run an unrelated manual Ruleset preparation flow before Activation. Before a V2 setup PR exists, the committed setup-branch profile bytes and exact HEAD MUST be bound to the canonical policy plan. The PR marker and V2 record MUST bind the verified setup branch, Ruleset ID, applied-record ID, and effective-policy digest. If current policy differs from an existing immutable setup PR proposal, the runtime MUST prepare a new exact setup generation and plan; it MUST NOT rewrite the old proposal or mark its old policy evidence as current. Before recording V2, the runtime MUST verify the default branch's active effective protection and complete trusted Required Check `(context, App ID)` set, and repeat the readback immediately before publication. It MUST read the branch, effective rules, Ruleset details, and legacy branch-protection endpoint; an HTTP 403 or partial response is `UNAVAILABLE`, never evidence that protection is absent. The Activation result MUST include a complete mode-specific required-setting inventory using `VERIFIED`, `NEEDS_APPLY`, `UNSUPPORTED`, or `BLOCKED`; in `external_reviewer`, V1 does not require the solo-owner managed Ruleset, so its inventory reports that setting as `UNSUPPORTED` without treating it as unmet. It MUST NOT claim `ACTIVE` while a mode-required setting is unmet.
 
 <a id="req-f01-009"></a>
 ### 9.6 REQ-F01-009 Approved Ruleset management
@@ -398,9 +432,9 @@ The typed Activation-owned current-base transition remains narrow for any suppor
 <a id="req-f01-014"></a>
 ### 9.11 REQ-F01-014 Activation-scoped temporary admin authentication
 
-Only `delivery consumer-activation-admin-plan` and `delivery consumer-activation-admin-apply` may request temporary administrator authentication. Each command uses a separate child-process session. The standard mode is `isolated-gh-device`: run `gh auth login --hostname github.com --web --git-protocol https --insecure-storage` in a new private mode-0700 `GH_CONFIG_DIR`, with ambient `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, and `GITHUB_ENTERPRISE_TOKEN` removed from the login and later Admin API child environments. A runner-managed PTY may display the device URL/code; the owner completes browser authentication without opening an owner-local terminal. If the runner cannot show the challenge or provide that PTY, stop with `ADMIN_DEVICE_LOGIN_UNAVAILABLE`. Never use the normal `gh` configuration as a fallback.
+Only `delivery consumer-activation-admin-plan` and `delivery consumer-activation-admin-apply` may request temporary administrator authentication. Each command uses a separate child-process session. `isolated-gh-device` is the only supported mode: run `gh auth login --hostname github.com --web --git-protocol https --insecure-storage` from the confirmed local interactive terminal in a new private mode-0700 `GH_CONFIG_DIR`, with ambient `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, and `GITHUB_ENTERPRISE_TOKEN` removed from the login and later Admin API child environments. Verify the authenticated human owner and repository Admin permission before complete policy reads. If local confirmation, device authentication, owner identity, or any policy source is unavailable or incomplete, stop as `UNAVAILABLE/BLOCKED`; never use normal `gh` configuration, PAT, App, Network-secret, SDK, direct REST, or another writer as a fallback.
 
-`pat` remains an explicit, nonstandard legacy fallback requiring a trusted owner-local TTY and `getpass`; it has only the permissions required by the existing Activation/Admin path. PAT use and browser device authentication are authentication only, not approval. Clear the child credential/config in `finally`; deleting the private directory does not revoke the GitHub OAuth grant. Normal `GH_CONFIG_DIR`, token variables, and ordinary `gh` commands remain unchanged. Do not expose credentials in logs, arguments, JSON, artifacts, or chat. Same-OS-user subprocesses are not a strong sandbox.
+Device authentication is authentication only, not approval. Clear the private device config in `finally`; deleting that directory does not revoke the GitHub OAuth grant. Normal `GH_CONFIG_DIR`, token variables, and ordinary `gh` commands remain unchanged. Do not expose credentials in logs, arguments, JSON, artifacts, or chat. Same-OS-user subprocesses are not a strong sandbox.
 
 Before any Ruleset action, the selected Admin client MUST verify the authenticated stable user ID equals the configured repository owner ID, repository ID and owner login match, `permissions.admin=true`, collaborator permission is `admin`, and branch protection, Ruleset inventory, and effective branch rules are fully readable. A 403 or incomplete read is unavailable, never evidence of absent protection. Admin-plan is read-only against GitHub and writes a canonical local plan only when blocker-free; Admin-apply revalidates that exact plan and the independent operation approval before using the existing durable-intent/single-writer/readback path. Ruleset verification remains part of the resumable Activation transaction. GitHub API calls in P-ASES use only `gh` through `runtime/p_ases/github.py`; request JSON is passed on stdin with `gh api --input -`.
 
@@ -465,3 +499,90 @@ Keep Issue #63's specialized phase-rebaseline implementation, ADC/Owner checks, 
 ### 9.21 REQ-F01-037 ADC is the sole Phase restart approval
 
 The exact approved ADC and its single valid typed authorization are the sole approval for this one phase reset. No separate Owner plan, terminal input, approval comment, or chat confirmation is required. Intent/Applied comments are technical records, not approval. This authority cannot be reused for Ruleset, Activation, review, merge, or Issue closure.
+
+<a id="req-f01-038"></a>
+### 9.22 REQ-F01-038 Missing historical Binding provenance
+
+When the original ExecutionBinding bytes are unavailable, report BLOCKED_BINDING_PROVENANCE_MISSING and keep the reported five-generation digest as an opaque historical reference. Its provenance remains UNVERIFIED. Never reconstruct, relabel, append to, or overwrite that history, and never synthesize a V1 ExecutionBinding or describe this epoch as a sixth Binding generation.
+
+<a id="req-f01-039"></a>
+### 9.23 REQ-F01-039 One-time epoch authorization
+
+Only the exact approved successor ADC authorization marker may create a prospective Issue #71 execution epoch. Bind the current approved ADC bytes, repository and owner IDs, Issue identity and body digest, predecessor ADC and active Phase generation, retired Intent, selected base and branch, transition, reason, and max_applications=1. Missing, changed, duplicate, stale, or reordered values block before a write.
+
+<a id="req-f01-040"></a>
+### 9.24 REQ-F01-040 Append-only epoch journal
+
+Record a distinct canonical V2 Intent and matching Applied comment. Bind stable repository and Issue IDs, authenticated owner actor, current ADC pointer and marker digest, predecessor Phase generation, retired V1 Intent identity and digest, UNVERIFIED Binding provenance, exact base and branch, complete before/after labels, unique epoch ID, timestamps, and exact Intent digest. GitHub is the durable journal; local state is only a verified attachment for that epoch.
+
+<a id="req-f01-041"></a>
+### 9.25 REQ-F01-041 One-shot epoch migration
+
+After complete direct/list/direct readback, establish the dedicated branch and workspace at the exact authorized base, append one Intent, make at most one complete-label replacement from phase:ready to phase:requirements, verify the full Issue snapshot, and append one matching Applied record. An interruption, timeout, duplicate, or mismatch is read-only recovery; never resend an ambiguous label update or append a duplicate record.
+
+<a id="req-f01-042"></a>
+### 9.26 REQ-F01-042 V2 current-epoch evidence
+
+A complete V2 Intent/Applied pair and verified workspace attachment establish the current execution epoch. Phase, readiness, verification, review, PR, and delivery readers for Issue #71 must bind to that epoch and accept only its current evidence. Earlier Phase receipts and V1 history remain immutable and readable as history but cannot yield current-epoch PASS. Missing, stale, duplicated, edited, or mismatched epoch state fails closed.
+
+The Issue #71 PR bridge stores the active digest in `PASES_PR_BINDING_V4.execution_epoch_sha256`; its work checkpoint stores it in `PASES_WORK_CHECKPOINT_V3.execution_epoch_sha256`. Neither schema may also carry an ExecutionBinding V1 or Issue #63 adoption identity. Ordinary V1 and adopted PRBinding/checkpoint bytes remain unchanged. `work base`, `work branch`, `work bind`, and `work recover` cannot create or reconstruct the Issue #71 epoch; the dedicated epoch reader is authoritative.
+
+<a id="req-f01-043"></a>
+### 9.27 REQ-F01-043 Agent-neutral local eligibility
+
+One shared eligibility guard at CLI and direct-runtime live-operation entrypoints admits owner-controlled local interactive Codex, Claude Code, and owner-controlled local VMs with identical semantics. It requires an interactive owner-controlled host, operator confirmation, authenticated owner identity, and complete current Admin readback. Known hosted, Cloud, CI, remote, noninteractive, and unknown-control contexts are rejected before live writes. Agent identity and absence of a Cloud marker are not proof of locality; owner control is an operational assumption, not cryptographic host attestation.
+
+<a id="req-f01-044"></a>
+### 9.28 REQ-F01-044 Isolated device authentication and complete Admin readback
+
+Live Admin access uses only isolated-gh-device and gh api with a fresh private mode-0700 GH_CONFIG_DIR. Remove GH_TOKEN, GITHUB_TOKEN, GH_ENTERPRISE_TOKEN, and GITHUB_ENTERPRISE_TOKEN from Admin children. Never fall back to ordinary credentials, PAT, App tokens, network secrets, SDKs, direct REST clients, or a second writer. Repeat complete local policy readback before any proposed plan or apply. 401, 403, 429, 5xx, malformed, incomplete, or identity-mismatched reads remain UNAVAILABLE/BLOCKED; a legacy-protection 404 is NOT_CONFIGURED only after all required repository, identity, branch, effective-rule, and Ruleset reads are complete and consistent.
+
+<a id="req-f01-045"></a>
+### 9.29 REQ-F01-045 Separated Ruleset and merge authority
+
+ruleset_management.py::apply_ruleset_plan remains the sole Ruleset writer. Applying a Ruleset requires separate exact-plan RULESET_PLAN_APPLY authority for the recomputed current plan and complete before/after readback. Setup PR merge requires separate exact-HEAD PR_MERGE authority. ADC approval, authentication, Issue edits, epoch creation, CI, and code review authorize neither operation. Missing chat user-role provenance yields CHAT_PROVENANCE_UNAVAILABLE and zero approval-dependent writes. Keep Issue #63 open until V2 ACTIVE and all post-activation and time-order checks pass.
+
+<a id="req-f01-046"></a>
+### 9.30 REQ-F01-046 Compatibility and epoch test coverage
+
+Preserve Issue #57 V1, Issue #63 and PR #64 history, predecessor ADC/Binding/Phase comments, and Issue #72/PR #73 byte-for-byte and behavior-for-behavior. Cover epoch authorization, journaling and recovery; active-reader isolation; local Codex/Claude parity and local VM acceptance; hosted, CI, remote, and unknown-context refusal; direct-runtime enforcement; device-auth separation; Admin 401/403/404/429/5xx and partial reads; stale plans; separate approvals; and zero writes on every blocked path.
+
+<a id="req-f01-047"></a>
+### 9.31 REQ-F01-047 Retire the first V1 migration
+
+Preserve the first successor ADC, its exact incomplete Intent, dedicated branch, predecessor ADC/Phase/Binding records, Issue #57 V1, Issue #63, PR #64, and Issue #72/PR #73 unchanged. The incomplete V1 Intent is retired history: never edit, delete, retry, complete, attach, or select it as the current epoch.
+
+<a id="req-f01-048"></a>
+### 9.32 REQ-F01-048 Exact V2 marker binding
+
+The sole new migration authority is the exact PASES_EXECUTION_EPOCH_AUTHORIZATION_V2 marker in the current approved ADC. It binds the predecessor ADC, retired Intent and body digest, active Phase Applied and digest, repository/owner/Issue identities, exact Issue body digest, base ref/SHA, dedicated branch, reason, ready-to-requirements transition, and max_applications=1. Any missing, changed, duplicate, stale, or reordered field blocks before writes.
+
+<a id="req-f01-049"></a>
+### 9.33 REQ-F01-049 Distinct V2 Intent and Applied records
+
+The V2 journal binds the current ADC marker digest, stable repository and Issue IDs, owner actor, predecessor Phase generation, retired V1 Intent, old Binding provenance UNVERIFIED, exact base and branch, complete labels, unique epoch ID, canonical timestamps, and exact Intent body digest. V1 and V2 journals remain distinct, and ExecutionBinding V1 is never mutated.
+
+<a id="req-f01-050"></a>
+### 9.34 REQ-F01-050 Partial migration is permanently non-retryable
+
+Create the authorized epoch-2 branch and workspace from the exact base, then perform the one authorized Intent/label/Applied sequence. On interruption or ambiguous outcome, recovery is read-only. Any partial V2 result stays blocked and requires a separately approved successor ADC that defines the next safe action.
+
+<a id="req-f01-051"></a>
+### 9.35 REQ-F01-051 Fresh Phase evidence before implementation
+
+Keep the Issue body unchanged through the migration and fresh requirements, specification, design, and ready Phase receipts so the pinned body digest remains valid. Establish the new epoch before issuing any current-epoch Phase PASS. Retired V1 Intent and predecessor READY/PASS receipts remain history and cannot produce current-epoch PASS.
+
+<a id="req-f01-052"></a>
+### 9.36 REQ-F01-052 Local Activation V2 implementation scope
+
+After the new epoch and Phase sequence pass, implement the inherited Issue #71 local Activation V2 contract, including common CLI and direct-runtime locality enforcement, local Codex and Claude Code parity, isolated device authentication, and Admin readback failure semantics. Reuse the merged Activation V2 implementation and sole Ruleset writer. Require separate exact-plan RULESET_PLAN_APPLY and exact-HEAD PR_MERGE authority; do not add a provenance bypass.
+
+<a id="req-f01-053"></a>
+### 9.37 REQ-F01-053 Synchronized artifacts and distributions
+
+Update the affected specifications, design, test Oracles and traceability, applicable workflow Skills, all three adapter READMEs, and Issue status evidence. Generate dist outputs only through python tools/build_dist.py. Keep the OpenAI, Claude, and Antigravity host packages independent.
+
+<a id="req-f01-054"></a>
+### 9.38 REQ-F01-054 Required focused and regression tests
+
+Cover retired V1 handling, exact V2 marker and journal validation, active-reader isolation, one successful transition, failure after each V2 write boundary, local Codex/Claude parity, local VM acceptance, Cloud/hosted/CI/unknown refusal, direct-runtime enforcement, authentication separation, Admin read failures, separated approval gates, and zero writes on every blocked path.

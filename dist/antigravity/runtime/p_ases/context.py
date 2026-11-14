@@ -1,4 +1,4 @@
-"""Resolved, read-only work context derived from a frozen ExecutionBinding."""
+"""Resolved, read-only work context derived from an immutable execution identity."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from .checkpoint import validate_ref
 from .execution import (
     AdoptedExecutionEpoch, ExecutionBinding, ExecutionError, ExecutionIdentity,
-    execution_identity_digest,
+    execution_identity_digest, is_issue71_execution_epoch,
 )
 
 
@@ -29,11 +29,11 @@ class WorkContext:
     execution_identity_sha256: str
 
     def validate(self) -> "WorkContext":
-        if not isinstance(self.execution_identity, (ExecutionBinding, AdoptedExecutionEpoch)):
-            raise WorkContextError("WorkContext must reference a typed ExecutionBinding or adopted epoch")
+        if not isinstance(self.execution_identity, (ExecutionBinding, AdoptedExecutionEpoch)) and not is_issue71_execution_epoch(self.execution_identity):
+            raise WorkContextError("WorkContext must reference a typed ExecutionBinding or execution epoch")
         try:
             self.execution_identity.validate()
-        except ExecutionError as exc:
+        except (ExecutionError, ValueError) as exc:
             raise WorkContextError(str(exc)) from exc
         if not isinstance(self.current_head_sha40, str) or not SHA40.fullmatch(self.current_head_sha40):
             raise WorkContextError("WorkContext current HEAD must be a full SHA-40")
@@ -53,7 +53,7 @@ class WorkContext:
     def execution_binding(self) -> ExecutionBinding:
         """Compatibility accessor for code that explicitly requires normal V1."""
         if not isinstance(self.execution_identity, ExecutionBinding):
-            raise WorkContextError("adopted execution epoch is not a normal ExecutionBinding V1")
+            raise WorkContextError("execution epoch is not a normal ExecutionBinding V1")
         return self.execution_identity
 
     @property

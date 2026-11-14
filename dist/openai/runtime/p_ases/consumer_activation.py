@@ -14,6 +14,9 @@ from typing import Any
 
 from .adc import ADCError, VerifiedADC, publish_adc, verify_adc, verify_adc_generation
 from .github import GitHub, GitHubError
+from .local_execution import (
+    LocalExecutionError, require_isolated_device_admin_client, require_local_activation_execution,
+)
 from .git import (
     GitError, activation_profile_bytes_at_commit, branch_exists, changed_paths_between,
     commit_and_push_one_path, commit_parent_sha40, create_branch, current_branch, discover_repository,
@@ -24,7 +27,7 @@ from .path_safety import path_has_symlink
 from .profile import ProfileError, load_profile
 from .ruleset_management import (
     ACTIVATION_BINDING_SCHEMA, RulesetManagementError, build_ruleset_plan, read_verified_managed_policy,
-    verify_applied_policy_record, write_plan as write_ruleset_plan,
+    verify_historical_applied_policy_record, write_plan as write_ruleset_plan,
 )
 
 
@@ -635,8 +638,21 @@ def _check_setup_pr(github: GitHub, pr: dict[str, Any], expected: dict[str, Any]
     return pr
 
 
-def verify_setup_pr_ready_to_merge(github: GitHub, pr_number: int) -> dict[str, Any]:
+def verify_setup_pr_ready_to_merge(github: GitHub, pr_number: int, *,
+                                   policy_github: GitHub | None = None) -> dict[str, Any]:
     """Require fresh Activation V2 policy, checks and independent review before merge."""
+    try:
+        require_local_activation_execution()
+        if policy_github is None:
+            raise LocalExecutionError(
+                "ADMIN_DEVICE_AUTH_REQUIRED: Setup PR merge requires isolated-gh-device"
+            )
+        require_isolated_device_admin_client(policy_github)
+    except LocalExecutionError as exc:
+        raise ConsumerActivationError(str(exc)) from exc
+    if policy_github.repo.casefold() != github.repo.casefold():
+        raise ConsumerActivationError("Activation policy reader targets a different repository")
+
     def snapshot() -> dict[str, Any]:
         metadata = github.repository_metadata()
         owner = metadata.get("owner") if isinstance(metadata, dict) else None
@@ -697,7 +713,7 @@ def verify_setup_pr_ready_to_merge(github: GitHub, pr_number: int) -> dict[str, 
             raise ConsumerActivationError("Activation Setup PR profile bytes or Required Checks changed")
         try:
             policy = read_verified_managed_policy(
-                github, default_branch, required_checks, "solo_owner", 57,
+                policy_github, default_branch, required_checks, "solo_owner", 57,
             )
         except RulesetManagementError as exc:
             raise ConsumerActivationError(f"Activation effective policy is not VERIFIED: {exc}") from exc
@@ -852,7 +868,8 @@ def _required_check_evidence(
 def _validate_merged_setup(github: GitHub, pr_number: int, expected: dict[str, Any], *,
                            require_current_adc: bool, require_current_admin: bool,
                            require_current_policy: bool = True,
-                           expected_check_runs: tuple[RequiredCheckEvidence, ...] | None = None
+                           expected_check_runs: tuple[RequiredCheckEvidence, ...] | None = None,
+                           policy_github: GitHub | None = None,
                            ) -> tuple[dict[str, Any], dict[str, Any], VerifiedADC,
                                       tuple[RequiredCheckEvidence, ...]]:
     try:
@@ -880,7 +897,10 @@ def _validate_merged_setup(github: GitHub, pr_number: int, expected: dict[str, A
             raise ConsumerActivationError("merged setup PR identity is incomplete or mismatched")
         merger_identity = _identity(merger, "setup PR merger")
         if require_current_admin:
-            permission = github.collaborator_permission(merger["login"])
+            admin_reader = policy_github if is_v2 else github
+            if admin_reader is None:
+                raise ConsumerActivationError("V2 Admin reader is missing for current merger permission check")
+            permission = admin_reader.collaborator_permission(merger["login"])
             if (permission.get("permission") != "admin"
                     or _identity(permission.get("user"), "setup PR merger") != merger_identity):
                 raise ConsumerActivationError("setup PR must be merged by a current repository admin")
@@ -914,9 +934,11 @@ def _validate_merged_setup(github: GitHub, pr_number: int, expected: dict[str, A
             github, head["sha"], checks, expected_check_runs, merged_at,
         )
         if is_v2 and require_current_policy:
+            if policy_github is None:
+                raise ConsumerActivationError("V2 Admin reader is missing for current policy verification")
             try:
                 managed = read_verified_managed_policy(
-                    github, default_branch, checks, expected["review_mode"],
+                    policy_github, default_branch, checks, expected["review_mode"],
                     expected["activation_issue_number"],
                 )
             except RulesetManagementError as exc:
@@ -1376,6 +1398,13 @@ def _setup_consumer_activation_v2_impl(
     required_checks: tuple[tuple[str, int], ...], policy_github: GitHub | None = None,
 ) -> dict[str, Any]:
     """Drive solo_owner Activation through a resumable plan/apply/readback lifecycle."""
+    try:
+        require_local_activation_execution()
+        if policy_github is None:
+            raise LocalExecutionError("ADMIN_DEVICE_AUTH_REQUIRED: Activation V2 needs isolated-gh-device")
+        require_isolated_device_admin_client(policy_github)
+    except LocalExecutionError as exc:
+        raise ConsumerActivationError(str(exc)) from exc
     policy_reader = policy_github or github
     profile_sha256 = hashlib.sha256(profile_content).hexdigest()
     latest = history[-1][0] if history else None
@@ -1473,7 +1502,7 @@ def _setup_consumer_activation_v2_impl(
                     "required_setting_inventory": _policy_inventory(
                         "blocked", verified=False, blockers=(str(exc),)),
                     "reasons": [str(exc)],
-                    "next_permitted_step": "Resume with consumer-activation-admin-plan using isolated browser device authentication; a runner-managed PTY must display the challenge."}
+                    "next_permitted_step": "Run consumer-activation-admin-plan in an owner-controlled local interactive terminal with isolated-gh-device and complete current Admin policy readback, then resume consumer-activation-setup."}
         raise
     if plan["blockers"]:
         blockers = tuple(plan["blockers"])
@@ -1495,7 +1524,7 @@ def _setup_consumer_activation_v2_impl(
                     "checkpoint_sha256": checkpoint_sha,
                     "required_setting_inventory": _policy_inventory(
                         "blocked", verified=False, blockers=blockers),
-                    "next_permitted_step": "Resume with consumer-activation-admin-plan using isolated browser device authentication; a runner-managed PTY must display the challenge."}
+                    "next_permitted_step": "Run consumer-activation-admin-plan in an owner-controlled local interactive terminal with isolated-gh-device and complete current Admin policy readback, then resume consumer-activation-setup."}
         _, saved_path, checkpoint_sha = _checkpoint_v2(
             root, repository=github.repo, repository_id=repository_id, owner_id=owner_id,
             issue_number=issue_number, adc=adc, predecessor_record_id=predecessor,
@@ -1783,6 +1812,36 @@ def _setup_consumer_activation_v2(
         raise
 
 
+def activation_setup_requires_admin(root: Path) -> bool:
+    """Return whether the configured setup flow is the scoped V2 solo-owner path."""
+    root = Path(root)
+    profile_path = root / ".agent" / "project.json"
+    if not profile_path.exists() and not profile_path.is_symlink():
+        return False
+    if path_has_symlink(profile_path, root=root):
+        raise ConsumerActivationError("project.json path traverses a symbolic link")
+    try:
+        return load_profile(root).final_delivery_review_mode == "solo_owner"
+    except ProfileError as exc:
+        raise ConsumerActivationError(f"existing project.json is invalid: {exc}") from exc
+
+
+def activation_pr_requires_admin(github: GitHub, pr_number: int) -> bool:
+    """Read the setup PR marker to select ordinary V1 or isolated-Admin V2 verification."""
+    try:
+        pr = github.pull_request(pr_number)
+    except GitHubError as exc:
+        raise ConsumerActivationError(f"Activation setup PR readback failed: {exc}") from exc
+    body = pr.get("body") if isinstance(pr, dict) else None
+    marker = (SETUP_MARKER_V2 if isinstance(body, str) and body.startswith(SETUP_MARKER_V2)
+              else SETUP_MARKER)
+    setup = _decode(body, marker, "setup PR", allow_trailer=True)
+    version = 2 if marker == SETUP_MARKER_V2 else 1
+    if setup.get("schema") != f"PASES_CONSUMER_ACTIVATION_SETUP_V{version}":
+        raise ConsumerActivationError("Activation setup PR schema marker and payload differ")
+    return version == 2
+
+
 def setup_consumer_activation(root: Path, github: GitHub, *, policy_github: GitHub | None = None) -> dict[str, Any]:
     """Prepare a marked Activation Issue, proposed ADC, project.json setup PR; never activate pre-merge."""
     root = Path(root)
@@ -1797,8 +1856,6 @@ def setup_consumer_activation(root: Path, github: GitHub, *, policy_github: GitH
         raise ConsumerActivationError(f"could not resolve the active repository from this workspace: {exc}") from exc
     if local_repository.casefold() != github.repo.casefold():
         raise ConsumerActivationError("GitHub repository does not match the active workspace origin")
-    if policy_github is not None and policy_github.repo.casefold() != github.repo.casefold():
-        raise ConsumerActivationError("Activation policy reader targets a different repository")
     profile_path = root / ".agent" / "project.json"
     configured = None
     review_mode = "external_reviewer"
@@ -1811,6 +1868,17 @@ def setup_consumer_activation(root: Path, github: GitHub, *, policy_github: GitH
             review_mode = profile.final_delivery_review_mode
         except ProfileError as exc:
             raise ConsumerActivationError(f"existing project.json is invalid: {exc}") from exc
+    version = 2 if review_mode == "solo_owner" else 1
+    if version == 2:
+        try:
+            require_local_activation_execution()
+            if policy_github is None:
+                raise LocalExecutionError("ADMIN_DEVICE_AUTH_REQUIRED: Activation V2 needs isolated-gh-device")
+            require_isolated_device_admin_client(policy_github)
+        except LocalExecutionError as exc:
+            raise ConsumerActivationError(str(exc)) from exc
+        if policy_github.repo.casefold() != github.repo.casefold():
+            raise ConsumerActivationError("Activation policy reader targets a different repository")
     try:
         metadata = github.repository_metadata()
         default_branch = metadata.get("default_branch")
@@ -1847,7 +1915,6 @@ def setup_consumer_activation(root: Path, github: GitHub, *, policy_github: GitH
         adc = _ensure_adc(github, issue_number)
         history = read_consumer_activation_history(github, github.repo, issue_number)
         value, content = _profile_for_setup(root, github.repo, issue_number)
-        version = 2 if review_mode == "solo_owner" else 1
         if version == 2:
             configured_profile = load_profile(root)
             configured_checks = configured_profile.required_checks
@@ -1996,7 +2063,8 @@ def _record_checkpoint_active(root: Path | None, github: GitHub, record: Consume
     write_activation_checkpoint(path, active, root=root)
 
 
-def verify_and_record_activation(github: GitHub, pr_number: int, *, root: Path | None = None
+def verify_and_record_activation(github: GitHub, pr_number: int, *, root: Path | None = None,
+                                 policy_github: GitHub | None = None
                                  ) -> tuple[ConsumerActivationRecord, int]:
     """Verify an admin-merged setup PR, approve its exact ADC generation, and append history."""
     try:
@@ -2005,6 +2073,18 @@ def verify_and_record_activation(github: GitHub, pr_number: int, *, root: Path |
                         and pr["body"].startswith(SETUP_MARKER_V2) else SETUP_MARKER)
         setup = _decode(pr.get("body"), setup_marker, "setup PR", allow_trailer=True)
         schema_version = 2 if setup_marker == SETUP_MARKER_V2 else 1
+        if setup.get("schema") != f"PASES_CONSUMER_ACTIVATION_SETUP_V{schema_version}":
+            raise ConsumerActivationError("Activation setup PR schema marker and payload differ")
+        if schema_version == 2:
+            try:
+                require_local_activation_execution()
+                if policy_github is None:
+                    raise LocalExecutionError("ADMIN_DEVICE_AUTH_REQUIRED: Activation V2 needs isolated-gh-device")
+                require_isolated_device_admin_client(policy_github)
+            except LocalExecutionError as exc:
+                raise ConsumerActivationError(str(exc)) from exc
+            if policy_github.repo.casefold() != github.repo.casefold():
+                raise ConsumerActivationError("Activation policy reader targets a different repository")
         issue_number = _positive(setup.get("activation_issue_number"), "Activation Issue number")
         if (not isinstance(setup.get("adc_sha256"), str) or not SHA256.fullmatch(setup["adc_sha256"])
                 or not isinstance(setup.get("activation_profile_sha256"), str)
@@ -2022,6 +2102,7 @@ def verify_and_record_activation(github: GitHub, pr_number: int, *, root: Path |
                 return existing, existing_id
         checked_pr, _issue, proposed, check_evidence = _validate_merged_setup(
             github, pr_number, setup, require_current_adc=True, require_current_admin=True,
+            policy_github=policy_github,
         )
         merger = checked_pr["merged_by"]
         merger_id, merger_login, _kind = _identity(merger, "setup PR merger")
@@ -2121,7 +2202,7 @@ def verify_and_record_activation(github: GitHub, pr_number: int, *, root: Path |
             # This catches policy changes during ADC/approval processing.
             try:
                 latest_policy = read_verified_managed_policy(
-                    github, checked_pr["base"]["ref"],
+                    policy_github, checked_pr["base"]["ref"],
                     tuple((item.name, item.app_id) for item in check_evidence),
                     setup["review_mode"], issue_number,
                 )
@@ -2285,7 +2366,7 @@ def read_consumer_activation_history(
             )
             if record.schema_version == 2:
                 try:
-                    verify_applied_policy_record(
+                    verify_historical_applied_policy_record(
                         github, issue_number, record_id, record.ruleset_applied_record_id,
                         record.ruleset_id, record.branch_policy_sha256,
                     )

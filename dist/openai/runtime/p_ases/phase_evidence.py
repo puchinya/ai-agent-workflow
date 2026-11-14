@@ -71,6 +71,8 @@ BRACED_DOC_PATH = re.compile(
     r"(docs/(?:specs|design|testing)/[A-Za-z0-9._/-]*?)\{([^{}]+)\}([A-Za-z0-9._/-]*)"
 )
 DOC_PATH = re.compile(r"(?<![A-Za-z0-9_.-])docs/(?:specs|design|testing)/[A-Za-z0-9._/-]+")
+DOCUMENTS_IMPACT_LINE = re.compile(r"(?im)^ *[-*] *Documents: *(.*?) *$")
+ALL_DOC_PATH = re.compile(r"docs/[A-Za-z0-9._/-]+")
 
 
 def _unique_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -293,6 +295,22 @@ def _artifact_impacts(verified: VerifiedADC) -> tuple[dict[str, tuple[str, ...]]
         if role in lines:
             raise PhaseEvidenceError(f"approved ADC duplicates its {match.group(1)} artifact impact")
         lines[role] = match.group(2).strip()
+    if not lines:
+        documents_matches = list(DOCUMENTS_IMPACT_LINE.finditer(text))
+        if documents_matches:
+            if len(documents_matches) != 1:
+                raise PhaseEvidenceError("approved ADC duplicates its Documents artifact impact")
+            declarations = {role: [] for role in DOCUMENT_ROLES}
+            for path in ALL_DOC_PATH.findall(documents_matches[0].group(1)):
+                if path.startswith(DOCUMENT_ROOTS["specification"]):
+                    declarations["specification"].append(path)
+                elif path.startswith(DOCUMENT_ROOTS["design"]):
+                    declarations["design"].append(path)
+                elif path.startswith(DOCUMENT_ROOTS["test-oracle"]):
+                    declarations["test-oracle"].append(path)
+                elif not path.startswith("docs/status/"):
+                    raise PhaseEvidenceError(f"approved ADC Documents path is outside supported artifact roots: {path}")
+            lines = {role: ", ".join(paths) for role, paths in declarations.items()}
     if set(lines) != DOCUMENT_ROLES:
         canonical_matches = list(CANONICAL_IMPACT_LINE.finditer(text))
         if len(canonical_matches) != 1:
@@ -383,6 +401,17 @@ def _kind_from_issue(issue: dict[str, Any]) -> tuple[IssueKind, list[str]]:
 
 def _verify_frozen_binding(github: GitHub, root: Path, issue_number: int, verified: VerifiedADC,
                            branch_ref: str, commit_sha: str) -> None:
+    if issue_number == 71 and github.repo.casefold() == "puchinya/ai-agent-workflow":
+        try:
+            from .execution_epoch import ExecutionEpochError, current_execution_epoch_generation
+
+            generation = current_execution_epoch_generation(github, root, issue_number, verified)
+            if (generation is None or branch_ref != "pases/issue-71-local-activation-v2-epoch-2"
+                    or commit_sha != head_sha40(root)):
+                raise PhaseEvidenceError("Issue #71 does not have its active V2 execution epoch on this branch/HEAD")
+            return
+        except (ExecutionEpochError, GitHubError, GitError, OSError, ValueError) as exc:
+            raise PhaseEvidenceError(f"a valid active Issue #71 V2 execution epoch is required: {exc}") from exc
     path = execution_binding_path(root.resolve(), issue_number)
     if not path.exists():
         if issue_number != 63 or not (
@@ -808,6 +837,26 @@ def _verify_predecessor_receipt(github: GitHub, root: Path, issue_number: int,
     return prior, payload["commit_sha40"]
 
 
+def _active_phase_generation_subject(github: GitHub, root: Path, issue_number: int,
+                                    verified: VerifiedADC) -> tuple[int, str] | None:
+    if issue_number == 71 and github.repo.casefold() == "puchinya/ai-agent-workflow":
+        try:
+            from .execution_epoch import ExecutionEpochError, current_execution_epoch_generation
+
+            generation = current_execution_epoch_generation(github, root, issue_number, verified)
+        except (ExecutionEpochError, GitHubError, GitError, OSError, ValueError) as exc:
+            raise PhaseEvidenceError(f"active Issue #71 execution epoch is invalid: {exc}") from exc
+        if generation is None:
+            raise PhaseEvidenceError("Issue #71 has no active V2 execution epoch")
+        return generation
+    try:
+        from .phase_restart import PhaseRestartError, current_phase_generation
+        active_generation = current_phase_generation(github, root, issue_number, verified)
+    except PhaseRestartError as exc:
+        raise PhaseEvidenceError(f"active Phase generation is invalid: {exc}") from exc
+    return ((active_generation.comment_id, active_generation.sha256) if active_generation else None)
+
+
 def _collect_payload(github: GitHub, root: Path, issue_number: int, source: Phase, target: Phase,
                      skips: Mapping[str, str], *, check_source_phase: bool = True,
                      verified_context: VerifiedOrdinaryIssueContext | None = None,
@@ -822,12 +871,7 @@ def _collect_payload(github: GitHub, root: Path, issue_number: int, source: Phas
     if check_source_phase and parse_phase_labels(labels) is not source:
         raise PhaseEvidenceError("Issue phase label differs from the requested evidence source phase")
     declared_paths, adc_reasons = _artifact_impacts(verified)
-    try:
-        from .phase_restart import PhaseRestartError, current_phase_generation
-        active_generation = current_phase_generation(github, root, issue_number, verified)
-    except PhaseRestartError as exc:
-        raise PhaseEvidenceError(f"active Phase generation is invalid: {exc}") from exc
-    generation_subject = (active_generation.comment_id, active_generation.sha256) if active_generation else None
+    generation_subject = _active_phase_generation_subject(github, root, issue_number, verified)
     skip_reasons = _expected_skip_reasons(source, target, skips, adc_reasons)
     if source is Phase.REQUIREMENTS and target is Phase.DESIGN and "specification" not in skip_reasons:
         raise PhaseEvidenceError("requirements to design requires an approved specification skip reason")
@@ -894,7 +938,7 @@ def _collect_payload(github: GitHub, root: Path, issue_number: int, source: Phas
 
     documents = sorted(documents_by_path.values(), key=lambda row: row["path"])
     payload = {
-        "schema": SENTINEL_V2 if active_generation else SENTINEL,
+        "schema": SENTINEL_V2 if generation_subject is not None else SENTINEL,
         "repository": github.repo,
         "issue_number": issue_number,
         "issue_kind": kind.value,
@@ -907,9 +951,8 @@ def _collect_payload(github: GitHub, root: Path, issue_number: int, source: Phas
         "documents": documents,
         "skip_reasons": skip_reasons,
     }
-    if active_generation is not None:
-        payload["phase_generation_comment_id"] = active_generation.comment_id
-        payload["phase_generation_sha256"] = active_generation.sha256
+    if generation_subject is not None:
+        payload["phase_generation_comment_id"], payload["phase_generation_sha256"] = generation_subject
     decision = PhaseDecision(_validate_payload(payload))
     return decision, issue, verified, branch_ref, local_sha
 
