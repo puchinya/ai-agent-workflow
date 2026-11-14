@@ -1002,6 +1002,9 @@ def read_active_epoch(github: GitHub, root: Path, verified_adc: VerifiedADC | No
             raise PhaseEpochRebaselineError("epoch-3 worktree is not on the authorized branch/base")
         epoch = _load_local_epoch(root, expected_adc_comment_id=verified.pointer.comment_id,
                                   expected_adc_sha256=verified.contract.sha256)
+        retired_binding = root / ".p_ases" / "state" / str(ISSUE_NUMBER) / "execution-binding.json"
+        if retired_binding.exists() or retired_binding.is_symlink():
+            raise PhaseEpochRebaselineError("epoch-3 identity must not coexist with a reconstructed V1 Binding")
         records = _read_rebaseline_history(github)
         intents = [r for r in records if r.schema == INTENT_SCHEMA]
         applied = [r for r in records if r.schema == APPLIED_SCHEMA]

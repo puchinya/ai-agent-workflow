@@ -87,6 +87,18 @@ class PhaseGeneration:
 
 
 @dataclass(frozen=True)
+class EpochPhaseGeneration:
+    """Phase generation sourced from Issue #71's verified V3 epoch attachment."""
+
+    comment_id: int
+    sha256: str
+    adc_comment_id: int
+    adc_sha256: str
+    epoch_id: str
+    epoch_sha256: str
+
+
+@dataclass(frozen=True)
 class _LiveSubject:
     repository: str
     repository_id: int
@@ -722,8 +734,18 @@ def _validated_current_journal(github: GitHub, subject: _LiveSubject,
 
 
 def current_phase_generation(github: GitHub, root: Path, issue_number: int,
-                             verified_adc: VerifiedADC) -> PhaseGeneration | None:
+                             verified_adc: VerifiedADC) -> PhaseGeneration | EpochPhaseGeneration | None:
     """Return the exact active restart Applied record for the current ADC/Binding, if any."""
+    if issue_number == 71 and github.repo.casefold() == "puchinya/ai-agent-workflow":
+        try:
+            from .phase_epoch_rebaseline import PhaseEpochRebaselineError, read_active_epoch
+            epoch = read_active_epoch(github, root, verified_adc)
+        except PhaseEpochRebaselineError as exc:
+            raise PhaseRestartError(f"Issue #71 active epoch-3 generation is invalid: {exc}") from exc
+        return EpochPhaseGeneration(
+            epoch.applied_comment_id, epoch.applied_body_sha256,
+            epoch.adc_comment_id, epoch.adc_sha256, epoch.epoch_id, epoch.sha256,
+        )
     bindings = _binding_history(root, issue_number)
     binding = bindings[-1]
     if (binding.repository.casefold() != github.repo.casefold() or binding.issue_number != issue_number

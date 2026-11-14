@@ -82,6 +82,38 @@ class CheckpointSchemaTests(unittest.TestCase):
             with self.assertRaises(CheckpointError):
                 write_checkpoint(path, self.checkpoint())
 
+    def test_issue71_prbinding_v4_and_checkpoint_v3_round_trip_exact_epoch_digest(self):
+        epoch_sha = "e" * 64
+        binding = PRBinding(
+            repository="puchinya/ai-agent-workflow", issue_number=71, adc_comment_id=6874553609,
+            adc_sha256="aa0e69210dec4f2df1b069eafc4f5ce99ca3a71465a7ca59da3a05301fa023a4",
+            base_sha40="07481c4b451a81750a6c2e1a6a18bdfd4e3459c2",
+            branch_ref="pases/issue-71-local-activation-v2-epoch-2", pr_number=81,
+            pr_head_sha40="c" * 40, execution_epoch_sha256=epoch_sha,
+        ).validate()
+        checkpoint = WorkCheckpoint(
+            execution_binding_sha256=None, current_head_sha40="c" * 40,
+            worktree_clean=True, completed_stage="pr",
+            artifact_digests=tuple(sorted((
+                ("execution-epoch", epoch_sha), ("pr-binding", binding.sha256),
+            ))), step=1, execution_epoch_sha256=epoch_sha,
+        ).validate()
+        with tempfile.TemporaryDirectory() as root:
+            pr_path = Path(root) / "pr-binding.json"
+            checkpoint_file = checkpoint_path(Path(root), 71, 1)
+            write_pr_binding(pr_path, binding)
+            write_checkpoint(checkpoint_file, checkpoint)
+            self.assertEqual(read_pr_binding(pr_path), binding)
+            self.assertEqual(read_checkpoint(checkpoint_file), checkpoint)
+            self.assertIn(b'"schema":"PASES_PR_BINDING_V4"', pr_path.read_bytes())
+            self.assertIn(b'"schema":"PASES_WORK_CHECKPOINT_V3"', checkpoint_file.read_bytes())
+        with self.assertRaises(CheckpointError):
+            replace(binding, issue_number=63).validate()
+        with self.assertRaises(CheckpointError):
+            replace(binding, current_base_sha40="d" * 40, current_base_advance_sha256="f" * 64).validate()
+        with self.assertRaises(CheckpointError):
+            replace(checkpoint, execution_binding_sha256="a" * 64).validate()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -6,7 +6,7 @@ description: Evaluate Review Readiness and Final Delivery without merging or pub
 
 ## Sandboxed GitHub CLI
 
-Run every `gh` command used for delivery, including scripts that call `gh` and Admin device login, inside the normal sandboxed execution environment. Do not escalate sandbox permissions or retry `gh` outside the sandbox. If sandboxed authentication, network access, or repository permissions are unavailable, report the exact failure and stop that GitHub operation.
+Keep GitHub API calls behind `runtime/p_ases/github.py`. Live Issue #71 Admin and Activation commands must run only from an owner-controlled local interactive terminal (local Codex, local Claude Code, or an owner-controlled local VM); do not run them in Codex Cloud, hosted Claude, CI, SSH, or another remote/unknown-control context. The Admin route uses a fresh private `GH_CONFIG_DIR` with `isolated-gh-device`; if local confirmation, device authentication, authenticated owner identity, or complete current Admin policy readback is unavailable, stop before planning, applying, creating a Setup PR, or recording Activation. Do not bypass the runtime guard or use another credential route.
 
 ## One-time Issue #63 / PR #64 adoption handoff
 
@@ -86,7 +86,7 @@ python -m p_ases delivery owner-authorize-plan RULESET_PLAN_APPLY --ruleset-plan
 python -m p_ases delivery consumer-activation-admin-apply --plan CHECKPOINT_PLAN_PATH --approval-comment-id OWNER_APPROVAL_COMMENT_ID
 ```
 
-Admin browser device authentication is the standard mode. It runs `gh auth login --hostname github.com --web --git-protocol https --insecure-storage` with a fresh mode-0700 private `GH_CONFIG_DIR`; a runner-managed PTY may show the URL/code for browser authentication without an owner-local terminal. The login and Admin API children remove all ambient GitHub token variables, and normal `gh` configuration remains unchanged. If the runner cannot display the device challenge, report `ADMIN_DEVICE_LOGIN_UNAVAILABLE` and make no Admin request. PAT is a nonstandard explicit fallback requiring a trusted owner-local TTY. Cleanup deletes only the private config and does not revoke the OAuth grant. Never request, print, or store an Admin credential in chat.
+Admin browser-device authentication is the only supported mode. It runs `gh auth login --hostname github.com --web --git-protocol https --insecure-storage` with a fresh mode-0700 private `GH_CONFIG_DIR`; an owner-controlled local interactive terminal must display and complete the device flow. The login and Admin API children remove all ambient GitHub token variables, and normal `gh` configuration remains unchanged. If locality, device authentication, owner identity, or complete Admin policy readback is unavailable, stop without an Admin request that could write state. There is no PAT, App, Network-secret, ordinary-auth, or SDK fallback. Cleanup deletes only the private config and does not revoke the OAuth grant. Never request, print, or store an Admin credential in chat.
 
 After #64 is merged and remains open at the Issue level, Activation verifies or provisions the exact managed Ruleset and creates or reuses the V2 Setup PR from current main. Obtain separate review and exact-head chat approval for Setup PR `PR_MERGE`; the decision does not authorize #64 or Issue closure. After Setup PR merge and Activation V2 `ACTIVE` readback, verify its effective time is after #64 merge and re-read current policy. `delivery finalize 63 64` may consume verified Activation evidence before the one-shot #63 close. Ordinary Final Delivery and owner merge evaluation never inspect Ruleset policy.
 
@@ -105,6 +105,10 @@ python -m p_ases delivery gate-policy ISSUE
 Pre-Activation Issues remain untouched. Subsequent policy approval uses a successor setup PR; existing Gate Selections remain pinned to their original Activation record.
 
 An already-owned matching Ruleset is read back as `NOOP` inside Consumer Activation; #64 has no pre-merge Ruleset gate. `external_reviewer` keeps its existing V1 formal-review behavior and does not receive unauthorized solo-owner policy writes. Activation shows its mode-specific setting inventory and blocks unsupported or unmet mandatory settings. Existing V1 records and Gate Selections remain read-only history.
+
+## Issue #71 epoch 2 local Activation
+
+For `puchinya/ai-agent-workflow` Issue #71, use only the exact active V2 execution epoch, its verified local attachment, and fresh Phase receipts for that generation. Keep prior Binding provenance `UNVERIFIED`; do not use ordinary `work bind`/`work recover` or the Issue #63 adoption path. PR ensure binds the epoch digest only through PRBinding V4 and WorkCheckpoint V3, and readiness/delivery must verify that bridge. Local Codex, local Claude Code, and owner-controlled local VMs share the same interactive host-control confirmation; hosted, CI, remote, and noninteractive sessions block before live writes. A 403 or incomplete Admin readback blocks Activation and never proves policy absence. Ruleset apply, Setup PR merge, Activation record, and Issue #63 closure still require their separate authorizations; this ADC approves none of them.
 
 ## Lifecycle handoff
 

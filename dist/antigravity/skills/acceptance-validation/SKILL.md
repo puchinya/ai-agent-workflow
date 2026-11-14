@@ -16,6 +16,8 @@ Owner: runtime/p_ases/acceptance.py. Inputs are the exact ADC and PR subject, fr
 4. Publish and verify the recomputed result after all required observations pass.
 5. Keep P-ASES parent acceptance separate from child acceptance and ordinary User Review.
 
+For Issue #71, require the active V2 execution epoch and an exact PRBinding V4 epoch digest. Acceptance from an earlier Binding or Phase generation cannot satisfy the current subject.
+
 ## CLI
 
 ~~~sh

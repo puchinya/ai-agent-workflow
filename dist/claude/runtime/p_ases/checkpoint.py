@@ -68,6 +68,7 @@ class PRBinding:
     current_base_sha40: str | None = None
     current_base_advance_sha256: str | None = None
     adoption_id: str | None = None
+    execution_epoch_sha256: str | None = None
 
     def validate(self) -> "PRBinding":
         if not isinstance(self.repository, str) or not REPOSITORY.fullmatch(self.repository):
@@ -94,6 +95,12 @@ class PRBinding:
             if (self.repository.casefold() != "puchinya/ai-agent-workflow" or self.issue_number != 63
                     or self.pr_number != 64):
                 raise CheckpointError("adopted PRBinding is restricted to puchinya/ai-agent-workflow Issue #63 / PR #64")
+        if self.execution_epoch_sha256 is not None:
+            _digest(self.execution_epoch_sha256, "PRBinding Issue execution epoch")
+            if (self.repository.casefold() != "puchinya/ai-agent-workflow" or self.issue_number != 71
+                    or self.adoption_id is not None or self.current_base_sha40 is not None
+                    or self.current_base_advance_sha256 is not None):
+                raise CheckpointError("V2 execution-epoch PRBinding is restricted to Issue #71 without another epoch")
         validate_ref(self.branch_ref)
         return self
 
@@ -108,9 +115,12 @@ class PRBinding:
             "pr_head_sha40": self.pr_head_sha40,
             "pr_number": self.pr_number,
             "repository": self.repository,
-            "schema": ("PASES_PR_BINDING_V3" if self.adoption_id is not None else
+            "schema": ("PASES_PR_BINDING_V4" if self.execution_epoch_sha256 is not None else
+                       "PASES_PR_BINDING_V3" if self.adoption_id is not None else
                        "PASES_PR_BINDING_V1" if self.current_base_sha40 is None else "PASES_PR_BINDING_V2"),
         }
+        if self.execution_epoch_sha256 is not None:
+            value["execution_epoch_sha256"] = self.execution_epoch_sha256
         if self.adoption_id is not None:
             value["adoption_id"] = self.adoption_id
         if self.current_base_sha40 is not None:
@@ -137,14 +147,23 @@ class WorkCheckpoint:
     artifact_digests: tuple[tuple[str, str], ...]
     step: int
     execution_adoption_sha256: str | None = None
+    execution_epoch_sha256: str | None = None
 
     def validate(self) -> "WorkCheckpoint":
-        if self.execution_adoption_sha256 is None:
+        identities = sum(item is not None for item in (
+            self.execution_binding_sha256, self.execution_adoption_sha256, self.execution_epoch_sha256,
+        ))
+        if identities != 1:
+            raise CheckpointError("Checkpoint must bind exactly one execution identity")
+        if self.execution_adoption_sha256 is None and self.execution_epoch_sha256 is None:
             _digest(self.execution_binding_sha256, "Checkpoint ExecutionBinding digest")
-        elif self.execution_binding_sha256 is not None:
+        elif self.execution_binding_sha256 is not None or (self.execution_adoption_sha256 is not None
+                                                           and self.execution_epoch_sha256 is not None):
             raise CheckpointError("Checkpoint cannot bind both a normal ExecutionBinding and an adopted epoch")
-        else:
+        elif self.execution_adoption_sha256 is not None:
             _digest(self.execution_adoption_sha256, "Checkpoint adopted epoch digest")
+        else:
+            _digest(self.execution_epoch_sha256, "Checkpoint Issue execution epoch digest")
         _digest(self.current_head_sha40, "Checkpoint current HEAD", SHA40)
         if type(self.worktree_clean) is not bool:
             raise CheckpointError("Checkpoint worktree_clean must be boolean")
@@ -171,15 +190,18 @@ class WorkCheckpoint:
             "artifact_digests": [{"name": name, "sha256": digest} for name, digest in self.artifact_digests],
             "completed_stage": self.completed_stage,
             "current_head_sha40": self.current_head_sha40,
-            "schema": "PASES_WORK_CHECKPOINT_V2" if self.execution_adoption_sha256 is not None
-                      else "PASES_WORK_CHECKPOINT_V1",
+            "schema": ("PASES_WORK_CHECKPOINT_V3" if self.execution_epoch_sha256 is not None else
+                       "PASES_WORK_CHECKPOINT_V2" if self.execution_adoption_sha256 is not None else
+                       "PASES_WORK_CHECKPOINT_V1"),
             "step": self.step,
             "worktree_clean": self.worktree_clean,
         }
-        if self.execution_adoption_sha256 is None:
+        if self.execution_adoption_sha256 is None and self.execution_epoch_sha256 is None:
             value["execution_binding_sha256"] = self.execution_binding_sha256
-        else:
+        elif self.execution_adoption_sha256 is not None:
             value["execution_adoption_sha256"] = self.execution_adoption_sha256
+        else:
+            value["execution_epoch_sha256"] = self.execution_epoch_sha256
         return value
 
     @property
@@ -220,7 +242,8 @@ def read_pr_binding(path: Path) -> PRBinding:
                 common | {"adoption_id"}
                 if schema == "PASES_PR_BINDING_V3" and "current_base_sha40" not in value else
                 common | {"adoption_id", "current_base_advance_sha256", "current_base_sha40"}
-                if schema == "PASES_PR_BINDING_V3" else set())
+                if schema == "PASES_PR_BINDING_V3" and "current_base_sha40" in value else
+                common | {"execution_epoch_sha256"} if schema == "PASES_PR_BINDING_V4" else set())
     if not isinstance(value, dict) or set(value) != expected:
         raise CheckpointError("PRBinding has unknown/missing fields or schema")
     binding = PRBinding(
@@ -231,6 +254,7 @@ def read_pr_binding(path: Path) -> PRBinding:
         current_base_sha40=value.get("current_base_sha40"),
         current_base_advance_sha256=value.get("current_base_advance_sha256"),
         adoption_id=value.get("adoption_id"),
+        execution_epoch_sha256=value.get("execution_epoch_sha256"),
     ).validate()
     if value["pr_binding_sha256"] != binding.sha256 or binding.to_bytes() != raw:
         raise CheckpointError("PRBinding digest or canonical byte representation does not match")
@@ -287,7 +311,8 @@ def read_checkpoint(path: Path) -> WorkCheckpoint:
     }
     schema = value.get("schema") if isinstance(value, dict) else None
     expected = (common | {"execution_binding_sha256"} if schema == "PASES_WORK_CHECKPOINT_V1" else
-                common | {"execution_adoption_sha256"} if schema == "PASES_WORK_CHECKPOINT_V2" else set())
+                common | {"execution_adoption_sha256"} if schema == "PASES_WORK_CHECKPOINT_V2" else
+                common | {"execution_epoch_sha256"} if schema == "PASES_WORK_CHECKPOINT_V3" else set())
     if not isinstance(value, dict) or set(value) != expected:
         raise CheckpointError("Checkpoint has unknown/missing fields or schema")
     if not isinstance(value["artifact_digests"], list):
@@ -302,6 +327,7 @@ def read_checkpoint(path: Path) -> WorkCheckpoint:
         current_head_sha40=value["current_head_sha40"], worktree_clean=value["worktree_clean"],
         completed_stage=value["completed_stage"], artifact_digests=tuple(artifacts), step=value["step"],
         execution_adoption_sha256=value.get("execution_adoption_sha256"),
+        execution_epoch_sha256=value.get("execution_epoch_sha256"),
     ).validate()
     if value["checkpoint_sha256"] != checkpoint.sha256 or checkpoint.to_bytes() != raw:
         raise CheckpointError("Checkpoint digest or canonical bytes do not match")

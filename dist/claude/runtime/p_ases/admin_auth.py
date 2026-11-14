@@ -1,10 +1,9 @@
 """Explicit, short-lived isolated GitHub administration sessions.
 
-The standard browser-device path uses a runner-managed interactive terminal and
-a private temporary ``GH_CONFIG_DIR`` for ``gh auth login`` and later API
-children. Neither path changes normal ``gh`` authentication, and neither path
-is an owner decision or a strong OS sandbox. The PAT route is a nonstandard
-legacy fallback that still requires an owner-local terminal.
+Admin access is available only through a locally confirmed, interactive
+``isolated-gh-device`` login and a private temporary ``GH_CONFIG_DIR``. The
+route does not change normal ``gh`` authentication, and authentication is not
+an owner decision or a strong OS sandbox.
 """
 from __future__ import annotations
 
@@ -17,24 +16,23 @@ import subprocess
 import sys
 import tempfile
 from contextlib import contextmanager
-from getpass import getpass
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from .github import GitHub
+from .local_execution import (
+    LocalExecutionError, require_local_activation_execution, verified_device_admin_session,
+)
 
 
 class AdminAuthError(ValueError):
     """Temporary administrator identity or terminal is unavailable."""
 
 
-ADMIN_AUTH_MODES = ("pat", "isolated-gh-device")
+ADMIN_AUTH_MODES = ("isolated-gh-device",)
 ADMIN_REPOSITORY = "puchinya/ai-agent-workflow"
 _TOKEN_ENV_VARS = (
     "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
-)
-_CLOUD_ENV_MARKERS = (
-    "CODEX_ENVIRONMENT_ID", "CODEX_EXEC_SERVER_REMOTE_BASE_URL", "CODEX_CLOUD", "CODESPACE_NAME",
 )
 
 
@@ -60,12 +58,8 @@ def _device_terminal(stdin: Any) -> Any:
         visible_output = False
         terminal = None
     if terminal is None or not visible_output:
-        raise AdminAuthError("ADMIN_DEVICE_LOGIN_UNAVAILABLE: runner-managed device-code terminal is unavailable")
+        raise AdminAuthError("ADMIN_DEVICE_LOGIN_UNAVAILABLE: local interactive device-code terminal is unavailable")
     return terminal
-
-
-def _is_cloud_runtime() -> bool:
-    return any(os.environ.get(key) for key in _CLOUD_ENV_MARKERS)
 
 
 def _without_ambient_tokens() -> dict[str, str]:
@@ -171,7 +165,11 @@ def _isolated_device_client(
         if not isinstance(github, GitHub):
             raise AdminAuthError("Admin GitHub factory returned an invalid client")
         github._admin_config_dir = str(config_dir)
-        yield github
+        try:
+            with verified_device_admin_session(github):
+                yield github
+        except LocalExecutionError as exc:
+            raise AdminAuthError(str(exc)) from exc
     except BaseException:
         primary_error = True
         raise
@@ -198,46 +196,23 @@ def _isolated_device_client(
 @contextmanager
 def temporary_admin_client(
     repo: str, *, stdin: Any = None,
-    getpass_fn: Callable[[str], str] = getpass,
     github_factory: Callable[[str], GitHub] = GitHub,
     auth_mode: str = "isolated-gh-device",
 ) -> Iterator[GitHub]:
     """Yield an isolated client in the selected authentication mode.
 
-    ``isolated-gh-device`` is the standard route. It uses a runner-managed
-    terminal to display the browser URL/code and stores GitHub CLI auth only
-    below a new mode-0700 config directory. ``pat`` is a nonstandard legacy
-    fallback requiring a trusted owner-local terminal. Device login failure
-    blocks with ``ADMIN_DEVICE_LOGIN_UNAVAILABLE`` and never falls back silently.
+    ``isolated-gh-device`` is the only supported route. It uses the local
+    interactive terminal and stores GitHub CLI auth only below a new mode-0700
+    config directory. Device login failure blocks without a credential fallback.
     """
     if repo != ADMIN_REPOSITORY:
         raise AdminAuthError("temporary Admin is limited to the configured repository")
     if auth_mode not in ADMIN_AUTH_MODES:
-        raise AdminAuthError("unsupported temporary Admin authentication mode")
-    if auth_mode == "isolated-gh-device":
-        terminal = _device_terminal(stdin)
-        with _isolated_device_client(repo, terminal, github_factory=github_factory) as github:
-            yield github
-        return
-
-    if _is_cloud_runtime():
-        raise AdminAuthError("ADMIN_AUTH_INTERACTIVE_REQUIRED: PAT fallback requires a trusted owner-local TTY")
-    terminal = _interactive_terminal(stdin)
+        raise AdminAuthError("ADMIN_AUTH_MODE_UNAVAILABLE: only isolated-gh-device is permitted")
     try:
-        token = getpass_fn("Repository-scoped temporary Admin PAT: ")
-    except (EOFError, KeyboardInterrupt, OSError) as exc:
-        raise AdminAuthError("ADMIN_AUTH_CANCELLED") from exc
-    if (not isinstance(token, str) or not token or
-            any(c in token for c in "\r\n\x00")):
-        raise AdminAuthError("ADMIN_AUTH_INVALID")
-    github: GitHub | None = None
-    try:
-        github = github_factory(repo)
-        if not isinstance(github, GitHub):
-            raise AdminAuthError("Admin GitHub factory returned an invalid client")
-        github._admin_token_override = token
+        require_local_activation_execution()
+    except LocalExecutionError as exc:
+        raise AdminAuthError(str(exc)) from exc
+    terminal = _device_terminal(stdin)
+    with _isolated_device_client(repo, terminal, github_factory=github_factory) as github:
         yield github
-    finally:
-        if github is not None:
-            github._admin_token_override = None
-        token = ""
