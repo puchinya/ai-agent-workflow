@@ -1274,15 +1274,10 @@ def read_verified_managed_policy(github: GitHub, branch: str,
     }
 
 
-def verify_applied_policy_record(github: GitHub, activation_issue_number: int,
-                                 activation_record_id: int, applied_record_id: int,
-                                 ruleset_id: int, policy_digest: str) -> dict[str, Any]:
-    """Bind a historical V2 Activation to an earlier append-only Ruleset apply record."""
-    try:
-        require_local_activation_execution()
-        require_isolated_device_admin_client(github)
-    except LocalExecutionError as exc:
-        raise RulesetManagementError(str(exc)) from exc
+def verify_historical_applied_policy_record(github: GitHub, activation_issue_number: int,
+                                            activation_record_id: int, applied_record_id: int,
+                                            ruleset_id: int, policy_digest: str) -> dict[str, Any]:
+    """Validate only the immutable ownership prefix bound by a historical V2 Activation."""
     activation_issue_number = _positive(activation_issue_number, "Activation Issue number")
     activation_record_id = _positive(activation_record_id, "Activation record Comment ID")
     applied_record_id = _positive(applied_record_id, "Ruleset applied-policy Comment ID")
@@ -1294,7 +1289,6 @@ def verify_applied_policy_record(github: GitHub, activation_issue_number: int,
     repository_id = _positive(metadata.get("id"), "repository ID")
     owner = metadata.get("owner") if isinstance(metadata.get("owner"), dict) else {}
     owner_id = _positive(owner.get("id"), "repository owner ID")
-    _require_current_admin(github, owner_id)
     history = _read_ownership_history(
         github, repository_id, owner_id, activation_issue_number,
         through_comment_id=applied_record_id,
@@ -1306,3 +1300,17 @@ def verify_applied_policy_record(github: GitHub, activation_issue_number: int,
             or payload["effective_policy_sha256"] != policy_digest):
         raise RulesetManagementError("V2 Activation does not bind one earlier Ruleset applied-policy record")
     return payload
+
+
+def verify_applied_policy_record(github: GitHub, activation_issue_number: int,
+                                 activation_record_id: int, applied_record_id: int,
+                                 ruleset_id: int, policy_digest: str) -> dict[str, Any]:
+    """Compatibility alias for historical ownership-prefix validation.
+
+    Current effective branch policy is verified separately by
+    :func:`read_verified_managed_policy`, which requires the isolated Admin reader.
+    """
+    return verify_historical_applied_policy_record(
+        github, activation_issue_number, activation_record_id, applied_record_id,
+        ruleset_id, policy_digest,
+    )

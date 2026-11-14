@@ -20,7 +20,7 @@ from p_ases.ruleset_management import (  # noqa: E402
     _canonical, _desired_payload, _managed_body,
     _body_digest, _publish_applied_record, _verify_exact_approval, apply_ruleset_plan,
     build_ruleset_plan,
-    effective_policy_sha256, validate_plan, verify_applied_policy_record, write_plan,
+    effective_policy_sha256, validate_plan, verify_historical_applied_policy_record, write_plan,
 )
 
 
@@ -852,13 +852,7 @@ class RulesetManagementTests(unittest.TestCase):
             repo = REPOSITORY
 
             def repository_metadata(self):
-                return {"id": 1401910271, "owner": {"id": OWNER_ID}, "permissions": {"admin": True}}
-
-            def authenticated_user(self):
-                return {"id": OWNER_ID, "login": "puchinya", "type": "User"}
-
-            def collaborator_permission(self, login):
-                return {"permission": "admin", "user": {"id": OWNER_ID, "login": login}}
+                return {"id": 1401910271, "owner": {"id": OWNER_ID}}
 
             def issue_comments(self, issue_number):
                 if issue_number != 57:
@@ -874,8 +868,13 @@ class RulesetManagementTests(unittest.TestCase):
                 return copy.deepcopy(matches[0])
 
         github = HistoricalGitHub()
-        verified = verify_applied_policy_record(github, 57, 20, 11, 17, policy_sha)
+        verified = verify_historical_applied_policy_record(github, 57, 20, 11, 17, policy_sha)
         self.assertEqual(verified, payload)
+        original_approval = comments[0]["body"]
+        comments[0]["body"] = "edited owner approval"
+        with self.assertRaisesRegex(RulesetManagementError, "approval|ownership"):
+            verify_historical_applied_policy_record(github, 57, 20, 11, 17, policy_sha)
+        comments[0]["body"] = original_approval
         from p_ases.ruleset_management import _read_ownership_history
         with self.assertRaisesRegex(RulesetManagementError, "canonical|JSON"):
             _read_ownership_history(github, 1401910271, OWNER_ID, 57)

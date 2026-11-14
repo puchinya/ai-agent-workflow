@@ -18,7 +18,8 @@ sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases.adc import publish_adc
 from p_ases.cli import (
-    CLI_ADVANCE_TARGETS, CLIError, OwnerAuthorizationError, _audit_independent, _delivery_final,
+    CLI_ADVANCE_TARGETS, CLIError, OwnerAuthorizationError, _activation_v2_issue63_proof,
+    _audit_independent, _delivery_final,
     _owner_merge_gate, _parser, _work_command, main,
 )
 from p_ases.delivery import ReadinessResult
@@ -589,6 +590,7 @@ class PasesCLITests(unittest.TestCase):
         with patch("p_ases.cli._runtime_root", return_value=ROOT), \
                 patch("p_ases.cli.discover_repository", return_value="puchinya/ai-agent-workflow"), \
                 patch("p_ases.cli.GitHub", return_value=fake_github), \
+                patch("p_ases.cli.activation_setup_requires_admin", return_value=True), \
                 patch("p_ases.cli.temporary_admin_client", return_value=contextlib.nullcontext(fake_github)), \
                 patch("p_ases.cli.setup_consumer_activation", return_value=pending), \
                 patch("p_ases.cli._json") as emit:
@@ -596,6 +598,140 @@ class PasesCLITests(unittest.TestCase):
                            "puchinya/ai-agent-workflow", "--root", str(ROOT)])
         self.assertEqual(status, 2)
         self.assertEqual(emit.call_args.args[0], pending)
+
+    def test_v1_activation_setup_uses_ordinary_client_without_opening_admin_session(self):
+        fake_github = SimpleNamespace(repo="owner/consumer")
+        pending = {"status": "SETUP_PENDING"}
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch("p_ases.cli._runtime_root", return_value=Path(temporary)), \
+                patch("p_ases.cli.discover_repository", return_value="owner/consumer"), \
+                patch("p_ases.cli.GitHub", return_value=fake_github), \
+                patch("p_ases.cli.activation_setup_requires_admin", return_value=False), \
+                patch("p_ases.cli.temporary_admin_client", side_effect=AssertionError("V1 opened Admin")), \
+                patch("p_ases.cli.setup_consumer_activation", return_value=pending) as setup, \
+                patch("p_ases.cli._json"):
+            status = main(["delivery", "consumer-activation-setup", "--repo", "owner/consumer",
+                           "--root", temporary])
+        self.assertEqual(status, 2)
+        setup.assert_called_once_with(Path(temporary), fake_github)
+
+    def test_v2_activation_verify_keeps_journal_writes_on_ordinary_client(self):
+        ordinary = SimpleNamespace(repo="puchinya/ai-agent-workflow")
+        admin = SimpleNamespace(repo="puchinya/ai-agent-workflow")
+        record = SimpleNamespace(
+            activation_issue_number=57, activated_at="2026-11-14T00:00:00Z", sha256="a" * 64,
+            review_mode="solo_owner", required_check_runs=(object(),), schema_version=2,
+        )
+        def admin_context(_repository):
+            return contextlib.nullcontext(admin)
+
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch("p_ases.cli._runtime_root", return_value=Path(temporary)), \
+                patch("p_ases.cli.discover_repository", return_value="puchinya/ai-agent-workflow"), \
+                patch("p_ases.cli.GitHub", return_value=ordinary), \
+                patch("p_ases.cli.activation_pr_requires_admin", return_value=True), \
+                patch("p_ases.cli.temporary_admin_client", side_effect=admin_context), \
+                patch("p_ases.cli.verify_and_record_activation", return_value=(record, 900)) as verify, \
+                patch("p_ases.cli._json"):
+            status = main(["delivery", "consumer-activation-verify", "82", "--repo",
+                           "puchinya/ai-agent-workflow", "--root", temporary])
+        self.assertEqual(status, 0)
+        verify.assert_called_once_with(ordinary, 82, root=Path(temporary), policy_github=admin)
+
+    def test_v1_activation_verify_uses_ordinary_client_without_admin_session(self):
+        ordinary = SimpleNamespace(repo="owner/consumer")
+        record = SimpleNamespace(
+            activation_issue_number=71, activated_at="2026-11-14T00:00:00Z", sha256="b" * 64,
+            review_mode="external_reviewer", required_check_runs=(object(),), schema_version=1,
+        )
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch("p_ases.cli._runtime_root", return_value=Path(temporary)), \
+                patch("p_ases.cli.discover_repository", return_value="owner/consumer"), \
+                patch("p_ases.cli.GitHub", return_value=ordinary), \
+                patch("p_ases.cli.activation_pr_requires_admin", return_value=False), \
+                patch("p_ases.cli.temporary_admin_client", side_effect=AssertionError("V1 opened Admin")), \
+                patch("p_ases.cli.verify_and_record_activation", return_value=(record, 901)) as verify, \
+                patch("p_ases.cli._json"):
+            status = main(["delivery", "consumer-activation-verify", "82", "--repo", "owner/consumer",
+                           "--root", temporary])
+        self.assertEqual(status, 0)
+        verify.assert_called_once_with(ordinary, 82, root=Path(temporary))
+
+    def test_finalize_opens_admin_only_for_verified_v2_activation_history(self):
+        ordinary = SimpleNamespace(repo="puchinya/ai-agent-workflow")
+        ordinary.pull_request = lambda _number: {
+            "state": "closed", "merged": True, "body": "Implementation delivered.\n\nRefs #63",
+        }
+        admin = SimpleNamespace(repo="puchinya/ai-agent-workflow")
+        v1 = [(SimpleNamespace(schema_version=1), 100)]
+        v2 = [(SimpleNamespace(schema_version=2), 200)]
+        for history, expect_admin in ((v1, False), (v2, True)):
+            with self.subTest(expect_admin=expect_admin), tempfile.TemporaryDirectory() as temporary:
+                admin_context = contextlib.nullcontext(admin)
+                with patch("p_ases.cli._runtime_root", return_value=Path(temporary)), \
+                        patch("p_ases.cli.discover_repository", return_value="puchinya/ai-agent-workflow"), \
+                        patch("p_ases.cli.GitHub", return_value=ordinary), \
+                        patch("p_ases.cli.read_consumer_activation_history", return_value=history) as read_history, \
+                        patch("p_ases.cli.temporary_admin_client", return_value=admin_context) as open_admin, \
+                        patch("p_ases.cli._delivery_finalize", return_value=0) as finalize:
+                    status = main(["delivery", "finalize", "63", "64", "--repo",
+                                   "puchinya/ai-agent-workflow", "--root", temporary])
+                self.assertEqual(status, 0)
+                read_history.assert_called_once_with(ordinary, "puchinya/ai-agent-workflow", 57)
+                self.assertEqual(open_admin.called, expect_admin)
+                if expect_admin:
+                    self.assertIs(finalize.call_args.kwargs["policy_github"], admin)
+                else:
+                    self.assertNotIn("policy_github", finalize.call_args.kwargs)
+
+    def test_issue63_activation_proof_separates_historical_and_current_policy_readers(self):
+        repository = "puchinya/ai-agent-workflow"
+        main_sha = "c" * 40
+        profile_bytes = b'{"activation":{"issue_number":57},"final_delivery":{"review_mode":"solo_owner"}}\n'
+        policy_evidence = {
+            "ruleset_id": 7, "effective_policy_sha256": "d" * 64, "applied_record_id": 499,
+        }
+        ordinary = SimpleNamespace(
+            repo=repository,
+            repository_metadata=lambda: {"default_branch": "main"},
+            branch=lambda _branch: {"commit": {"sha": main_sha}},
+            regular_content_at_ref=lambda _path, _ref: profile_bytes,
+        )
+        admin = SimpleNamespace(repo=repository)
+        profile = SimpleNamespace(
+            activation_issue_number=57, final_delivery_review_mode="solo_owner",
+            required_checks=(("ci", 15368),),
+            required_check_policy=lambda: SimpleNamespace(sha256="e" * 64),
+        )
+        record = SimpleNamespace(
+            schema_version=2, activation_issue_number=57, repository=repository,
+            review_mode="solo_owner", ruleset_id=7, branch_policy_sha256="d" * 64,
+            ruleset_applied_record_id=499, adc_sha256="a" * 64, adc_comment_id=600,
+            activation_profile_sha256=hashlib.sha256(profile_bytes).hexdigest(),
+            activated_at="2026-11-14T00:00:00Z", payload=lambda: {"schema": "PASES_CONSUMER_ACTIVATION_V2"},
+        )
+        adc = SimpleNamespace(pointer=SimpleNamespace(
+            state="approved", sha256="a" * 64, comment_id=600,
+        ))
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch("p_ases.cli.read_consumer_activation_history",
+                      return_value=[(record, 601)]) as read_history, \
+                patch("p_ases.cli.load_profile", return_value=profile), \
+                patch("p_ases.cli.current_branch", return_value="main"), \
+                patch("p_ases.cli.worktree_clean", return_value=True), \
+                patch("p_ases.cli.head_sha40", return_value=main_sha), \
+                patch("p_ases.cli.verify_adc", return_value=adc), \
+                patch("p_ases.cli.require_local_activation_execution"), \
+                patch("p_ases.cli.require_isolated_device_admin_client") as require_admin, \
+                patch("p_ases.cli.read_verified_managed_policy", return_value=policy_evidence) as read_policy:
+            result = _activation_v2_issue63_proof(
+                Path(temporary), ordinary, repository, policy_github=admin,
+            )
+        self.assertEqual(result["status"], "ACTIVE")
+        read_history.assert_called_once_with(ordinary, repository, 57)
+        require_admin.assert_called_once_with(admin)
+        self.assertEqual(read_policy.call_count, 2)
+        self.assertTrue(all(call.args[0] is admin for call in read_policy.call_args_list))
 
     def test_advance_cli_excludes_readiness_approval_and_close_targets(self):
         self.assertNotIn("user-review", CLI_ADVANCE_TARGETS)

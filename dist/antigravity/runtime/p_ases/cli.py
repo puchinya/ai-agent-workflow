@@ -22,13 +22,17 @@ from .adc import (
     verify_adc, verify_adc_generation,
 )
 from .admin_auth import AdminAuthError, temporary_admin_client
+from .local_execution import (
+    LocalExecutionError, require_isolated_device_admin_client, require_local_activation_execution,
+)
 from .owner_authorization import (
     OwnerAuthorizationError, authorize_chat_confirmed_plan, authorize_plan, create_authorization_plan,
     issue63_deferred_merge_details, read_authorization_plan, resume_authorization, write_authorization_plan,
 )
 from .owner_authorization import capture_direct_chat_confirmation
 from .consumer_activation import (
-    ConsumerActivationError, activation_checkpoint_path, activation_setting_inventory, read_activation_checkpoint,
+    ConsumerActivationError, activation_checkpoint_path, activation_setup_requires_admin,
+    activation_pr_requires_admin, activation_setting_inventory, read_activation_checkpoint,
     read_consumer_activation_history, verify_setup_pr_ready_to_merge, write_activation_checkpoint,
     setup_consumer_activation, verify_and_record_activation,
 )
@@ -3727,11 +3731,21 @@ def _create_issue_close_intent(path: Path, payload: dict[str, Any], *, root: Pat
         raise CLIError("Issue close intent failed exact readback; no close retry is permitted")
 
 
-def _activation_v2_issue63_proof(root: Path, github: GitHub, repository: str) -> dict[str, Any] | None:
+def _activation_v2_issue63_proof(root: Path, github: GitHub, repository: str, *,
+                                 policy_github: GitHub | None = None) -> dict[str, Any] | None:
     """Return fresh ACTIVE V2 and policy proof, or None while Activation is not active."""
     history = read_consumer_activation_history(github, repository, 57)
     if not history or history[-1][0].schema_version != 2:
         return None
+    try:
+        require_local_activation_execution()
+        if policy_github is None:
+            raise LocalExecutionError("ADMIN_DEVICE_AUTH_REQUIRED: Activation V2 needs isolated-gh-device")
+        require_isolated_device_admin_client(policy_github)
+    except LocalExecutionError as exc:
+        raise CLIError(str(exc)) from exc
+    if policy_github.repo.casefold() != github.repo.casefold():
+        raise CLIError("Activation policy reader targets a different repository")
     record, record_id = history[-1]
     profile = load_profile(root)
     if (repository.casefold() != "puchinya/ai-agent-workflow" or profile.activation_issue_number != 57
@@ -3761,8 +3775,8 @@ def _activation_v2_issue63_proof(root: Path, github: GitHub, repository: str) ->
     if (current_adc.pointer.state != "approved" or current_adc.pointer.sha256 != record.adc_sha256
             or current_adc.pointer.comment_id != record.adc_comment_id):
         raise CLIError("current approved Activation ADC differs from the ACTIVE V2 record")
-    first = read_verified_managed_policy(github, default_branch, checks, "solo_owner", 57)
-    second = read_verified_managed_policy(github, default_branch, checks, "solo_owner", 57)
+    first = read_verified_managed_policy(policy_github, default_branch, checks, "solo_owner", 57)
+    second = read_verified_managed_policy(policy_github, default_branch, checks, "solo_owner", 57)
     if (first != second or first.get("ruleset_id") != record.ruleset_id
             or first.get("effective_policy_sha256") != record.branch_policy_sha256
             or first.get("applied_record_id") != record.ruleset_applied_record_id):
@@ -3779,7 +3793,8 @@ def _activation_v2_issue63_proof(root: Path, github: GitHub, repository: str) ->
     }
 
 
-def _delivery_finalize(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
+def _delivery_finalize(args: argparse.Namespace, repository: str, root: Path, github: GitHub, *,
+                       policy_github: GitHub | None = None) -> int:
     try:
         pr = github.pull_request(args.pr)
         issue = github.issue(args.issue)
@@ -3837,7 +3852,9 @@ def _delivery_finalize(args: argparse.Namespace, repository: str, root: Path, gi
                     else:
                         close_status = "MERGED_AWAITING_ISSUE_COMPLETION"
                 else:
-                    activation_proof = _activation_v2_issue63_proof(root, github, repository)
+                    activation_proof = _activation_v2_issue63_proof(
+                        root, github, repository, policy_github=policy_github,
+                    )
                     if activation_proof is None:
                         close_status = "MERGED_AWAITING_ISSUE_COMPLETION"
                     else:
@@ -4904,8 +4921,11 @@ def main(argv: list[str] | None = None) -> int:
                 return _delivery_gate_policy(args, repository, root, github)
             if args.verb == "consumer-activation-setup":
                 try:
-                    with temporary_admin_client(repository) as admin:
-                        result = setup_consumer_activation(root, github, policy_github=admin)
+                    if activation_setup_requires_admin(root):
+                        with temporary_admin_client(repository) as admin:
+                            result = setup_consumer_activation(root, github, policy_github=admin)
+                    else:
+                        result = setup_consumer_activation(root, github)
                     _json(result)
                     return 0 if result.get("status") == "ACTIVE" else 2
                 except ConsumerActivationError as exc:
@@ -4928,8 +4948,13 @@ def main(argv: list[str] | None = None) -> int:
                 try:
                     if discover_repository(root).casefold() != repository.casefold():
                         raise ConsumerActivationError("GitHub repository does not match the active workspace origin")
-                    with temporary_admin_client(repository) as admin:
-                        record, comment_id = verify_and_record_activation(admin, args.pr, root=root)
+                    if activation_pr_requires_admin(github, args.pr):
+                        with temporary_admin_client(repository) as admin:
+                            record, comment_id = verify_and_record_activation(
+                                github, args.pr, root=root, policy_github=admin,
+                            )
+                    else:
+                        record, comment_id = verify_and_record_activation(github, args.pr, root=root)
                     _json({"status": "ACTIVATED", "repository": repository,
                            "issue": record.activation_issue_number, "pr": args.pr,
                            "activation_comment_id": comment_id, "activated_at": record.activated_at,
@@ -5124,6 +5149,32 @@ def main(argv: list[str] | None = None) -> int:
             if args.verb == "final":
                 return _delivery_final(args, repository, root, github)
             if args.verb == "finalize":
+                if args.issue == 63 and args.pr == 64:
+                    eligible_deferred_close = False
+                    try:
+                        candidate_pr = github.pull_request(args.pr)
+                        candidate_mode = parse_issue_association(candidate_pr.get("body"), args.issue)
+                        eligible_deferred_close = (
+                            candidate_pr.get("state") == "closed"
+                            and candidate_pr.get("merged") is True
+                            and candidate_mode == "deferred_close"
+                        )
+                    except (GitHubError, WorkError, CLIError):
+                        pass
+                    if eligible_deferred_close:
+                        try:
+                            activation_history = read_consumer_activation_history(github, repository, 57)
+                        except (ConsumerActivationError, GitHubError):
+                            # Let the finalizer emit its normal blocked result from the
+                            # authoritative read; no Admin session is opened on failure.
+                            return _delivery_finalize(args, repository, root, github)
+                    else:
+                        activation_history = []
+                    if activation_history and activation_history[-1][0].schema_version == 2:
+                        with temporary_admin_client(repository) as admin:
+                            return _delivery_finalize(
+                                args, repository, root, github, policy_github=admin,
+                            )
                 return _delivery_finalize(args, repository, root, github)
             if args.verb == "parent":
                 return _delivery_parent(args, repository, root, github)

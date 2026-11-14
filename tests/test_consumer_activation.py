@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -31,6 +33,17 @@ from p_ases.git import (  # noqa: E402
     fetch_remote_branch_exact, head_sha40, remote_branch_sha, run_git, worktree_clean,
 )
 from p_ases.work import execution_binding_path  # noqa: E402
+from p_ases.phase_evidence import _check_activation  # noqa: E402
+from p_ases.local_execution import LocalExecutionError  # noqa: E402
+from p_ases.ruleset_management import APPLIED_MARKER, _canonical as ruleset_canonical  # noqa: E402
+
+
+@contextmanager
+def allow_v2_admin_access():
+    """Supply the explicit local/device boundary only to V2-focused tests."""
+    with patch("p_ases.consumer_activation.require_local_activation_execution"), \
+            patch("p_ases.consumer_activation.require_isolated_device_admin_client"):
+        yield
 
 
 REPO = "owner/consumer"
@@ -301,22 +314,25 @@ def watch_activation_writes(github: FakeGitHub):
 
 
 class ConsumerActivationTests(unittest.TestCase):
-    def setUp(self):
-        # The fixtures use fake GitHub clients. The locality/device-session
-        # boundary is tested directly in test_local_execution.py.
-        for name in ("require_local_activation_execution", "require_isolated_device_admin_client"):
-            patcher = patch(f"p_ases.consumer_activation.{name}")
-            patcher.start()
-            self.addCleanup(patcher.stop)
-        original_setup = setup_consumer_activation
-        patcher = patch(
-            "test_consumer_activation.setup_consumer_activation",
-            side_effect=lambda root, github, *, policy_github=None: original_setup(
-                root, github, policy_github=policy_github or github,
-            ),
-        )
-        patcher.start()
-        self.addCleanup(patcher.stop)
+    def test_v2_setup_requires_local_device_admin_before_github_writes(self):
+        github = FakeGitHub()
+        profile = _default_profile(REPO)
+        profile["final_delivery"] = {"review_mode": "solo_owner"}
+        with tempfile.TemporaryDirectory() as tmp:
+            profile_path = Path(tmp) / ".agent" / "project.json"
+            profile_path.parent.mkdir()
+            profile_path.write_text(json.dumps(profile), encoding="utf-8")
+            writes = watch_activation_writes(github)
+            for name, spy in writes.items():
+                setattr(github, name, spy)
+            with patch("p_ases.consumer_activation.worktree_clean", return_value=True), \
+                    patch("p_ases.consumer_activation.discover_repository", return_value=REPO), \
+                    patch("p_ases.consumer_activation.require_local_activation_execution",
+                          side_effect=LocalExecutionError("ADMIN_DEVICE_AUTH_REQUIRED")):
+                with self.assertRaisesRegex(ConsumerActivationError, "ADMIN_DEVICE_AUTH_REQUIRED"):
+                    setup_consumer_activation(Path(tmp), github)
+        for spy in writes.values():
+            spy.assert_not_called()
 
     def test_activation_setup_rejects_feature_worktree_before_writes_and_preserves_issue63_state(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -430,7 +446,7 @@ class ConsumerActivationTests(unittest.TestCase):
             "blockers": [], "diff": {"operation": "create"}, "plan_sha256": "d" * 64,
             "policy_proof": {"status": "NOT_CONFIGURED"},
         })
-        with tempfile.TemporaryDirectory() as tmp, \
+        with allow_v2_admin_access(), tempfile.TemporaryDirectory() as tmp, \
                 patch("p_ases.consumer_activation.worktree_clean", return_value=True), \
                 patch("p_ases.consumer_activation.discover_repository", return_value=REPO), \
                 patch("p_ases.consumer_activation.current_branch", return_value="main"), \
@@ -443,7 +459,7 @@ class ConsumerActivationTests(unittest.TestCase):
             profile_path = Path(tmp) / ".agent" / "project.json"
             profile_path.parent.mkdir()
             profile_path.write_text(json.dumps(profile, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-            result = setup_consumer_activation(Path(tmp), github)
+            result = setup_consumer_activation(Path(tmp), github, policy_github=github)
             checkpoint = read_activation_checkpoint(activation_checkpoint_path(Path(tmp), ISSUE))
         self.assertEqual(result["status"], "PENDING_APPROVAL")
         self.assertEqual(result["stage"], "AWAIT_OWNER_POLICY_DECISION")
@@ -470,7 +486,7 @@ class ConsumerActivationTests(unittest.TestCase):
                               "REPOSITORY_RULESET_INVENTORY_UNAVAILABLE"],
                 "diff": {"operation": "blocked"}, "plan_sha256": "d" * 64,
                 "policy_proof": {"status": "UNAVAILABLE"}}
-        with tempfile.TemporaryDirectory() as tmp, \
+        with allow_v2_admin_access(), tempfile.TemporaryDirectory() as tmp, \
                 patch("p_ases.consumer_activation.worktree_clean", return_value=True), \
                 patch("p_ases.consumer_activation.discover_repository", return_value=REPO), \
                 patch("p_ases.consumer_activation.current_branch", return_value="main"), \
@@ -482,7 +498,7 @@ class ConsumerActivationTests(unittest.TestCase):
             profile_path = Path(tmp) / ".agent" / "project.json"
             profile_path.parent.mkdir()
             profile_path.write_text(json.dumps(profile, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-            result = setup_consumer_activation(Path(tmp), github)
+            result = setup_consumer_activation(Path(tmp), github, policy_github=github)
             checkpoint = read_activation_checkpoint(activation_checkpoint_path(Path(tmp), ISSUE))
         self.assertEqual(result["status"], "ADMIN_POLICY_UNAVAILABLE")
         self.assertEqual(result["stage"], "POLICY_PLAN")
@@ -499,7 +515,7 @@ class ConsumerActivationTests(unittest.TestCase):
         profile["activation"] = {"issue_number": ISSUE}
         policy = {"ruleset_id": 123, "effective_policy_sha256": "c" * 64,
                   "applied_record_id": 456}
-        with tempfile.TemporaryDirectory() as tmp, \
+        with allow_v2_admin_access(), tempfile.TemporaryDirectory() as tmp, \
                 patch("p_ases.consumer_activation.worktree_clean", return_value=True), \
                 patch("p_ases.consumer_activation.discover_repository", return_value=REPO), \
                 patch("p_ases.consumer_activation.current_branch", return_value="main"), \
@@ -516,7 +532,7 @@ class ConsumerActivationTests(unittest.TestCase):
             profile_path = Path(tmp) / ".agent" / "project.json"
             profile_path.parent.mkdir()
             profile_path.write_text(json.dumps(profile, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-            result = setup_consumer_activation(Path(tmp), github)
+            result = setup_consumer_activation(Path(tmp), github, policy_github=github)
             checkpoint = read_activation_checkpoint(activation_checkpoint_path(Path(tmp), ISSUE))
         self.assertEqual(result["status"], "SETUP_PENDING")
         self.assertEqual(result["stage"], "SETUP_PR_REVIEW_AND_MERGE")
@@ -545,7 +561,7 @@ class ConsumerActivationTests(unittest.TestCase):
                     "plan_sha256": "f" * 64 if "-g" in activation_binding["setup_branch"] else "e" * 64,
                     "policy_proof": {"status": "VERIFIED"}}
 
-        with tempfile.TemporaryDirectory() as tmp, \
+        with allow_v2_admin_access(), tempfile.TemporaryDirectory() as tmp, \
                 patch("p_ases.consumer_activation.worktree_clean", return_value=True), \
                 patch("p_ases.consumer_activation.discover_repository", return_value=REPO), \
                 patch("p_ases.consumer_activation.current_branch", return_value="main"), \
@@ -559,9 +575,9 @@ class ConsumerActivationTests(unittest.TestCase):
             profile_path = Path(tmp) / ".agent" / "project.json"
             profile_path.parent.mkdir()
             profile_path.write_text(json.dumps(profile, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-            first = setup_consumer_activation(Path(tmp), github)
+            first = setup_consumer_activation(Path(tmp), github, policy_github=github)
             old_pr = copy.deepcopy(github.prs[first["pr"]])
-            second = setup_consumer_activation(Path(tmp), github)
+            second = setup_consumer_activation(Path(tmp), github, policy_github=github)
             checkpoint = read_activation_checkpoint(activation_checkpoint_path(Path(tmp), ISSUE))
 
         self.assertEqual(first["status"], "SETUP_PENDING")
@@ -970,8 +986,7 @@ class ConsumerActivationTests(unittest.TestCase):
             github, REPO, 27, "2026-10-14T12:03:00Z", activation_issue_number=ISSUE,
         ))
 
-    @patch("p_ases.consumer_activation.verify_applied_policy_record", return_value={})
-    def test_successor_activation_appends_chain_and_old_selection_keeps_old_record(self, _policy_record_mock):
+    def test_successor_activation_appends_chain_and_old_selection_keeps_old_record(self):
         github = FakeGitHub()
         setup_fake(github)
         first, first_id = verify_and_record_activation(github, PR)
@@ -1000,10 +1015,36 @@ class ConsumerActivationTests(unittest.TestCase):
         v2_profile["branch"]["required_checks"] = [{"name": "ci", "trusted_app_id": APP_ID}]
         v2_profile["final_delivery"] = {"review_mode": "solo_owner"}
         v2_profile["activation"] = {"issue_number": ISSUE}
-        policy_evidence = {"ruleset_id": 123, "effective_policy_sha256": "c" * 64,
-                           "applied_record_id": 456}
+        plan_sha = "d" * 64
+        policy_digest = "c" * 64
+        approval_id = max(row["id"] for row in github.comments) + 1
+        applied_id = approval_id + 1
+        approval_body = (f"PASES-RULESET-APPROVE: {plan_sha}\n"
+                         f"PASES-REPOSITORY: {REPO}")
+        applied_payload = {
+            "actor_id": USER["id"], "actor_login": USER["login"], "approval_comment_id": approval_id,
+            "effective_policy_sha256": policy_digest, "plan_sha256": plan_sha,
+            "predecessor_comment_id": None, "repository": REPO, "repository_id": 9001,
+            "ruleset_body_sha256": "e" * 64, "ruleset_id": 123,
+            "schema": "PASES_RULESET_APPLIED_V1",
+        }
+        github.comments.extend([
+            comment_row(approval_id, approval_body, timestamp="2026-10-14T12:58:00Z"),
+            comment_row(applied_id, APPLIED_MARKER + ruleset_canonical(applied_payload).decode("utf-8")
+                        + "\n-->", timestamp="2026-10-14T12:58:01Z"),
+        ])
+        policy_evidence = {"ruleset_id": 123, "effective_policy_sha256": policy_digest,
+                           "applied_record_id": applied_id}
         setup_bytes: dict[str, bytes] = {}
+        class AdminPolicyReader:
+            repo = REPO
+
+            def collaborator_permission(self, login):
+                return github.collaborator_permission(login)
+
+        admin = AdminPolicyReader()
         with tempfile.TemporaryDirectory() as tmp, \
+                allow_v2_admin_access(), \
                 patch("p_ases.consumer_activation.worktree_clean", return_value=True), \
                 patch("p_ases.consumer_activation.discover_repository", return_value=REPO), \
                 patch("p_ases.consumer_activation.current_branch", return_value="main"), \
@@ -1024,7 +1065,7 @@ class ConsumerActivationTests(unittest.TestCase):
             profile_path = Path(tmp) / ".agent" / "project.json"
             profile_path.parent.mkdir()
             profile_path.write_text(json.dumps(v2_profile, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-            result = setup_consumer_activation(Path(tmp), github)
+            result = setup_consumer_activation(Path(tmp), github, policy_github=admin)
         second_pr = result["pr"]
         self.assertNotEqual(second_pr, PR)
         second_merge = "e" * 40
@@ -1033,10 +1074,23 @@ class ConsumerActivationTests(unittest.TestCase):
                        "merged_by": copy.deepcopy(USER), "merge_commit_sha": second_merge})
         github.profile_by_commit[second_merge] = setup_bytes["profile"]
         github.main_sha = "f" * 40
-        with patch("p_ases.consumer_activation.read_verified_managed_policy",
-                   return_value=policy_evidence) as policy_reads:
-            successor, successor_id = verify_and_record_activation(github, second_pr)
+        writes = watch_activation_writes(github)
+        for name, spy in writes.items():
+            setattr(github, name, spy)
+        with allow_v2_admin_access(), self.assertRaisesRegex(
+                ConsumerActivationError, "ADMIN_DEVICE_AUTH_REQUIRED"):
+            verify_and_record_activation(github, second_pr)
+        for spy in writes.values():
+            spy.assert_not_called()
+        with allow_v2_admin_access(), patch(
+                "p_ases.consumer_activation.read_verified_managed_policy",
+                return_value=policy_evidence) as policy_reads:
+            successor, successor_id = verify_and_record_activation(
+                github, second_pr, policy_github=admin,
+            )
         self.assertEqual(policy_reads.call_count, 2)
+        self.assertTrue(all(call.args[0] is admin for call in policy_reads.call_args_list))
+        writes["create_issue_comment"].assert_called()
         self.assertEqual(successor.predecessor_record_id, first_id)
         self.assertGreater(successor_id, first_id)
         history = read_consumer_activation_record(github, REPO, ISSUE)
@@ -1062,6 +1116,88 @@ class ConsumerActivationTests(unittest.TestCase):
             github, REPO, 30, "2026-10-14T13:03:00Z", activation_issue_number=ISSUE,
         )
         self.assertEqual(later_selection.activation_comment_id, successor_id)
+        _gate_comment_id, _gate_body = pin_gate_selection(github, later_selection)
+        with patch("p_ases.ruleset_management.require_local_activation_execution",
+                   side_effect=AssertionError("historical Gate Selection read requested a local Admin session")), \
+                patch("p_ases.ruleset_management.require_isolated_device_admin_client",
+                      side_effect=AssertionError("historical Gate Selection read requested an Admin client")):
+            _check_activation(github, 30)
+
+        # Exercise the deferred-close reader with the actual V2 comment history.
+        # The normal client must read the append-only ownership prefix without
+        # asking for collaborator/Admin permissions; the separate policy reader
+        # is carried only into the current-policy proof.
+        from types import SimpleNamespace
+        from p_ases.cli import _delivery_finalize
+
+        issue63 = {
+            "number": 63, "state": "open", "closed_at": None,
+            "repository_url": f"https://api.github.com/repos/{REPO}",
+        }
+        pr64 = {
+            "number": 64, "state": "closed", "merged": True,
+            "merged_at": "2026-10-14T13:00:00Z", "merge_commit_sha": "9" * 40,
+            "title": "Issue #63 implementation", "body": "Implementation delivered.\n\nRefs #63",
+            "head": {"sha": "8" * 40},
+        }
+        original_issue = github.issue
+        original_pr = github.pull_request
+
+        def issue_for_finalize(number):
+            return copy.deepcopy(issue63) if number == 63 else original_issue(number)
+
+        def pr_for_finalize(number):
+            return copy.deepcopy(pr64) if number == 64 else original_pr(number)
+
+        github.issue = issue_for_finalize
+        github.pull_request = pr_for_finalize
+        github.issues_all = lambda: [copy.deepcopy(issue63)]
+        github.commit_details = lambda sha: {"message": "Merge PR #64\n\nImplementation delivered."}
+        github.collaborator_permission = lambda _login: (_ for _ in ()).throw(
+            AssertionError("historical Activation validation used the ordinary client's Admin endpoint"))
+
+        def close_issue(number):
+            self.assertEqual(number, 63)
+            issue63.update({"state": "closed", "closed_at": "2026-10-14T13:05:00Z"})
+            return copy.deepcopy(issue63)
+
+        github.close_issue = close_issue
+        policy_reader = SimpleNamespace(repo=REPO)
+        activation_proof = {
+            "status": "ACTIVE",
+            "activation_record_id": successor_id,
+            "activation_record_sha256": hashlib.sha256(
+                json.dumps(successor.payload(), sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+            "activated_at": successor.activated_at, "ruleset_id": successor.ruleset_id,
+            "effective_policy_sha256": successor.branch_policy_sha256,
+            "default_branch": "main", "default_branch_sha40": github.main_sha,
+            "required_check_policy_sha256": "b" * 64,
+        }
+
+        def history_for_issue63(normal_github, repository, activation_issue_number):
+            self.assertIs(normal_github, github)
+            self.assertEqual(activation_issue_number, 57)
+            return read_consumer_activation_history(normal_github, repository, ISSUE)
+
+        def activation_proof_for_issue63(_root, normal_github, repository, *, policy_github):
+            self.assertIs(normal_github, github)
+            self.assertEqual(repository, REPO)
+            self.assertIs(policy_github, policy_reader)
+            return activation_proof
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch("p_ases.cli.issue63_deferred_merge_details", return_value={
+                    "association_mode": "deferred_close"}), \
+                patch("p_ases.cli.read_consumer_activation_history",
+                      side_effect=history_for_issue63), \
+                patch("p_ases.cli._activation_v2_issue63_proof",
+                      side_effect=activation_proof_for_issue63) as proof:
+            status = _delivery_finalize(
+                SimpleNamespace(issue=63, pr=64), REPO, Path(tmp), github,
+                policy_github=policy_reader,
+            )
+        self.assertEqual(status, 0)
+        self.assertIs(proof.call_args.kwargs["policy_github"], policy_reader)
 
         successor_comment = next(row for row in github.comments if row["id"] == successor_id)
         successor_comment["body"] += "\ncorrupt successor payload"

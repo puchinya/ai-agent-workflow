@@ -53,6 +53,7 @@ class FakeGitHub:
             "body": body,
             "user": {"id": epoch.OWNER_ID, "login": "puchinya", "type": "User"},
             "created_at": "2026-11-14T06:14:56Z",
+            "updated_at": "2026-11-14T06:14:56Z",
             "issue_url": f"https://api.github.com/repos/{epoch.REPOSITORY}/issues/{epoch.ISSUE_NUMBER}",
             "html_url": f"https://github.com/{epoch.REPOSITORY}/issues/{epoch.ISSUE_NUMBER}#issuecomment-{comment_id}",
             "url": f"https://api.github.com/repos/{epoch.REPOSITORY}/issues/comments/{comment_id}",
@@ -259,6 +260,27 @@ class ExecutionEpochTests(unittest.TestCase):
         self.assertEqual(body_sha, self.retired_sha)
         self.assertEqual(value["schema"], epoch.V1_INTENT_SCHEMA)
         self.assertEqual(self.github.label_update_calls, 0)
+
+    def test_retired_journal_rejects_edited_then_restored_body_by_updated_at(self):
+        row = next(item for item in self.github.comments
+                   if item["id"] == epoch.RETIRED_INTENT_COMMENT_ID)
+        original_body = row["body"]
+        row["body"] = "temporarily edited"
+        row["updated_at"] = "2026-11-14T06:15:00Z"
+        row["body"] = original_body
+        with self.assertRaisesRegex(epoch.ExecutionEpochError, "timestamp.*edited"):
+            epoch._read_v1_retired_triplet(self.github)
+
+    def test_epoch_journal_rejects_missing_or_noncanonical_updated_at(self):
+        row = next(item for item in self.github.comments
+                   if item["id"] == epoch.RETIRED_INTENT_COMMENT_ID)
+        row.pop("updated_at")
+        with self.assertRaisesRegex(epoch.ExecutionEpochError, "timestamp"):
+            epoch._read_v1_retired_triplet(self.github)
+
+        row["updated_at"] = "2026-11-14T06:14:56+00:00"
+        with self.assertRaisesRegex(epoch.ExecutionEpochError, "timestamp"):
+            epoch._read_v1_retired_triplet(self.github)
 
     def test_inspect_is_read_only_and_reports_ready(self):
         result = epoch.inspect_execution_epoch(self.github, self.root)

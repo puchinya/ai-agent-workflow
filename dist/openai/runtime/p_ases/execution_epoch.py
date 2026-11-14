@@ -243,9 +243,16 @@ def _comment_fp(row: Any, comment_id: int) -> tuple[Any, ...]:
             or user.get("type") != "User" or not isinstance(user.get("login"), str)
             or not user.get("login")):
         raise ExecutionEpochError("epoch journal comment is not authored by the verified owner")
-    body, created_at = row.get("body"), row.get("created_at")
-    if not isinstance(body, str) or not isinstance(created_at, str) or not created_at.endswith("Z"):
-        raise ExecutionEpochError("epoch journal comment body or timestamp is incomplete")
+    body, created_at, updated_at = row.get("body"), row.get("created_at"), row.get("updated_at")
+    if (not isinstance(body, str) or not isinstance(created_at, str)
+            or not isinstance(updated_at, str) or updated_at != created_at):
+        raise ExecutionEpochError("epoch journal comment timestamp is missing, invalid, or edited")
+    try:
+        parsed_created_at = datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError as exc:
+        raise ExecutionEpochError("epoch journal comment timestamp is not canonical UTC") from exc
+    if parsed_created_at.strftime("%Y-%m-%dT%H:%M:%SZ") != created_at:
+        raise ExecutionEpochError("epoch journal comment timestamp is not canonical UTC")
     expected = (
         f"https://api.github.com/repos/{REPOSITORY}/issues/{ISSUE_NUMBER}",
         f"https://github.com/{REPOSITORY}/issues/{ISSUE_NUMBER}#issuecomment-{comment_id}",
@@ -255,7 +262,7 @@ def _comment_fp(row: Any, comment_id: int) -> tuple[Any, ...]:
     if tuple(item.casefold() if isinstance(item, str) else None for item in actual) != tuple(
             item.casefold() for item in expected):
         raise ExecutionEpochError("epoch journal comment URLs do not match Issue #71")
-    return (body, created_at, user["id"], user["login"].casefold(), user["type"], *actual)
+    return (body, created_at, updated_at, user["id"], user["login"].casefold(), user["type"], *actual)
 
 
 def _read_comment_triplet(github: GitHub, comment_id: int) -> dict[str, Any]:

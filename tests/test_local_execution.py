@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import stat
 import sys
 import tempfile
@@ -13,7 +14,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases import local_execution  # noqa: E402
-from p_ases.consumer_activation import ConsumerActivationError, setup_consumer_activation  # noqa: E402
+from p_ases.consumer_activation import (
+    ConsumerActivationError, _default_profile, setup_consumer_activation,
+)  # noqa: E402
 from p_ases.ruleset_management import RulesetManagementError, build_ruleset_plan  # noqa: E402
 
 
@@ -158,13 +161,21 @@ class LocalExecutionTests(unittest.TestCase):
 
         github = TrapGitHub()
         token = local_execution._AUTHORIZED.set(False)
-        with patch.dict(os.environ, {name: "" for name in local_execution._REMOTE_MARKERS}), \
+        with tempfile.TemporaryDirectory() as temporary, \
+             patch.dict(os.environ, {name: "" for name in local_execution._REMOTE_MARKERS}), \
+             patch("p_ases.consumer_activation.worktree_clean", return_value=True), \
+             patch("p_ases.consumer_activation.discover_repository", return_value=REPOSITORY), \
              self.tty_streams()[0], self.tty_streams()[1], self.tty_streams()[2], \
              patch("builtins.input", return_value="I CONTROL THIS LOCAL HOST"):
             with self.assertRaisesRegex(RulesetManagementError, "ADMIN_DEVICE_AUTH_REQUIRED"):
                 build_ruleset_plan(Path("/unused"), github)
+            profile = _default_profile(REPOSITORY)
+            profile["final_delivery"] = {"review_mode": "solo_owner"}
+            project = Path(temporary) / ".agent" / "project.json"
+            project.parent.mkdir()
+            project.write_text(json.dumps(profile), encoding="utf-8")
             with self.assertRaisesRegex(ConsumerActivationError, "ADMIN_DEVICE_AUTH_REQUIRED"):
-                setup_consumer_activation(Path("/unused"), github, policy_github=github)
+                setup_consumer_activation(Path(temporary), github, policy_github=github)
         local_execution._AUTHORIZED.reset(token)
         self.assertEqual(github.calls, [])
 
@@ -183,13 +194,21 @@ class LocalExecutionTests(unittest.TestCase):
 
         github = TrapGitHub()
         token = local_execution._AUTHORIZED.set(False)
-        with patch.dict(os.environ, {"CODEX_CLOUD": "1"}), \
+        with tempfile.TemporaryDirectory() as temporary, \
+             patch.dict(os.environ, {"CODEX_CLOUD": "1"}), \
+             patch("p_ases.consumer_activation.worktree_clean", return_value=True), \
+             patch("p_ases.consumer_activation.discover_repository", return_value=REPOSITORY), \
              self.tty_streams()[0], self.tty_streams()[1], self.tty_streams()[2], \
              patch("builtins.input", side_effect=AssertionError("must not prompt in Cloud")):
             with self.assertRaisesRegex(RulesetManagementError, "REMOTE_OR_HOSTED_CONTEXT"):
                 build_ruleset_plan(Path("/unused"), github)
+            profile = _default_profile(REPOSITORY)
+            profile["final_delivery"] = {"review_mode": "solo_owner"}
+            project = Path(temporary) / ".agent" / "project.json"
+            project.parent.mkdir()
+            project.write_text(json.dumps(profile), encoding="utf-8")
             with self.assertRaisesRegex(ConsumerActivationError, "REMOTE_OR_HOSTED_CONTEXT"):
-                setup_consumer_activation(Path("/unused"), github, policy_github=github)
+                setup_consumer_activation(Path(temporary), github, policy_github=github)
         local_execution._AUTHORIZED.reset(token)
         self.assertEqual(github.calls, [])
 
