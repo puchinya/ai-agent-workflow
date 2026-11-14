@@ -17,7 +17,8 @@ from .checkpoint import CheckpointError, PRBinding
 from .context import WorkContext, WorkContextError
 from .current_base import CurrentBaseAdvanceEvidence
 from .evidence_store import VerificationSubject
-from .execution import AdoptedExecutionEpoch, ExecutionBinding, execution_identity_base
+from .execution import (AdoptedExecutionEpoch, ExecutionBinding, execution_identity_base,
+                        is_issue71_execution_epoch)
 from .path_safety import path_has_symlink
 from .verification import VerificationResult, VERDICTS
 
@@ -31,11 +32,25 @@ SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _identity_adc_matches_subject(identity: Any, pr_binding: Any, subject: VerificationSubject) -> bool:
-    """Use the PRBinding generation bridge for adopted epochs; V1 stays directly bound."""
+    """Require a typed generation bridge where an execution identity is epoch-scoped."""
+    if (subject.repository.casefold() == "puchinya/ai-agent-workflow"
+            and subject.issue_number == 71 and not is_issue71_execution_epoch(identity)):
+        return False
     if isinstance(identity, AdoptedExecutionEpoch):
         return (
             isinstance(pr_binding, PRBinding)
             and pr_binding.adoption_id == identity.adoption_id
+            and pr_binding.repository == subject.repository
+            and pr_binding.issue_number == subject.issue_number
+            and pr_binding.pr_number == subject.pr_number
+            and pr_binding.adc_comment_id == subject.adc_comment_id
+            and pr_binding.adc_sha256 == subject.adc_sha256
+        )
+    if is_issue71_execution_epoch(identity):
+        return (
+            isinstance(pr_binding, PRBinding)
+            and pr_binding.execution_epoch_sha256 == identity.sha256
+            and pr_binding.adoption_id is None
             and pr_binding.repository == subject.repository
             and pr_binding.issue_number == subject.issue_number
             and pr_binding.pr_number == subject.pr_number
@@ -407,6 +422,9 @@ def evaluate_readiness(
         if not isinstance(reason, str) or not reason.strip():
             raise ReadinessError("Readiness blocker reasons must be non-empty text")
         reasons.append(reason.strip())
+    if (subject.repository.casefold() == "puchinya/ai-agent-workflow" and subject.issue_number == 71
+            and not is_issue71_execution_epoch(getattr(work_context, "execution_identity", None))):
+        reasons.append("Issue #71 requires the active V2 execution epoch")
 
     pr_readback_valid = False
     if not isinstance(pr, PRReadback):
@@ -488,7 +506,10 @@ def evaluate_readiness(
                         and base_sha != pr_binding.base_sha40)
                     or (isinstance(identity, AdoptedExecutionEpoch)
                         and pr_binding.adoption_id != identity.adoption_id)
+                    or (is_issue71_execution_epoch(identity)
+                        and pr_binding.execution_epoch_sha256 != identity.sha256)
                     or (isinstance(identity, ExecutionBinding) and pr_binding.adoption_id is not None)
+                    or (isinstance(identity, ExecutionBinding) and pr_binding.execution_epoch_sha256 is not None)
                     or (pr_readback_valid and ((base_sha != pr.base_sha40
                                                and not (base_advance_valid and current_base_advance is not None
                                                         and current_base_advance.frozen_base_sha40 == base_sha

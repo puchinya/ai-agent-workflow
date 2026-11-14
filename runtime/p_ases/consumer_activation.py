@@ -14,6 +14,9 @@ from typing import Any
 
 from .adc import ADCError, VerifiedADC, publish_adc, verify_adc, verify_adc_generation
 from .github import GitHub, GitHubError
+from .local_execution import (
+    LocalExecutionError, require_isolated_device_admin_client, require_local_activation_execution,
+)
 from .git import (
     GitError, activation_profile_bytes_at_commit, branch_exists, changed_paths_between,
     commit_and_push_one_path, commit_parent_sha40, create_branch, current_branch, discover_repository,
@@ -1376,6 +1379,13 @@ def _setup_consumer_activation_v2_impl(
     required_checks: tuple[tuple[str, int], ...], policy_github: GitHub | None = None,
 ) -> dict[str, Any]:
     """Drive solo_owner Activation through a resumable plan/apply/readback lifecycle."""
+    try:
+        require_local_activation_execution()
+        if policy_github is None:
+            raise LocalExecutionError("ADMIN_DEVICE_AUTH_REQUIRED: Activation V2 needs isolated-gh-device")
+        require_isolated_device_admin_client(policy_github)
+    except LocalExecutionError as exc:
+        raise ConsumerActivationError(str(exc)) from exc
     policy_reader = policy_github or github
     profile_sha256 = hashlib.sha256(profile_content).hexdigest()
     latest = history[-1][0] if history else None
@@ -1473,7 +1483,7 @@ def _setup_consumer_activation_v2_impl(
                     "required_setting_inventory": _policy_inventory(
                         "blocked", verified=False, blockers=(str(exc),)),
                     "reasons": [str(exc)],
-                    "next_permitted_step": "Resume with consumer-activation-admin-plan using isolated browser device authentication; a runner-managed PTY must display the challenge."}
+                    "next_permitted_step": "Run consumer-activation-admin-plan in an owner-controlled local interactive terminal with isolated-gh-device and complete current Admin policy readback, then resume consumer-activation-setup."}
         raise
     if plan["blockers"]:
         blockers = tuple(plan["blockers"])
@@ -1495,7 +1505,7 @@ def _setup_consumer_activation_v2_impl(
                     "checkpoint_sha256": checkpoint_sha,
                     "required_setting_inventory": _policy_inventory(
                         "blocked", verified=False, blockers=blockers),
-                    "next_permitted_step": "Resume with consumer-activation-admin-plan using isolated browser device authentication; a runner-managed PTY must display the challenge."}
+                    "next_permitted_step": "Run consumer-activation-admin-plan in an owner-controlled local interactive terminal with isolated-gh-device and complete current Admin policy readback, then resume consumer-activation-setup."}
         _, saved_path, checkpoint_sha = _checkpoint_v2(
             root, repository=github.repo, repository_id=repository_id, owner_id=owner_id,
             issue_number=issue_number, adc=adc, predecessor_record_id=predecessor,
@@ -1785,6 +1795,13 @@ def _setup_consumer_activation_v2(
 
 def setup_consumer_activation(root: Path, github: GitHub, *, policy_github: GitHub | None = None) -> dict[str, Any]:
     """Prepare a marked Activation Issue, proposed ADC, project.json setup PR; never activate pre-merge."""
+    try:
+        require_local_activation_execution()
+        if policy_github is None:
+            raise LocalExecutionError("ADMIN_DEVICE_AUTH_REQUIRED: Activation setup needs isolated-gh-device")
+        require_isolated_device_admin_client(policy_github)
+    except LocalExecutionError as exc:
+        raise ConsumerActivationError(str(exc)) from exc
     root = Path(root)
     if root.is_symlink() or not root.is_dir():
         raise ConsumerActivationError("Activation setup requires an existing non-symlink repository directory")
@@ -1849,6 +1866,13 @@ def setup_consumer_activation(root: Path, github: GitHub, *, policy_github: GitH
         value, content = _profile_for_setup(root, github.repo, issue_number)
         version = 2 if review_mode == "solo_owner" else 1
         if version == 2:
+            try:
+                require_local_activation_execution()
+                if policy_github is None:
+                    raise LocalExecutionError("ADMIN_DEVICE_AUTH_REQUIRED: Activation V2 needs isolated-gh-device")
+                require_isolated_device_admin_client(policy_github)
+            except LocalExecutionError as exc:
+                raise ConsumerActivationError(str(exc)) from exc
             configured_profile = load_profile(root)
             configured_checks = configured_profile.required_checks
             missing = []
@@ -1999,6 +2023,11 @@ def _record_checkpoint_active(root: Path | None, github: GitHub, record: Consume
 def verify_and_record_activation(github: GitHub, pr_number: int, *, root: Path | None = None
                                  ) -> tuple[ConsumerActivationRecord, int]:
     """Verify an admin-merged setup PR, approve its exact ADC generation, and append history."""
+    try:
+        require_local_activation_execution()
+        require_isolated_device_admin_client(github)
+    except LocalExecutionError as exc:
+        raise ConsumerActivationError(str(exc)) from exc
     try:
         pr = github.pull_request(pr_number)
         setup_marker = (SETUP_MARKER_V2 if isinstance(pr.get("body"), str)

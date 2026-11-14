@@ -18,7 +18,9 @@ from .current_base import (
     read_current_base_advance, verify_current_base_advance,
 )
 from .context import WorkContext
-from .execution import ExecutionBinding, ExecutionError, binding_digest, read_binding, write_binding
+from .execution import (ExecutionBinding, ExecutionError, Issue71ExecutionEpochIdentity,
+                        binding_digest, is_issue71_execution_epoch, read_binding, write_binding)
+from .execution_epoch import ExecutionEpochError, IssueExecutionEpoch, verify_execution_epoch
 from .git import (
     GitError, branch_exists, create_branch, current_branch, fetch_remote_branch_exact,
     head_sha40, is_ancestor, remote_branch_sha, switch_branch, worktree_clean,
@@ -120,6 +122,8 @@ def ensure_pull_request(repository_root: Path, github: GitHub, *, repository: st
                         issue_number: int, binding: ExecutionBinding,
                         branch_ref: str, base_ref: str, title: str, body: str) -> PREnsureResult:
     """Reuse one exact eligible PR or create once, then read it back before binding."""
+    if issue_number == 71 and repository.casefold() == "puchinya/ai-agent-workflow":
+        raise WorkError("Issue #71 requires epoch PR ensure; ordinary ExecutionBinding cannot create its PR")
     root = Path(repository_root).resolve()
     branch_ref, base_ref = validate_ref(branch_ref), validate_ref(base_ref)
     requested_association_mode = _validate_pr_body(body, issue_number)
@@ -276,6 +280,115 @@ def ensure_pull_request(repository_root: Path, github: GitHub, *, repository: st
     return PREnsureResult(pull, pr_binding, checkpoint_file, checkpoint.sha256, reused)
 
 
+def ensure_epoch_pull_request(repository_root: Path, github: GitHub, *, repository: str,
+                              issue_number: int, execution_epoch: IssueExecutionEpoch,
+                              branch_ref: str, base_ref: str, title: str, body: str) -> PREnsureResult:
+    """Create or resume an Issue #71 PR bound to its active V2 execution epoch."""
+    root = Path(repository_root).resolve()
+    if (not isinstance(execution_epoch, IssueExecutionEpoch)
+            or repository.casefold() != "puchinya/ai-agent-workflow" or issue_number != 71
+            or github.repo.casefold() != repository.casefold()):
+        raise WorkError("execution-epoch PR creation is restricted to puchinya/ai-agent-workflow Issue #71")
+    try:
+        current_epoch = verify_execution_epoch(github, root)
+    except (ExecutionEpochError, GitHubError, GitError, OSError) as exc:
+        raise WorkError(f"active Issue #71 execution epoch readback failed: {exc}") from exc
+    if current_epoch != execution_epoch:
+        raise WorkError("active Issue #71 execution epoch changed before PR creation")
+    branch_ref, base_ref = validate_ref(branch_ref), validate_ref(base_ref)
+    if (branch_ref != execution_epoch.branch_ref or base_ref != execution_epoch.base_ref
+            or not worktree_clean(root) or current_branch(root) != branch_ref):
+        raise WorkError("epoch PR ensure requires a clean worktree on the exact authorized branch and base")
+    if _validate_pr_body(body, issue_number) != "auto_close":
+        raise WorkError("Issue #71 implementation PR must contain the exact Closes #71 association")
+    local_head = head_sha40(root)
+    if not is_ancestor(root, execution_epoch.base_sha40, local_head):
+        raise WorkError("Issue #71 PR HEAD does not descend from the epoch base")
+    remote_head = remote_branch_sha(root, branch_ref)
+    remote_base = remote_branch_sha(root, base_ref)
+    if remote_head != local_head or remote_base != execution_epoch.base_sha40:
+        raise WorkError("Issue #71 PR branch or authorized base differs from the exact remote SHA")
+
+    history = read_pr_binding_history(root, issue_number, github=github)
+    if any(row.execution_epoch_sha256 != execution_epoch.sha256 for _path, row in history):
+        raise WorkError("Issue #71 PRBinding history is missing or mixes the active V2 epoch")
+    candidates = github.pull_requests_for_refs(base_ref=base_ref, head_ref=branch_ref)
+    if len(candidates) > 1:
+        raise WorkError("multiple exact branch/base PRs match the active Issue #71 epoch")
+    reused = bool(candidates)
+    if candidates:
+        pull = _readback_pull(github, candidates[0], repository=repository, issue_number=issue_number,
+                              base_ref=base_ref, base_sha40=remote_base, head_ref=branch_ref,
+                              head_sha40=local_head, expected_association_mode="auto_close")
+        if pull.get("title") != title or pull.get("body") != body:
+            raise WorkError("existing Issue #71 PR title/body differs from the authorized handoff")
+    else:
+        if history:
+            raise WorkError("active Issue #71 epoch already has a PRBinding but no exact PR was found")
+        try:
+            created = github.create_pull_request(title=title, body=body,
+                                                 head_ref=branch_ref, base_ref=base_ref)
+            pull = github.pull_request(created["number"])
+        except GitHubError as exc:
+            try:
+                recovered = github.pull_requests_for_refs(base_ref=base_ref, head_ref=branch_ref)
+            except GitHubError as read_error:
+                raise WorkError(f"Issue #71 PR create was ambiguous and read-only recovery failed: {read_error}") from exc
+            if len(recovered) != 1:
+                raise WorkError(f"Issue #71 PR create was ambiguous; recovery found {len(recovered)} candidates") from exc
+            reused = True
+            pull = recovered[0]
+        pull = _readback_pull(github, pull, repository=repository, issue_number=issue_number,
+                              base_ref=base_ref, base_sha40=remote_base, head_ref=branch_ref,
+                              head_sha40=local_head, expected_association_mode="auto_close")
+        if pull.get("title") != title or pull.get("body") != body:
+            raise WorkError("created Issue #71 PR title/body differs from the authorized handoff")
+
+    if (not worktree_clean(root) or current_branch(root) != branch_ref or head_sha40(root) != local_head
+            or remote_branch_sha(root, branch_ref) != local_head
+            or remote_branch_sha(root, base_ref) != execution_epoch.base_sha40):
+        raise WorkError("Issue #71 epoch, local worktree, or remote refs changed during PR readback")
+    pr_number = pull.get("number")
+    if type(pr_number) is not int or pr_number < 1:
+        raise WorkError("Issue #71 PR readback has no valid number")
+    pr_binding = PRBinding(
+        repository, issue_number, execution_epoch.adc_comment_id, execution_epoch.adc_sha256,
+        execution_epoch.base_sha40, branch_ref, pr_number, local_head,
+        execution_epoch_sha256=execution_epoch.sha256,
+    ).validate()
+    if history and history[-1][1] != pr_binding:
+        if not _same_pr_execution_identity(history[-1][1], pr_binding):
+            raise WorkError("existing Issue #71 PRBinding changes the PR or execution epoch")
+        if not is_ancestor(root, history[-1][1].pr_head_sha40, local_head):
+            raise WorkError("new Issue #71 PRBinding HEAD does not descend from its predecessor")
+        write_pr_binding(_pr_binding_version_path(root, issue_number, len(history) + 1), pr_binding)
+    elif not history:
+        write_pr_binding(_pr_binding_version_path(root, issue_number, 1), pr_binding)
+
+    previous = latest_checkpoint(root, issue_number)
+    if previous is not None and previous[1].execution_epoch_sha256 != execution_epoch.sha256:
+        raise WorkError("Issue #71 checkpoint history does not belong to the active V2 epoch")
+    if previous is not None and previous[1].completed_stage == "pr" and previous[1].current_head_sha40 == local_head:
+        checkpoint = WorkCheckpoint(
+            None, local_head, True, "pr", tuple(sorted((
+                ("execution-epoch", execution_epoch.sha256), ("pr-binding", pr_binding.sha256),
+            ))), previous[1].step, execution_epoch_sha256=execution_epoch.sha256,
+        ).validate()
+        if checkpoint != previous[1]:
+            raise WorkError("Issue #71 PR checkpoint retry conflicts with its immutable epoch record")
+        checkpoint_file = previous[0]
+    else:
+        step = 1 if previous is None else previous[1].step + 1
+        checkpoint = WorkCheckpoint(
+            None, local_head, True, "pr", tuple(sorted((
+                ("execution-epoch", execution_epoch.sha256), ("pr-binding", pr_binding.sha256),
+            ))), step, execution_epoch_sha256=execution_epoch.sha256,
+        ).validate()
+        checkpoint_file = checkpoint_path(root, issue_number, step)
+        write_checkpoint(checkpoint_file, checkpoint)
+    return PREnsureResult(pull, pr_binding, checkpoint_file, checkpoint.sha256, reused)
+
+
 def execution_binding_path(work_directory: Path, issue_number: int) -> Path:
     if type(issue_number) is not int or issue_number < 1:
         raise WorkError("Issue number must be positive")
@@ -302,7 +415,8 @@ def _pr_binding_version_path(work_directory: Path, issue_number: int, version: i
 def _same_pr_execution_identity(left: PRBinding, right: PRBinding) -> bool:
     return (left.repository == right.repository and left.issue_number == right.issue_number
             and left.base_sha40 == right.base_sha40 and left.branch_ref == right.branch_ref
-            and left.pr_number == right.pr_number)
+            and left.pr_number == right.pr_number and left.adoption_id == right.adoption_id
+            and left.execution_epoch_sha256 == right.execution_epoch_sha256)
 
 
 def _verify_pr_binding_successor(github: GitHub, issue_number: int,
@@ -514,6 +628,8 @@ def ensure_branch(repository_root: Path, base_ref: str, base_sha40: str, branch_
 def bind_work(repository_root: Path, *, repository: str, issue_number: int, adc_comment_id: int,
               adc_sha256: str, base_ref: str, branch_ref: str,
               expected_base_sha40: str | None = None) -> WorkResult:
+    if issue_number == 71 and repository.casefold() == "puchinya/ai-agent-workflow":
+        raise WorkError("Issue #71 requires its approved execution-epoch restart; generic work bind cannot synthesize V1")
     root = Path(repository_root).resolve()
     base_ref, branch_ref = validate_ref(base_ref), validate_ref(branch_ref)
     path = execution_binding_path(root, issue_number)
@@ -560,6 +676,8 @@ def bind_work(repository_root: Path, *, repository: str, issue_number: int, adc_
 
 def recover_work(repository_root: Path, *, repository: str, issue_number: int,
                  adc_comment_id: int, adc_sha256: str, expected_branch_ref: str) -> WorkResult:
+    if issue_number == 71 and repository.casefold() == "puchinya/ai-agent-workflow":
+        raise WorkError("Issue #71 requires its active execution epoch; generic work recover cannot select or reconstruct V1")
     root = Path(repository_root).resolve()
     path = execution_binding_path(root, issue_number)
     _reject_symlink_path(path, "ExecutionBinding path")

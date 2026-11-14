@@ -301,6 +301,23 @@ def watch_activation_writes(github: FakeGitHub):
 
 
 class ConsumerActivationTests(unittest.TestCase):
+    def setUp(self):
+        # The fixtures use fake GitHub clients. The locality/device-session
+        # boundary is tested directly in test_local_execution.py.
+        for name in ("require_local_activation_execution", "require_isolated_device_admin_client"):
+            patcher = patch(f"p_ases.consumer_activation.{name}")
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        original_setup = setup_consumer_activation
+        patcher = patch(
+            "test_consumer_activation.setup_consumer_activation",
+            side_effect=lambda root, github, *, policy_github=None: original_setup(
+                root, github, policy_github=policy_github or github,
+            ),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_activation_setup_rejects_feature_worktree_before_writes_and_preserves_issue63_state(self):
         with tempfile.TemporaryDirectory() as temporary:
             root, base = local_consumer_checkout(Path(temporary))

@@ -16,6 +16,8 @@ Owner: runtime/p_ases/verification_plan.py, oracle_trace.py, verification.py, an
 4. Re-evaluate final evidence after implementation changes. Empty plans and skipped checks remain non-passing.
 5. Publish only the recomputed exact-subject result and read it back.
 
+For Issue #71, verify the active V2 execution epoch and fresh current-generation Phase receipts before accepting evidence. PRBinding V4 must name that epoch digest; historical READY, verification, review, or readiness artifacts from the retired generation cannot produce PASS.
+
 ## CLI
 
 ~~~sh

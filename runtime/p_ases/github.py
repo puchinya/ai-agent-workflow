@@ -31,7 +31,6 @@ class GitHub:
     repo: str
     _api_request_count: int = field(default=0, init=False, repr=False)
     _api_elapsed_ms: float = field(default=0.0, init=False, repr=False)
-    _admin_token_override: str | None = field(default=None, init=False, repr=False)
     _admin_config_dir: str | None = field(default=None, init=False, repr=False)
 
     @property
@@ -93,13 +92,7 @@ class GitHub:
     def _child_environment(self) -> dict[str, str]:
         """Apply this client's scoped auth boundary to every gh API subprocess."""
         child_env = os.environ.copy()
-        if self._admin_token_override is not None and self._admin_config_dir is not None:
-            raise GitHubError("Admin client cannot combine token and isolated gh-config authentication")
-        if self._admin_token_override is not None:
-            for name in ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"):
-                child_env.pop(name, None)
-            child_env["GH_TOKEN"] = self._admin_token_override
-        elif self._admin_config_dir is not None:
+        if self._admin_config_dir is not None:
             for name in ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"):
                 child_env.pop(name, None)
             child_env["GH_CONFIG_DIR"] = self._admin_config_dir

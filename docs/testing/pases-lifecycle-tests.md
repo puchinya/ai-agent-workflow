@@ -430,13 +430,13 @@ Retain the existing Activation-owned base-transition regression as a separate co
 <a id="220-tst-f01-014-activation-admin-session-and-approval-separation"></a>
 ### 2.20 TST-F01-014 Activation admin session and approval separation
 
-**Setup and action:** Run each of the two explicit Admin commands with default `--auth-mode isolated-gh-device`. Fake success, failure, and interruption of the exact `gh auth login --hostname github.com --web --git-protocol https --insecure-storage` call; verify the private mode-0700 `GH_CONFIG_DIR`, runner-managed PTY challenge display without owner-local TTY, ambient token stripping, parent `gh` config preservation, and cleanup. Cover explicit nonstandard `--auth-mode pat` fallback with local interactive TTY, missing/non-interactive TTY, empty input, cancellation, and a repository-limited owner PAT. Exercise correct and incorrect owner/repository identity, admin permission, legacy protection, Ruleset inventory, and effective branch-rule responses; include 403 and incomplete readbacks. Exercise a clean plan, blocked plan, exact and missing Issue #57 plan approvals, plan drift, and separate command invocations. Interrupt apply after POST or PUT and retry with the same plan and approval. Record prompts, output, plan-file creation, API method sequence, and Issue #57 history before and after. If the runner cannot display the browser challenge, record `ADMIN_DEVICE_LOGIN_UNAVAILABLE` and verify zero Admin/Ruleset writes; do not fabricate PTY availability.
+**Setup and action:** Run each of the two explicit Admin commands with default `--auth-mode isolated-gh-device`. Fake success, failure, and interruption of the exact `gh auth login --hostname github.com --web --git-protocol https --insecure-storage` call; verify a local interactive confirmation, private mode-0700 `GH_CONFIG_DIR`, ambient token stripping, parent `gh` config preservation, owner identity readback, and cleanup. Verify PAT and all other auth modes block before login/client creation. Exercise correct and incorrect owner/repository identity, admin permission, legacy protection, Ruleset inventory, and effective branch-rule responses; include 401/403/429/5xx, malformed data, incomplete pages, and complete/incomplete 404 readbacks. Exercise a clean plan, blocked plan, exact and missing Issue #57 plan approvals, plan drift, and separate command invocations. Interrupt apply after POST or PUT and retry with the same plan and approval. Record prompts, output, plan-file creation, API method sequence, and Issue #57 history before and after. Cloud/hosted/CI/SSH/remote/noninteractive/unconfirmed contexts must stop before Admin reads or writes; no credential fallback is permitted.
 
 <a id="ora-f01-014"></a>
 <a id="2201-ora-f01-014-expected-result"></a>
 #### 2.20.1 ORA-F01-014 Expected result
 
-Only the two explicit commands accept Admin authentication. Device mode is the default and uses the human-completed isolated browser challenge with a mode-0700 private config, no inherited token variables, and no change to normal `gh` config; a runner-managed PTY may display the challenge without an owner-local TTY. Explicit PAT fallback reads the owner-created PAT through `getpass` from a trusted owner-local TTY. Unavailable device login, non-TTY PAT fallback, cancellation, identity/admin mismatch, 403, incomplete readback, blocked plan, absent exact approval, or plan drift produces no Ruleset write; a plan file is created only for a blocker-free canonical plan. A valid apply reaches at most the existing single POST or PUT path after exact Issue #57 approval. Interruption recovery performs reads only and does not issue a second write. PAT bytes do not appear in observable output, persisted files, or unrelated command behavior. Device config cleanup does not revoke the GitHub OAuth grant; same-OS-user subprocesses are not a strong sandbox. Authentication, plan approval, User Review, Final Delivery, and merge authorization remain distinct.
+Only the two explicit commands accept Admin authentication, and only through the isolated browser-device route in the owner-confirmed local interactive session. The private config has mode 0700, no inherited token variables, and does not change normal `gh` config. PAT, App, Network-secret, ordinary credentials, SDK, direct REST, and alternate writers are rejected. Unavailable local confirmation/device login, identity/admin mismatch, 401/403/429/5xx, malformed or incomplete readback, blocked plan, absent exact approval, or plan drift produces no Ruleset write; a plan file is created only for a blocker-free canonical plan. A valid apply reaches at most the existing single POST or PUT path after exact Issue #57 approval. Interruption recovery performs reads only and does not issue a second write. Device config cleanup does not revoke the GitHub OAuth grant; same-OS-user subprocesses are not a strong sandbox. Authentication, plan approval, User Review, Final Delivery, and merge authorization remain distinct.
 <a id="tst-f01-015"></a>
 <a id="221-tst-f01-015-owner-decision-relay-and-lifecycle-gates"></a>
 ### 2.21 TST-F01-015 Chat-confirmed authorization and lifecycle gates
@@ -592,7 +592,7 @@ Every valid subject reaches only its authorized result with exact identity and r
 <a id="tst-f01-042"></a>
 ### 2.34 TST-F01-042 Current-epoch reader isolation
 
-**Setup and action:** Use an active V2 journal plus old Binding/Phase fixtures. Exercise phase evidence, readiness, PR, verification, review, and delivery readers with current V2 receipts, old V1 receipts, mismatched generation digest, missing/edited attachment, stale ADC, and wrong branch/HEAD.
+**Setup and action:** Use an active V2 journal plus old Binding/Phase fixtures. Exercise phase evidence, PR ensure/history, readiness, verification, review, and delivery readers with current V2 receipts and a PRBinding V4/checkpoint V3, old V1 receipts, missing/wrong epoch digest, mixed adoption/binding fields, mismatched generation digest, missing/edited attachment, stale ADC, and wrong branch/base/HEAD. Confirm ordinary work base/branch/bind/recover cannot create or reconstruct the Issue #71 epoch.
 
 <a id="ora-f01-042"></a>
 #### 2.34.1 ORA-F01-042 Expected result
@@ -602,7 +602,7 @@ Every valid subject reaches only its authorized result with exact identity and r
 <a id="tst-f01-043"></a>
 ### 2.35 TST-F01-043 Local eligibility parity
 
-**Setup and action:** Run every live Activation and Admin CLI/direct-runtime entrypoint under local Codex, local Claude Code, and owner-controlled local VM fixtures. Also vary noninteractive, no operator confirmation, Cloud, hosted, CI, SSH/remote, and unknown-control contexts. Record API methods and writes.
+**Setup and action:** Run every live Activation and Admin CLI/direct-runtime entrypoint under identical local interactive Codex, Claude Code, and owner-controlled VM fixtures, including the typed operator confirmation. Also vary noninteractive, missing confirmation, Cloud, hosted, CI, SSH/remote, and unknown-control contexts. Do not use agent-name environment markers as proof. Record API methods and writes.
 
 <a id="ora-f01-043"></a>
 #### 2.35.1 ORA-F01-043 Expected result
@@ -612,7 +612,7 @@ Every valid subject reaches only its authorized result with exact identity and r
 <a id="tst-f01-044"></a>
 ### 2.36 TST-F01-044 Isolated device authentication and Admin reads
 
-**Setup and action:** Use fake gh children to verify a fresh mode-0700 GH_CONFIG_DIR, ambient-token removal and cleanup. Inject owner/repository mismatch, missing admin permission, 401/403/429/5xx, malformed/incomplete pages, and consistent/unavailable 404 reads. Observe fallback attempts and all writes.
+**Setup and action:** Use fake gh children to verify a fresh mode-0700 GH_CONFIG_DIR, ambient-token removal and cleanup. Confirm isolated-gh-device is the only accepted route. Inject owner/repository mismatch, missing admin permission, 401/403/429/5xx, malformed/incomplete pages, and consistent/unavailable 404 reads. Observe credential fallback attempts and all writes.
 
 <a id="ora-f01-044"></a>
 #### 2.36.1 ORA-F01-044 Expected result

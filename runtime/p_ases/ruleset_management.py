@@ -13,6 +13,9 @@ from typing import Any
 from .branch_policy import EffectiveBranchPolicy, assess_branch_policy
 from .git import GitError, discover_repository, head_sha40, worktree_clean
 from .github import GitHub, GitHubError
+from .local_execution import (
+    LocalExecutionError, require_isolated_device_admin_client, require_local_activation_execution,
+)
 from .profile import ProfileError, load_profile
 
 
@@ -380,6 +383,11 @@ def _validate_activation_binding(value: Any, activation_issue_number: int,
 def build_ruleset_plan(root: Path, github: GitHub, *, profile_ref: str | None = None,
                        activation_binding: dict[str, Any] | None = None) -> dict[str, Any]:
     """Read a canonical current-state plan. This function never mutates GitHub."""
+    try:
+        require_local_activation_execution()
+        require_isolated_device_admin_client(github)
+    except LocalExecutionError as exc:
+        raise RulesetManagementError(str(exc)) from exc
     root = Path(root).resolve()
     blockers: list[str] = []
     if not worktree_clean(root):
@@ -435,6 +443,7 @@ def build_ruleset_plan(root: Path, github: GitHub, *, profile_ref: str | None = 
     repository_id = _positive(metadata.get("id"), "repository ID")
     owner = metadata.get("owner") if isinstance(metadata.get("owner"), dict) else {}
     owner_id = _positive(owner.get("id"), "repository owner ID")
+    _require_current_admin(github, owner_id)
     default_branch = metadata.get("default_branch")
     if not isinstance(default_branch, str) or not default_branch:
         raise RulesetManagementError("repository default branch is unavailable")
@@ -1048,6 +1057,11 @@ def _resume_ruleset_apply(root: Path, github: GitHub, plan: dict[str, Any],
 def apply_ruleset_plan(root: Path, github: GitHub, plan_path: Path,
                        approval_comment_id: int, *, expected_plan_sha256: str | None = None) -> dict[str, Any]:
     """Apply one approved plan once, read it back, and append ownership evidence."""
+    try:
+        require_local_activation_execution()
+        require_isolated_device_admin_client(github)
+    except LocalExecutionError as exc:
+        raise RulesetManagementError(str(exc)) from exc
     plan = read_plan(plan_path)
     if expected_plan_sha256 is not None and plan["plan_sha256"] != expected_plan_sha256:
         raise RulesetManagementError("Ruleset plan changed after exact owner decision verification")
@@ -1212,10 +1226,16 @@ def read_verified_managed_policy(github: GitHub, branch: str,
                                  activation_issue_number: int
                                  ) -> dict[str, Any]:
     """Verify the unique owned Ruleset against live branch policy for Activation V2."""
+    try:
+        require_local_activation_execution()
+        require_isolated_device_admin_client(github)
+    except LocalExecutionError as exc:
+        raise RulesetManagementError(str(exc)) from exc
     metadata = github.repository_metadata()
     repository_id = _positive(metadata.get("id"), "repository ID")
     owner = metadata.get("owner") if isinstance(metadata.get("owner"), dict) else {}
     owner_id = _positive(owner.get("id"), "repository owner ID")
+    _require_current_admin(github, owner_id)
     default_branch = metadata.get("default_branch")
     if branch != default_branch:
         raise RulesetManagementError("Activation policy must target the repository default branch")
@@ -1258,6 +1278,11 @@ def verify_applied_policy_record(github: GitHub, activation_issue_number: int,
                                  activation_record_id: int, applied_record_id: int,
                                  ruleset_id: int, policy_digest: str) -> dict[str, Any]:
     """Bind a historical V2 Activation to an earlier append-only Ruleset apply record."""
+    try:
+        require_local_activation_execution()
+        require_isolated_device_admin_client(github)
+    except LocalExecutionError as exc:
+        raise RulesetManagementError(str(exc)) from exc
     activation_issue_number = _positive(activation_issue_number, "Activation Issue number")
     activation_record_id = _positive(activation_record_id, "Activation record Comment ID")
     applied_record_id = _positive(applied_record_id, "Ruleset applied-policy Comment ID")
@@ -1269,6 +1294,7 @@ def verify_applied_policy_record(github: GitHub, activation_issue_number: int,
     repository_id = _positive(metadata.get("id"), "repository ID")
     owner = metadata.get("owner") if isinstance(metadata.get("owner"), dict) else {}
     owner_id = _positive(owner.get("id"), "repository owner ID")
+    _require_current_admin(github, owner_id)
     history = _read_ownership_history(
         github, repository_id, owner_id, activation_issue_number,
         through_comment_id=applied_record_id,

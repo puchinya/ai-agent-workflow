@@ -589,6 +589,7 @@ class PasesCLITests(unittest.TestCase):
         with patch("p_ases.cli._runtime_root", return_value=ROOT), \
                 patch("p_ases.cli.discover_repository", return_value="puchinya/ai-agent-workflow"), \
                 patch("p_ases.cli.GitHub", return_value=fake_github), \
+                patch("p_ases.cli.temporary_admin_client", return_value=contextlib.nullcontext(fake_github)), \
                 patch("p_ases.cli.setup_consumer_activation", return_value=pending), \
                 patch("p_ases.cli._json") as emit:
             status = main(["delivery", "consumer-activation-setup", "--repo",
