@@ -59,6 +59,8 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
     - [2.23.1 ORA-RT-023 Expected result](#2231-ora-rt-023-expected-result)
   - [2.24 TST-RT-024 Strict Phase restart authorization parsing](#224-tst-rt-024-strict-phase-restart-authorization-parsing)
     - [2.24.1 ORA-RT-024 Expected result](#2241-ora-rt-024-expected-result)
+  - [2.25 TST-RT-025 Issue #71 V2 epoch and local Admin guard](#225-tst-rt-025-issue-71-v2-epoch-and-local-admin-guard)
+    - [2.25.1 ORA-RT-025 Expected result](#2251-ora-rt-025-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -111,6 +113,8 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
 - [ORA-RT-023](#ora-rt-023) — 2.23.1 ORA-RT-023 Expected result
 - [TST-RT-024](#tst-rt-024) — 2.24 TST-RT-024 Strict Phase restart authorization parsing
 - [ORA-RT-024](#ora-rt-024) — 2.24.1 ORA-RT-024 Expected result
+- [TST-RT-025](#tst-rt-025) — 2.25 TST-RT-025 Issue #71 V2 epoch and local Admin guard
+- [ORA-RT-025](#ora-rt-025) — 2.25.1 ORA-RT-025 Expected result
 <!-- heading-map:end -->
 
 
@@ -405,3 +409,13 @@ For a valid joined-child result, runtime ingestion accepts missing optional host
 Only one unique canonical marker outside fenced code in the current approved ADC yields a typed authorization. All malformed, ambiguous, stale, out-of-scope, or prose-only inputs fail closed before any GitHub write.
 
 The existing phase artifact-impact parser also accepts `Test Oracles and traceability:` as the test-oracle role label. It maps to the same exact `docs/testing/` path validation as `Testing:` and does not alter document-role semantics. A restart Applied record activates `PASES_PHASE_DECISION_V2`; history collection recognizes reserved V1/V2 decision candidates and malformed restart marker candidates through direct/list/direct readback, including leading whitespace and separated comment hyphens, and rejects malformed, edited, or unauthored records. Current-generation lookup performs the verified read even when its initial candidate set is empty, compares the initially enumerated candidate IDs/bodies with its verified readback, and blocks if evidence appears or disappears between those reads. With no restart record, malformed decision candidates and canonical orphan V2 fail closed while valid V1-only history remains compatible. Before a later phase label can produce NOOP, every historical V2 receipt is rechecked against ADC-declared artifacts, the recorded commit's regular blobs and SHA-256 values, ADC skip reasons, and the READY traceability validator. Authorized skipped spec/design targets are read from that receipt commit; executable sources are fetched only for current ADC requirement rows. READY lookup binds V2 to the Applied ID and digest. The preceding V1 serializer remains byte-for-byte unchanged.
+
+<a id="tst-rt-025"></a>
+### 2.25 TST-RT-025 Issue #71 V2 epoch and local Admin guard
+
+**Setup and action:** Use fake GitHub/Git/Admin clients and a complete Issue #71 V2 epoch. Exercise all scoped CLI and direct-runtime live Activation/Ruleset entrypoints under local interactive Codex, local interactive Claude Code and an owner-controlled local VM, then under Cloud, hosted, CI, remote, noninteractive and unknown contexts. Vary operator confirmation, authenticated actor, repository Admin permission, current ADC, epoch attachment, branch HEAD, and complete policy reads. For Admin children inspect argv and environment for a fresh private GH_CONFIG_DIR and removal of all four ambient token names; inject 401, 403, 404 with incomplete and complete policy sources, 429, 5xx, malformed JSON and incomplete pagination. Attempt ordinary credential, PAT, App, network-secret, SDK, direct REST, second-writer, Ruleset-plan, Setup PR merge, Activation, and Issue #63 closure fallbacks. Record every GitHub method, Admin child, approval path and write.
+
+<a id="ora-rt-025"></a>
+#### 2.25.1 ORA-RT-025 Expected result
+
+Only the three owner-controlled local interactive contexts with explicit confirmation, the authenticated owner and a fully verified current Admin policy read proceed through the same guard. Cloud, hosted, CI, remote, noninteractive and unknown contexts stop before a write. Admin children use the isolated device config and receive none of the four ambient token variables; no fallback or alternate API writer is attempted. Incomplete reads and 401/403/429/5xx are unavailable. A legacy-protection 404 is NOT_CONFIGURED only with complete consistent repository, actor, branch, effective-rule and Ruleset readback. A current exact plan and separate RULESET_PLAN_APPLY decision are required before the sole Ruleset writer; Setup PR merge requires separate exact-HEAD PR_MERGE authority. Missing chat provenance, stale epoch, or any blocker yields zero Ruleset, PR, Activation, and Issue writes.
