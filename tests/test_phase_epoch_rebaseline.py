@@ -201,10 +201,12 @@ class EpochIdentityTests(unittest.TestCase):
             ]},
         )
         current = SimpleNamespace(
-            pointer=SimpleNamespace(state="approved", comment_id=6881591677),
+            pointer=SimpleNamespace(state="approved", comment_id=6881591677,
+                                    sha256=module.CURRENT_ADC_SHA256),
             contract=SimpleNamespace(sha256=module.CURRENT_ADC_SHA256, repository=module.REPOSITORY),
         )
         with patch.object(module, "verify_adc", return_value=current), \
+             patch.object(module, "verify_adc_generation", return_value=current), \
              patch.object(module, "_parse_marker", return_value=(module.AUTHORIZATION, "a" * 64)), \
              patch.object(module, "_check_issue", side_effect=lambda issue: issue):
             with tempfile.TemporaryDirectory() as temporary, self.assertRaisesRegex(

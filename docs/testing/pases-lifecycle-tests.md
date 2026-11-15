@@ -119,6 +119,8 @@
     - [2.54.1 ORA-F01-074 Expected result](#2541-ora-f01-074-expected-result)
   - [2.55 TST-F01-075 Separate Activation operation gates](#255-tst-f01-075-separate-activation-operation-gates)
     - [2.55.1 ORA-F01-075 Expected result](#2551-ora-f01-075-expected-result)
+  - [2.56 TST-F01-090 Successor ADC bootstrap and Phase rework](#256-tst-f01-090-successor-adc-bootstrap-and-phase-rework)
+    - [2.56.1 ORA-F01-090 Expected result](#2561-ora-f01-090-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -233,6 +235,8 @@
 - [ORA-F01-074](#ora-f01-074) — 2.54.1 ORA-F01-074 Expected result
 - [TST-F01-075](#tst-f01-075) — 2.55 TST-F01-075 Separate Activation operation gates
 - [ORA-F01-075](#ora-f01-075) — 2.55.1 ORA-F01-075 Expected result
+- [TST-F01-090](#tst-f01-090) — 2.56 TST-F01-090 Successor ADC bootstrap and Phase rework
+- [ORA-F01-090](#ora-f01-090) — 2.56.1 ORA-F01-090 Expected result
 <!-- heading-map:end -->
 
 
@@ -844,3 +848,13 @@ PR #74 remains unchanged until one open, non-draft exact-head replacement is ver
 #### 2.55.1 ORA-F01-075 Expected result
 
 No activation-dependent write occurs without complete owner-controlled local policy readback and its own exact authorization. A 403/incomplete read blocks; no Ruleset, Setup PR, Activation, Issue #63, or merge write is inferred or performed.
+
+<a id="tst-f01-090"></a>
+### 2.56 TST-F01-090 Successor ADC bootstrap and Phase rework
+
+**Setup and action:** Use the exact Issue #71 successor ADC, immutable epoch-origin attachment, PR #75 baseline, and typed readiness/evidence fixtures. Verify current ADC forward-chain validation while local epoch bytes remain rooted at #6881591677. Exercise one-to-three commit ancestry, merge and outside-allowlist rejection, dirty worktree, local/remote/PR HEAD mismatch, stale Readiness, wrong ADC or epoch, and malformed rework history. For the permitted subject, record Intent POST, the one complete-label PUT, Applied POST, Issue/body/label readback, and direct/list/direct history. Inject lost responses at each write boundary, an incomplete Intent, an existing User Review session, and phase movement after Applied. Verify the active generation after later descendant commits and the origin epoch digest/attachment are unchanged.
+
+<a id="ora-f01-090"></a>
+#### 2.56.1 ORA-F01-090 Expected result
+
+Only one-to-three clean allowlisted descendant commits with matching local, remote, and open non-draft PR #75 HEAD can reach fresh PASS Readiness and the one authorized phase rework. The exact V2 marker and current approved ADC chain are required. One Intent, at most one label replacement, and one matching Applied are recorded; ambiguous writes are never retried. Incomplete rework blocks Phase operations. Applied remains the active generation on valid descendant HEADs, while the epoch origin bytes and attachment remain unchanged. No Admin, Activation, Issue #63, PR merge, or Issue-close write occurs.

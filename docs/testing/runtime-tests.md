@@ -63,6 +63,8 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
     - [2.25.1 ORA-RT-025 Expected result](#2251-ora-rt-025-expected-result)
   - [2.26 TST-RT-026 Issue #71 epoch-3 CLI and generation reader](#226-tst-rt-026-issue-71-epoch-3-cli-and-generation-reader)
     - [2.26.1 ORA-RT-026 Expected result](#2261-ora-rt-026-expected-result)
+  - [2.27 TST-RT-027 Issue #71 successor ADC Phase rework CLI](#227-tst-rt-027-issue-71-successor-adc-phase-rework-cli)
+    - [2.27.1 ORA-RT-027 Expected result](#2271-ora-rt-027-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -119,6 +121,8 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
 - [ORA-RT-025](#ora-rt-025) — 2.25.1 ORA-RT-025 Expected result
 - [TST-RT-026](#tst-rt-026) — 2.26 TST-RT-026 Issue #71 epoch-3 CLI and generation reader
 - [ORA-RT-026](#ora-rt-026) — 2.26.1 ORA-RT-026 Expected result
+- [TST-RT-027](#tst-rt-027) — 2.27 TST-RT-027 Issue #71 successor ADC Phase rework CLI
+- [ORA-RT-027](#ora-rt-027) — 2.27.1 ORA-RT-027 Expected result
 <!-- heading-map:end -->
 
 
@@ -433,3 +437,13 @@ Only the three owner-controlled local interactive contexts with explicit confirm
 #### 2.26.1 ORA-RT-026 Expected result
 
 Only Issue #71 with the exact approved ADC and validated epoch-3 journal/attachment reaches the dedicated route. Stale, malformed, duplicated, wrong-branch, or wrong-Issue evidence blocks closed; ordinary V1 and Issue #63 behavior remains unchanged.
+
+<a id="tst-rt-027"></a>
+### 2.27 TST-RT-027 Issue #71 successor ADC Phase rework CLI
+
+**Setup and action:** Parse `issue phase-rework`, require the exact Issue #71 worktree root, and exercise dispatch with complete, missing, and partial current evidence inputs. Stub readiness recomputation to return fresh PASS, stale PASS, and blocked results. Verify the route recomputes readiness twice before the sole label write, binds actual local/remote/PR HEAD and the current ADC, supports read-only recovery without evidence inputs, and never invokes Admin, Activation, Issue #63, or PR merge routes.
+
+<a id="ora-rt-027"></a>
+#### 2.27.1 ORA-RT-027 Expected result
+
+The CLI accepts only the Issue #71 dedicated route and complete evidence input set for first application. Stale/blocked readiness and partial input sets block before writes; recovery never retries a potentially sent label request. All outputs identify exact current evidence and report no merge or Admin authority.

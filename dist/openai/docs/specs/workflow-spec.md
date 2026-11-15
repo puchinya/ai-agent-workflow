@@ -72,6 +72,14 @@
   - [9.45 REQ-F01-073 Active identity in Readiness evidence](#945-req-f01-073-active-identity-in-readiness-evidence)
   - [9.46 REQ-F01-074 Supersede the prior implementation PR](#946-req-f01-074-supersede-the-prior-implementation-pr)
   - [9.47 REQ-F01-075 Inherited Activation and delivery gates](#947-req-f01-075-inherited-activation-and-delivery-gates)
+  - [9.48 REQ-F01-090 Preserve the current execution origin](#948-req-f01-090-preserve-the-current-execution-origin)
+  - [9.49 REQ-F01-091 Exact verification-rework authority](#949-req-f01-091-exact-verification-rework-authority)
+  - [9.50 REQ-F01-092 Bounded bootstrap commits](#950-req-f01-092-bounded-bootstrap-commits)
+  - [9.51 REQ-F01-093 Exact PR #75 subject](#951-req-f01-093-exact-pr-75-subject)
+  - [9.52 REQ-F01-094 Fresh exact-head delivery evidence](#952-req-f01-094-fresh-exact-head-delivery-evidence)
+  - [9.53 REQ-F01-095 One-shot verification-to-requirements rework](#953-req-f01-095-one-shot-verification-to-requirements-rework)
+  - [9.54 REQ-F01-096 Fresh Phase sequence before implementation](#954-req-f01-096-fresh-phase-sequence-before-implementation)
+  - [9.55 REQ-F01-097 Separate delivery and Admin gates](#955-req-f01-097-separate-delivery-and-admin-gates)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -133,6 +141,14 @@
 - [REQ-F01-073](#req-f01-073) — 9.45 REQ-F01-073 Active identity in Readiness evidence
 - [REQ-F01-074](#req-f01-074) — 9.46 REQ-F01-074 Supersede the prior implementation PR
 - [REQ-F01-075](#req-f01-075) — 9.47 REQ-F01-075 Inherited Activation and delivery gates
+- [REQ-F01-090](#req-f01-090) — 9.48 REQ-F01-090 Preserve the current execution origin
+- [REQ-F01-091](#req-f01-091) — 9.49 REQ-F01-091 Exact verification-rework authority
+- [REQ-F01-092](#req-f01-092) — 9.50 REQ-F01-092 Bounded bootstrap commits
+- [REQ-F01-093](#req-f01-093) — 9.51 REQ-F01-093 Exact PR #75 subject
+- [REQ-F01-094](#req-f01-094) — 9.52 REQ-F01-094 Fresh exact-head delivery evidence
+- [REQ-F01-095](#req-f01-095) — 9.53 REQ-F01-095 One-shot verification-to-requirements rework
+- [REQ-F01-096](#req-f01-096) — 9.54 REQ-F01-096 Fresh Phase sequence before implementation
+- [REQ-F01-097](#req-f01-097) — 9.55 REQ-F01-097 Separate delivery and Admin gates
 <!-- heading-map:end -->
 
 
@@ -649,3 +665,43 @@ Keep PR #74 open and unchanged until one replacement, non-draft Issue #71 PR fro
 ### 9.47 REQ-F01-075 Inherited Activation and delivery gates
 
 All inherited Issue #71 local Codex/Claude Code Admin authentication, complete current policy readback, separate exact Ruleset, Setup PR merge, and Activation approvals remain in force. Issue #63 protections and all inherited tests, documentation, review, CI, and delivery gates remain unchanged. A 403 or incomplete policy read is unavailable evidence, never proof that protection is absent. No Ruleset write, Setup PR merge, Activation, Issue #63 closure, PR merge, release, tag push, or parent activation occurs without its separate exact authorization.
+
+<a id="req-f01-090"></a>
+### 9.48 REQ-F01-090 Preserve the current execution origin
+
+Keep the approved ADC chain, Issue #71 body, epoch-3 origin identity and attachment, historical Binding, branch/worktree, PR #74, and prior evidence unchanged. The epoch remains rooted at ADC #6881591677 and must be verified through the complete approved successor chain. Keep Issue #71 open.
+
+<a id="req-f01-091"></a>
+### 9.49 REQ-F01-091 Exact verification-rework authority
+
+Only the canonical `PASES_ISSUE_VERIFICATION_REWORK_AUTHORIZATION_V2` marker in the exact approved successor ADC may authorize this transition. It binds predecessor ADC #6886739124, immutable epoch origin and Phase generation, pre-bootstrap branch/PR baseline, full Issue state, and the bootstrap path allowlist. The predecessor V1 marker remains immutable history and cannot authorize rework.
+
+<a id="req-f01-092"></a>
+### 9.50 REQ-F01-092 Bounded bootstrap commits
+
+Permit one to three descendant commits from pre-bootstrap HEAD `b781ddf1bd6eb5067e87f269da4b1306341e682d`; every changed path must be in the exact successor ADC allowlist. The complete local worktree must be clean after commits. Bootstrap must not change User Review identity, profile review mode, Activation, PR #74, or Issue #63 behavior.
+
+<a id="req-f01-093"></a>
+### 9.51 REQ-F01-093 Exact PR #75 subject
+
+Push only the authorized bootstrap commits to existing PR #75. Before evidence collection and rework, require the PR open and non-draft, based on `main@07481c4b451a81750a6c2e1a6a18bdfd4e3459c2`, with its HEAD equal to the exact local bootstrap HEAD. Re-read local, remote, and GitHub identities immediately before the Intent and label update.
+
+<a id="req-f01-094"></a>
+### 9.52 REQ-F01-094 Fresh exact-head delivery evidence
+
+After the bootstrap push, produce fresh Verification, Acceptance, Self-Audit, Independent Review, Required CI, and Review Readiness at the exact pushed HEAD under the current approved ADC. Bind the rework Intent to the actual ADC pointer, bootstrap/PR HEAD, fresh Readiness digest, epoch origin, active Phase generation, Issue body/labels, owner, and repository identities. The earlier Readiness digest is historical only. Any stale gate or identity mismatch blocks before writes.
+
+<a id="req-f01-095"></a>
+### 9.53 REQ-F01-095 One-shot verification-to-requirements rework
+
+Use one append-only Intent, at most one full-label replacement from the exact verification state to requirements, and one matching Applied record. Verify direct/list/direct comment history and full Issue state. Never retry an ambiguous write. Applied becomes the active Phase generation while epoch 3 and its attachment remain unchanged.
+
+<a id="req-f01-096"></a>
+### 9.54 REQ-F01-096 Fresh Phase sequence before implementation
+
+At the same bootstrap HEAD, publish fresh requirements → specification → design → READY receipts under the new active Phase generation. Only after READY passes may Issue #71 advance normally to execution and receive the Issue #71-only `solo_owner` User Review identity correction. Preserve Issue #63 behavior. Run final exact-head evidence, CI, Readiness, and User Review required by the inherited contract.
+
+<a id="req-f01-097"></a>
+### 9.55 REQ-F01-097 Separate delivery and Admin gates
+
+Keep all other inherited delivery gates unchanged. PR merge requires separate owner authorization for exact current PR #75 HEAD. This ADC does not authorize Admin policy changes, Ruleset or Setup PR writes, Activation, release, tag, Issue #63, or Issue-close writes.

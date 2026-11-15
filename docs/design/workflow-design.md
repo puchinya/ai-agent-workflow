@@ -42,6 +42,7 @@
   - [5.27 DES-F01-053 Canonical artifact generation](#527-des-f01-053-canonical-artifact-generation)
   - [5.28 DES-F01-054 Failure-oriented verification](#528-des-f01-054-failure-oriented-verification)
   - [5.29 DES-F01-067 Issue #71 epoch-3 Phase generation](#529-des-f01-067-issue-71-epoch-3-phase-generation)
+  - [5.30 DES-F01-090 Successor ADC bootstrap and active Phase bridge](#530-des-f01-090-successor-adc-bootstrap-and-active-phase-bridge)
 - [6 DES-WF-003 Workspace execution flow](#6-des-wf-003-workspace-execution-flow)
 - [7 DES-WF-004 Failure handling](#7-des-wf-004-failure-handling)
 - [8 DES-WF-005 Authorization boundary and PR handoff](#8-des-wf-005-authorization-boundary-and-pr-handoff)
@@ -83,6 +84,7 @@
 - [DES-F01-053](#des-f01-053) — 5.27 DES-F01-053 Canonical artifact generation
 - [DES-F01-054](#des-f01-054) — 5.28 DES-F01-054 Failure-oriented verification
 - [DES-F01-067](#des-f01-067) — 5.29 DES-F01-067 Issue #71 epoch-3 Phase generation
+- [DES-F01-090](#des-f01-090) — 5.30 DES-F01-090 Successor ADC bootstrap and active Phase bridge
 - [DES-WF-003](#des-wf-003) — 6 DES-WF-003 Workspace execution flow
 - [DES-WF-004](#des-wf-004) — 7 DES-WF-004 Failure handling
 - [DES-WF-005](#des-wf-005) — 8 DES-WF-005 Authorization boundary and PR handoff
@@ -358,6 +360,11 @@ Test authorization parsing, journal integrity and each write boundary with injec
 A repository- and Issue-scoped bootstrap validates the typed authorization against the current ADC and immutable predecessor evidence, then uses one forward-only state machine: direct/list/direct preflight; one Intent; a second complete preflight; at most one complete-label replacement; label readback; one matching Applied record; and a canonical local epoch identity plus workspace attachment. Durable Issue comments remain the source of journal truth, while the local files attach that verified identity to this exact branch/worktree.
 
 The epoch-3 reader is the only active-generation selector for Issue #71. It checks the current approved ADC, exact repository/Issue identity and body, unique kind:single and phase labels, branch/base ancestry, canonical local files and attachment paths, and the immutable Intent/Applied chain. Phase receipt generation and restart lookup use the Applied comment ID and exact body digest. Legacy V1 Binding, epoch-2 records, and old READY receipts remain readable history but cannot satisfy the new generation. Ordinary Issues and Issue #63 continue through their existing independent readers.
+
+<a id="des-f01-090"></a>
+### 5.30 DES-F01-090 Successor ADC bootstrap and active Phase bridge
+
+`phase_epoch_rebaseline.py` reads the immutable epoch-3 files against origin ADC #6881591677, then verifies the full approved ADC successor chain before returning an active view. `Issue71ActiveExecutionEpoch` keeps the origin epoch digest and attachment unchanged while exposing the latest approved ADC pointer and active Phase Applied identity to existing work, PR, evidence, and readiness readers. `phase_rework.py` validates the exact V2 marker, bootstrap ancestry/path allowlist, local/remote/PR #75 equality, and fresh Readiness. It appends one Intent, performs at most one complete-label replacement, and appends one matching Applied record. An incomplete Intent blocks Phase operations; a completed Applied remains active on descendant commits of the exact branch. Existing Issues and epoch-3 bytes retain their current reader paths.
 
 ## 6 DES-WF-003 Workspace execution flow
 

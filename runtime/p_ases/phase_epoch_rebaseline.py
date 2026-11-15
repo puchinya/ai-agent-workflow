@@ -15,7 +15,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from .adc import ADCError, VerifiedADC, verify_adc, verify_adc_generation
+from .adc import (
+    ADCError, VerifiedADC, verify_adc, verify_adc_forward_generations, verify_adc_generation,
+)
 from .execution import ExecutionError, SHA40, SHA256
 from .github import GitHub, GitHubError
 from .git import (
@@ -31,6 +33,8 @@ ISSUE_NUMBER = 71
 ISSUE_ID = 6135294757
 OWNER_ID = 3744776
 CURRENT_ADC_SHA256 = "3c6b3ac28270357b57047dc5da0a2c1fbdbada269d55225ea33a656cd3076e17"
+EPOCH_ORIGIN_ADC_COMMENT_ID = 6881591677
+EPOCH_ORIGIN_ADC_SHA256 = CURRENT_ADC_SHA256
 PREDECESSOR_ADC_COMMENT_ID = 6881235235
 PREDECESSOR_ADC_SHA256 = "3b86972309acf28df77cee3634dc102545fd79e3aa252034606c0c0250675e7c"
 ISSUE_BODY_SHA256 = "5f910c8de4cbe3ec391edf18b69fabe0f4c42880b59357083647a8b06e7a6a36"
@@ -199,6 +203,111 @@ class Issue71ExecutionEpoch:
             raise PhaseEpochRebaselineError("epoch-3 epoch_id is invalid")
         if not isinstance(self.base_sha40, str) or SHA40.fullmatch(self.base_sha40) is None:
             raise PhaseEpochRebaselineError("epoch-3 base SHA is invalid")
+        return self
+
+
+@dataclass(frozen=True)
+class Issue71ActiveExecutionEpoch:
+    """Active view joining an immutable epoch origin to current ADC/Phase state.
+
+    The local epoch and attachment remain bound to ``origin``. The public
+    execution identity exposes the current approved ADC and current Phase
+    generation so existing work/evidence readers do not confuse those two
+    independently advancing identities.
+    """
+
+    origin: Issue71ExecutionEpoch
+    adc_comment_id: int
+    adc_sha256: str
+    applied_comment_id: int
+    applied_body_sha256: str
+
+    @property
+    def schema(self) -> str:
+        return self.origin.schema
+
+    @property
+    def repository(self) -> str:
+        return self.origin.repository
+
+    @property
+    def issue_number(self) -> int:
+        return self.origin.issue_number
+
+    @property
+    def issue_id(self) -> int:
+        return self.origin.issue_id
+
+    @property
+    def base_ref(self) -> str:
+        return self.origin.base_ref
+
+    @property
+    def base_sha40(self) -> str:
+        return self.origin.base_sha40
+
+    @property
+    def branch_ref(self) -> str:
+        return self.origin.branch_ref
+
+    @property
+    def epoch_id(self) -> str:
+        return self.origin.epoch_id
+
+    @property
+    def intent_comment_id(self) -> int:
+        return self.origin.intent_comment_id
+
+    @property
+    def intent_body_sha256(self) -> str:
+        return self.origin.intent_body_sha256
+
+    @property
+    def predecessor_epoch_id(self) -> str:
+        return self.origin.predecessor_epoch_id
+
+    @property
+    def predecessor_epoch_sha256(self) -> str:
+        return self.origin.predecessor_epoch_sha256
+
+    @property
+    def historical_binding_provenance(self) -> str:
+        return self.origin.historical_binding_provenance
+
+    @property
+    def historical_binding_sha256(self) -> str:
+        return self.origin.historical_binding_sha256
+
+    @property
+    def sha256(self) -> str:
+        return self.origin.sha256
+
+    @property
+    def epoch_origin_adc_comment_id(self) -> int:
+        return self.origin.adc_comment_id
+
+    @property
+    def epoch_origin_adc_sha256(self) -> str:
+        return self.origin.adc_sha256
+
+    @property
+    def epoch_origin_applied_comment_id(self) -> int:
+        return self.origin.applied_comment_id
+
+    @property
+    def epoch_origin_applied_body_sha256(self) -> str:
+        return self.origin.applied_body_sha256
+
+    def validate(self) -> "Issue71ActiveExecutionEpoch":
+        self.origin.validate()
+        for name, value in (("current ADC comment ID", self.adc_comment_id),
+                            ("active Phase generation comment ID", self.applied_comment_id)):
+            if type(value) is not int or value < 1:
+                raise PhaseEpochRebaselineError(f"{name} is invalid")
+        for name, value in (("current ADC SHA-256", self.adc_sha256),
+                            ("active Phase generation SHA-256", self.applied_body_sha256)):
+            if not isinstance(value, str) or SHA256_RE.fullmatch(value) is None:
+                raise PhaseEpochRebaselineError(f"{name} is invalid")
         return self
 
 
@@ -976,16 +1085,40 @@ def apply_phase_epoch_rebaseline(github: GitHub, root: Path, issue_number: int) 
         raise PhaseEpochRebaselineError(str(exc)) from exc
 
 
-def read_active_epoch(github: GitHub, root: Path, verified_adc: VerifiedADC | None = None
-                      ) -> Issue71ExecutionEpoch:
-    """Read the current epoch-3 journal and verified workspace attachment."""
+def read_epoch_origin(github: GitHub, root: Path, verified_adc: VerifiedADC | None = None
+                      ) -> tuple[Issue71ExecutionEpoch, VerifiedADC, VerifiedADC, dict[str, Any]]:
+    """Read the immutable epoch origin through the current approved ADC chain."""
     root = Path(root).resolve()
     try:
-        verified = verify_adc(github, ISSUE_NUMBER) if verified_adc is None else verified_adc
-        if (verified.pointer.state != "approved" or verified.contract.sha256 != CURRENT_ADC_SHA256
-                or verified.contract.repository != REPOSITORY):
-            raise PhaseEpochRebaselineError("current ADC does not authorize the epoch-3 identity")
-        marker, _auth_sha = _parse_marker(verified)
+        live_current = verify_adc(github, ISSUE_NUMBER)
+        if verified_adc is not None and verified_adc.pointer != live_current.pointer:
+            raise PhaseEpochRebaselineError("current ADC pointer changed before the epoch-origin read")
+        verified = live_current
+        if (verified.pointer.state != "approved"
+                or verified.contract.repository.casefold() != REPOSITORY.casefold()):
+            raise PhaseEpochRebaselineError("current ADC pointer is not approved for the epoch-3 repository")
+        origin = verify_adc_generation(
+            github, ISSUE_NUMBER, EPOCH_ORIGIN_ADC_COMMENT_ID, EPOCH_ORIGIN_ADC_SHA256,
+            state="approved",
+        )
+        if (origin.pointer.comment_id != EPOCH_ORIGIN_ADC_COMMENT_ID
+                or origin.pointer.sha256 != EPOCH_ORIGIN_ADC_SHA256
+                or origin.pointer.state != "approved"
+                or origin.contract.repository.casefold() != REPOSITORY.casefold()):
+            raise PhaseEpochRebaselineError("epoch-origin ADC differs from its immutable approved tuple")
+        if verified.pointer != origin.pointer:
+            chain = verify_adc_forward_generations(
+                github, ISSUE_NUMBER,
+                prior_comment_id=origin.pointer.comment_id,
+                prior_sha256=origin.contract.sha256,
+                current_comment_id=verified.pointer.comment_id,
+                current_sha256=verified.contract.sha256,
+            )
+            if (not chain or chain[0].pointer != origin.pointer
+                    or chain[-1].pointer != verified.pointer
+                    or any(item.pointer.state != "approved" for item in chain)):
+                raise PhaseEpochRebaselineError("current ADC does not have a complete approved path from epoch origin")
+        _marker, auth_sha = _parse_marker(origin)
         metadata = github.repository_metadata()
         if (not isinstance(metadata, dict)
                 or metadata.get("full_name", "").casefold() != REPOSITORY.casefold()
@@ -1000,8 +1133,8 @@ def read_active_epoch(github: GitHub, root: Path, verified_adc: VerifiedADC | No
         head = head_sha40(root)
         if branch != BRANCH_REF or not is_ancestor(root, BASE_SHA40, head):
             raise PhaseEpochRebaselineError("epoch-3 worktree is not on the authorized branch/base")
-        epoch = _load_local_epoch(root, expected_adc_comment_id=verified.pointer.comment_id,
-                                  expected_adc_sha256=verified.contract.sha256)
+        epoch = _load_local_epoch(root, expected_adc_comment_id=origin.pointer.comment_id,
+                                  expected_adc_sha256=origin.contract.sha256)
         retired_binding = root / ".p_ases" / "state" / str(ISSUE_NUMBER) / "execution-binding.json"
         if retired_binding.exists() or retired_binding.is_symlink():
             raise PhaseEpochRebaselineError("epoch-3 identity must not coexist with a reconstructed V1 Binding")
@@ -1010,16 +1143,39 @@ def read_active_epoch(github: GitHub, root: Path, verified_adc: VerifiedADC | No
         applied = [r for r in records if r.schema == APPLIED_SCHEMA]
         if len(intents) != 1 or len(applied) != 1:
             raise PhaseEpochRebaselineError("current epoch-3 Intent/Applied history is incomplete or duplicated")
-        preflight = _Preflight(issue, verified, _parse_marker(verified)[1], OWNER_ID)
+        preflight = _Preflight(issue, origin, auth_sha, OWNER_ID)
         _validate_intent(intents[0], preflight)
         _validate_applied(applied[0], intents[0], preflight)
         if (epoch.epoch_id != intents[0].payload["epoch_id"]
                 or epoch.intent_comment_id != intents[0].comment_id
                 or epoch.applied_comment_id != applied[0].comment_id):
             raise PhaseEpochRebaselineError("local epoch-3 identity differs from its durable journal")
-        return epoch
+        final_current = verify_adc(github, ISSUE_NUMBER)
+        if final_current.pointer != verified.pointer:
+            raise PhaseEpochRebaselineError("current ADC pointer changed during epoch-origin verification")
+        return epoch, verified, origin, issue
     except (ADCError, ExecutionError, GitError, GitHubError, PhaseError) as exc:
         raise PhaseEpochRebaselineError(str(exc)) from exc
+
+
+def read_active_epoch(github: GitHub, root: Path, verified_adc: VerifiedADC | None = None
+                      ) -> Issue71ActiveExecutionEpoch:
+    """Join immutable epoch-origin identity to the live ADC and Phase generation."""
+    epoch, current_adc, _origin_adc, issue = read_epoch_origin(github, root, verified_adc)
+    try:
+        from .phase_rework import PhaseReworkError, active_phase_generation_for_epoch
+        active_id, active_sha = active_phase_generation_for_epoch(
+            github, Path(root).resolve(), current_adc, epoch, issue,
+        )
+    except PhaseReworkError as exc:
+        raise PhaseEpochRebaselineError(str(exc)) from exc
+    except (GitError, GitHubError, ADCError) as exc:
+        raise PhaseEpochRebaselineError(str(exc)) from exc
+    return Issue71ActiveExecutionEpoch(
+        origin=epoch, adc_comment_id=current_adc.pointer.comment_id,
+        adc_sha256=current_adc.contract.sha256,
+        applied_comment_id=active_id, applied_body_sha256=active_sha,
+    ).validate()
 
 
 def active_phase_generation(github: GitHub, root: Path,

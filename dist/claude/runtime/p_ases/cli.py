@@ -115,6 +115,7 @@ from .phase_restart import PhaseRestartError, restart_issue_phase
 from .phase_epoch_rebaseline import (
     PhaseEpochRebaselineError, apply_phase_epoch_rebaseline, epoch_paths, read_active_epoch,
 )
+from .phase_rework import PhaseReworkError, apply_issue71_phase_rework
 from .oracle_trace import (
     OracleDefinition, OracleTraceError, TestDefinition, validate_plan_oracles,
     validate_plan_tests,
@@ -4556,6 +4557,23 @@ def _parser() -> argparse.ArgumentParser:
     phase_epoch_rebaseline.add_argument("--repo", help="repository owner/name; defaults to origin")
     phase_epoch_rebaseline.add_argument("--root", type=Path, required=True,
                                         help="the exact authorized Issue #71 epoch-3 worktree")
+    phase_rework = issue_commands.add_parser(
+        "phase-rework", help="apply/recover the one ADC-authorized Issue #71 verification rework"
+    )
+    phase_rework.add_argument("issue", type=_positive_number)
+    phase_rework.add_argument("--repo", help="repository owner/name; defaults to origin")
+    phase_rework.add_argument("--root", type=Path, required=True,
+                              help="the exact authorized Issue #71 epoch-3 worktree")
+    phase_rework.add_argument("--plan", type=Path,
+                              help="fresh current-subject Verification Plan input")
+    phase_rework.add_argument("--verification", type=Path,
+                              help="fresh current-subject Verification result")
+    phase_rework.add_argument("--acceptance", type=Path,
+                              help="fresh current-subject Acceptance result")
+    phase_rework.add_argument("--self-audit", dest="self_audit", type=Path,
+                              help="fresh current-subject Self-Audit")
+    phase_rework.add_argument("--independent-review", dest="independent_review", type=Path,
+                              help="fresh current-subject Independent Review")
     validate_plan = issue_commands.add_parser("validate-split")
     validate_plan.add_argument("plan", type=Path)
     validate_plan.add_argument("--repo", help="repository owner/name; defaults to origin")
@@ -5368,6 +5386,49 @@ def main(argv: list[str] | None = None) -> int:
                 _json(result)
                 return 0
             except PhaseEpochRebaselineError as exc:
+                return _blocked_result((str(exc),))
+
+        if args.verb == "phase-rework":
+            root = _repo_root(str(args.root)).resolve()
+            github = GitHub(repository)
+            input_paths = (args.plan, args.verification, args.acceptance,
+                           args.self_audit, args.independent_review)
+            if any(path is not None for path in input_paths) and not all(
+                    path is not None for path in input_paths):
+                return _blocked_result(("provide all five fresh evidence inputs together",))
+
+            def readiness_factory():
+                if any(path is None for path in input_paths):
+                    raise CLIError("first phase-rework application requires all five fresh evidence inputs")
+                readiness_args = argparse.Namespace(
+                    issue=args.issue, pr=75, head=head_sha40(root), plan=args.plan,
+                    verification=args.verification, acceptance=args.acceptance,
+                    self_audit=args.self_audit, independent_review=args.independent_review,
+                )
+                output = io.StringIO()
+                with adc_forward_generation_session(github, args.issue), contextlib.redirect_stdout(output):
+                    exit_code = _delivery_readiness(readiness_args, repository, root, github)
+                if exit_code != 0:
+                    raise CLIError("fresh exact-subject Review Readiness did not PASS")
+                report = json.loads(output.getvalue())
+                if (not isinstance(report, dict) or report.get("status") != "PASS"
+                        or not isinstance(report.get("path"), str)):
+                    raise CLIError("fresh Review Readiness output is incomplete")
+                path_value = report["path"]
+                result = read_readiness(Path(path_value))
+                if (report.get("readiness_sha256") != result.sha256
+                        or report.get("subject_sha256") != result.subject.sha256):
+                    raise CLIError("fresh Review Readiness output differs from its saved record")
+                return result
+
+            try:
+                result = apply_issue71_phase_rework(
+                    github, root, args.issue,
+                    readiness_factory=readiness_factory if all(path is not None for path in input_paths) else None,
+                )
+                _json(result)
+                return 0
+            except (PhaseReworkError, CLIError, ADCError, GitError, GitHubError, OSError, ValueError) as exc:
                 return _blocked_result((str(exc),))
 
         if args.verb == "phase-evidence":

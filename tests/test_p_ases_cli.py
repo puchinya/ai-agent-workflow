@@ -775,6 +775,14 @@ class PasesCLITests(unittest.TestCase):
             "issue", "phase-restart", "72", "--repo", "puchinya/ai-agent-workflow", "--root", str(ROOT),
         ])
         self.assertEqual((restart.namespace, restart.verb, restart.issue), ("issue", "phase-restart", 72))
+        rework = _parser().parse_args([
+            "issue", "phase-rework", "71", "--repo", "puchinya/ai-agent-workflow",
+            "--root", str(ROOT), "--plan", "plan.json", "--verification", "verification.json",
+            "--acceptance", "acceptance.json", "--self-audit", "self-audit.json",
+            "--independent-review", "independent-review.json",
+        ])
+        self.assertEqual((rework.namespace, rework.verb, rework.issue), ("issue", "phase-rework", 71))
+        self.assertEqual(rework.independent_review, Path("independent-review.json"))
 
     def test_phase_restart_cli_dispatches_to_generic_authorized_route(self):
         expected = {"status": "APPLIED", "issue": 72, "label_write_count": 1}
@@ -789,6 +797,25 @@ class PasesCLITests(unittest.TestCase):
             ])
         self.assertEqual(status, 0)
         restart.assert_called_once_with(github, ROOT.resolve(), 72)
+        make_github.assert_called_once_with(github.repo)
+        emit.assert_called_once_with(expected)
+
+    def test_issue71_phase_rework_cli_dispatches_to_dedicated_route(self):
+        expected = {"status": "NOOP", "issue": 71, "label_write_count": 0}
+        github = SimpleNamespace(repo="puchinya/ai-agent-workflow")
+        with patch("p_ases.cli._repo_root", return_value=ROOT), \
+                patch("p_ases.cli.discover_repository", return_value=github.repo), \
+                patch("p_ases.cli.GitHub", return_value=github) as make_github, \
+                patch("p_ases.cli.apply_issue71_phase_rework", return_value=expected) as rework, \
+                patch("p_ases.cli._json") as emit:
+            status = main([
+                "issue", "phase-rework", "71", "--repo", github.repo, "--root", str(ROOT),
+            ])
+        self.assertEqual(status, 0)
+        rework.assert_called_once()
+        args, kwargs = rework.call_args
+        self.assertEqual(args, (github, ROOT.resolve(), 71))
+        self.assertIsNone(kwargs["readiness_factory"])
         make_github.assert_called_once_with(github.repo)
         emit.assert_called_once_with(expected)
 
