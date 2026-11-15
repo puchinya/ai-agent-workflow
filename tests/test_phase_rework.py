@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
@@ -183,6 +183,64 @@ class BootstrapAndReadinessTests(unittest.TestCase):
 
 
 class OneShotWriteTests(unittest.TestCase):
+    def test_intent_prewrite_live_head_drift_blocks_before_marker_or_post(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            result = readiness(root)
+            initial = live_subject(root)
+            drifted = live_subject(root, head="f" * 40)
+
+            class FakeGitHub:
+                repo = module.REPOSITORY
+                posts = 0
+
+                def create_issue_comment(self, _issue: int, _body: str) -> dict:
+                    self.posts += 1
+                    return {"id": 201}
+
+            github = FakeGitHub()
+            with patch.object(module, "_live", side_effect=[initial, drifted]), \
+                    patch.object(module, "_read_history", return_value=()), \
+                    patch.object(module, "_user_review_absent"), \
+                    self.assertRaisesRegex(module.PhaseReworkError, "stale or bound"):
+                module.apply_issue71_phase_rework(
+                    github, root, 71, readiness_factory=lambda: result,
+                )
+
+            self.assertEqual(github.posts, 0)
+            self.assertFalse(module._record_path(root, "intent").exists())
+
+    def test_intent_prewrite_readiness_drift_blocks_before_marker_or_post(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            initial_readiness = readiness(root)
+            changed_readiness = ReadinessResult(
+                "PASS", initial_readiness.subject, (), (), "c" * 64,
+            ).validate()
+            write_readiness(readiness_path(root, changed_readiness), changed_readiness)
+            initial = live_subject(root)
+
+            class FakeGitHub:
+                repo = module.REPOSITORY
+                posts = 0
+
+                def create_issue_comment(self, _issue: int, _body: str) -> dict:
+                    self.posts += 1
+                    return {"id": 202}
+
+            github = FakeGitHub()
+            with patch.object(module, "_live", return_value=initial), \
+                    patch.object(module, "_read_history", return_value=()), \
+                    patch.object(module, "_user_review_absent"), \
+                    self.assertRaisesRegex(module.PhaseReworkError, "Readiness changed"):
+                module.apply_issue71_phase_rework(
+                    github, root, 71,
+                    readiness_factory=Mock(side_effect=[initial_readiness, changed_readiness]),
+                )
+
+            self.assertEqual(github.posts, 0)
+            self.assertFalse(module._record_path(root, "intent").exists())
+
     def _run_label_update(self, root: Path, *, apply_then_lose_response: bool) -> tuple[int, bool]:
         intent, _result = intent_record(root)
         issue_before = {"body": "fixed", "state": "open"}

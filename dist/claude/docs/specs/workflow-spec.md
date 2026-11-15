@@ -674,7 +674,7 @@ Keep the approved ADC chain, Issue #71 body, epoch-3 origin identity and attachm
 <a id="req-f01-091"></a>
 ### 9.49 REQ-F01-091 Exact verification-rework authority
 
-Only the canonical `PASES_ISSUE_VERIFICATION_REWORK_AUTHORIZATION_V2` marker in the exact approved successor ADC may authorize this transition. It binds predecessor ADC #6886739124, immutable epoch origin and Phase generation, pre-bootstrap branch/PR baseline, full Issue state, and the bootstrap path allowlist. The predecessor V1 marker remains immutable history and cannot authorize rework.
+Only the canonical `PASES_ISSUE_VERIFICATION_REWORK_AUTHORIZATION_V2` marker in the exact approved successor ADC may authorize this transition. It binds predecessor ADC #6886911700, immutable epoch origin and Phase generation, pre-bootstrap branch/PR baseline, full Issue state, and the bootstrap path allowlist. The predecessor V1 marker remains immutable history and cannot authorize rework.
 
 <a id="req-f01-092"></a>
 ### 9.50 REQ-F01-092 Bounded bootstrap commits

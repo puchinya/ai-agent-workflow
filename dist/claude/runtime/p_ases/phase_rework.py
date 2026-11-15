@@ -352,7 +352,7 @@ def _live(github: GitHub, root: Path, *, phase: str | None = None,
         if (len(chain) != 2 or chain[0].pointer.comment_id != PREDECESSOR_ADC_COMMENT_ID
                 or chain[0].contract.sha256 != PREDECESSOR_ADC_SHA256
                 or chain[1].pointer != current.pointer):
-            raise PhaseReworkError("current ADC is not the exact approved successor of #6886739124")
+            raise PhaseReworkError("current ADC is not the exact approved successor of #6886911700")
         actor = github.authenticated_user()
         metadata = github.repository_metadata()
         if (not isinstance(actor, dict) or actor.get("id") != OWNER_ID or actor.get("type") != "User"
@@ -667,7 +667,8 @@ def _write_attempt_once(root: Path, operation: str, payload: Mapping[str, Any]) 
 
 
 def _post_record_once(github: GitHub, root: Path, schema: str,
-                      payload: Mapping[str, Any]) -> PhaseReworkRecord:
+                      payload: Mapping[str, Any], *,
+                      before_write: Callable[[], None] | None = None) -> PhaseReworkRecord:
     body = _record_body(schema, payload)
     records = _read_history(github)
     matching = [record for record in records if record.schema == schema and record.body == body]
@@ -676,6 +677,8 @@ def _post_record_once(github: GitHub, root: Path, schema: str,
     if any(record.schema == schema for record in records):
         raise PhaseReworkError(f"a conflicting {schema} record already exists")
     operation = "intent" if schema == INTENT_SCHEMA else "applied"
+    if before_write is not None:
+        before_write()
     _write_attempt_once(root, operation, payload)
     write_error: GitHubError | None = None
     created_id = None
@@ -902,7 +905,28 @@ def apply_issue71_phase_rework(
     payload = _intent_payload(live, readiness)
     if set(payload) != INTENT_FIELDS:
         raise PhaseReworkError("phase rework Intent payload fields are incomplete")
-    intent = _post_record_once(github, root, INTENT_SCHEMA, payload)
+
+    def verify_intent_subject_before_write() -> None:
+        # Readiness may take long enough for the mutable GitHub or local subject
+        # to change. Re-evaluate the evidence, then make the complete live
+        # identity read the final check before the one-shot marker and POST.
+        fresh_readiness = readiness_factory()
+        _validate_readiness(fresh_readiness, live)
+        if fresh_readiness != readiness:
+            raise PhaseReworkError("Readiness changed immediately before the one-shot Intent")
+        fresh_live = _live(github, root, phase="verification", require_clean=True)
+        _validate_readiness(fresh_readiness, fresh_live)
+        fresh_payload = _intent_payload(fresh_live, fresh_readiness)
+        stable_payload = {key: value for key, value in payload.items() if key != "created_at"}
+        stable_fresh_payload = {key: value for key, value in fresh_payload.items() if key != "created_at"}
+        if stable_fresh_payload != stable_payload:
+            raise PhaseReworkError("Issue, ADC, branch, PR, or executor identity changed immediately before Intent")
+        _user_review_absent(root)
+
+    intent = _post_record_once(
+        github, root, INTENT_SCHEMA, payload,
+        before_write=verify_intent_subject_before_write,
+    )
 
     # Re-read the complete mutable subject and recompute the exact Readiness
     # after Intent. No label write occurs if any evidence or identity changed.
