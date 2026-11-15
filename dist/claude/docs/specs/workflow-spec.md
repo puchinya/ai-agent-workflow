@@ -88,6 +88,14 @@
   - [9.61 REQ-F01-103 Require exact-HEAD Recovery gates](#961-req-f01-103-require-exact-head-recovery-gates)
   - [9.62 REQ-F01-104 Resume the approved Phase sequence](#962-req-f01-104-resume-the-approved-phase-sequence)
   - [9.63 REQ-F01-105 Preserve separate delivery and Admin gates](#963-req-f01-105-preserve-separate-delivery-and-admin-gates)
+  - [9.64 REQ-F01-106 Preserve the existing phase journal](#964-req-f01-106-preserve-the-existing-phase-journal)
+  - [9.65 REQ-F01-107 Bound Applied event and publication time](#965-req-f01-107-bound-applied-event-and-publication-time)
+  - [9.66 REQ-F01-108 Permit one timestamp-reader correction commit](#966-req-f01-108-permit-one-timestamp-reader-correction-commit)
+  - [9.67 REQ-F01-109 Verify the timestamp-recovery ADC successor](#967-req-f01-109-verify-the-timestamp-recovery-adc-successor)
+  - [9.68 REQ-F01-110 Test exact Applied reconciliation without writes](#968-req-f01-110-test-exact-applied-reconciliation-without-writes)
+  - [9.69 REQ-F01-111 Gate the exact follow-up HEAD](#969-req-f01-111-gate-the-exact-follow-up-head)
+  - [9.70 REQ-F01-112 Resume Phase evidence after reconciliation](#970-req-f01-112-resume-phase-evidence-after-reconciliation)
+  - [9.71 REQ-F01-113 Preserve separate authorization boundaries](#971-req-f01-113-preserve-separate-authorization-boundaries)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -165,6 +173,14 @@
 - [REQ-F01-103](#req-f01-103) — 9.61 REQ-F01-103 Require exact-HEAD Recovery gates
 - [REQ-F01-104](#req-f01-104) — 9.62 REQ-F01-104 Resume the approved Phase sequence
 - [REQ-F01-105](#req-f01-105) — 9.63 REQ-F01-105 Preserve separate delivery and Admin gates
+- [REQ-F01-106](#req-f01-106) — 9.64 REQ-F01-106 Preserve the existing phase journal
+- [REQ-F01-107](#req-f01-107) — 9.65 REQ-F01-107 Bound Applied event and publication time
+- [REQ-F01-108](#req-f01-108) — 9.66 REQ-F01-108 Permit one timestamp-reader correction commit
+- [REQ-F01-109](#req-f01-109) — 9.67 REQ-F01-109 Verify the timestamp-recovery ADC successor
+- [REQ-F01-110](#req-f01-110) — 9.68 REQ-F01-110 Test exact Applied reconciliation without writes
+- [REQ-F01-111](#req-f01-111) — 9.69 REQ-F01-111 Gate the exact follow-up HEAD
+- [REQ-F01-112](#req-f01-112) — 9.70 REQ-F01-112 Resume Phase evidence after reconciliation
+- [REQ-F01-113](#req-f01-113) — 9.71 REQ-F01-113 Preserve separate authorization boundaries
 <!-- heading-map:end -->
 
 
@@ -761,3 +777,43 @@ Only after Applied is read back, publish fresh requirements → specification �
 ### 9.63 REQ-F01-105 Preserve separate delivery and Admin gates
 
 Keep PR #75 open and unmerged, preserving its title and body. Admin policy and Activation remain blocked until complete owner-controlled Admin policy readback and separate approvals. Merge, Activation, release, tag, Issue #63, and Issue-close operations retain their separate authorization gates.
+
+<a id="req-f01-106"></a>
+### 9.64 REQ-F01-106 Preserve the existing phase journal
+
+Preserve Issue #71's body and open state, the approved ADC chain, epoch, branch, PR #75, Intent #6888474848, Applied #6889965335, local attempt markers, and all historical records. Do not edit or duplicate either journal comment.
+
+<a id="req-f01-107"></a>
+### 9.65 REQ-F01-107 Bound Applied event and publication time
+
+For the exact Issue #71 phase-rework Applied record, parse `applied_at` and GitHub `created_at` as strict UTC. Treat `applied_at` as the local event time and `created_at` as publication time. Accept only when `0 <= created_at - applied_at <= 300` seconds. Reject future event times, larger differences, malformed timestamps, or any mismatch in the exact Applied identity and fields. Do not change timestamp rules for other Issues or record types.
+
+<a id="req-f01-108"></a>
+### 9.66 REQ-F01-108 Permit one timestamp-reader correction commit
+
+Permit exactly one follow-up commit parented by `574d7970323840933c34c37e874ad1616d577a8a`, with every changed path in the exact timestamp-recovery marker allowlist. Validate the original bootstrap prefix through `4185a510054a2a8781659191c1a48178336f8571` using the original ADC's bootstrap bound, then validate the Recovery and timestamp follow-up commits against their separate exact markers. Together with the existing Recovery commit, the branch has exactly two descendants of `4185a510054a2a8781659191c1a48178336f8571`. Generate distribution mirrors only with `python tools/build_dist.py`.
+
+<a id="req-f01-109"></a>
+### 9.67 REQ-F01-109 Verify the timestamp-recovery ADC successor
+
+Validate the exact successor ADC #6890080277, its predecessor #6888665795, exact marker, complete approved ADC chain, and existing Intent/Applied records. Preserve the existing epoch and all exact Issue, owner, ADC, branch, PR, base, HEAD, labels, and local attempt-marker checks. Generic phase semantics and other Issues remain unchanged.
+
+<a id="req-f01-110"></a>
+### 9.68 REQ-F01-110 Test exact Applied reconciliation without writes
+
+Cover timestamp equality, the observed three-second difference, the inclusive 300-second limit, over-limit and future values, malformed timestamps, wrong Applied comment ID/body digest, wrong Intent, and no-write reconciliation. Reconciliation performs no Issue label or comment write.
+
+<a id="req-f01-111"></a>
+### 9.69 REQ-F01-111 Gate the exact follow-up HEAD
+
+At the single follow-up commit HEAD, require compileall, the full unit suite, documentation validation and formatting, generated distribution check and validation, specification/design/test-oracle traceability, all 16-Skill acceptance checks, whitespace validation, configured GitHub Required Checks, a fresh Self-Audit, and a fresh native Independent Review. Rebind PR #75 with P-ASES at that HEAD. Preserve the PR title, body, base, open state, and unmerged state.
+
+<a id="req-f01-112"></a>
+### 9.70 REQ-F01-112 Resume Phase evidence after reconciliation
+
+After read-only reconciliation confirms the exact existing Applied record and current binding, issue fresh requirements → specification → design → READY receipts at the corrected HEAD and active Phase generation, then advance normally to execution. Only then continue the inherited Issue #71 `solo_owner` User Review identity correction. Preserve Issue #63 behavior.
+
+<a id="req-f01-113"></a>
+### 9.71 REQ-F01-113 Preserve separate authorization boundaries
+
+Do not create duplicate Intent or Applied comments, another backward Phase transition, PR merge, Admin policy or Ruleset operation, Setup PR, Activation, release, tag, Issue #63 write, or Issue close.

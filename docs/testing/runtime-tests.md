@@ -67,6 +67,8 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
     - [2.27.1 ORA-RT-027 Expected result](#2271-ora-rt-027-expected-result)
   - [2.28 TST-RT-028 Issue #71 pending rework Recovery CLI](#228-tst-rt-028-issue-71-pending-rework-recovery-cli)
     - [2.28.1 ORA-RT-028 Expected result](#2281-ora-rt-028-expected-result)
+  - [2.29 TST-RT-029 Issue #71 Applied timestamp reconciliation CLI](#229-tst-rt-029-issue-71-applied-timestamp-reconciliation-cli)
+    - [2.29.1 ORA-RT-029 Expected result](#2291-ora-rt-029-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -127,6 +129,8 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
 - [ORA-RT-027](#ora-rt-027) — 2.27.1 ORA-RT-027 Expected result
 - [TST-RT-028](#tst-rt-028) — 2.28 TST-RT-028 Issue #71 pending rework Recovery CLI
 - [ORA-RT-028](#ora-rt-028) — 2.28.1 ORA-RT-028 Expected result
+- [TST-RT-029](#tst-rt-029) — 2.29 TST-RT-029 Issue #71 Applied timestamp reconciliation CLI
+- [ORA-RT-029](#ora-rt-029) — 2.29.1 ORA-RT-029 Expected result
 <!-- heading-map:end -->
 
 
@@ -461,3 +465,13 @@ The CLI accepts only the Issue #71 dedicated route and complete evidence input s
 #### 2.28.1 ORA-RT-028 Expected result
 
 Recovery accepts only the exact current approved successor and its one pending Intent. Before code gates, the no-input route may append only one exact current V4 PRBinding and V3 checkpoint locally; it cannot change PR metadata or Issue state. A gated continuation requires that current binding. Before-state without a marker permits one marked complete-label PUT; a present marker prevents retries. After-state with the exact marker permits an Applied append only. Mismatches and ambiguous before-state outcomes make no further Issue writes, and no fresh Readiness is generated while Intent is incomplete.
+
+<a id="tst-rt-029"></a>
+### 2.29 TST-RT-029 Issue #71 Applied timestamp reconciliation CLI
+
+**Setup and action:** Invoke the public `issue phase-rework` route with the approved timestamp-recovery ADC, exact existing Intent/Applied records, original Readiness, attempt markers, and current PRBinding. Verify that the route validates the complete ADC chain, the bounded timestamp pair, exact journal digests, and local markers. Assert that the current-binding path returns NOOP without invoking Readiness recomputation or any GitHub label/comment write. Exercise the no-gate local PRBinding/checkpoint repair separately and assert zero GitHub writes.
+
+<a id="ora-rt-029"></a>
+#### 2.29.1 ORA-RT-029 Expected result
+
+The CLI accepts only the exact timestamp-recovery successor and its pinned Applied record. Applied reconciliation with the current binding is a read-only NOOP. Without the binding, it may append only local immutable binding/checkpoint evidence. Neither path writes Issue labels/comments or recomputes Readiness.

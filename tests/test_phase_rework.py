@@ -5,6 +5,7 @@ import json
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -110,6 +111,21 @@ def marker_contract(schema: str, authorization: dict, predecessor_id: int,
         raise AssertionError("marker fixture exceeds pinned contract byte length")
     content += b" " * (byte_length - len(content))
     return verified_contract(comment_id, digest, byte_length, module.REPOSITORY, content)
+
+
+def timestamp_recovery_contract(authorization: dict | None = None) -> SimpleNamespace:
+    authorization = authorization or module.TIMESTAMP_RECOVERY_AUTHORIZATION
+    raw = json.dumps(authorization, separators=(",", ":"))
+    text = (
+        f"Predecessor ADC: Issue #71 comment #{module.RECOVERY_ADC_COMMENT_ID}, "
+        f"SHA-256 {module.RECOVERY_ADC_SHA256}\n\n"
+        f"<!-- {module.TIMESTAMP_RECOVERY_AUTH_SCHEMA}\n{raw}\n-->\n"
+    )
+    content = text.encode("utf-8")
+    return verified_contract(
+        module.TIMESTAMP_RECOVERY_ADC_COMMENT_ID, hashlib.sha256(content).hexdigest(),
+        len(content), module.REPOSITORY, content,
+    )
 
 
 def recovery_fixture(root: Path, *, labels: tuple[str, ...] | None = None,
@@ -244,15 +260,62 @@ class AuthorizationTests(unittest.TestCase):
             module.RECOVERY_ADC_COMMENT_ID, module.RECOVERY_ADC_SHA256, module.RECOVERY_ADC_BYTES,
         )
         with patch.object(module, "verify_adc_forward_generations", return_value=(predecessor, old, current)):
-            authorization, authorization_sha, recovery, recovery_sha = module._authorization_context(
+            authorization, authorization_sha, recovery, recovery_sha, timestamp, timestamp_sha = module._authorization_context(
                 SimpleNamespace(), current,
             )
         self.assertEqual(authorization, module.AUTHORIZATION)
         self.assertEqual(recovery, module.RECOVERY_AUTHORIZATION)
+        self.assertIsNone(timestamp)
+        self.assertIsNone(timestamp_sha)
         self.assertEqual(len(authorization_sha), 64)
         self.assertEqual(len(recovery_sha), 64)
 
         with patch.object(module, "verify_adc_forward_generations", return_value=(predecessor, current)), \
+                self.assertRaisesRegex(module.PhaseReworkError, "complete exact approved successor chain"):
+            module._authorization_context(SimpleNamespace(), current)
+
+    def test_exact_timestamp_recovery_marker_and_four_generation_chain(self):
+        predecessor = SimpleNamespace(
+            pointer=SimpleNamespace(comment_id=module.PREDECESSOR_ADC_COMMENT_ID,
+                                    state="approved", sha256=module.PREDECESSOR_ADC_SHA256),
+            contract=SimpleNamespace(sha256=module.PREDECESSOR_ADC_SHA256),
+        )
+        old = marker_contract(
+            module.AUTH_SCHEMA, module.AUTHORIZATION,
+            module.PREDECESSOR_ADC_COMMENT_ID, module.PREDECESSOR_ADC_SHA256,
+            module.REWORK_ADC_COMMENT_ID, module.REWORK_ADC_SHA256, module.REWORK_ADC_BYTES,
+        )
+        recovery = marker_contract(
+            module.RECOVERY_AUTH_SCHEMA, module.RECOVERY_AUTHORIZATION,
+            module.REWORK_ADC_COMMENT_ID, module.REWORK_ADC_SHA256,
+            module.RECOVERY_ADC_COMMENT_ID, module.RECOVERY_ADC_SHA256,
+            module.RECOVERY_ADC_BYTES,
+        )
+        current = timestamp_recovery_contract()
+        timestamp_sha = module.TIMESTAMP_RECOVERY_AUTH_MARKER_SHA256
+        marker_bytes = module.TIMESTAMP_RECOVERY_AUTH_MARKER_BYTES
+        with patch.object(module, "TIMESTAMP_RECOVERY_ADC_SHA256", current.contract.sha256), \
+                patch.object(module, "TIMESTAMP_RECOVERY_ADC_BYTES", current.contract.byte_length), \
+                patch.object(module, "verify_adc_forward_generations",
+                             return_value=(predecessor, old, recovery, current)):
+            timestamp, parsed_sha = module.parse_timestamp_recovery_authorization(current)
+            self.assertEqual(timestamp, module.TIMESTAMP_RECOVERY_AUTHORIZATION)
+            self.assertEqual(parsed_sha, timestamp_sha)
+            self.assertEqual(len(parsed_sha), 64)
+            authorization, authorization_sha, recovery_auth, recovery_sha, timestamp_auth, _ = (
+                module._authorization_context(SimpleNamespace(), current)
+            )
+        self.assertEqual(authorization, module.AUTHORIZATION)
+        self.assertEqual(recovery_auth, module.RECOVERY_AUTHORIZATION)
+        self.assertEqual(timestamp_auth, module.TIMESTAMP_RECOVERY_AUTHORIZATION)
+        self.assertEqual(marker_bytes, 2258)
+        self.assertEqual(len(authorization_sha), 64)
+        self.assertEqual(len(recovery_sha), 64)
+
+        with patch.object(module, "TIMESTAMP_RECOVERY_ADC_SHA256", current.contract.sha256), \
+                patch.object(module, "TIMESTAMP_RECOVERY_ADC_BYTES", current.contract.byte_length), \
+                patch.object(module, "verify_adc_forward_generations",
+                             return_value=(predecessor, old, recovery)), \
                 self.assertRaisesRegex(module.PhaseReworkError, "complete exact approved successor chain"):
             module._authorization_context(SimpleNamespace(), current)
 
@@ -307,6 +370,24 @@ class BootstrapAndReadinessTests(unittest.TestCase):
                 self.assertRaisesRegex(module.PhaseReworkError, "outside its exact allowlist"):
             module._verify_recovery_commit_set(Path("/tmp/repo"), commit, authorization)
 
+    def test_timestamp_recovery_validates_bootstrap_and_each_successor_segment(self):
+        root = Path("/tmp/repo")
+        head = "f" * 40
+        bootstrap_head = module.RECOVERY_AUTHORIZATION["pre_recovery_head_sha40"]
+        with patch.object(module, "_verify_commit_set") as verify_bootstrap, \
+                patch.object(module, "_verify_recovery_commit_set") as verify_successors:
+            module._verify_issue71_commit_lineage(
+                root, head, module.AUTHORIZATION, module.RECOVERY_AUTHORIZATION,
+                module.TIMESTAMP_RECOVERY_AUTHORIZATION,
+            )
+        verify_bootstrap.assert_called_once_with(
+            root, bootstrap_head, tuple(module.AUTHORIZATION["bootstrap_path_allowlist"]),
+        )
+        verify_successors.assert_called_once_with(
+            root, head, module.RECOVERY_AUTHORIZATION,
+            module.TIMESTAMP_RECOVERY_AUTHORIZATION,
+        )
+
     def test_readiness_is_read_from_the_bound_worktree_and_exact_subject(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -331,6 +412,155 @@ class BootstrapAndReadinessTests(unittest.TestCase):
             module._validate_applied(applied, intent, current)
             self.assertEqual(payload["readiness_sha256"], result.sha256)
             self.assertEqual(payload["active_epoch_id"], module.ACTIVE_EPOCH_ID)
+
+    def test_applied_timestamp_skew_is_utc_ordered_and_inclusive_at_300_seconds(self):
+        delta = module._applied_timestamp_delta_seconds
+        self.assertEqual(
+            delta("2026-11-15T05:50:04Z", "2026-11-15T05:50:04Z", 300), 0,
+        )
+        self.assertEqual(
+            delta("2026-11-15T05:50:01Z", "2026-11-15T05:50:04Z", 300), 3,
+        )
+        self.assertEqual(
+            delta("2026-11-15T05:45:04Z", "2026-11-15T05:50:04Z", 300), 300,
+        )
+        with self.assertRaisesRegex(module.PhaseReworkError, "authorized UTC skew"):
+            delta("2026-11-15T05:45:03Z", "2026-11-15T05:50:04Z", 300)
+        with self.assertRaisesRegex(module.PhaseReworkError, "authorized UTC skew"):
+            delta("2026-11-15T05:50:05Z", "2026-11-15T05:50:04Z", 300)
+        with self.assertRaisesRegex(module.PhaseReworkError, "canonical UTC"):
+            delta("2026-11-15 05:50:01Z", "2026-11-15T05:50:04Z", 300)
+
+    def test_timestamp_recovery_binds_exact_existing_intent_and_applied(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            intent, _result = intent_record(root)
+            payload = module._applied_payload(intent)
+            payload["applied_at"] = "2026-11-15T05:50:01Z"
+            body = module._record_body(module.APPLIED_SCHEMA, payload)
+            applied = module.PhaseReworkRecord(
+                module.TIMESTAMP_RECOVERY_AUTHORIZATION["applied_comment_id"],
+                module.APPLIED_SCHEMA, payload, body, module.OWNER_ID,
+                module.TIMESTAMP_RECOVERY_AUTHORIZATION["applied_comment_created_at"],
+            )
+            timestamp_authorization = dict(module.TIMESTAMP_RECOVERY_AUTHORIZATION)
+            timestamp_authorization.update({
+                "intent_comment_id": intent.comment_id,
+                "intent_body_sha256": intent.body_sha256,
+                "applied_body_sha256": applied.body_sha256,
+            })
+            current = replace(
+                live_subject(root, head=intent.payload["bootstrap_head_sha40"]),
+                current_adc=SimpleNamespace(
+                    pointer=SimpleNamespace(comment_id=module.TIMESTAMP_RECOVERY_ADC_COMMENT_ID,
+                                            state="approved"),
+                    contract=SimpleNamespace(sha256=module.TIMESTAMP_RECOVERY_ADC_SHA256),
+                ),
+                timestamp_recovery_authorization=timestamp_authorization,
+            )
+            module._validate_applied(applied, intent, current)
+
+            with self.assertRaisesRegex(module.PhaseReworkError, "exact Intent"):
+                wrong_intent = dict(payload, intent_comment_id=intent.comment_id + 1)
+                wrong_body = module._record_body(module.APPLIED_SCHEMA, wrong_intent)
+                module._validate_applied(
+                    replace(applied, payload=wrong_intent, body=wrong_body), intent, current,
+                )
+            with self.assertRaisesRegex(module.PhaseReworkError, "exact timestamp-recovery journal"):
+                module._validate_applied(replace(applied, comment_id=applied.comment_id + 1), intent, current)
+            with self.assertRaisesRegex(module.PhaseReworkError, "exact timestamp-recovery journal"):
+                module._validate_applied(replace(applied, body=body + " "), intent, current)
+            with self.assertRaisesRegex(module.PhaseReworkError, "exact timestamp-recovery journal"):
+                module._validate_applied(
+                    replace(applied, created_at="2026-11-15T05:50:05Z"), intent, current,
+                )
+
+    def test_recovery_intent_accepts_only_the_exact_timestamp_adc_successor(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            intent, _readiness, live = recovery_fixture(root)
+            current_adc = SimpleNamespace(
+                pointer=SimpleNamespace(
+                    comment_id=module.TIMESTAMP_RECOVERY_ADC_COMMENT_ID, state="approved",
+                ),
+                contract=SimpleNamespace(sha256=module.TIMESTAMP_RECOVERY_ADC_SHA256),
+            )
+            current = replace(
+                live, current_adc=current_adc,
+                timestamp_recovery_authorization=module.TIMESTAMP_RECOVERY_AUTHORIZATION,
+                timestamp_recovery_authorization_sha256=module.TIMESTAMP_RECOVERY_AUTH_MARKER_SHA256,
+            )
+            with patch.object(module, "_validate_intent"), \
+                    patch.object(module, "_validate_recorded_readiness"), \
+                    patch.object(module, "_read_exact_attempt_marker", return_value=True):
+                module._validate_recovery_intent(intent, current, root)
+                with self.assertRaisesRegex(module.PhaseReworkError, "current ADC does not authorize"):
+                    module._validate_recovery_intent(
+                        intent, replace(current, timestamp_recovery_authorization=None), root,
+                    )
+
+    def test_applied_timestamp_reconciliation_is_a_no_write_noop(self):
+        class WriteCounter:
+            repo = module.REPOSITORY
+
+            def __init__(self):
+                self.writes = []
+
+            def __getattr__(self, name):
+                if any(part in name.casefold() for part in ("comment", "label", "update", "post")):
+                    def record_write(*_args, **_kwargs):
+                        self.writes.append(name)
+                        raise AssertionError(f"unexpected GitHub write: {name}")
+                    return record_write
+                raise AttributeError(name)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            intent = SimpleNamespace(
+                comment_id=module.TIMESTAMP_RECOVERY_AUTHORIZATION["intent_comment_id"],
+                body_sha256=module.TIMESTAMP_RECOVERY_AUTHORIZATION["intent_body_sha256"],
+                schema=module.INTENT_SCHEMA,
+                payload={"adc_comment_id": module.REWORK_ADC_COMMENT_ID,
+                         "adc_sha256": module.REWORK_ADC_SHA256,
+                         "readiness_sha256": "e" * 64},
+            )
+            applied = SimpleNamespace(
+                comment_id=module.TIMESTAMP_RECOVERY_AUTHORIZATION["applied_comment_id"],
+                schema=module.APPLIED_SCHEMA,
+                payload={"adc_comment_id": module.REWORK_ADC_COMMENT_ID,
+                         "adc_sha256": module.REWORK_ADC_SHA256},
+            )
+            current_adc = SimpleNamespace(
+                pointer=SimpleNamespace(
+                    comment_id=module.TIMESTAMP_RECOVERY_ADC_COMMENT_ID, state="approved",
+                ),
+                contract=SimpleNamespace(sha256=module.TIMESTAMP_RECOVERY_ADC_SHA256),
+            )
+            live = replace(
+                live_subject(root, labels=tuple(sorted(module.LABELS_AFTER))),
+                current_adc=current_adc,
+                recovery_authorization=module.RECOVERY_AUTHORIZATION,
+                timestamp_recovery_authorization=module.TIMESTAMP_RECOVERY_AUTHORIZATION,
+                timestamp_recovery_authorization_sha256=module.TIMESTAMP_RECOVERY_AUTH_MARKER_SHA256,
+            )
+            github = WriteCounter()
+            with patch.object(module, "_live", return_value=live), \
+                    patch.object(module, "_read_history", return_value=(intent, applied)), \
+                    patch.object(module, "_validate_recovery_intent"), \
+                    patch.object(module, "_validate_applied"), \
+                    patch.object(module, "_validate_post_rework_labels"), \
+                    patch.object(module, "_read_exact_attempt_marker", return_value=True), \
+                    patch.object(module, "_validate_recorded_readiness"), \
+                    patch.object(module, "_verify_recovery_pr_binding") as verify_binding:
+                result = module.apply_issue71_phase_rework(
+                    github, root, module.ISSUE_NUMBER, readiness_factory=object(),
+                )
+
+        self.assertEqual(result["status"], "NOOP")
+        self.assertEqual(result["intent_comment_id"], intent.comment_id)
+        self.assertEqual(result["applied_comment_id"], applied.comment_id)
+        self.assertEqual(github.writes, [])
+        verify_binding.assert_called_once()
 
 
 class OneShotWriteTests(unittest.TestCase):
@@ -868,7 +1098,8 @@ class PendingRecoveryTests(unittest.TestCase):
             issue = {"labels": [{"name": label} for label in module.LABELS_AFTER]}
             with patch.object(module, "_authorization_context",
                               return_value=(module.AUTHORIZATION, live.authorization_sha256,
-                                            live.recovery_authorization, live.recovery_authorization_sha256)), \
+                                            live.recovery_authorization, live.recovery_authorization_sha256,
+                                            None, None)), \
                     patch.object(module, "_read_history", return_value=(intent, applied)), \
                     patch.object(module, "head_sha40", return_value=live.head_sha40), \
                     patch.object(module, "_pr", return_value={}), \
@@ -897,7 +1128,7 @@ class ActiveGenerationTests(unittest.TestCase):
             issue = {"labels": [{"name": label} for label in module.LABELS_AFTER]}
             with patch.object(module, "_read_history", return_value=(intent, applied)), \
                     patch.object(module, "_authorization_context",
-                                 return_value=(module.AUTHORIZATION, "c" * 64, None, None)), \
+                                 return_value=(module.AUTHORIZATION, "c" * 64, None, None, None, None)), \
                     patch.object(module, "head_sha40", return_value="f" * 40), \
                     patch.object(module, "_pr", return_value={}), \
                     patch.object(module, "is_ancestor", return_value=True), \
@@ -917,7 +1148,7 @@ class ActiveGenerationTests(unittest.TestCase):
             issue = {"labels": [{"name": label} for label in module.LABELS_BEFORE]}
             with patch.object(module, "_read_history", return_value=(intent,)), \
                     patch.object(module, "_authorization_context",
-                                 return_value=(module.AUTHORIZATION, "c" * 64, None, None)), \
+                                 return_value=(module.AUTHORIZATION, "c" * 64, None, None, None, None)), \
                     patch.object(module, "head_sha40", return_value="e" * 40), \
                     patch.object(module, "_pr", return_value={}), \
                     patch.object(module, "is_ancestor", return_value=True):

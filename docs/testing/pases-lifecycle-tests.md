@@ -123,6 +123,8 @@
     - [2.56.1 ORA-F01-090 Expected result](#2561-ora-f01-090-expected-result)
   - [2.57 TST-F01-091 Pending phase-rework Recovery](#257-tst-f01-091-pending-phase-rework-recovery)
     - [2.57.1 ORA-F01-091 Expected result](#2571-ora-f01-091-expected-result)
+  - [2.58 TST-F01-092 Applied timestamp reconciliation](#258-tst-f01-092-applied-timestamp-reconciliation)
+    - [2.58.1 ORA-F01-092 Expected result](#2581-ora-f01-092-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -241,6 +243,8 @@
 - [ORA-F01-090](#ora-f01-090) — 2.56.1 ORA-F01-090 Expected result
 - [TST-F01-091](#tst-f01-091) — 2.57 TST-F01-091 Pending phase-rework Recovery
 - [ORA-F01-091](#ora-f01-091) — 2.57.1 ORA-F01-091 Expected result
+- [TST-F01-092](#tst-f01-092) — 2.58 TST-F01-092 Applied timestamp reconciliation
+- [ORA-F01-092](#ora-f01-092) — 2.58.1 ORA-F01-092 Expected result
 <!-- heading-map:end -->
 
 
@@ -872,3 +876,13 @@ Only one-to-three clean allowlisted descendant commits with matching local, remo
 #### 2.57.1 ORA-F01-091 Expected result
 
 Only the exact pending Intent and its original PASS Readiness under the exact approved Recovery ADC chain may enter continuation. The one Recovery commit satisfies its pinned ancestry and path allowlist. A local-only V4 PRBinding/V3 checkpoint successor must bind the exact ADC, epoch, PR #75, and Recovery HEAD before any Issue write. Before-labels with no label marker permit exactly one marked label PUT; any existing marker forbids another PUT. A matching after-state marker permits only readback and Applied completion. Every mismatch blocks before an Issue write. No second Intent, new Readiness, PR edit/merge, Admin, Activation, Issue #63, release, tag, or Issue-close operation occurs.
+
+<a id="tst-f01-092"></a>
+### 2.58 TST-F01-092 Applied timestamp reconciliation
+
+**Setup and action:** Use timestamp-recovery ADC #6890080277, its exact predecessor chain, existing Intent #6888474848 and Applied #6889965335, original PASS Readiness, local attempt markers, epoch-3 identity, and PR #75. Reject an incomplete, reordered, unapproved, wrong-byte, or wrong-predecessor ADC generation and any marker tuple or path-allowlist drift. Verify the original bootstrap prefix ends at the pinned `4185a510054a2a8781659191c1a48178336f8571` and satisfies its separate three-commit bound; verify the Recovery and timestamp follow-up as separate one-commit segments with their own allowlists. Verify strict UTC event/publication ordering at equality, three seconds, and the inclusive 300-second boundary; reject 301 seconds, future event time, malformed time, wrong Intent, Applied ID/body digest, or timestamp tuple. Count all GitHub methods during Applied reconciliation: local-only PRBinding/checkpoint rebinding may occur without Issue writes, and a second invocation with the current binding must return NOOP with zero label/comment writes and no Readiness recomputation. Preserve the existing Intent/Applied bytes and verify exactly one follow-up commit parented by `574d7970323840933c34c37e874ad1616d577a8a`, limited to the marker allowlist.
+
+<a id="ora-f01-092"></a>
+#### 2.58.1 ORA-F01-092 Expected result
+
+Only the exact four-generation ADC chain and pinned existing journal records pass. Applied timestamps pass when the canonical UTC publication time is from zero through 300 seconds after the canonical UTC event time; all other differences and identity mismatches block. The existing Applied record is reconciled without writing labels or comments. At most one allowlisted follow-up commit is accepted, and the existing PR metadata, base, branch, epoch, and Issue state remain unchanged.

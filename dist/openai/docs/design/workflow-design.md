@@ -44,6 +44,7 @@
   - [5.29 DES-F01-067 Issue #71 epoch-3 Phase generation](#529-des-f01-067-issue-71-epoch-3-phase-generation)
   - [5.30 DES-F01-090 Successor ADC bootstrap and active Phase bridge](#530-des-f01-090-successor-adc-bootstrap-and-active-phase-bridge)
   - [5.31 DES-F01-091 Pending phase-rework continuation](#531-des-f01-091-pending-phase-rework-continuation)
+  - [5.32 DES-F01-092 Applied timestamp reconciliation and Phase resumption](#532-des-f01-092-applied-timestamp-reconciliation-and-phase-resumption)
 - [6 DES-WF-003 Workspace execution flow](#6-des-wf-003-workspace-execution-flow)
 - [7 DES-WF-004 Failure handling](#7-des-wf-004-failure-handling)
 - [8 DES-WF-005 Authorization boundary and PR handoff](#8-des-wf-005-authorization-boundary-and-pr-handoff)
@@ -87,6 +88,7 @@
 - [DES-F01-067](#des-f01-067) — 5.29 DES-F01-067 Issue #71 epoch-3 Phase generation
 - [DES-F01-090](#des-f01-090) — 5.30 DES-F01-090 Successor ADC bootstrap and active Phase bridge
 - [DES-F01-091](#des-f01-091) — 5.31 DES-F01-091 Pending phase-rework continuation
+- [DES-F01-092](#des-f01-092) — 5.32 DES-F01-092 Applied timestamp reconciliation and Phase resumption
 - [DES-WF-003](#des-wf-003) — 6 DES-WF-003 Workspace execution flow
 - [DES-WF-004](#des-wf-004) — 7 DES-WF-004 Failure handling
 - [DES-WF-005](#des-wf-005) — 8 DES-WF-005 Authorization boundary and PR handoff
@@ -374,6 +376,19 @@ The epoch-3 reader is the only active-generation selector for Issue #71. It chec
 The current Recovery ADC is parsed as a separate exact-byte authorization and chained to its exact predecessor, while the original V2 authorization is recovered from the approved history and remains the authority recorded in Intent #6888474848. The Recovery marker pins the one existing Intent ID/body digest, original Readiness and subject digests, local Intent-attempt digest, pre-recovery HEAD, branch, PR/base, owner/repository/Issue, epoch/Phase generation, full before/after labels, and exact recovery path allowlist. The live reader verifies exactly one descendant commit after the pinned pre-recovery HEAD plus the total bootstrap chain and its combined path policy.
 
 Recovery first validates the stored Intent against its original ADC authorization, validates the canonical original PASS Readiness file at its subject-addressed path, and compares the local Intent-attempt marker byte-for-byte with the pinned payload digest. The no-gate command route verifies the same live subject and appends one current-ADC V4 PRBinding and V3 checkpoint as local immutable records; retries reuse only byte-identical records. The gated continuation refuses to write labels or Applied until those records bind the exact current HEAD. With exact before-labels and no label-attempt marker, it writes the label marker, performs one full-label PUT, reads back the Issue, and appends the matching Applied record. If labels already equal the after-state, Recovery accepts only a matching existing label marker and completes Applied without a PUT. If labels remain before after a marker exists, or after-labels have no marker, it blocks. A lost/ambiguous response therefore permits only read-only reconciliation. No new Intent or post-Intent Readiness is produced.
+
+<a id="des-f01-092"></a>
+### 5.32 DES-F01-092 Applied timestamp reconciliation and Phase resumption
+
+The exact approved timestamp-recovery ADC #6890080277 follows Recovery ADC #6888665795 and adds one immutable authorization marker. The reader verifies the full four-generation approved chain, exact marker bytes, predecessor identity, pinned Issue #71 state, epoch, branch, PR #75, HEAD, labels, and local attempt records. The original rework Intent remains bound to ADC #6886911700; its existing Applied record remains unchanged.
+
+For this exact Applied record only, `applied_at` is the local event time and GitHub `created_at` is publication time. Both must be canonical UTC timestamps. The reader accepts `0 <= created_at - applied_at <= 300` seconds and rejects negative or larger differences. It additionally pins the exact Intent ID/body digest, Applied ID/body digest, both timestamps, and observed delta from the successor marker. Other records and Issues retain exact timestamp equality.
+
+The original bootstrap prefix through `4185a510054a2a8781659191c1a48178336f8571` is validated separately with the original ADC's bounded bootstrap allowlist. The Recovery commit remains one descendant of that boundary. The timestamp correction permits exactly one additional commit parented by `574d7970323840933c34c37e874ad1616d577a8a`; its paths must be in the exact successor allowlist. The complete branch therefore has exactly two descendants of the original Recovery base, with each segment checked against its own marker. Generated host mirrors come only from `python tools/build_dist.py`.
+
+With Applied already present, reconciliation verifies its exact bytes, the original Intent and Readiness, local label and Applied attempt markers, current labels, and PR subject. A no-gate invocation may append only a current-ADC PRBinding V4 and WorkCheckpoint V3 locally; it performs no GitHub writes. A second invocation with the current binding returns a read-only NOOP and does not recompute Readiness or write Issue labels/comments. It never repeats the transition.
+
+After reconciliation and exact-HEAD gates, fresh requirements, specification, design, and READY receipts bind the corrected HEAD and current active Phase generation. The ordinary Phase path then advances to execution before the inherited `solo_owner` User Review identity correction continues. PR merge, Admin policy, Ruleset, Activation, Issue #63, release, tag, and Issue-close operations remain separately gated.
 
 ## 6 DES-WF-003 Workspace execution flow
 
