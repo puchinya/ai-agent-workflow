@@ -104,6 +104,11 @@
   - [9.77 REQ-F01-125 Reconcile before issuing Phase evidence](#977-req-f01-125-reconcile-before-issuing-phase-evidence)
   - [9.78 REQ-F01-126 Declare exact Phase artifact paths](#978-req-f01-126-declare-exact-phase-artifact-paths)
   - [9.79 REQ-F01-127 Preserve operation boundaries](#979-req-f01-127-preserve-operation-boundaries)
+  - [9.80 REQ-F01-128 Preserve the exact reader-continuation subject](#980-req-f01-128-preserve-the-exact-reader-continuation-subject)
+  - [9.81 REQ-F01-129 Verify the exact eight-generation ADC chain](#981-req-f01-129-verify-the-exact-eight-generation-adc-chain)
+  - [9.82 REQ-F01-130 Bound the reader-continuation commit](#982-req-f01-130-bound-the-reader-continuation-commit)
+  - [9.83 REQ-F01-131 Repair executable-source traceability](#983-req-f01-131-repair-executable-source-traceability)
+  - [9.84 REQ-F01-132 Gate the exact HEAD and resume Phase transitions](#984-req-f01-132-gate-the-exact-head-and-resume-phase-transitions)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -197,6 +202,11 @@
 - [REQ-F01-125](#req-f01-125) — 9.77 REQ-F01-125 Reconcile before issuing Phase evidence
 - [REQ-F01-126](#req-f01-126) — 9.78 REQ-F01-126 Declare exact Phase artifact paths
 - [REQ-F01-127](#req-f01-127) — 9.79 REQ-F01-127 Preserve operation boundaries
+- [REQ-F01-128](#req-f01-128) — 9.80 REQ-F01-128 Preserve the exact reader-continuation subject
+- [REQ-F01-129](#req-f01-129) — 9.81 REQ-F01-129 Verify the exact eight-generation ADC chain
+- [REQ-F01-130](#req-f01-130) — 9.82 REQ-F01-130 Bound the reader-continuation commit
+- [REQ-F01-131](#req-f01-131) — 9.83 REQ-F01-131 Repair executable-source traceability
+- [REQ-F01-132](#req-f01-132) — 9.84 REQ-F01-132 Gate the exact HEAD and resume Phase transitions
 <!-- heading-map:end -->
 
 
@@ -873,3 +883,28 @@ Declare Specification as `docs/specs/workflow-spec.md`, Design as `docs/design/w
 ### 9.79 REQ-F01-127 Preserve operation boundaries
 
 Do not add an Intent/Applied or recovery marker, move phases backward, merge PR #75, change Admin policy or Rulesets, create a Setup PR, run Activation, implement User Review identity, release, push tags, write Issue #63, or close Issue #71.
+
+<a id="req-f01-128"></a>
+### 9.80 REQ-F01-128 Preserve the exact reader-continuation subject
+
+Preserve Issue #71 OPEN and its exact body, the complete approved ADC history, active epoch and execution identity, branch and frozen base, PR #75 metadata, existing rework Intent/Applied, current phase labels before continuation, and completed requirements→specification and specification→design receipts as immutable history.
+
+<a id="req-f01-129"></a>
+### 9.81 REQ-F01-129 Verify the exact eight-generation ADC chain
+
+Accept the current approved reader-continuation ADC only after verifying the exact eight-generation chain, every predecessor digest, canonical marker bytes and fields, and the pinned Issue, owner, epoch, branch, PR/base, Intent, Applied, phase, labels, and HEAD identities. Reject missing, duplicate, reordered, edited, unapproved, stale, or mismatched generations.
+
+<a id="req-f01-130"></a>
+### 9.82 REQ-F01-130 Bound the reader-continuation commit
+
+Preserve the validated continuation through `b31cca21da15e18d0e1665827621700f7d774d0a`, then permit exactly one direct-child commit with the marker's exact 15-path allowlist. Reject merges, wrong parents, extra commits, outside paths, and any later descendant. Generate distribution mirrors only with `python tools/build_dist.py`.
+
+<a id="req-f01-131"></a>
+### 9.83 REQ-F01-131 Repair executable-source traceability
+
+Add `../../tests/test_phase_rework.py` to the REQ-F01-124 traceability row while preserving its existing links. Add complete traceability rows for REQ-F01-128 through REQ-F01-132, each with exactly one linked Specification, Design, Oracle, and Test plus at least one repository-contained executable test source.
+
+<a id="req-f01-132"></a>
+### 9.84 REQ-F01-132 Gate the exact HEAD and resume Phase transitions
+
+At the one exact pushed HEAD, pass every required local and hosted verification gate, fresh exact-subject Verification/Acceptance/Self-Audit/Independent Review, and P-ASES PRBinding. Reconcile the existing Applied record read-only with a zero-write NOOP. Then publish and verify fresh design→ready and ready→execution receipts in order and apply only those adjacent phase transitions. Keep Issue #71 OPEN and PR #75 OPEN/non-draft/unmerged; stop at execution.
