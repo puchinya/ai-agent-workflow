@@ -227,6 +227,76 @@ TIMESTAMP_RECOVERY_AUTHORIZATION: dict[str, Any] = {
     "schema": TIMESTAMP_RECOVERY_AUTH_SCHEMA,
 }
 TIMESTAMP_RECOVERY_AUTH_FIELDS = frozenset(TIMESTAMP_RECOVERY_AUTHORIZATION)
+PATH_CORRECTION_ADC_COMMENT_ID = 6891800412
+PATH_CORRECTION_ADC_SHA256 = "ca22ada47ffb31479ccc57664052486808fa86de3eabf2c1fb5680ca33b05280"
+PATH_CORRECTION_ADC_BYTES = 9188
+PATH_CORRECTION_ARTIFACT_IMPACT = (
+    "## Artifact impact\n\n"
+    "- Specification: `docs/specs/workflow-spec.md`.\n"
+    "- Design: `docs/design/workflow-design.md`.\n"
+    "- Testing: `docs/testing/pases-lifecycle-tests.md`, `docs/testing/runtime-tests.md`, "
+    "`docs/testing/traceability.md`."
+)
+CONTINUATION_ADC_COMMENT_ID = 6891926625
+CONTINUATION_ADC_SHA256 = "64c8d8d3ceb06f5e04d6c9eb780c0bb3a0607dc61440e136b00bcdf63cf941a8"
+CONTINUATION_ADC_BYTES = 16060
+CONTINUATION_AUTH_SCHEMA = "PASES_ISSUE_PHASE_EVIDENCE_CONTINUATION_AUTHORIZATION_V1"
+CONTINUATION_AUTH_MARKER_BYTES = 2155
+CONTINUATION_AUTH_MARKER_SHA256 = "f74bcd07095019aade9bfb4247bdfba1efe92d6daf925f0988f88b79d04199a5"
+CONTINUATION_ARTIFACT_IMPACT = (
+    "## Artifact impact\n\n"
+    "- Specification: `docs/specs/workflow-spec.md`.\n"
+    "- Design: `docs/design/workflow-design.md`.\n"
+    "- Testing: `docs/testing/pases-lifecycle-tests.md`, `docs/testing/traceability.md`."
+)
+CONTINUATION_AUTHORIZATION: dict[str, Any] = {
+    "active_epoch_id": ACTIVE_EPOCH_ID,
+    "active_epoch_sha256": ACTIVE_EPOCH_SHA256,
+    "active_phase_generation_comment_id": ACTIVE_PHASE_COMMENT_ID,
+    "active_phase_generation_sha256": ACTIVE_PHASE_SHA256,
+    "applied_body_sha256": "b8648cfd2c9c1479791554179069bfc3b57ab5c7d26ccf255184087dcf388b18",
+    "applied_comment_id": 6889965335,
+    "branch_ref": BRANCH_REF,
+    "current_head_sha40": "cb02a9fccfb988300dff82c5ad2ccfe946cd4dd3",
+    "current_issue_body_sha256": ISSUE_BODY_SHA256,
+    "executor_user_id": OWNER_ID,
+    "followup_path_allowlist": [
+        "dist/antigravity/docs/design/workflow-design.md",
+        "dist/antigravity/docs/specs/workflow-spec.md",
+        "dist/antigravity/runtime/p_ases/phase_rework.py",
+        "dist/claude/docs/design/workflow-design.md",
+        "dist/claude/docs/specs/workflow-spec.md",
+        "dist/claude/runtime/p_ases/phase_rework.py",
+        "dist/openai/docs/design/workflow-design.md",
+        "dist/openai/docs/specs/workflow-spec.md",
+        "dist/openai/runtime/p_ases/phase_rework.py",
+        "docs/design/workflow-design.md",
+        "docs/specs/workflow-spec.md",
+        "docs/testing/pases-lifecycle-tests.md",
+        "docs/testing/traceability.md",
+        "runtime/p_ases/phase_rework.py",
+        "tests/test_p_ases_cli.py",
+        "tests/test_phase_rework.py",
+    ],
+    "frozen_base_ref": BASE_REF,
+    "frozen_base_sha40": BASE_SHA40,
+    "intent_body_sha256": "ad2b75b99d4d0aa11d2cf021605eae9ecd9386a436f8032033a4cf87e5bd5be5",
+    "intent_comment_id": 6888474848,
+    "issue_id": ISSUE_ID,
+    "issue_number": ISSUE_NUMBER,
+    "labels_before": LABELS_AFTER,
+    "max_followup_commits": 1,
+    "owner_id": OWNER_ID,
+    "predecessor_adc_comment_id": PATH_CORRECTION_ADC_COMMENT_ID,
+    "predecessor_adc_sha256": PATH_CORRECTION_ADC_SHA256,
+    "pr_base_ref": PR_BASE_REF,
+    "pr_base_sha40": PR_BASE_SHA40,
+    "pr_number": PR_NUMBER,
+    "repository": REPOSITORY,
+    "repository_id": REPOSITORY_ID,
+    "schema": CONTINUATION_AUTH_SCHEMA,
+}
+CONTINUATION_AUTH_FIELDS = frozenset(CONTINUATION_AUTHORIZATION)
 COMMON_FIELDS = frozenset({
     "repository", "repository_id", "issue_number", "issue_id", "adc_comment_id", "adc_sha256",
     "authorization_sha256", "predecessor_adc_comment_id", "predecessor_adc_sha256",
@@ -274,6 +344,8 @@ class _Live:
     recovery_authorization_sha256: str | None = None
     timestamp_recovery_authorization: dict[str, Any] | None = None
     timestamp_recovery_authorization_sha256: str | None = None
+    continuation_authorization: dict[str, Any] | None = None
+    continuation_authorization_sha256: str | None = None
 
 
 def _canonical(value: Any) -> str:
@@ -413,10 +485,76 @@ def parse_timestamp_recovery_authorization(verified: VerifiedADC) -> tuple[dict[
     return value, hashlib.sha256(marker_bytes).hexdigest()
 
 
+def _validate_adc_predecessor(text: str, comment_id: int, digest: str, label: str) -> None:
+    predecessor = re.search(
+        r"^Predecessor ADC: Issue #71 comment #(\d+), SHA-256 ([0-9a-f]{64})$", text, re.M,
+    )
+    if (predecessor is None or int(predecessor.group(1)) != comment_id
+            or predecessor.group(2) != digest):
+        raise PhaseReworkError(f"{label} predecessor declaration differs from its exact approved pointer")
+
+
+def parse_path_correction_generation(verified: VerifiedADC) -> None:
+    """Validate the immutable ADC generation that corrected the artifact paths."""
+    contract = verified.contract
+    if (verified.pointer.state != "approved"
+            or verified.pointer.comment_id != PATH_CORRECTION_ADC_COMMENT_ID
+            or contract.sha256 != PATH_CORRECTION_ADC_SHA256
+            or contract.byte_length != PATH_CORRECTION_ADC_BYTES
+            or contract.repository.casefold() != REPOSITORY.casefold()):
+        raise PhaseReworkError("path-correction ADC differs from its exact approved generation")
+    text = contract.content.decode("utf-8", errors="strict")
+    _validate_adc_predecessor(
+        text, TIMESTAMP_RECOVERY_ADC_COMMENT_ID, TIMESTAMP_RECOVERY_ADC_SHA256,
+        "path-correction ADC",
+    )
+    if text.count(PATH_CORRECTION_ARTIFACT_IMPACT) != 1:
+        raise PhaseReworkError("path-correction ADC does not declare the exact corrected Artifact impact paths")
+
+
+def parse_continuation_authorization(verified: VerifiedADC) -> tuple[dict[str, Any], str]:
+    """Parse the one exact continuation marker authorized by the current ADC."""
+    contract = verified.contract
+    if (verified.pointer.state != "approved"
+            or verified.pointer.comment_id != CONTINUATION_ADC_COMMENT_ID
+            or contract.sha256 != CONTINUATION_ADC_SHA256
+            or contract.byte_length != CONTINUATION_ADC_BYTES
+            or contract.repository.casefold() != REPOSITORY.casefold()):
+        raise PhaseReworkError("current continuation ADC differs from its exact approved generation")
+    text = contract.content.decode("utf-8", errors="strict")
+    start_marker = f"<!-- {CONTINUATION_AUTH_SCHEMA}\n"
+    if text.count(start_marker) != 1:
+        raise PhaseReworkError("current continuation ADC must contain exactly one authorization marker")
+    start = text.index(start_marker)
+    close = text.find("\n-->", start + len(start_marker))
+    if close < 0:
+        raise PhaseReworkError("continuation authorization marker is incomplete")
+    raw = text[start + len(start_marker):close]
+    try:
+        value = json.loads(raw, object_pairs_hook=_pairs)
+    except (json.JSONDecodeError, UnicodeError) as exc:
+        raise PhaseReworkError("continuation authorization JSON is malformed") from exc
+    marker_bytes = text[start:close + len("\n-->")].encode("utf-8")
+    if (len(marker_bytes) != CONTINUATION_AUTH_MARKER_BYTES
+            or hashlib.sha256(marker_bytes).hexdigest() != CONTINUATION_AUTH_MARKER_SHA256):
+        raise PhaseReworkError("continuation authorization bytes differ from the exact approved marker")
+    if (not isinstance(value, dict) or set(value) != CONTINUATION_AUTH_FIELDS
+            or _canonical(value) != raw or value != CONTINUATION_AUTHORIZATION):
+        raise PhaseReworkError("continuation authorization differs from its exact canonical tuple")
+    _validate_adc_predecessor(
+        text, PATH_CORRECTION_ADC_COMMENT_ID, PATH_CORRECTION_ADC_SHA256,
+        "continuation ADC",
+    )
+    if text.count(CONTINUATION_ARTIFACT_IMPACT) != 1:
+        raise PhaseReworkError("continuation ADC does not declare the exact corrected Artifact impact paths")
+    return value, hashlib.sha256(marker_bytes).hexdigest()
+
+
 def _authorization_context(github: GitHub, current: VerifiedADC
                             ) -> tuple[dict[str, Any], str, dict[str, Any] | None, str | None,
+                                       dict[str, Any] | None, str | None,
                                        dict[str, Any] | None, str | None]:
-    """Resolve the original rework authorization and optional recovery successor."""
+    """Resolve the original rework authorization and its exact approved successors."""
     if current.pointer.comment_id == REWORK_ADC_COMMENT_ID:
         try:
             chain = verify_adc_forward_generations(
@@ -433,7 +571,47 @@ def _authorization_context(github: GitHub, current: VerifiedADC
                 (REWORK_ADC_COMMENT_ID, REWORK_ADC_SHA256)):
             raise PhaseReworkError("current ADC is not the exact approved successor of #6886911700")
         authorization, authorization_sha = parse_authorization(current)
-        return authorization, authorization_sha, None, None, None, None
+        return authorization, authorization_sha, None, None, None, None, None, None
+    if current.pointer.comment_id == CONTINUATION_ADC_COMMENT_ID:
+        continuation_authorization, continuation_sha = parse_continuation_authorization(current)
+        try:
+            chain = verify_adc_forward_generations(
+                github, ISSUE_NUMBER,
+                prior_comment_id=PREDECESSOR_ADC_COMMENT_ID,
+                prior_sha256=PREDECESSOR_ADC_SHA256,
+                current_comment_id=current.pointer.comment_id,
+                current_sha256=current.contract.sha256,
+            )
+        except ADCError as exc:
+            raise PhaseReworkError(f"approved continuation ADC chain readback failed: {exc}") from exc
+        expected_chain = (
+            (PREDECESSOR_ADC_COMMENT_ID, PREDECESSOR_ADC_SHA256),
+            (REWORK_ADC_COMMENT_ID, REWORK_ADC_SHA256),
+            (RECOVERY_ADC_COMMENT_ID, RECOVERY_ADC_SHA256),
+            (TIMESTAMP_RECOVERY_ADC_COMMENT_ID, TIMESTAMP_RECOVERY_ADC_SHA256),
+            (PATH_CORRECTION_ADC_COMMENT_ID, PATH_CORRECTION_ADC_SHA256),
+            (CONTINUATION_ADC_COMMENT_ID, CONTINUATION_ADC_SHA256),
+        )
+        actual_chain = tuple((item.pointer.comment_id, item.contract.sha256) for item in chain)
+        if (actual_chain != expected_chain
+                or any(item.pointer.state != "approved" for item in chain)):
+            raise PhaseReworkError("continuation ADC is not the complete exact six-generation approved chain")
+        authorization, authorization_sha = parse_authorization(chain[1])
+        recovery_authorization, recovery_sha = parse_authorization(chain[2])
+        timestamp_recovery_authorization, timestamp_recovery_sha = (
+            parse_timestamp_recovery_authorization(chain[3])
+        )
+        parse_path_correction_generation(chain[4])
+        if (recovery_authorization.get("predecessor_adc_comment_id") != chain[1].pointer.comment_id
+                or recovery_authorization.get("predecessor_adc_sha256") != chain[1].contract.sha256
+                or timestamp_recovery_authorization.get("predecessor_adc_comment_id") != chain[2].pointer.comment_id
+                or timestamp_recovery_authorization.get("predecessor_adc_sha256") != chain[2].contract.sha256
+                or continuation_authorization.get("predecessor_adc_comment_id") != chain[4].pointer.comment_id
+                or continuation_authorization.get("predecessor_adc_sha256") != chain[4].contract.sha256):
+            raise PhaseReworkError("continuation authorization does not bind its exact approved predecessor chain")
+        return (authorization, authorization_sha, recovery_authorization, recovery_sha,
+                timestamp_recovery_authorization, timestamp_recovery_sha,
+                continuation_authorization, continuation_sha)
     if current.pointer.comment_id == TIMESTAMP_RECOVERY_ADC_COMMENT_ID:
         timestamp_recovery_authorization, timestamp_recovery_sha = (
             parse_timestamp_recovery_authorization(current)
@@ -465,7 +643,7 @@ def _authorization_context(github: GitHub, current: VerifiedADC
                 or timestamp_recovery_authorization.get("predecessor_adc_sha256") != chain[2].contract.sha256):
             raise PhaseReworkError("timestamp-recovery authorization does not bind its exact approved predecessor")
         return (authorization, authorization_sha, recovery_authorization, recovery_sha,
-                timestamp_recovery_authorization, timestamp_recovery_sha)
+                timestamp_recovery_authorization, timestamp_recovery_sha, None, None)
     recovery_authorization, recovery_sha = parse_authorization(current)
     if current.pointer.comment_id != RECOVERY_ADC_COMMENT_ID:
         raise PhaseReworkError("current ADC is not an exact Issue #71 rework generation")
@@ -491,7 +669,7 @@ def _authorization_context(github: GitHub, current: VerifiedADC
     if (recovery_authorization.get("predecessor_adc_comment_id") != chain[1].pointer.comment_id
             or recovery_authorization.get("predecessor_adc_sha256") != chain[1].contract.sha256):
         raise PhaseReworkError("recovery authorization does not bind its exact approved predecessor")
-    return authorization, authorization_sha, recovery_authorization, recovery_sha, None, None
+    return authorization, authorization_sha, recovery_authorization, recovery_sha, None, None, None, None
 
 
 def _label_names(issue: Mapping[str, Any]) -> tuple[str, ...]:
@@ -575,7 +753,32 @@ def _verify_commit_set(root: Path, head: str, allowlist: tuple[str, ...]) -> Non
 
 def _verify_recovery_commit_set(root: Path, head: str,
                                 recovery_authorization: Mapping[str, Any],
-                                timestamp_recovery_authorization: Mapping[str, Any] | None = None) -> None:
+                                timestamp_recovery_authorization: Mapping[str, Any] | None = None,
+                                continuation_authorization: Mapping[str, Any] | None = None) -> None:
+    if continuation_authorization is not None:
+        followup_head = continuation_authorization.get("current_head_sha40")
+        if (followup_head != "cb02a9fccfb988300dff82c5ad2ccfe946cd4dd3"
+                or continuation_authorization.get("max_followup_commits") != 1
+                or timestamp_recovery_authorization is None):
+            raise PhaseReworkError("continuation marker differs from the exact follow-up commit tuple")
+        _verify_recovery_commit_set(
+            root, followup_head, recovery_authorization, timestamp_recovery_authorization,
+        )
+        if not is_ancestor(root, followup_head, head):
+            raise PhaseReworkError("continuation HEAD must descend from its exact starting HEAD")
+        rows = run_git(root, "rev-list", "--reverse", f"{followup_head}..{head}").splitlines()
+        if len(rows) != continuation_authorization.get("max_followup_commits"):
+            raise PhaseReworkError("continuation must contain exactly one authorized follow-up commit")
+        if commit_parents_sha40(root, rows[0]) != (followup_head,):
+            raise PhaseReworkError("continuation commit has an unexpected parent")
+        changed = changed_paths_between(root, followup_head, rows[0])
+        allowlist = continuation_authorization.get("followup_path_allowlist")
+        if (not isinstance(allowlist, list) or len(allowlist) != len(set(allowlist))
+                or not changed or any(path not in allowlist for path in changed)):
+            raise PhaseReworkError("continuation commit changes a path outside its exact allowlist")
+        if rows[0] != head:
+            raise PhaseReworkError("continuation commit enumeration does not end at the exact HEAD")
+        return
     if timestamp_recovery_authorization is not None:
         followup_head = timestamp_recovery_authorization.get("current_head_sha40")
         if (followup_head != "574d7970323840933c34c37e874ad1616d577a8a"
@@ -617,8 +820,11 @@ def _verify_recovery_commit_set(root: Path, head: str,
 def _verify_issue71_commit_lineage(root: Path, head: str,
                                    authorization: Mapping[str, Any],
                                    recovery_authorization: Mapping[str, Any] | None,
-                                   timestamp_recovery_authorization: Mapping[str, Any] | None) -> None:
+                                   timestamp_recovery_authorization: Mapping[str, Any] | None,
+                                   continuation_authorization: Mapping[str, Any] | None = None) -> None:
     if recovery_authorization is not None:
+        if continuation_authorization is not None and timestamp_recovery_authorization is None:
+            raise PhaseReworkError("continuation lineage lacks the exact timestamp-recovery generation")
         if timestamp_recovery_authorization is None:
             allowlist = tuple(sorted(set(authorization["bootstrap_path_allowlist"])
                                      | set(recovery_authorization["recovery_path_allowlist"])))
@@ -631,6 +837,7 @@ def _verify_issue71_commit_lineage(root: Path, head: str,
                                tuple(authorization["bootstrap_path_allowlist"]))
         _verify_recovery_commit_set(
             root, head, recovery_authorization, timestamp_recovery_authorization,
+            continuation_authorization,
         )
     elif head != BASELINE_HEAD:
         _verify_commit_set(root, head, tuple(authorization["bootstrap_path_allowlist"]))
@@ -656,7 +863,8 @@ def _live(github: GitHub, root: Path, *, phase: str | None = None,
     try:
         current = verify_adc(github, ISSUE_NUMBER)
         authorization, authorization_sha, recovery_authorization, recovery_sha, \
-            timestamp_recovery_authorization, timestamp_recovery_sha = (
+            timestamp_recovery_authorization, timestamp_recovery_sha, \
+            continuation_authorization, continuation_sha = (
             _authorization_context(github, current)
         )
         actor = github.authenticated_user()
@@ -698,11 +906,13 @@ def _live(github: GitHub, root: Path, *, phase: str | None = None,
             raise PhaseReworkError("local bootstrap HEAD differs from the remote PR branch HEAD")
         _verify_issue71_commit_lineage(
             root, head, authorization, recovery_authorization, timestamp_recovery_authorization,
+            continuation_authorization,
         )
         return _Live(current, epoch, issue, labels, branch, head, _pr(github, head),
                      actor["id"], authorization_sha, root,
                      recovery_authorization, recovery_sha,
-                     timestamp_recovery_authorization, timestamp_recovery_sha)
+                     timestamp_recovery_authorization, timestamp_recovery_sha,
+                     continuation_authorization, continuation_sha)
     except (ADCError, GitError, GitHubError, ValueError) as exc:
         raise PhaseReworkError(str(exc)) from exc
 
@@ -996,13 +1206,26 @@ def _validate_recovery_intent(intent: PhaseReworkRecord, live: _Live,
     recovery = live.recovery_authorization
     current_adc_id = live.current_adc.pointer.comment_id
     timestamp_authorization = live.timestamp_recovery_authorization
+    continuation_authorization = live.continuation_authorization
     if (recovery is None
-            or current_adc_id not in {RECOVERY_ADC_COMMENT_ID, TIMESTAMP_RECOVERY_ADC_COMMENT_ID}
-            or (current_adc_id == RECOVERY_ADC_COMMENT_ID and timestamp_authorization is not None)
+            or current_adc_id not in {
+                RECOVERY_ADC_COMMENT_ID, TIMESTAMP_RECOVERY_ADC_COMMENT_ID,
+                CONTINUATION_ADC_COMMENT_ID,
+            }
+            or (current_adc_id == RECOVERY_ADC_COMMENT_ID
+                and (timestamp_authorization is not None or continuation_authorization is not None))
             or (current_adc_id == TIMESTAMP_RECOVERY_ADC_COMMENT_ID
                 and (timestamp_authorization != TIMESTAMP_RECOVERY_AUTHORIZATION
                      or live.timestamp_recovery_authorization_sha256
-                     != TIMESTAMP_RECOVERY_AUTH_MARKER_SHA256))):
+                     != TIMESTAMP_RECOVERY_AUTH_MARKER_SHA256
+                     or continuation_authorization is not None))
+            or (current_adc_id == CONTINUATION_ADC_COMMENT_ID
+                and (timestamp_authorization != TIMESTAMP_RECOVERY_AUTHORIZATION
+                     or live.timestamp_recovery_authorization_sha256
+                     != TIMESTAMP_RECOVERY_AUTH_MARKER_SHA256
+                     or continuation_authorization != CONTINUATION_AUTHORIZATION
+                     or live.continuation_authorization_sha256
+                     != CONTINUATION_AUTH_MARKER_SHA256))):
         raise PhaseReworkError("current ADC does not authorize pending Intent recovery")
     if (intent.comment_id != recovery["intent_comment_id"]
             or intent.body_sha256 != recovery["intent_body_sha256"]
@@ -1143,7 +1366,11 @@ def rebind_issue71_recovery_pr(github: GitHub, root: Path, issue_number: int) ->
     fresh_history = _read_history(github)
     fresh_intent, fresh_applied = _active_rework_records(fresh_history, fresh.current_adc)
     if (fresh.recovery_authorization != live.recovery_authorization
+            or fresh.recovery_authorization_sha256 != live.recovery_authorization_sha256
             or fresh.timestamp_recovery_authorization != live.timestamp_recovery_authorization
+            or fresh.timestamp_recovery_authorization_sha256 != live.timestamp_recovery_authorization_sha256
+            or fresh.continuation_authorization != live.continuation_authorization
+            or fresh.continuation_authorization_sha256 != live.continuation_authorization_sha256
             or fresh.current_adc.pointer != live.current_adc.pointer
             or fresh.current_adc.contract.sha256 != live.current_adc.contract.sha256
             or fresh.epoch.sha256 != live.epoch.sha256 or fresh.issue != live.issue
@@ -1190,7 +1417,12 @@ def rebind_issue71_recovery_pr(github: GitHub, root: Path, issue_number: int) ->
         raise PhaseReworkError(f"could not append Recovery PR checkpoint: {exc}") from exc
     final_live = _live(github, root, require_clean=True)
     if (final_live.recovery_authorization != fresh.recovery_authorization
+            or final_live.recovery_authorization_sha256 != fresh.recovery_authorization_sha256
             or final_live.timestamp_recovery_authorization != fresh.timestamp_recovery_authorization
+            or final_live.timestamp_recovery_authorization_sha256
+            != fresh.timestamp_recovery_authorization_sha256
+            or final_live.continuation_authorization != fresh.continuation_authorization
+            or final_live.continuation_authorization_sha256 != fresh.continuation_authorization_sha256
             or final_live.current_adc.pointer != fresh.current_adc.pointer
             or final_live.current_adc.contract.sha256 != fresh.current_adc.contract.sha256
             or final_live.epoch.sha256 != fresh.epoch.sha256 or final_live.issue != fresh.issue
@@ -1417,7 +1649,8 @@ def active_phase_generation_for_epoch(github: GitHub, root: Path, current_adc: V
                                       origin_epoch: Any, issue: Mapping[str, Any]) -> tuple[int, str]:
     """Return the active rework Applied generation or the immutable epoch Applied."""
     (_authorization, authorization_sha, recovery_authorization, recovery_sha,
-     timestamp_recovery_authorization, timestamp_recovery_sha) = (
+     timestamp_recovery_authorization, timestamp_recovery_sha,
+     continuation_authorization, continuation_sha) = (
         _authorization_context(github, current_adc)
     )
     history = _read_history(github)
@@ -1439,7 +1672,8 @@ def active_phase_generation_for_epoch(github: GitHub, root: Path, current_adc: V
     live = _Live(current_adc, origin_epoch, dict(issue), issue_labels, BRANCH_REF,
                  current_head, _pr(github, current_head), OWNER_ID,
                  authorization_sha, root, recovery_authorization, recovery_sha,
-                 timestamp_recovery_authorization, timestamp_recovery_sha)
+                 timestamp_recovery_authorization, timestamp_recovery_sha,
+                 continuation_authorization, continuation_sha)
     if recovery_authorization is not None:
         _validate_recovery_intent(intent, live, root)
     _validate_intent(intent, live, allow_bootstrap_descendant=True)

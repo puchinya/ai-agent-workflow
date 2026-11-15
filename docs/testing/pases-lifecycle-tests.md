@@ -125,6 +125,8 @@
     - [2.57.1 ORA-F01-091 Expected result](#2571-ora-f01-091-expected-result)
   - [2.58 TST-F01-092 Applied timestamp reconciliation](#258-tst-f01-092-applied-timestamp-reconciliation)
     - [2.58.1 ORA-F01-092 Expected result](#2581-ora-f01-092-expected-result)
+  - [2.59 TST-F01-093 Exact continuation ADC and commit lineage](#259-tst-f01-093-exact-continuation-adc-and-commit-lineage)
+    - [2.59.1 ORA-F01-093 Expected result](#2591-ora-f01-093-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -245,6 +247,8 @@
 - [ORA-F01-091](#ora-f01-091) — 2.57.1 ORA-F01-091 Expected result
 - [TST-F01-092](#tst-f01-092) — 2.58 TST-F01-092 Applied timestamp reconciliation
 - [ORA-F01-092](#ora-f01-092) — 2.58.1 ORA-F01-092 Expected result
+- [TST-F01-093](#tst-f01-093) — 2.59 TST-F01-093 Exact continuation ADC and commit lineage
+- [ORA-F01-093](#ora-f01-093) — 2.59.1 ORA-F01-093 Expected result
 <!-- heading-map:end -->
 
 
@@ -886,3 +890,13 @@ Only the exact pending Intent and its original PASS Readiness under the exact ap
 #### 2.58.1 ORA-F01-092 Expected result
 
 Only the exact four-generation ADC chain and pinned existing journal records pass. Applied timestamps pass when the canonical UTC publication time is from zero through 300 seconds after the canonical UTC event time; all other differences and identity mismatches block. The existing Applied record is reconciled without writing labels or comments. At most one allowlisted follow-up commit is accepted, and the existing PR metadata, base, branch, epoch, and Issue state remain unchanged.
+
+<a id="tst-f01-093"></a>
+### 2.59 TST-F01-093 Exact continuation ADC and commit lineage
+
+**Setup and action:** Use the approved six-generation ADC chain through continuation ADC #6891926625, its exact canonical 2,155-byte marker and corrected Artifact impact declarations, the immutable epoch-3 identity, PR #75, current branch/remote HEAD `cb02a9fccfb988300dff82c5ad2ccfe946cd4dd3`, and the existing Intent/Applied pair. Verify exact chain order, approved states, every predecessor link, repository/Issue/owner identity, marker fields, and exact allowlist. Reject a missing or duplicate marker, noncanonical JSON, wrong owner/repository, changed Intent/Applied ID or digest, invalid branch/base/HEAD, bad predecessor, or punctuated artifact path. Verify the branch has three separate one-commit segments after `4185a510054a2a8781659191c1a48178336f8571`: Recovery, timestamp reconciliation, and continuation. Reject unexpected parents, merge commits, extra descendants, and paths outside each segment's allowlist. Count all GitHub writes during exact Applied reconciliation and require a zero-write NOOP. Exercise the CLI route and confirm no second Intent or label/comment write is sent.
+
+<a id="ora-f01-093"></a>
+#### 2.59.1 ORA-F01-093 Expected result
+
+Only the exact approved six-generation chain and its canonical marker authorize the one direct child of `cb02a9fccfb988300dff82c5ad2ccfe946cd4dd3`. Every historic segment keeps its own one-commit boundary and path policy. The current Issue, labels, epoch, Intent, Applied, branch, frozen base, and open/unmerged PR #75 remain bound to the exact subject. Reconciliation returns NOOP with zero Issue writes; any malformed marker, lineage, identity, or artifact path blocks before a write.

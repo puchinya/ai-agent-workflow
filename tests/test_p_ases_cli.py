@@ -802,7 +802,20 @@ class PasesCLITests(unittest.TestCase):
 
     def test_issue71_phase_rework_cli_dispatches_to_dedicated_route(self):
         expected = {"status": "NOOP", "issue": 71, "label_write_count": 0}
-        github = SimpleNamespace(repo="puchinya/ai-agent-workflow")
+        class NoWriteGitHub:
+            repo = "puchinya/ai-agent-workflow"
+
+            def __init__(self):
+                self.write_calls = []
+
+            def __getattr__(self, name):
+                if any(token in name.casefold() for token in ("create", "post", "label", "update")):
+                    def record(*_args, **_kwargs):
+                        self.write_calls.append(name)
+                    return record
+                raise AttributeError(name)
+
+        github = NoWriteGitHub()
         with patch("p_ases.cli._repo_root", return_value=ROOT), \
                 patch("p_ases.cli.discover_repository", return_value=github.repo), \
                 patch("p_ases.cli.GitHub", return_value=github) as make_github, \
@@ -818,6 +831,7 @@ class PasesCLITests(unittest.TestCase):
         self.assertIsNone(kwargs["readiness_factory"])
         make_github.assert_called_once_with(github.repo)
         emit.assert_called_once_with(expected)
+        self.assertEqual(github.write_calls, [])
 
     def test_phase_refresh_ready_cli_is_generic_and_reports_current_receipt(self):
         args = _parser().parse_args([

@@ -45,6 +45,7 @@
   - [5.30 DES-F01-090 Successor ADC bootstrap and active Phase bridge](#530-des-f01-090-successor-adc-bootstrap-and-active-phase-bridge)
   - [5.31 DES-F01-091 Pending phase-rework continuation](#531-des-f01-091-pending-phase-rework-continuation)
   - [5.32 DES-F01-092 Applied timestamp reconciliation and Phase resumption](#532-des-f01-092-applied-timestamp-reconciliation-and-phase-resumption)
+  - [5.33 DES-F01-093 Exact continuation ADC reader and lineage](#533-des-f01-093-exact-continuation-adc-reader-and-lineage)
 - [6 DES-WF-003 Workspace execution flow](#6-des-wf-003-workspace-execution-flow)
 - [7 DES-WF-004 Failure handling](#7-des-wf-004-failure-handling)
 - [8 DES-WF-005 Authorization boundary and PR handoff](#8-des-wf-005-authorization-boundary-and-pr-handoff)
@@ -89,6 +90,7 @@
 - [DES-F01-090](#des-f01-090) — 5.30 DES-F01-090 Successor ADC bootstrap and active Phase bridge
 - [DES-F01-091](#des-f01-091) — 5.31 DES-F01-091 Pending phase-rework continuation
 - [DES-F01-092](#des-f01-092) — 5.32 DES-F01-092 Applied timestamp reconciliation and Phase resumption
+- [DES-F01-093](#des-f01-093) — 5.33 DES-F01-093 Exact continuation ADC reader and lineage
 - [DES-WF-003](#des-wf-003) — 6 DES-WF-003 Workspace execution flow
 - [DES-WF-004](#des-wf-004) — 7 DES-WF-004 Failure handling
 - [DES-WF-005](#des-wf-005) — 8 DES-WF-005 Authorization boundary and PR handoff
@@ -389,6 +391,15 @@ The original bootstrap prefix through `4185a510054a2a8781659191c1a48178336f8571`
 With Applied already present, reconciliation verifies its exact bytes, the original Intent and Readiness, local label and Applied attempt markers, current labels, and PR subject. A no-gate invocation may append only a current-ADC PRBinding V4 and WorkCheckpoint V3 locally; it performs no GitHub writes. A second invocation with the current binding returns a read-only NOOP and does not recompute Readiness or write Issue labels/comments. It never repeats the transition.
 
 After reconciliation and exact-HEAD gates, fresh requirements, specification, design, and READY receipts bind the corrected HEAD and current active Phase generation. The ordinary Phase path then advances to execution before the inherited `solo_owner` User Review identity correction continues. PR merge, Admin policy, Ruleset, Activation, Issue #63, release, tag, and Issue-close operations remain separately gated.
+
+<a id="des-f01-093"></a>
+### 5.33 DES-F01-093 Exact continuation ADC reader and lineage
+
+`phase_rework.py` accepts the continuation generation only after the ADC reader verifies the complete six-generation approved chain from #6886911700 through #6891926625. It separately parses the exact current continuation marker, checks canonical JSON and its pinned bytes/digest, and binds the exact predecessor, corrected inline-code Artifact impact, Issue/repository/owner, existing Intent/Applied, epoch, phase, labels, branch, frozen base, PR, pre-commit HEAD, and allowlist. The immutable path-correction ADC is validated as its own predecessor generation; it does not change the generic artifact path parser.
+
+Lineage validation composes three independent one-commit segments after the pinned pre-recovery boundary: the existing Recovery commit, the timestamp reconciliation commit, and the new continuation commit. Each segment requires one direct parent, one exact endpoint, and only its own allowlisted paths. The original bootstrap prefix is still checked with the original bootstrap policy. A missing or duplicate marker, reordered/unapproved generation, changed Intent/Applied binding, invalid live identity, merge, extra descendant, wrong parent, or changed path blocks.
+
+The continuation preserves the original Intent and Applied journal. Its read-only reconciliation validates the existing pair and local attempt records; PRBinding/checkpoint rebinding remains local-only and create-once. Once the current binding and all exact-HEAD gates pass, fresh Phase receipts and adjacent label transitions resume in order through execution. No Admin, Activation, User Review identity implementation, PR merge, release, tag, Issue #63, or Issue-close operation is part of this continuation.
 
 ## 6 DES-WF-003 Workspace execution flow
 

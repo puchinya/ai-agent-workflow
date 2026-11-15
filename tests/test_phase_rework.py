@@ -128,6 +128,52 @@ def timestamp_recovery_contract(authorization: dict | None = None) -> SimpleName
     )
 
 
+def path_correction_contract() -> SimpleNamespace:
+    text = (
+        f"Predecessor ADC: Issue #71 comment #{module.TIMESTAMP_RECOVERY_ADC_COMMENT_ID}, "
+        f"SHA-256 {module.TIMESTAMP_RECOVERY_ADC_SHA256}\n\n"
+        f"{module.PATH_CORRECTION_ARTIFACT_IMPACT}\n"
+    )
+    content = text.encode("utf-8")
+    content += b" " * (module.PATH_CORRECTION_ADC_BYTES - len(content))
+    return verified_contract(
+        module.PATH_CORRECTION_ADC_COMMENT_ID, module.PATH_CORRECTION_ADC_SHA256,
+        module.PATH_CORRECTION_ADC_BYTES, module.REPOSITORY, content,
+    )
+
+
+def continuation_contract(authorization: dict | None = None,
+                          *, predecessor_id: int | None = None,
+                          predecessor_sha: str | None = None,
+                          artifact_impact: str | None = None,
+                          duplicate_marker: bool = False,
+                          missing_marker: bool = False,
+                          repository: str | None = None) -> SimpleNamespace:
+    authorization = authorization or module.CONTINUATION_AUTHORIZATION
+    predecessor_id = predecessor_id or module.PATH_CORRECTION_ADC_COMMENT_ID
+    predecessor_sha = predecessor_sha or module.PATH_CORRECTION_ADC_SHA256
+    impact = artifact_impact or module.CONTINUATION_ARTIFACT_IMPACT
+    marker = (
+        f"<!-- {module.CONTINUATION_AUTH_SCHEMA}\n"
+        f"{module._canonical(authorization)}\n-->"
+    )
+    marker_section = "" if missing_marker else f"\n\n{marker}"
+    if duplicate_marker:
+        marker_section += f"\n{marker}"
+    text = (
+        f"Predecessor ADC: Issue #71 comment #{predecessor_id}, SHA-256 {predecessor_sha}\n\n"
+        f"{impact}{marker_section}\n"
+    )
+    content = text.encode("utf-8")
+    if len(content) > module.CONTINUATION_ADC_BYTES:
+        raise AssertionError("continuation fixture exceeds pinned ADC byte length")
+    content += b" " * (module.CONTINUATION_ADC_BYTES - len(content))
+    return verified_contract(
+        module.CONTINUATION_ADC_COMMENT_ID, module.CONTINUATION_ADC_SHA256,
+        module.CONTINUATION_ADC_BYTES, repository or module.REPOSITORY, content,
+    )
+
+
 def recovery_fixture(root: Path, *, labels: tuple[str, ...] | None = None,
                      current_head: str = "f" * 40):
     intent, original_readiness = intent_record(
@@ -260,13 +306,15 @@ class AuthorizationTests(unittest.TestCase):
             module.RECOVERY_ADC_COMMENT_ID, module.RECOVERY_ADC_SHA256, module.RECOVERY_ADC_BYTES,
         )
         with patch.object(module, "verify_adc_forward_generations", return_value=(predecessor, old, current)):
-            authorization, authorization_sha, recovery, recovery_sha, timestamp, timestamp_sha = module._authorization_context(
+            authorization, authorization_sha, recovery, recovery_sha, timestamp, timestamp_sha, continuation, continuation_sha = module._authorization_context(
                 SimpleNamespace(), current,
             )
         self.assertEqual(authorization, module.AUTHORIZATION)
         self.assertEqual(recovery, module.RECOVERY_AUTHORIZATION)
         self.assertIsNone(timestamp)
         self.assertIsNone(timestamp_sha)
+        self.assertIsNone(continuation)
+        self.assertIsNone(continuation_sha)
         self.assertEqual(len(authorization_sha), 64)
         self.assertEqual(len(recovery_sha), 64)
 
@@ -302,12 +350,14 @@ class AuthorizationTests(unittest.TestCase):
             self.assertEqual(timestamp, module.TIMESTAMP_RECOVERY_AUTHORIZATION)
             self.assertEqual(parsed_sha, timestamp_sha)
             self.assertEqual(len(parsed_sha), 64)
-            authorization, authorization_sha, recovery_auth, recovery_sha, timestamp_auth, _ = (
+            authorization, authorization_sha, recovery_auth, recovery_sha, timestamp_auth, _, continuation_auth, continuation_sha = (
                 module._authorization_context(SimpleNamespace(), current)
             )
         self.assertEqual(authorization, module.AUTHORIZATION)
         self.assertEqual(recovery_auth, module.RECOVERY_AUTHORIZATION)
         self.assertEqual(timestamp_auth, module.TIMESTAMP_RECOVERY_AUTHORIZATION)
+        self.assertIsNone(continuation_auth)
+        self.assertIsNone(continuation_sha)
         self.assertEqual(marker_bytes, 2258)
         self.assertEqual(len(authorization_sha), 64)
         self.assertEqual(len(recovery_sha), 64)
@@ -317,6 +367,96 @@ class AuthorizationTests(unittest.TestCase):
                 patch.object(module, "verify_adc_forward_generations",
                              return_value=(predecessor, old, recovery)), \
                 self.assertRaisesRegex(module.PhaseReworkError, "complete exact approved successor chain"):
+            module._authorization_context(SimpleNamespace(), current)
+
+    def test_continuation_marker_and_corrected_artifact_impact_are_exact(self):
+        current = continuation_contract()
+        marker = (
+            f"<!-- {module.CONTINUATION_AUTH_SCHEMA}\n"
+            f"{module._canonical(module.CONTINUATION_AUTHORIZATION)}\n-->"
+        ).encode("utf-8")
+        self.assertEqual(len(marker), module.CONTINUATION_AUTH_MARKER_BYTES)
+        self.assertEqual(hashlib.sha256(marker).hexdigest(), module.CONTINUATION_AUTH_MARKER_SHA256)
+        authorization, marker_sha = module.parse_continuation_authorization(current)
+        self.assertEqual(authorization, module.CONTINUATION_AUTHORIZATION)
+        self.assertEqual(marker_sha, module.CONTINUATION_AUTH_MARKER_SHA256)
+        module.parse_path_correction_generation(path_correction_contract())
+
+        wrong_path_correction_artifact = path_correction_contract()
+        wrong_path_correction_artifact.contract.content = (
+            wrong_path_correction_artifact.contract.content.replace(
+                b"docs/testing/runtime-tests.md", b"docs/testing/failure-tests.md",
+            )
+        )
+        with self.assertRaisesRegex(module.PhaseReworkError, "path-correction ADC does not declare"):
+            module.parse_path_correction_generation(wrong_path_correction_artifact)
+
+        wrong_predecessor = continuation_contract(predecessor_id=module.RECOVERY_ADC_COMMENT_ID)
+        wrong_artifact = continuation_contract(
+            artifact_impact=module.CONTINUATION_ARTIFACT_IMPACT.replace(
+                "docs/testing/traceability.md", "docs/testing/traceability.md."
+            ),
+        )
+        for invalid in (wrong_predecessor, wrong_artifact):
+            with self.assertRaises(module.PhaseReworkError):
+                module.parse_continuation_authorization(invalid)
+
+    def test_continuation_marker_rejects_missing_duplicate_and_mismatched_identity(self):
+        for invalid in (
+                continuation_contract(missing_marker=True),
+                continuation_contract(duplicate_marker=True),
+                continuation_contract({**module.CONTINUATION_AUTHORIZATION, "owner_id": module.OWNER_ID + 1}),
+                continuation_contract({**module.CONTINUATION_AUTHORIZATION, "repository_id": 1}),
+                continuation_contract({**module.CONTINUATION_AUTHORIZATION, "intent_comment_id": 1}),
+                continuation_contract({**module.CONTINUATION_AUTHORIZATION, "applied_comment_id": 1}),
+                continuation_contract({**module.CONTINUATION_AUTHORIZATION, "branch_ref": "other"}),
+                continuation_contract({**module.CONTINUATION_AUTHORIZATION, "pr_base_sha40": "0" * 40}),
+                continuation_contract({**module.CONTINUATION_AUTHORIZATION, "current_head_sha40": "0" * 40}),
+                continuation_contract(repository="other/repo")):
+            with self.assertRaises(module.PhaseReworkError):
+                module.parse_continuation_authorization(invalid)
+
+        invalid_state = continuation_contract()
+        invalid_state.pointer.state = "draft"
+        with self.assertRaisesRegex(module.PhaseReworkError, "exact approved generation"):
+            module.parse_continuation_authorization(invalid_state)
+
+    def test_continuation_requires_the_exact_six_generation_approved_chain(self):
+        predecessor = SimpleNamespace(
+            pointer=SimpleNamespace(comment_id=module.PREDECESSOR_ADC_COMMENT_ID,
+                                    state="approved", sha256=module.PREDECESSOR_ADC_SHA256),
+            contract=SimpleNamespace(sha256=module.PREDECESSOR_ADC_SHA256,
+                                     repository=module.REPOSITORY),
+        )
+        old = marker_contract(
+            module.AUTH_SCHEMA, module.AUTHORIZATION,
+            module.PREDECESSOR_ADC_COMMENT_ID, module.PREDECESSOR_ADC_SHA256,
+            module.REWORK_ADC_COMMENT_ID, module.REWORK_ADC_SHA256, module.REWORK_ADC_BYTES,
+        )
+        recovery = marker_contract(
+            module.RECOVERY_AUTH_SCHEMA, module.RECOVERY_AUTHORIZATION,
+            module.REWORK_ADC_COMMENT_ID, module.REWORK_ADC_SHA256,
+            module.RECOVERY_ADC_COMMENT_ID, module.RECOVERY_ADC_SHA256,
+            module.RECOVERY_ADC_BYTES,
+        )
+        timestamp = timestamp_recovery_contract()
+        timestamp.pointer.sha256 = module.TIMESTAMP_RECOVERY_ADC_SHA256
+        timestamp.contract.sha256 = module.TIMESTAMP_RECOVERY_ADC_SHA256
+        timestamp.contract.byte_length = module.TIMESTAMP_RECOVERY_ADC_BYTES
+        path_correction = path_correction_contract()
+        current = continuation_contract()
+        chain = (predecessor, old, recovery, timestamp, path_correction, current)
+        with patch.object(module, "verify_adc_forward_generations", return_value=chain):
+            result = module._authorization_context(SimpleNamespace(), current)
+        self.assertEqual(result[0], module.AUTHORIZATION)
+        self.assertEqual(result[2], module.RECOVERY_AUTHORIZATION)
+        self.assertEqual(result[4], module.TIMESTAMP_RECOVERY_AUTHORIZATION)
+        self.assertEqual(result[6], module.CONTINUATION_AUTHORIZATION)
+        self.assertEqual(result[7], module.CONTINUATION_AUTH_MARKER_SHA256)
+
+        wrong_chain = (predecessor, old, recovery, timestamp, current, path_correction)
+        with patch.object(module, "verify_adc_forward_generations", return_value=wrong_chain), \
+                self.assertRaisesRegex(module.PhaseReworkError, "complete exact six-generation"):
             module._authorization_context(SimpleNamespace(), current)
 
 
@@ -385,8 +525,73 @@ class BootstrapAndReadinessTests(unittest.TestCase):
         )
         verify_successors.assert_called_once_with(
             root, head, module.RECOVERY_AUTHORIZATION,
-            module.TIMESTAMP_RECOVERY_AUTHORIZATION,
+            module.TIMESTAMP_RECOVERY_AUTHORIZATION, None,
         )
+
+    def test_continuation_lineage_preserves_three_separate_one_commit_segments(self):
+        root = Path("/tmp/repo")
+        head = "f" * 40
+        bootstrap_head = module.RECOVERY_AUTHORIZATION["pre_recovery_head_sha40"]
+        with patch.object(module, "_verify_commit_set") as verify_bootstrap, \
+                patch.object(module, "_verify_recovery_commit_set") as verify_segments:
+            module._verify_issue71_commit_lineage(
+                root, head, module.AUTHORIZATION, module.RECOVERY_AUTHORIZATION,
+                module.TIMESTAMP_RECOVERY_AUTHORIZATION, module.CONTINUATION_AUTHORIZATION,
+            )
+        verify_bootstrap.assert_called_once_with(
+            root, bootstrap_head, tuple(module.AUTHORIZATION["bootstrap_path_allowlist"]),
+        )
+        verify_segments.assert_called_once_with(
+            root, head, module.RECOVERY_AUTHORIZATION,
+            module.TIMESTAMP_RECOVERY_AUTHORIZATION, module.CONTINUATION_AUTHORIZATION,
+        )
+
+    def test_continuation_commit_is_one_direct_child_on_its_exact_allowlist(self):
+        root = Path("/tmp/repo")
+        head = "f" * 40
+        recovery_commit = "574d7970323840933c34c37e874ad1616d577a8a"
+        start = module.CONTINUATION_AUTHORIZATION["current_head_sha40"]
+        ranges = {
+            f"{module.RECOVERY_AUTHORIZATION['pre_recovery_head_sha40']}..574d7970323840933c34c37e874ad1616d577a8a": recovery_commit,
+            f"574d7970323840933c34c37e874ad1616d577a8a..{start}": start,
+            f"{start}..{head}": head,
+        }
+        parents = {
+            recovery_commit: (module.RECOVERY_AUTHORIZATION["pre_recovery_head_sha40"],),
+            start: ("574d7970323840933c34c37e874ad1616d577a8a",),
+            head: (start,),
+        }
+
+        def check(*, continuation_parent: tuple[str, ...] = (start,),
+                  continuation_rows: str = head,
+                  continuation_paths: tuple[str, ...] = ("tests/test_phase_rework.py",)):
+            rows_by_range = {**ranges, f"{start}..{head}": continuation_rows}
+            commit_parents = {**parents, head: continuation_parent}
+
+            def run_git(_root, *_args):
+                return rows_by_range[_args[-1]]
+
+            def changed_paths(_root, _parent, commit):
+                if commit == recovery_commit or commit == start:
+                    return ("runtime/p_ases/phase_rework.py",)
+                return continuation_paths
+
+            with patch.object(module, "is_ancestor", return_value=True), \
+                    patch.object(module, "run_git", side_effect=run_git), \
+                    patch.object(module, "commit_parents_sha40", side_effect=lambda _root, commit: commit_parents[commit]), \
+                    patch.object(module, "changed_paths_between", side_effect=changed_paths):
+                module._verify_recovery_commit_set(
+                    root, head, module.RECOVERY_AUTHORIZATION,
+                    module.TIMESTAMP_RECOVERY_AUTHORIZATION, module.CONTINUATION_AUTHORIZATION,
+                )
+
+        check()
+        with self.assertRaisesRegex(module.PhaseReworkError, "unexpected parent"):
+            check(continuation_parent=("e" * 40,))
+        with self.assertRaisesRegex(module.PhaseReworkError, "exactly one authorized"):
+            check(continuation_rows=f"{head}\n{'e' * 40}")
+        with self.assertRaisesRegex(module.PhaseReworkError, "outside its exact allowlist"):
+            check(continuation_paths=("runtime/p_ases/github.py",))
 
     def test_readiness_is_read_from_the_bound_worktree_and_exact_subject(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -494,12 +699,28 @@ class BootstrapAndReadinessTests(unittest.TestCase):
                     patch.object(module, "_validate_recorded_readiness"), \
                     patch.object(module, "_read_exact_attempt_marker", return_value=True):
                 module._validate_recovery_intent(intent, current, root)
+                continuation = replace(
+                    current,
+                    current_adc=SimpleNamespace(
+                        pointer=SimpleNamespace(
+                            comment_id=module.CONTINUATION_ADC_COMMENT_ID, state="approved",
+                        ),
+                        contract=SimpleNamespace(sha256=module.CONTINUATION_ADC_SHA256),
+                    ),
+                    continuation_authorization=module.CONTINUATION_AUTHORIZATION,
+                    continuation_authorization_sha256=module.CONTINUATION_AUTH_MARKER_SHA256,
+                )
+                module._validate_recovery_intent(intent, continuation, root)
+                with self.assertRaisesRegex(module.PhaseReworkError, "current ADC does not authorize"):
+                    module._validate_recovery_intent(
+                        intent, replace(continuation, continuation_authorization_sha256="0" * 64), root,
+                    )
                 with self.assertRaisesRegex(module.PhaseReworkError, "current ADC does not authorize"):
                     module._validate_recovery_intent(
                         intent, replace(current, timestamp_recovery_authorization=None), root,
                     )
 
-    def test_applied_timestamp_reconciliation_is_a_no_write_noop(self):
+    def test_continuation_reconciliation_is_a_zero_issue_write_noop(self):
         class WriteCounter:
             repo = module.REPOSITORY
 
@@ -532,9 +753,9 @@ class BootstrapAndReadinessTests(unittest.TestCase):
             )
             current_adc = SimpleNamespace(
                 pointer=SimpleNamespace(
-                    comment_id=module.TIMESTAMP_RECOVERY_ADC_COMMENT_ID, state="approved",
+                    comment_id=module.CONTINUATION_ADC_COMMENT_ID, state="approved",
                 ),
-                contract=SimpleNamespace(sha256=module.TIMESTAMP_RECOVERY_ADC_SHA256),
+                contract=SimpleNamespace(sha256=module.CONTINUATION_ADC_SHA256),
             )
             live = replace(
                 live_subject(root, labels=tuple(sorted(module.LABELS_AFTER))),
@@ -542,6 +763,8 @@ class BootstrapAndReadinessTests(unittest.TestCase):
                 recovery_authorization=module.RECOVERY_AUTHORIZATION,
                 timestamp_recovery_authorization=module.TIMESTAMP_RECOVERY_AUTHORIZATION,
                 timestamp_recovery_authorization_sha256=module.TIMESTAMP_RECOVERY_AUTH_MARKER_SHA256,
+                continuation_authorization=module.CONTINUATION_AUTHORIZATION,
+                continuation_authorization_sha256=module.CONTINUATION_AUTH_MARKER_SHA256,
             )
             github = WriteCounter()
             with patch.object(module, "_live", return_value=live), \
@@ -1099,7 +1322,7 @@ class PendingRecoveryTests(unittest.TestCase):
             with patch.object(module, "_authorization_context",
                               return_value=(module.AUTHORIZATION, live.authorization_sha256,
                                             live.recovery_authorization, live.recovery_authorization_sha256,
-                                            None, None)), \
+                                            None, None, None, None)), \
                     patch.object(module, "_read_history", return_value=(intent, applied)), \
                     patch.object(module, "head_sha40", return_value=live.head_sha40), \
                     patch.object(module, "_pr", return_value={}), \
@@ -1128,7 +1351,8 @@ class ActiveGenerationTests(unittest.TestCase):
             issue = {"labels": [{"name": label} for label in module.LABELS_AFTER]}
             with patch.object(module, "_read_history", return_value=(intent, applied)), \
                     patch.object(module, "_authorization_context",
-                                 return_value=(module.AUTHORIZATION, "c" * 64, None, None, None, None)), \
+                                 return_value=(module.AUTHORIZATION, "c" * 64, None, None,
+                                               None, None, None, None)), \
                     patch.object(module, "head_sha40", return_value="f" * 40), \
                     patch.object(module, "_pr", return_value={}), \
                     patch.object(module, "is_ancestor", return_value=True), \
@@ -1148,7 +1372,8 @@ class ActiveGenerationTests(unittest.TestCase):
             issue = {"labels": [{"name": label} for label in module.LABELS_BEFORE]}
             with patch.object(module, "_read_history", return_value=(intent,)), \
                     patch.object(module, "_authorization_context",
-                                 return_value=(module.AUTHORIZATION, "c" * 64, None, None, None, None)), \
+                                 return_value=(module.AUTHORIZATION, "c" * 64, None, None,
+                                               None, None, None, None)), \
                     patch.object(module, "head_sha40", return_value="e" * 40), \
                     patch.object(module, "_pr", return_value={}), \
                     patch.object(module, "is_ancestor", return_value=True):

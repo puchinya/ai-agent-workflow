@@ -96,6 +96,14 @@
   - [9.69 REQ-F01-111 Gate the exact follow-up HEAD](#969-req-f01-111-gate-the-exact-follow-up-head)
   - [9.70 REQ-F01-112 Resume Phase evidence after reconciliation](#970-req-f01-112-resume-phase-evidence-after-reconciliation)
   - [9.71 REQ-F01-113 Preserve separate authorization boundaries](#971-req-f01-113-preserve-separate-authorization-boundaries)
+  - [9.72 REQ-F01-120 Preserve the approved Issue #71 continuation subject](#972-req-f01-120-preserve-the-approved-issue-71-continuation-subject)
+  - [9.73 REQ-F01-121 Verify the exact continuation ADC chain and marker](#973-req-f01-121-verify-the-exact-continuation-adc-chain-and-marker)
+  - [9.74 REQ-F01-122 Bound the continuation commit lineage](#974-req-f01-122-bound-the-continuation-commit-lineage)
+  - [9.75 REQ-F01-123 Test authorization, lineage, and no-write behavior](#975-req-f01-123-test-authorization-lineage-and-no-write-behavior)
+  - [9.76 REQ-F01-124 Gate and bind the exact pushed HEAD](#976-req-f01-124-gate-and-bind-the-exact-pushed-head)
+  - [9.77 REQ-F01-125 Reconcile before issuing Phase evidence](#977-req-f01-125-reconcile-before-issuing-phase-evidence)
+  - [9.78 REQ-F01-126 Declare exact Phase artifact paths](#978-req-f01-126-declare-exact-phase-artifact-paths)
+  - [9.79 REQ-F01-127 Preserve operation boundaries](#979-req-f01-127-preserve-operation-boundaries)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -181,6 +189,14 @@
 - [REQ-F01-111](#req-f01-111) — 9.69 REQ-F01-111 Gate the exact follow-up HEAD
 - [REQ-F01-112](#req-f01-112) — 9.70 REQ-F01-112 Resume Phase evidence after reconciliation
 - [REQ-F01-113](#req-f01-113) — 9.71 REQ-F01-113 Preserve separate authorization boundaries
+- [REQ-F01-120](#req-f01-120) — 9.72 REQ-F01-120 Preserve the approved Issue #71 continuation subject
+- [REQ-F01-121](#req-f01-121) — 9.73 REQ-F01-121 Verify the exact continuation ADC chain and marker
+- [REQ-F01-122](#req-f01-122) — 9.74 REQ-F01-122 Bound the continuation commit lineage
+- [REQ-F01-123](#req-f01-123) — 9.75 REQ-F01-123 Test authorization, lineage, and no-write behavior
+- [REQ-F01-124](#req-f01-124) — 9.76 REQ-F01-124 Gate and bind the exact pushed HEAD
+- [REQ-F01-125](#req-f01-125) — 9.77 REQ-F01-125 Reconcile before issuing Phase evidence
+- [REQ-F01-126](#req-f01-126) — 9.78 REQ-F01-126 Declare exact Phase artifact paths
+- [REQ-F01-127](#req-f01-127) — 9.79 REQ-F01-127 Preserve operation boundaries
 <!-- heading-map:end -->
 
 
@@ -817,3 +833,43 @@ After read-only reconciliation confirms the exact existing Applied record and cu
 ### 9.71 REQ-F01-113 Preserve separate authorization boundaries
 
 Do not create duplicate Intent or Applied comments, another backward Phase transition, PR merge, Admin policy or Ruleset operation, Setup PR, Activation, release, tag, Issue #63 write, or Issue close.
+
+<a id="req-f01-120"></a>
+### 9.72 REQ-F01-120 Preserve the approved Issue #71 continuation subject
+
+Preserve the OPEN Issue #71 body and approved ADC history, epoch-3 identity and attachment, execution identity, branch/worktree, frozen base, PR #75, current labels, and existing Intent #6888474848 and Applied #6889965335. Treat those Intent/Applied records and all earlier ADC generations as immutable history. Do not edit, duplicate, restore, or roll back them.
+
+<a id="req-f01-121"></a>
+### 9.73 REQ-F01-121 Verify the exact continuation ADC chain and marker
+
+Accept the continuation only when the approved chain is exactly #6886911700 → #6887429739 → #6888665795 → #6890080277 → #6891800412 → #6891926625 with the pinned SHA-256 values. Validate the exact current canonical continuation marker, its 2,155-byte digest, predecessor, repository/Issue/owner, epoch, phase, labels, branch, base, PR, HEAD, Intent/Applied IDs and digests, and exact path allowlist. Reject missing, duplicate, reordered, unapproved, edited, stale, or mismatched generations.
+
+<a id="req-f01-122"></a>
+### 9.74 REQ-F01-122 Bound the continuation commit lineage
+
+Permit exactly one continuation commit whose sole parent is `cb02a9fccfb988300dff82c5ad2ccfe946cd4dd3`. Preserve the existing recovery and timestamp-reconciliation commits as separate one-commit segments after `4185a510054a2a8781659191c1a48178336f8571`; validate each segment against its own exact allowlist. Reject merge commits, unexpected parents, extra descendants, and paths outside the continuation allowlist. Generate mirrors only with `python tools/build_dist.py`.
+
+<a id="req-f01-123"></a>
+### 9.75 REQ-F01-123 Test authorization, lineage, and no-write behavior
+
+Cover the six-generation ADC chain, canonical marker and artifact declarations, wrong/missing/duplicate marker, wrong identity, changed Intent/Applied tuple, invalid branch/base/HEAD, wrong parent, extra descendant, and outside-allowlist change. Prove that exact existing Applied reconciliation is a read-only NOOP with zero Issue comment or label writes. Keep timestamp boundary and prior no-write regressions.
+
+<a id="req-f01-124"></a>
+### 9.76 REQ-F01-124 Gate and bind the exact pushed HEAD
+
+At the one pushed continuation HEAD, require compileall, full unit tests, documentation validation and formatting, generated distribution check and validation, specification/design/test-oracle traceability, all 16-Skill acceptance checks, whitespace validation, configured Required Checks, fresh Self-Audit, and fresh native Independent Review. Rebind PR #75 through P-ASES at that HEAD. Keep its title, body, base, open state, and unmerged state unchanged.
+
+<a id="req-f01-125"></a>
+### 9.77 REQ-F01-125 Reconcile before issuing Phase evidence
+
+After current ADC, binding, commit lineage, local marker, and live PR checks pass, reconcile the existing Intent/Applied pair read-only and require NOOP with zero Issue writes. Only then publish and verify fresh requirements → specification → design → READY receipts at the exact HEAD, applying each adjacent P-ASES phase transition only after its receipt and complete labels are verified. Stop at execution.
+
+<a id="req-f01-126"></a>
+### 9.78 REQ-F01-126 Declare exact Phase artifact paths
+
+Declare Specification as `docs/specs/workflow-spec.md`, Design as `docs/design/workflow-design.md`, and Testing as `docs/testing/pases-lifecycle-tests.md` plus `docs/testing/traceability.md`, with each path inside inline code so sentence punctuation is outside the path. Confirm committed blob bytes match the local regular files. Do not change the generic document path parser or create substitute files.
+
+<a id="req-f01-127"></a>
+### 9.79 REQ-F01-127 Preserve operation boundaries
+
+Do not add an Intent/Applied or recovery marker, move phases backward, merge PR #75, change Admin policy or Rulesets, create a Setup PR, run Activation, implement User Review identity, release, push tags, write Issue #63, or close Issue #71.
