@@ -121,6 +121,8 @@
     - [2.55.1 ORA-F01-075 Expected result](#2551-ora-f01-075-expected-result)
   - [2.56 TST-F01-090 Successor ADC bootstrap and Phase rework](#256-tst-f01-090-successor-adc-bootstrap-and-phase-rework)
     - [2.56.1 ORA-F01-090 Expected result](#2561-ora-f01-090-expected-result)
+  - [2.57 TST-F01-091 Pending phase-rework Recovery](#257-tst-f01-091-pending-phase-rework-recovery)
+    - [2.57.1 ORA-F01-091 Expected result](#2571-ora-f01-091-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -237,6 +239,8 @@
 - [ORA-F01-075](#ora-f01-075) — 2.55.1 ORA-F01-075 Expected result
 - [TST-F01-090](#tst-f01-090) — 2.56 TST-F01-090 Successor ADC bootstrap and Phase rework
 - [ORA-F01-090](#ora-f01-090) — 2.56.1 ORA-F01-090 Expected result
+- [TST-F01-091](#tst-f01-091) — 2.57 TST-F01-091 Pending phase-rework Recovery
+- [ORA-F01-091](#ora-f01-091) — 2.57.1 ORA-F01-091 Expected result
 <!-- heading-map:end -->
 
 
@@ -852,9 +856,19 @@ No activation-dependent write occurs without complete owner-controlled local pol
 <a id="tst-f01-090"></a>
 ### 2.56 TST-F01-090 Successor ADC bootstrap and Phase rework
 
-**Setup and action:** Use the exact Issue #71 successor ADC, immutable epoch-origin attachment, PR #75 baseline, and typed readiness/evidence fixtures. Verify current ADC forward-chain validation while local epoch bytes remain rooted at #6881591677. Exercise one-to-three commit ancestry, merge and outside-allowlist rejection, dirty worktree, local/remote/PR HEAD mismatch, stale Readiness, wrong ADC or epoch, and malformed rework history. Change the live HEAD/ADC/PR identity after initial Readiness and change Readiness itself before Intent; each drift must block before writing the one-shot Intent attempt marker or posting a comment. For the permitted subject, record Intent POST, the one complete-label PUT, Applied POST, Issue/body/label readback, and direct/list/direct history. Inject lost responses at each write boundary, an incomplete Intent, an existing User Review session, and phase movement after Applied. Verify the active generation after later descendant commits and the origin epoch digest/attachment are unchanged.
+**Setup and action:** Use the exact Issue #71 successor ADC, immutable epoch-origin attachment, PR #75 baseline, and typed readiness/evidence fixtures. Verify current ADC forward-chain validation while local epoch bytes remain rooted at #6881591677. Exercise one-to-three commit ancestry, merge and outside-allowlist rejection, dirty worktree, local/remote/PR HEAD mismatch, stale Readiness, wrong ADC or epoch, and malformed rework history. Change the live HEAD/ADC/PR identity after initial Readiness and change Readiness itself before Intent; each drift must block before writing the one-shot Intent attempt marker or posting a comment. For the original approved operation, record one Intent, one complete-label PUT, one Applied, and complete Issue/history readback. Verify that after Intent the saved PASS Readiness is reused instead of recomputed. Check that the active generation and immutable epoch origin remain stable on valid descendant commits.
 
 <a id="ora-f01-090"></a>
 #### 2.56.1 ORA-F01-090 Expected result
 
 Only one-to-three clean allowlisted descendant commits with matching local, remote, and open non-draft PR #75 HEAD can reach fresh PASS Readiness and the one authorized phase rework. The exact V2 marker and current approved ADC chain are required. One Intent, at most one label replacement, and one matching Applied are recorded; ambiguous writes are never retried. Incomplete rework blocks Phase operations. Applied remains the active generation on valid descendant HEADs, while the epoch origin bytes and attachment remain unchanged. No Admin, Activation, Issue #63, PR merge, or Issue-close write occurs.
+
+<a id="tst-f01-091"></a>
+### 2.57 TST-F01-091 Pending phase-rework Recovery
+
+**Setup and action:** Use approved Recovery ADC #6888665795 and the exact pending Intent #6888474848, original PASS Readiness, Issue labels, local attempt files, epoch-3 identity, and PR #75. Verify the complete three-generation approved ADC chain and reject any missing, reordered, unapproved, wrong-byte, or wrong-predecessor generation. Verify the exact-byte Recovery marker rejects any byte drift, duplicate keys, unknown fields, or tuple drift. Accept exactly one Recovery commit after HEAD 4185 with paths limited to its pinned 16-path allowlist; reject zero, multiple, merge, wrong-parent, or outside-allowlist commits. Validate the exact Intent author/ID/body digest and original ADC marker digest, Readiness bytes/subject, local Intent-attempt payload, owner/repository/Issue/body/state, epoch/Phase generation, frozen base, branch, PR, and local/remote/current HEAD. Exercise local-only P-ASES PR rebinding: the no-gate route appends one exact V4 PRBinding and V3 checkpoint without GitHub writes; identical retry is a zero-write NOOP; stale lineage, PR metadata drift, checkpoint mismatch, or ref drift blocks; gated continuation requires the current binding. Exercise before-label continuation with no label marker and assert no Readiness recomputation, no second Intent, one marker before one complete-label PUT, exact Issue readback, and one matching Applied. Inject a lost PUT response followed by after-state and marker (Applied completes with zero further PUTs), lost response followed by before-state and marker (blocks without retry), after-labels without a marker, malformed marker, missing/wrong Intent or Readiness, and ADC/HEAD/PR/owner/label drift. Verify all blocked paths make zero additional Issue writes and that ordinary Phase readers remain blocked until Applied.
+
+<a id="ora-f01-091"></a>
+#### 2.57.1 ORA-F01-091 Expected result
+
+Only the exact pending Intent and its original PASS Readiness under the exact approved Recovery ADC chain may enter continuation. The one Recovery commit satisfies its pinned ancestry and path allowlist. A local-only V4 PRBinding/V3 checkpoint successor must bind the exact ADC, epoch, PR #75, and Recovery HEAD before any Issue write. Before-labels with no label marker permit exactly one marked label PUT; any existing marker forbids another PUT. A matching after-state marker permits only readback and Applied completion. Every mismatch blocks before an Issue write. No second Intent, new Readiness, PR edit/merge, Admin, Activation, Issue #63, release, tag, or Issue-close operation occurs.

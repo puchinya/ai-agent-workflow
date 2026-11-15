@@ -80,6 +80,14 @@
   - [9.53 REQ-F01-095 One-shot verification-to-requirements rework](#953-req-f01-095-one-shot-verification-to-requirements-rework)
   - [9.54 REQ-F01-096 Fresh Phase sequence before implementation](#954-req-f01-096-fresh-phase-sequence-before-implementation)
   - [9.55 REQ-F01-097 Separate delivery and Admin gates](#955-req-f01-097-separate-delivery-and-admin-gates)
+  - [9.56 REQ-F01-098 Preserve the pending rework operation](#956-req-f01-098-preserve-the-pending-rework-operation)
+  - [9.57 REQ-F01-099 Bound the Recovery commit](#957-req-f01-099-bound-the-recovery-commit)
+  - [9.58 REQ-F01-100 Verify the successor Recovery authorization](#958-req-f01-100-verify-the-successor-recovery-authorization)
+  - [9.59 REQ-F01-101 Continue the exact pending Intent once](#959-req-f01-101-continue-the-exact-pending-intent-once)
+  - [9.60 REQ-F01-102 Cover Recovery and no-retry behavior](#960-req-f01-102-cover-recovery-and-no-retry-behavior)
+  - [9.61 REQ-F01-103 Require exact-HEAD Recovery gates](#961-req-f01-103-require-exact-head-recovery-gates)
+  - [9.62 REQ-F01-104 Resume the approved Phase sequence](#962-req-f01-104-resume-the-approved-phase-sequence)
+  - [9.63 REQ-F01-105 Preserve separate delivery and Admin gates](#963-req-f01-105-preserve-separate-delivery-and-admin-gates)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -149,6 +157,14 @@
 - [REQ-F01-095](#req-f01-095) — 9.53 REQ-F01-095 One-shot verification-to-requirements rework
 - [REQ-F01-096](#req-f01-096) — 9.54 REQ-F01-096 Fresh Phase sequence before implementation
 - [REQ-F01-097](#req-f01-097) — 9.55 REQ-F01-097 Separate delivery and Admin gates
+- [REQ-F01-098](#req-f01-098) — 9.56 REQ-F01-098 Preserve the pending rework operation
+- [REQ-F01-099](#req-f01-099) — 9.57 REQ-F01-099 Bound the Recovery commit
+- [REQ-F01-100](#req-f01-100) — 9.58 REQ-F01-100 Verify the successor Recovery authorization
+- [REQ-F01-101](#req-f01-101) — 9.59 REQ-F01-101 Continue the exact pending Intent once
+- [REQ-F01-102](#req-f01-102) — 9.60 REQ-F01-102 Cover Recovery and no-retry behavior
+- [REQ-F01-103](#req-f01-103) — 9.61 REQ-F01-103 Require exact-HEAD Recovery gates
+- [REQ-F01-104](#req-f01-104) — 9.62 REQ-F01-104 Resume the approved Phase sequence
+- [REQ-F01-105](#req-f01-105) — 9.63 REQ-F01-105 Preserve separate delivery and Admin gates
 <!-- heading-map:end -->
 
 
@@ -705,3 +721,43 @@ At the same bootstrap HEAD, publish fresh requirements → specification → des
 ### 9.55 REQ-F01-097 Separate delivery and Admin gates
 
 Keep all other inherited delivery gates unchanged. PR merge requires separate owner authorization for exact current PR #75 HEAD. This ADC does not authorize Admin policy changes, Ruleset or Setup PR writes, Activation, release, tag, Issue #63, or Issue-close writes.
+
+<a id="req-f01-098"></a>
+### 9.56 REQ-F01-098 Preserve the pending rework operation
+
+Keep Issue #71, its body and OPEN state, approved ADC history, epoch-3 origin, active Phase generation, branch/worktree, PR #74 and PR #75, original pre-Intent PASS Readiness, pending Intent #6888474848, and all historical records unchanged. Recovery must bind the exact existing Intent and must not post another Intent.
+
+<a id="req-f01-099"></a>
+### 9.57 REQ-F01-099 Bound the Recovery commit
+
+Permit at most one Recovery commit descended from `4185a510054a2a8781659191c1a48178336f8571`. Require every changed path to be in the Recovery ADC's exact 16-path allowlist. Generate the three distribution mirrors only with `python tools/build_dist.py`. Require a clean worktree and equal local/remote HEADs before any Issue write.
+
+<a id="req-f01-100"></a>
+### 9.58 REQ-F01-100 Verify the successor Recovery authorization
+
+Validate the exact approved ADC #6888665795 and its exact-byte Recovery marker, the complete approved ADC chain, the exact pending Intent comment/body digest, the original ADC identity in that Intent, the recorded original Readiness bytes and subject, and the local Intent attempt marker. Recheck repository, owner, Issue, epoch, Phase generation, frozen base, PR #75, branch, and current HEAD before a write. Before Recovery code gates, append a V4 PRBinding and V3 checkpoint for the current Recovery ADC and exact Recovery HEAD through the P-ASES recovery command. Preserve PR #75 title/body bytes; the ordinary PR ensure path stays blocked while Intent is incomplete.
+
+<a id="req-f01-101"></a>
+### 9.59 REQ-F01-101 Continue the exact pending Intent once
+
+When the exact pending Intent exists, labels equal the exact before-state, and no label-attempt marker exists, reuse only the exact pre-Intent PASS Readiness bound by the Intent. Do not recompute Readiness after Intent. Write the label-attempt marker before the only complete-label PUT, read back the exact after-state, and append one matching Applied record. A prior marker forbids another PUT. Ambiguous outcomes permit read-only reconciliation only.
+
+<a id="req-f01-102"></a>
+### 9.60 REQ-F01-102 Cover Recovery and no-retry behavior
+
+Test Recovery marker and chain validation, original Intent and Readiness reuse, absence of post-Intent Readiness recomputation, before-label continuation with no marker, marker-present no-retry, after-label Applied recovery, and wrong Intent, Readiness, ADC, HEAD, PR, owner or labels. Run focused tests and the full inherited verification suite at the Recovery HEAD.
+
+<a id="req-f01-103"></a>
+### 9.61 REQ-F01-103 Require exact-HEAD Recovery gates
+
+At the Recovery HEAD, require compileall, the full unit suite, documentation validation and formatting, generated distribution check and validation, specification/design/oracle traceability, all 16-Skill acceptance checks, whitespace validation, all configured Required Checks, a fresh Self-Audit, and a fresh native Independent Review. The V4 PRBinding and V3 checkpoint must bridge the Recovery ADC, immutable epoch-3 identity, frozen PR #75, and Recovery HEAD before these gates are evaluated. The existing original PASS Readiness remains the sole Readiness authorizing Intent #6888474848; do not claim a new PASS Readiness while rework is incomplete.
+
+<a id="req-f01-104"></a>
+### 9.62 REQ-F01-104 Resume the approved Phase sequence
+
+Only after Applied is read back, publish fresh requirements → specification → design → READY receipts at the exact Recovery HEAD and new active Phase generation, then advance normally to execution. Only then implement the inherited Issue #71 `solo_owner` User Review identity correction. Preserve Issue #63 behavior.
+
+<a id="req-f01-105"></a>
+### 9.63 REQ-F01-105 Preserve separate delivery and Admin gates
+
+Keep PR #75 open and unmerged, preserving its title and body. Admin policy and Activation remain blocked until complete owner-controlled Admin policy readback and separate approvals. Merge, Activation, release, tag, Issue #63, and Issue-close operations retain their separate authorization gates.

@@ -15,6 +15,7 @@ from .adc import (
     ADCError, VerifiedADC, verify_adc, verify_adc_forward_generations,
     verify_adc_generation,
 )
+from .checkpoint import PRBinding, WorkCheckpoint, checkpoint_path, write_checkpoint, write_pr_binding
 from .delivery import ReadinessResult, read_readiness, readiness_path
 from .github import GitHub, GitHubError
 from .git import (
@@ -32,6 +33,11 @@ ISSUE_BODY_SHA256 = "5f910c8de4cbe3ec391edf18b69fabe0f4c42880b59357083647a8b06e7
 REWORK_ADC_COMMENT_ID = 6887429739
 REWORK_ADC_SHA256 = "c4de9fc1308c63f0de3ba4b8269fa779d2c38688cf420c59031911d1522cb8e2"
 REWORK_ADC_BYTES = 15113
+RECOVERY_ADC_COMMENT_ID = 6888665795
+RECOVERY_ADC_SHA256 = "a12b71873e64a10f119a38df94e55c96c64d6cb1fc2e510432cf7d40116c7e4f"
+RECOVERY_ADC_BYTES = 15501
+RECOVERY_AUTH_MARKER_SHA256 = "3b229664d98735478bf764c420058a1dec72e4412618548b5045e6734583ec9d"
+RECOVERY_AUTH_MARKER_BYTES = 2347
 PREDECESSOR_ADC_COMMENT_ID = 6886911700
 PREDECESSOR_ADC_SHA256 = "a3c171ab44bf2145aea25b9e43b35fc235b04748e9ad2228847c7379f404e350"
 EPOCH_ORIGIN_ADC_COMMENT_ID = 6881591677
@@ -45,6 +51,8 @@ BASE_REF = "main"
 BASE_SHA40 = "07481c4b451a81750a6c2e1a6a18bdfd4e3459c2"
 BRANCH_REF = "pases/issue-71-local-activation-v2-phase-rebaseline-epoch-3"
 PR_NUMBER = 75
+PR_TITLE = "[P-ASES] Issue #71 local Activation V2 epoch-3"
+PR_BODY_SHA256 = "12f3dc5d45a8ca9d1155a80608d05b31402acd0d39d33f61afeee844b93efff7"
 PR_BASE_REF = "main"
 PR_BASE_SHA40 = "07481c4b451a81750a6c2e1a6a18bdfd4e3459c2"
 PRIOR_READINESS_SHA256 = "62e1ab213abe3ffe81939a4bfaae92f86bbf1c465b787a81eab8d6cee129448e"
@@ -130,6 +138,56 @@ AUTHORIZATION: dict[str, Any] = {
     "to_phase": "requirements",
 }
 AUTH_FIELDS = frozenset(AUTHORIZATION)
+RECOVERY_AUTH_SCHEMA = "PASES_ISSUE_VERIFICATION_REWORK_RECOVERY_AUTHORIZATION_V1"
+RECOVERY_AUTHORIZATION: dict[str, Any] = {
+    "active_epoch_id": ACTIVE_EPOCH_ID,
+    "active_epoch_sha256": ACTIVE_EPOCH_SHA256,
+    "active_phase_generation_comment_id": ACTIVE_PHASE_COMMENT_ID,
+    "active_phase_generation_sha256": ACTIVE_PHASE_SHA256,
+    "branch_ref": BRANCH_REF,
+    "current_issue_body_sha256": ISSUE_BODY_SHA256,
+    "executor_user_id": OWNER_ID,
+    "intent_attempt_payload_sha256": "7466f59e2e797e1f4116c31e07cdde1d73784dbefe44c25875f7e405f2d7b701",
+    "intent_body_sha256": "ad2b75b99d4d0aa11d2cf021605eae9ecd9386a436f8032033a4cf87e5bd5be5",
+    "intent_comment_id": 6888474848,
+    "intent_readiness_sha256": "520cd31540b5ab6ed27ed6e11afbef85ad93ce371625713ab2f914a4224834e6",
+    "intent_readiness_subject_sha256": "faad0f2917297526c89fdb948a5219dd7952a85b6ac8ebe0eec195c6c837d9cc",
+    "issue_id": ISSUE_ID,
+    "issue_number": ISSUE_NUMBER,
+    "labels_after": LABELS_AFTER,
+    "labels_before": LABELS_BEFORE,
+    "max_recovery_applications": 1,
+    "max_recovery_commits": 1,
+    "owner_id": OWNER_ID,
+    "predecessor_adc_comment_id": REWORK_ADC_COMMENT_ID,
+    "predecessor_adc_sha256": REWORK_ADC_SHA256,
+    "pre_recovery_head_sha40": "4185a510054a2a8781659191c1a48178336f8571",
+    "pr_base_ref": PR_BASE_REF,
+    "pr_base_sha40": PR_BASE_SHA40,
+    "pr_number": PR_NUMBER,
+    "recovery_path_allowlist": [
+        "dist/antigravity/docs/design/workflow-design.md",
+        "dist/antigravity/docs/specs/workflow-spec.md",
+        "dist/antigravity/runtime/p_ases/phase_rework.py",
+        "dist/claude/docs/design/workflow-design.md",
+        "dist/claude/docs/specs/workflow-spec.md",
+        "dist/claude/runtime/p_ases/phase_rework.py",
+        "dist/openai/docs/design/workflow-design.md",
+        "dist/openai/docs/specs/workflow-spec.md",
+        "dist/openai/runtime/p_ases/phase_rework.py",
+        "docs/design/workflow-design.md",
+        "docs/specs/workflow-spec.md",
+        "docs/testing/pases-lifecycle-tests.md",
+        "docs/testing/runtime-tests.md",
+        "docs/testing/traceability.md",
+        "runtime/p_ases/phase_rework.py",
+        "tests/test_phase_rework.py",
+    ],
+    "repository": REPOSITORY,
+    "repository_id": REPOSITORY_ID,
+    "schema": RECOVERY_AUTH_SCHEMA,
+}
+RECOVERY_AUTH_FIELDS = frozenset(RECOVERY_AUTHORIZATION)
 COMMON_FIELDS = frozenset({
     "repository", "repository_id", "issue_number", "issue_id", "adc_comment_id", "adc_sha256",
     "authorization_sha256", "predecessor_adc_comment_id", "predecessor_adc_sha256",
@@ -173,6 +231,8 @@ class _Live:
     executor_user_id: int
     authorization_sha256: str
     root: Path
+    recovery_authorization: dict[str, Any] | None = None
+    recovery_authorization_sha256: str | None = None
 
 
 def _canonical(value: Any) -> str:
@@ -211,6 +271,39 @@ def _timestamp() -> str:
 
 
 def parse_authorization(verified: VerifiedADC) -> tuple[dict[str, Any], str]:
+    if (verified.pointer.state == "approved"
+            and verified.pointer.comment_id == RECOVERY_ADC_COMMENT_ID
+            and verified.contract.sha256 == RECOVERY_ADC_SHA256
+            and verified.contract.byte_length == RECOVERY_ADC_BYTES
+            and verified.contract.repository.casefold() == REPOSITORY.casefold()):
+        text = verified.contract.content.decode("utf-8", errors="strict")
+        start_marker = f"<!-- {RECOVERY_AUTH_SCHEMA}\n"
+        if text.count(start_marker) != 1:
+            raise PhaseReworkError("current recovery ADC must contain exactly one recovery authorization marker")
+        start = text.index(start_marker)
+        close = text.find("\n-->", start + len(start_marker))
+        if close < 0:
+            raise PhaseReworkError("recovery authorization marker is incomplete")
+        raw = text[start + len(start_marker):close]
+        try:
+            value = json.loads(raw, object_pairs_hook=_pairs)
+        except (json.JSONDecodeError, UnicodeError) as exc:
+            raise PhaseReworkError("recovery authorization JSON is malformed") from exc
+        marker_bytes = text[start:close + len("\n-->")].encode("utf-8")
+        if (len(marker_bytes) != RECOVERY_AUTH_MARKER_BYTES
+                or hashlib.sha256(marker_bytes).hexdigest() != RECOVERY_AUTH_MARKER_SHA256):
+            raise PhaseReworkError("recovery authorization bytes differ from the exact approved marker")
+        if not isinstance(value, dict) or set(value) != RECOVERY_AUTH_FIELDS:
+            raise PhaseReworkError("recovery authorization has unknown fields")
+        if value != RECOVERY_AUTHORIZATION:
+            raise PhaseReworkError("recovery authorization differs from the exact pending Intent tuple")
+        predecessor = re.search(
+            r"^Predecessor ADC: Issue #71 comment #(\d+), SHA-256 ([0-9a-f]{64})$", text, re.M,
+        )
+        if (predecessor is None or int(predecessor.group(1)) != REWORK_ADC_COMMENT_ID
+                or predecessor.group(2) != REWORK_ADC_SHA256):
+            raise PhaseReworkError("recovery ADC predecessor declaration differs from its exact pointer")
+        return value, hashlib.sha256(marker_bytes).hexdigest()
     if (verified.pointer.state != "approved" or verified.pointer.comment_id != REWORK_ADC_COMMENT_ID
             or verified.contract.sha256 != REWORK_ADC_SHA256
             or verified.contract.byte_length != REWORK_ADC_BYTES
@@ -241,6 +334,54 @@ def parse_authorization(verified: VerifiedADC) -> tuple[dict[str, Any], str]:
         raise PhaseReworkError("current ADC predecessor declaration differs from the exact approved pointer")
     marker_bytes = text[start:close + len("\n-->")].encode("utf-8")
     return value, hashlib.sha256(marker_bytes).hexdigest()
+
+
+def _authorization_context(github: GitHub, current: VerifiedADC
+                            ) -> tuple[dict[str, Any], str, dict[str, Any] | None, str | None]:
+    """Resolve the original rework authorization and optional recovery successor."""
+    if current.pointer.comment_id == REWORK_ADC_COMMENT_ID:
+        try:
+            chain = verify_adc_forward_generations(
+                github, ISSUE_NUMBER,
+                prior_comment_id=PREDECESSOR_ADC_COMMENT_ID,
+                prior_sha256=PREDECESSOR_ADC_SHA256,
+                current_comment_id=current.pointer.comment_id,
+                current_sha256=current.contract.sha256,
+            )
+        except ADCError as exc:
+            raise PhaseReworkError(f"approved rework ADC chain readback failed: {exc}") from exc
+        if tuple((row.pointer.comment_id, row.contract.sha256) for row in chain) != (
+                (PREDECESSOR_ADC_COMMENT_ID, PREDECESSOR_ADC_SHA256),
+                (REWORK_ADC_COMMENT_ID, REWORK_ADC_SHA256)):
+            raise PhaseReworkError("current ADC is not the exact approved successor of #6886911700")
+        authorization, authorization_sha = parse_authorization(current)
+        return authorization, authorization_sha, None, None
+    recovery_authorization, recovery_sha = parse_authorization(current)
+    if current.pointer.comment_id != RECOVERY_ADC_COMMENT_ID:
+        raise PhaseReworkError("current ADC is not an exact Issue #71 rework generation")
+    try:
+        chain = verify_adc_forward_generations(
+            github, ISSUE_NUMBER,
+            prior_comment_id=PREDECESSOR_ADC_COMMENT_ID,
+            prior_sha256=PREDECESSOR_ADC_SHA256,
+            current_comment_id=current.pointer.comment_id,
+            current_sha256=current.contract.sha256,
+        )
+    except ADCError as exc:
+        raise PhaseReworkError(f"approved recovery ADC chain readback failed: {exc}") from exc
+    expected_chain = (
+        (PREDECESSOR_ADC_COMMENT_ID, PREDECESSOR_ADC_SHA256),
+        (REWORK_ADC_COMMENT_ID, REWORK_ADC_SHA256),
+        (RECOVERY_ADC_COMMENT_ID, RECOVERY_ADC_SHA256),
+    )
+    actual_chain = tuple((item.pointer.comment_id, item.contract.sha256) for item in chain)
+    if actual_chain != expected_chain:
+        raise PhaseReworkError("recovery ADC is not the complete exact approved successor chain")
+    authorization, authorization_sha = parse_authorization(chain[1])
+    if (recovery_authorization.get("predecessor_adc_comment_id") != chain[1].pointer.comment_id
+            or recovery_authorization.get("predecessor_adc_sha256") != chain[1].contract.sha256):
+        raise PhaseReworkError("recovery authorization does not bind its exact approved predecessor")
+    return authorization, authorization_sha, recovery_authorization, recovery_sha
 
 
 def _label_names(issue: Mapping[str, Any]) -> tuple[str, ...]:
@@ -322,6 +463,25 @@ def _verify_commit_set(root: Path, head: str, allowlist: tuple[str, ...]) -> Non
         raise PhaseReworkError("bootstrap commit enumeration does not end at the exact HEAD")
 
 
+def _verify_recovery_commit_set(root: Path, head: str,
+                                recovery_authorization: Mapping[str, Any]) -> None:
+    pre_recovery_head = recovery_authorization.get("pre_recovery_head_sha40")
+    if (not isinstance(pre_recovery_head, str) or SHA40.fullmatch(pre_recovery_head) is None
+            or pre_recovery_head != "4185a510054a2a8781659191c1a48178336f8571"
+            or not is_ancestor(root, pre_recovery_head, head)):
+        raise PhaseReworkError("recovery HEAD must descend from the exact pre-recovery HEAD")
+    rows = run_git(root, "rev-list", "--reverse", f"{pre_recovery_head}..{head}").splitlines()
+    if len(rows) != recovery_authorization.get("max_recovery_commits"):
+        raise PhaseReworkError("recovery must contain exactly one authorized descendant commit")
+    if commit_parents_sha40(root, rows[0]) != (pre_recovery_head,):
+        raise PhaseReworkError("recovery commit has an unexpected parent")
+    changed = changed_paths_between(root, pre_recovery_head, rows[0])
+    allowlist = recovery_authorization.get("recovery_path_allowlist")
+    if (not isinstance(allowlist, list) or not changed
+            or any(path not in allowlist for path in changed)):
+        raise PhaseReworkError("recovery commit changes a path outside its exact allowlist")
+
+
 def _user_review_absent(root: Path) -> None:
     folder = root / ".p_ases" / "user-review" / str(ISSUE_NUMBER)
     if path_has_symlink(folder, root=root):
@@ -341,18 +501,9 @@ def _live(github: GitHub, root: Path, *, phase: str | None = None,
 
     try:
         current = verify_adc(github, ISSUE_NUMBER)
-        authorization, authorization_sha = parse_authorization(current)
-        chain = verify_adc_forward_generations(
-            github, ISSUE_NUMBER,
-            prior_comment_id=PREDECESSOR_ADC_COMMENT_ID,
-            prior_sha256=PREDECESSOR_ADC_SHA256,
-            current_comment_id=current.pointer.comment_id,
-            current_sha256=current.contract.sha256,
+        authorization, authorization_sha, recovery_authorization, recovery_sha = (
+            _authorization_context(github, current)
         )
-        if (len(chain) != 2 or chain[0].pointer.comment_id != PREDECESSOR_ADC_COMMENT_ID
-                or chain[0].contract.sha256 != PREDECESSOR_ADC_SHA256
-                or chain[1].pointer != current.pointer):
-            raise PhaseReworkError("current ADC is not the exact approved successor of #6886911700")
         actor = github.authenticated_user()
         metadata = github.repository_metadata()
         if (not isinstance(actor, dict) or actor.get("id") != OWNER_ID or actor.get("type") != "User"
@@ -390,10 +541,18 @@ def _live(github: GitHub, root: Path, *, phase: str | None = None,
         remote_head = remote_branch_sha(root, BRANCH_REF)
         if remote_head != head:
             raise PhaseReworkError("local bootstrap HEAD differs from the remote PR branch HEAD")
-        if head != BASELINE_HEAD:
+        if recovery_authorization is not None:
+            _verify_commit_set(
+                root, head,
+                tuple(sorted(set(authorization["bootstrap_path_allowlist"])
+                             | set(recovery_authorization["recovery_path_allowlist"]))),
+            )
+            _verify_recovery_commit_set(root, head, recovery_authorization)
+        elif head != BASELINE_HEAD:
             _verify_commit_set(root, head, tuple(authorization["bootstrap_path_allowlist"]))
         return _Live(current, epoch, issue, labels, branch, head, _pr(github, head),
-                     actor["id"], authorization_sha, root)
+                     actor["id"], authorization_sha, root,
+                     recovery_authorization, recovery_sha)
     except (ADCError, GitError, GitHubError, ValueError) as exc:
         raise PhaseReworkError(str(exc)) from exc
 
@@ -632,6 +791,233 @@ def _validate_recorded_readiness(root: Path, intent: PhaseReworkRecord) -> None:
         raise PhaseReworkError("Intent-bound Readiness is not the exact fresh bootstrap PASS")
 
 
+def _read_exact_attempt_marker(root: Path, operation: str,
+                               payload_sha256: str) -> bool:
+    path = _record_path(root, operation)
+    if path_has_symlink(path, root=Path(root).resolve()):
+        raise PhaseReworkError(f"{operation} attempt path traverses a symlink")
+    if not path.exists():
+        return False
+    try:
+        actual = path.read_bytes()
+    except OSError as exc:
+        raise PhaseReworkError(f"{operation} attempt marker cannot be read") from exc
+    expected = (_canonical({
+        "schema": "PASES_ISSUE_PHASE_REWORK_LOCAL_ATTEMPT_V1",
+        "operation": operation,
+        "payload_sha256": payload_sha256,
+    }) + "\n").encode()
+    if actual != expected:
+        raise PhaseReworkError(f"{operation} attempt marker differs from the exact authorized payload")
+    return True
+
+
+def _validate_recovery_intent(intent: PhaseReworkRecord, live: _Live,
+                              root: Path) -> None:
+    recovery = live.recovery_authorization
+    if recovery is None or live.current_adc.pointer.comment_id != RECOVERY_ADC_COMMENT_ID:
+        raise PhaseReworkError("current ADC does not authorize pending Intent recovery")
+    if (intent.comment_id != recovery["intent_comment_id"]
+            or intent.body_sha256 != recovery["intent_body_sha256"]
+            or intent.body != _record_body(INTENT_SCHEMA, intent.payload)
+            or intent.payload.get("readiness_sha256") != recovery["intent_readiness_sha256"]
+            or intent.payload.get("readiness_subject_sha256") != recovery["intent_readiness_subject_sha256"]):
+        raise PhaseReworkError("pending Intent or original Readiness differs from the exact Recovery ADC tuple")
+    _validate_intent(intent, live, allow_bootstrap_descendant=True)
+    _validate_recorded_readiness(root, intent)
+    if hashlib.sha256(_canonical(intent.payload).encode()).hexdigest() != recovery["intent_attempt_payload_sha256"]:
+        raise PhaseReworkError("pending Intent payload differs from its one-shot local attempt binding")
+    if not _read_exact_attempt_marker(
+            root, "intent", recovery["intent_attempt_payload_sha256"]):
+        raise PhaseReworkError("the original local Intent attempt marker is missing")
+
+
+def _recovery_pr_binding_candidate(live: _Live) -> PRBinding:
+    pull = live.pr
+    if (pull.get("title") != PR_TITLE or not isinstance(pull.get("body"), str)
+            or hashlib.sha256(pull["body"].encode("utf-8")).hexdigest() != PR_BODY_SHA256):
+        raise PhaseReworkError("PR #75 title or body differs from the exact preserved Recovery subject")
+    try:
+        return PRBinding(
+            REPOSITORY, ISSUE_NUMBER, live.current_adc.pointer.comment_id,
+            live.current_adc.contract.sha256, BASE_SHA40, BRANCH_REF, PR_NUMBER,
+            live.head_sha40, execution_epoch_sha256=live.epoch.sha256,
+        ).validate()
+    except (AttributeError, ValueError) as exc:
+        raise PhaseReworkError(f"current Recovery PRBinding identity is invalid: {exc}") from exc
+
+
+def _recovery_checkpoint_matches(checkpoint: WorkCheckpoint, binding: PRBinding) -> bool:
+    return (
+        checkpoint.execution_epoch_sha256 == ACTIVE_EPOCH_SHA256
+        and checkpoint.execution_binding_sha256 is None
+        and checkpoint.execution_adoption_sha256 is None
+        and checkpoint.current_head_sha40 == binding.pr_head_sha40
+        and checkpoint.worktree_clean is True
+        and checkpoint.completed_stage == "pr"
+        and checkpoint.artifact_digests == tuple(sorted((
+            ("execution-epoch", ACTIVE_EPOCH_SHA256),
+            ("pr-binding", binding.sha256),
+        )))
+    )
+
+
+def _recovery_binding_history(github: GitHub, root: Path) -> list[tuple[Path, PRBinding]]:
+    from .work import WorkError, read_pr_binding_history
+
+    try:
+        rows = read_pr_binding_history(root, ISSUE_NUMBER, github=github)
+    except (WorkError, GitHubError, OSError, ValueError) as exc:
+        raise PhaseReworkError(f"immutable PRBinding history is invalid: {exc}") from exc
+    if not rows:
+        raise PhaseReworkError("Recovery requires the existing immutable PRBinding history")
+    for _path, row in rows:
+        if (row.repository.casefold() != REPOSITORY.casefold()
+                or row.issue_number != ISSUE_NUMBER or row.pr_number != PR_NUMBER
+                or row.base_sha40 != BASE_SHA40 or row.branch_ref != BRANCH_REF
+                or row.execution_epoch_sha256 != ACTIVE_EPOCH_SHA256
+                or row.adoption_id is not None):
+            raise PhaseReworkError("PRBinding history changes the frozen Issue #71 PR execution identity")
+    return rows
+
+
+def _verify_recovery_pr_binding(live: _Live, github: GitHub) -> tuple[PRBinding, Path, str]:
+    from .work import WorkError, latest_checkpoint
+
+    root = live.root
+    candidate = _recovery_pr_binding_candidate(live)
+    rows = _recovery_binding_history(github, root)
+    latest_path, latest = rows[-1]
+    if latest != candidate:
+        raise PhaseReworkError("PRBinding does not name the current Recovery ADC and exact HEAD")
+    try:
+        checkpoint = latest_checkpoint(root, ISSUE_NUMBER)
+    except (WorkError, OSError, ValueError) as exc:
+        raise PhaseReworkError(f"Recovery PR checkpoint history is invalid: {exc}") from exc
+    if checkpoint is None or not _recovery_checkpoint_matches(checkpoint[1], candidate):
+        raise PhaseReworkError("PR checkpoint does not bind the current Recovery PRBinding and exact HEAD")
+    return candidate, latest_path, checkpoint[1].sha256
+
+
+def rebind_issue71_recovery_pr(github: GitHub, root: Path, issue_number: int) -> dict[str, Any]:
+    """Append the exact Recovery PRBinding/checkpoint without writing to GitHub."""
+    if (type(issue_number) is not int or issue_number != ISSUE_NUMBER
+            or github.repo.casefold() != REPOSITORY.casefold()):
+        raise PhaseReworkError("Recovery PR rebinding is fixed to puchinya/ai-agent-workflow Issue #71")
+    root = Path(root).resolve()
+    live = _live(github, root, require_clean=True)
+    if live.recovery_authorization is None:
+        raise PhaseReworkError("current ADC does not authorize Recovery PR rebinding")
+    history = _read_history(github)
+    intent, applied = _active_rework_records(history, live.current_adc)
+    if intent is None or applied is not None:
+        raise PhaseReworkError("Recovery PR rebinding requires the exact pending Intent without Applied")
+    _validate_recovery_intent(intent, live, root)
+    if live.labels != tuple(sorted(LABELS_BEFORE)):
+        raise PhaseReworkError("Recovery PR rebinding requires the exact before-label state")
+    label_payload = _recovery_label_attempt_payload(intent)
+    if _read_exact_attempt_marker(
+            root, "labels", hashlib.sha256(_canonical(label_payload).encode()).hexdigest()):
+        raise PhaseReworkError("Recovery PR rebinding is blocked after a label-attempt marker")
+
+    candidate = _recovery_pr_binding_candidate(live)
+    rows = _recovery_binding_history(github, root)
+    latest_path, latest = rows[-1]
+    from .work import (
+        WorkError, _pr_binding_version_path, _same_pr_execution_identity,
+        _verify_pr_binding_successor, latest_checkpoint,
+    )
+    try:
+        if latest != candidate:
+            if (not _same_pr_execution_identity(latest, candidate)
+                    or not is_ancestor(root, latest.pr_head_sha40, candidate.pr_head_sha40)):
+                raise PhaseReworkError("Recovery PRBinding is not a forward-only successor of its prior row")
+            _verify_pr_binding_successor(github, ISSUE_NUMBER, latest, candidate)
+        previous_checkpoint = latest_checkpoint(root, ISSUE_NUMBER)
+    except (WorkError, GitError, GitHubError, OSError, ValueError) as exc:
+        raise PhaseReworkError(f"Recovery PRBinding successor validation failed: {exc}") from exc
+
+    # Re-read the complete live subject immediately before the first local append.
+    fresh = _live(github, root, require_clean=True)
+    fresh_history = _read_history(github)
+    fresh_intent, fresh_applied = _active_rework_records(fresh_history, fresh.current_adc)
+    if (fresh.recovery_authorization != live.recovery_authorization
+            or fresh.current_adc.pointer != live.current_adc.pointer
+            or fresh.current_adc.contract.sha256 != live.current_adc.contract.sha256
+            or fresh.epoch.sha256 != live.epoch.sha256 or fresh.issue != live.issue
+            or fresh.labels != live.labels or fresh.branch_ref != live.branch_ref
+            or fresh.head_sha40 != live.head_sha40 or fresh.pr != live.pr
+            or fresh_intent != intent or fresh_applied is not None):
+        raise PhaseReworkError("Recovery PR subject changed immediately before immutable local binding")
+    if (current_branch(root) != BRANCH_REF or head_sha40(root) != candidate.pr_head_sha40
+            or not worktree_clean(root)
+            or remote_branch_sha(root, BRANCH_REF) != candidate.pr_head_sha40
+            or remote_branch_sha(root, BASE_REF) != BASE_SHA40):
+        raise PhaseReworkError("local or remote refs changed before Recovery PRBinding append")
+
+    if latest != candidate:
+        try:
+            write_pr_binding(
+                _pr_binding_version_path(root, ISSUE_NUMBER, len(rows) + 1), candidate,
+            )
+        except (WorkError, OSError, ValueError) as exc:
+            raise PhaseReworkError(f"could not append immutable Recovery PRBinding: {exc}") from exc
+    try:
+        current_checkpoint = latest_checkpoint(root, ISSUE_NUMBER)
+        if current_checkpoint is not None and _recovery_checkpoint_matches(current_checkpoint[1], candidate):
+            checkpoint_file, checkpoint = current_checkpoint
+        else:
+            expected_prior = latest if latest != candidate else (rows[-2][1] if len(rows) > 1 else None)
+            if (expected_prior is None or previous_checkpoint is None
+                    or previous_checkpoint[1].execution_epoch_sha256 != ACTIVE_EPOCH_SHA256
+                    or previous_checkpoint[1].current_head_sha40 != expected_prior.pr_head_sha40
+                    or previous_checkpoint[1].artifact_digests != tuple(sorted((
+                        ("execution-epoch", ACTIVE_EPOCH_SHA256),
+                        ("pr-binding", expected_prior.sha256),
+                    )))):
+                raise PhaseReworkError("prior PR checkpoint does not match the immutable binding predecessor")
+            checkpoint = WorkCheckpoint(
+                None, candidate.pr_head_sha40, True, "pr", tuple(sorted((
+                    ("execution-epoch", ACTIVE_EPOCH_SHA256), ("pr-binding", candidate.sha256),
+                ))), previous_checkpoint[1].step + 1,
+                execution_epoch_sha256=ACTIVE_EPOCH_SHA256,
+            ).validate()
+            checkpoint_file = checkpoint_path(root, ISSUE_NUMBER, checkpoint.step)
+            write_checkpoint(checkpoint_file, checkpoint)
+    except (WorkError, GitError, OSError, ValueError) as exc:
+        raise PhaseReworkError(f"could not append Recovery PR checkpoint: {exc}") from exc
+    final_live = _live(github, root, require_clean=True)
+    if (final_live.recovery_authorization != fresh.recovery_authorization
+            or final_live.current_adc.pointer != fresh.current_adc.pointer
+            or final_live.current_adc.contract.sha256 != fresh.current_adc.contract.sha256
+            or final_live.epoch.sha256 != fresh.epoch.sha256 or final_live.issue != fresh.issue
+            or final_live.labels != fresh.labels or final_live.branch_ref != fresh.branch_ref
+            or final_live.head_sha40 != fresh.head_sha40 or final_live.pr != fresh.pr):
+        raise PhaseReworkError("Recovery PR subject changed during immutable binding append")
+    verified, binding_path, checkpoint_sha = _verify_recovery_pr_binding(final_live, github)
+    if verified != candidate:
+        raise PhaseReworkError("Recovery PRBinding/checkpoint direct readback differs from the append")
+    return {
+        "status": "PR_BOUND", "issue": ISSUE_NUMBER, "pr_number": PR_NUMBER,
+        "adc_comment_id": RECOVERY_ADC_COMMENT_ID, "head_sha40": candidate.pr_head_sha40,
+        "execution_epoch_sha256": ACTIVE_EPOCH_SHA256,
+        "pr_binding_sha256": candidate.sha256,
+        "pr_binding_path": str(binding_path),
+        "checkpoint_path": str(checkpoint_file), "checkpoint_sha256": checkpoint_sha,
+        "github_writes": 0,
+    }
+
+
+def _recovery_label_attempt_payload(intent: PhaseReworkRecord) -> dict[str, Any]:
+    return {
+        "intent_comment_id": intent.comment_id,
+        "intent_body_sha256": intent.body_sha256,
+        "labels_before": LABELS_BEFORE,
+        "labels_after": LABELS_AFTER,
+        "schema": "PASES_ISSUE_PHASE_REWORK_LABEL_ATTEMPT_V1",
+    }
+
+
 def _record_body(schema: str, payload: Mapping[str, Any]) -> str:
     return f"<!-- {schema}\n{_canonical(dict(payload))}\n-->"
 
@@ -714,24 +1100,29 @@ def _validate_label_attempt(root: Path, intent: PhaseReworkRecord) -> bool:
 
 def _replace_labels_once(github: GitHub, root: Path, intent: PhaseReworkRecord) -> None:
     live = _live(github, root, phase="verification")
-    _validate_intent(intent, live)
-    _validate_recorded_readiness(root, intent)
+    recovery = live.recovery_authorization is not None
+    if recovery:
+        _validate_recovery_intent(intent, live, root)
+    else:
+        _validate_intent(intent, live)
+        _validate_recorded_readiness(root, intent)
     _user_review_absent(root)
     issue, labels = live.issue, live.labels
+    label_payload = _recovery_label_attempt_payload(intent)
+    label_marker_exists = (
+        _read_exact_attempt_marker(
+            root, "labels", hashlib.sha256(_canonical(label_payload).encode()).hexdigest(),
+        ) if recovery else _validate_label_attempt(root, intent)
+    )
     if labels == tuple(sorted(LABELS_AFTER)):
+        if recovery and not label_marker_exists:
+            raise PhaseReworkError("after-label state lacks the one-shot label-attempt marker")
         return
     if labels != tuple(sorted(LABELS_BEFORE)):
         raise PhaseReworkError("Issue labels match neither the exact before nor after state")
-    if _validate_label_attempt(root, intent):
+    if label_marker_exists:
         raise PhaseReworkError("label PUT was previously attempted; read-only recovery only")
-    marker_payload = {
-        "intent_comment_id": intent.comment_id,
-        "intent_body_sha256": intent.body_sha256,
-        "labels_before": LABELS_BEFORE,
-        "labels_after": LABELS_AFTER,
-        "schema": "PASES_ISSUE_PHASE_REWORK_LABEL_ATTEMPT_V1",
-    }
-    _write_attempt_once(root, "labels", marker_payload)
+    _write_attempt_once(root, "labels", label_payload)
     write_error: GitHubError | None = None
     try:
         github.replace_issue_labels(ISSUE_NUMBER, LABELS_AFTER)
@@ -808,19 +1199,28 @@ def _ensure_active_record_context(live: _Live, record: PhaseReworkRecord, root: 
     if (payload.get("bootstrap_head_sha40") != live.head_sha40
             or payload.get("pr_head_sha40") != live.head_sha40
             or live.branch_ref != BRANCH_REF):
-        raise PhaseReworkError("incomplete phase rework must be recovered at its exact bootstrap HEAD")
-    _validate_intent(record, live)
-    _validate_recorded_readiness(root, record)
+        if (live.recovery_authorization is None
+                or not is_ancestor(root, payload.get("bootstrap_head_sha40", ""), live.head_sha40)):
+            raise PhaseReworkError("incomplete phase rework must remain on its exact authorized branch ancestry")
+    if live.recovery_authorization is not None:
+        _validate_recovery_intent(record, live, root)
+    else:
+        _validate_intent(record, live)
+        _validate_recorded_readiness(root, record)
 
 
 def active_phase_generation_for_epoch(github: GitHub, root: Path, current_adc: VerifiedADC,
                                       origin_epoch: Any, issue: Mapping[str, Any]) -> tuple[int, str]:
     """Return the active rework Applied generation or the immutable epoch Applied."""
-    parse_authorization(current_adc)
+    _authorization, authorization_sha, recovery_authorization, recovery_sha = (
+        _authorization_context(github, current_adc)
+    )
     history = _read_history(github)
     intent, applied = _active_rework_records(history, current_adc)
     issue_labels = _label_names(issue)
     if intent is None:
+        if recovery_authorization is not None:
+            raise PhaseReworkError("Recovery ADC has no exact pending phase rework Intent")
         if applied is not None or issue_labels != tuple(sorted(LABELS_BEFORE)):
             raise PhaseReworkError("Issue labels changed without the authorized rework Intent")
         if (origin_epoch.epoch_id != ACTIVE_EPOCH_ID
@@ -833,7 +1233,9 @@ def active_phase_generation_for_epoch(github: GitHub, root: Path, current_adc: V
     current_head = head_sha40(root)
     live = _Live(current_adc, origin_epoch, dict(issue), issue_labels, BRANCH_REF,
                  current_head, _pr(github, current_head), OWNER_ID,
-                 parse_authorization(current_adc)[1], root)
+                 authorization_sha, root, recovery_authorization, recovery_sha)
+    if recovery_authorization is not None:
+        _validate_recovery_intent(intent, live, root)
     _validate_intent(intent, live, allow_bootstrap_descendant=True)
     if applied is None:
         raise PhaseReworkError("phase rework has an incomplete Intent; phase operations are blocked")
@@ -852,11 +1254,21 @@ def _write_applied(github: GitHub, root: Path, intent: PhaseReworkRecord,
                    live: _Live) -> PhaseReworkRecord:
     _check_labels_after(github)
     fresh = _live(github, root, phase="requirements", require_clean=False)
-    _validate_intent(intent, fresh)
-    if _validate_label_attempt(root, intent) is False:
-        raise PhaseReworkError("Applied cannot be written without the one-shot label attempt record")
+    if fresh.recovery_authorization is not None:
+        _validate_recovery_intent(intent, fresh, root)
+        label_payload = _recovery_label_attempt_payload(intent)
+        if not _read_exact_attempt_marker(
+                root, "labels", hashlib.sha256(_canonical(label_payload).encode()).hexdigest()):
+            raise PhaseReworkError("Applied cannot be written without the exact one-shot label attempt record")
+    else:
+        _validate_intent(intent, fresh)
+        if _validate_label_attempt(root, intent) is False:
+            raise PhaseReworkError("Applied cannot be written without the one-shot label attempt record")
     applied = _post_record_once(github, root, APPLIED_SCHEMA, _applied_payload(intent))
-    _validate_applied(applied, intent, fresh)
+    _validate_applied(
+        applied, intent, fresh,
+        allow_bootstrap_descendant=fresh.recovery_authorization is not None,
+    )
     return applied
 
 
@@ -875,6 +1287,45 @@ def apply_issue71_phase_rework(
     live = _live(github, root, require_clean=True)
     history = _read_history(github)
     intent, applied = _active_rework_records(history, live.current_adc)
+    if live.recovery_authorization is not None:
+        if intent is None:
+            raise PhaseReworkError("Recovery ADC only authorizes its exact existing pending Intent")
+        _validate_recovery_intent(intent, live, root)
+        label_payload = _recovery_label_attempt_payload(intent)
+        label_attempted = _read_exact_attempt_marker(
+            root, "labels", hashlib.sha256(_canonical(label_payload).encode()).hexdigest(),
+        )
+        if applied is not None:
+            _validate_applied(applied, intent, live, allow_bootstrap_descendant=True)
+            _validate_post_rework_labels(live.labels)
+            _verify_recovery_pr_binding(live, github)
+            if not label_attempted:
+                raise PhaseReworkError("Applied recovery lacks the exact label-attempt marker")
+            return {"status": "NOOP", "issue": ISSUE_NUMBER,
+                    "intent_comment_id": intent.comment_id, "applied_comment_id": applied.comment_id,
+                    "readiness_sha256": intent.payload["readiness_sha256"], "label_write_count": 0}
+        if live.labels == tuple(sorted(LABELS_BEFORE)):
+            if label_attempted:
+                raise PhaseReworkError("label PUT was previously attempted; read-only recovery only")
+            if readiness_factory is None:
+                return rebind_issue71_recovery_pr(github, root, issue_number)
+            _verify_recovery_pr_binding(live, github)
+            _replace_labels_once(github, root, intent)
+            _check_labels_after(github)
+            applied = _write_applied(github, root, intent, live)
+            return {"status": "RECOVERED", "issue": ISSUE_NUMBER,
+                    "intent_comment_id": intent.comment_id, "applied_comment_id": applied.comment_id,
+                    "readiness_sha256": intent.payload["readiness_sha256"], "label_write_count": 1}
+        if live.labels == tuple(sorted(LABELS_AFTER)):
+            if not label_attempted:
+                raise PhaseReworkError("after-label state lacks the one-shot label-attempt marker")
+            _verify_recovery_pr_binding(live, github)
+            _ensure_active_record_context(live, intent, root)
+            applied = _write_applied(github, root, intent, live)
+            return {"status": "RECOVERED", "issue": ISSUE_NUMBER,
+                    "intent_comment_id": intent.comment_id, "applied_comment_id": applied.comment_id,
+                    "readiness_sha256": intent.payload["readiness_sha256"], "label_write_count": 0}
+        raise PhaseReworkError("pending phase rework labels match neither exact state")
     if applied is not None:
         if intent is None:
             raise PhaseReworkError("phase rework Applied has no Intent")
@@ -928,14 +1379,12 @@ def apply_issue71_phase_rework(
         before_write=verify_intent_subject_before_write,
     )
 
-    # Re-read the complete mutable subject and recompute the exact Readiness
-    # after Intent. No label write occurs if any evidence or identity changed.
+    # The just-recorded Intent makes the active epoch incomplete, so normal
+    # Readiness recomputation is expected to block. Reuse the exact PASS that
+    # the Intent binds, then reread the complete live subject before the PUT.
     before_labels = _live(github, root, phase="verification")
     _validate_intent(intent, before_labels)
-    readiness_after_intent = readiness_factory()
-    _validate_intent(intent, before_labels, readiness_after_intent)
-    if readiness_after_intent != readiness:
-        raise PhaseReworkError("Readiness changed after the one-shot Intent; label update is blocked")
+    _validate_recorded_readiness(root, intent)
     _replace_labels_once(github, root, intent)
     _check_labels_after(github)
     applied = _write_applied(github, root, intent, before_labels)

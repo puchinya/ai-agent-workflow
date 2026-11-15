@@ -65,6 +65,8 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
     - [2.26.1 ORA-RT-026 Expected result](#2261-ora-rt-026-expected-result)
   - [2.27 TST-RT-027 Issue #71 successor ADC Phase rework CLI](#227-tst-rt-027-issue-71-successor-adc-phase-rework-cli)
     - [2.27.1 ORA-RT-027 Expected result](#2271-ora-rt-027-expected-result)
+  - [2.28 TST-RT-028 Issue #71 pending rework Recovery CLI](#228-tst-rt-028-issue-71-pending-rework-recovery-cli)
+    - [2.28.1 ORA-RT-028 Expected result](#2281-ora-rt-028-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -123,6 +125,8 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
 - [ORA-RT-026](#ora-rt-026) — 2.26.1 ORA-RT-026 Expected result
 - [TST-RT-027](#tst-rt-027) — 2.27 TST-RT-027 Issue #71 successor ADC Phase rework CLI
 - [ORA-RT-027](#ora-rt-027) — 2.27.1 ORA-RT-027 Expected result
+- [TST-RT-028](#tst-rt-028) — 2.28 TST-RT-028 Issue #71 pending rework Recovery CLI
+- [ORA-RT-028](#ora-rt-028) — 2.28.1 ORA-RT-028 Expected result
 <!-- heading-map:end -->
 
 
@@ -441,9 +445,19 @@ Only Issue #71 with the exact approved ADC and validated epoch-3 journal/attachm
 <a id="tst-rt-027"></a>
 ### 2.27 TST-RT-027 Issue #71 successor ADC Phase rework CLI
 
-**Setup and action:** Parse `issue phase-rework`, require the exact Issue #71 worktree root, and exercise dispatch with complete, missing, and partial current evidence inputs. Stub readiness recomputation to return fresh PASS, stale PASS, and blocked results. Verify the route recomputes readiness twice before the sole label write, binds actual local/remote/PR HEAD and the current ADC, supports read-only recovery without evidence inputs, and never invokes Admin, Activation, Issue #63, or PR merge routes.
+**Setup and action:** Parse `issue phase-rework`, require the exact Issue #71 worktree root, and exercise dispatch with complete, missing, and partial current evidence inputs. Stub readiness recomputation to return fresh PASS, stale PASS, and blocked results. Verify the initial route recomputes readiness before Intent only, then reuses the Intent-bound PASS while rereading the live subject; the Recovery route uses the pinned stored PASS without invoking Readiness recomputation. Bind actual local/remote/PR HEAD and current ADC; never invoke Admin, Activation, Issue #63, or PR merge routes.
 
 <a id="ora-rt-027"></a>
 #### 2.27.1 ORA-RT-027 Expected result
 
-The CLI accepts only the Issue #71 dedicated route and complete evidence input set for first application. Stale/blocked readiness and partial input sets block before writes; recovery never retries a potentially sent label request. All outputs identify exact current evidence and report no merge or Admin authority.
+The CLI accepts only the Issue #71 dedicated route and complete evidence input set for first application. Stale/blocked readiness and partial input sets block before writes. After Intent, it never recomputes Readiness; the exact stored PASS is revalidated. Recovery never retries a potentially sent label request. All outputs identify exact current evidence and report no merge or Admin authority.
+
+<a id="tst-rt-028"></a>
+### 2.28 TST-RT-028 Issue #71 pending rework Recovery CLI
+
+**Setup and action:** Invoke the public `issue phase-rework` route with the exact Recovery ADC, pending Intent, original Readiness, local Intent marker, and recovery branch fixtures. Assert complete ADC-chain verification and exact-byte recovery-marker parsing, exact original Authorization/Intent binding, and no call to the Readiness factory after Intent. With no gate inputs, verify that the route appends only the current PRBinding/checkpoint pair locally and makes no GitHub write. Check exact ADC/epoch/PR/HEAD lineage, preserved PR title/body digest, and zero-write idempotent retry; stale binding, metadata, checkpoint, and ref drift must block. With gates supplied, require the current binding before labels-before/no-marker (one marker and one PUT), labels-before/marker (zero PUT), labels-after/marker (Applied-only recovery), labels-after/no-marker (block), ambiguous PUT before and after server application, and malformed/missing local attempt markers. Mutate each pinned Issue/owner/ADC/epoch/branch/base/PR/HEAD/Intent/Readiness identity and assert zero additional POST/PUT calls. Verify duplicate Intent creation is unreachable under the Recovery ADC.
+
+<a id="ora-rt-028"></a>
+#### 2.28.1 ORA-RT-028 Expected result
+
+Recovery accepts only the exact current approved successor and its one pending Intent. Before code gates, the no-input route may append only one exact current V4 PRBinding and V3 checkpoint locally; it cannot change PR metadata or Issue state. A gated continuation requires that current binding. Before-state without a marker permits one marked complete-label PUT; a present marker prevents retries. After-state with the exact marker permits an Applied append only. Mismatches and ambiguous before-state outcomes make no further Issue writes, and no fresh Readiness is generated while Intent is incomplete.
