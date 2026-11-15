@@ -127,6 +127,8 @@
     - [2.58.1 ORA-F01-092 Expected result](#2581-ora-f01-092-expected-result)
   - [2.59 TST-F01-093 Exact continuation ADC and commit lineage](#259-tst-f01-093-exact-continuation-adc-and-commit-lineage)
     - [2.59.1 ORA-F01-093 Expected result](#2591-ora-f01-093-expected-result)
+  - [2.60 TST-F01-094 Execution-receipt reader continuation and transition record](#260-tst-f01-094-execution-receipt-reader-continuation-and-transition-record)
+    - [2.60.1 ORA-F01-094 Expected result](#2601-ora-f01-094-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -249,6 +251,8 @@
 - [ORA-F01-092](#ora-f01-092) — 2.58.1 ORA-F01-092 Expected result
 - [TST-F01-093](#tst-f01-093) — 2.59 TST-F01-093 Exact continuation ADC and commit lineage
 - [ORA-F01-093](#ora-f01-093) — 2.59.1 ORA-F01-093 Expected result
+- [TST-F01-094](#tst-f01-094) — 2.60 TST-F01-094 Execution-receipt reader continuation and transition record
+- [ORA-F01-094](#ora-f01-094) — 2.60.1 ORA-F01-094 Expected result
 <!-- heading-map:end -->
 
 
@@ -894,9 +898,19 @@ Only the exact four-generation ADC chain and pinned existing journal records pas
 <a id="tst-f01-093"></a>
 ### 2.59 TST-F01-093 Exact continuation ADC and commit lineage
 
-**Setup and action:** Use the approved eight-generation ADC chain through reader-continuation ADC #6893557456, including traceability-only predecessor #6893385802, its exact canonical 2,168-byte marker and Artifact impact declarations, the immutable epoch-3 identity, PR #75, starting HEAD `b31cca21da15e18d0e1665827621700f7d774d0a`, and the existing Intent/Applied pair. Verify exact chain order, approved states, every predecessor link, repository/Issue/owner identity, marker fields, and exact allowlist. Reject a missing or duplicate marker, noncanonical JSON, wrong owner/repository, changed Intent/Applied ID or digest, invalid branch/base/HEAD, bad predecessor, or punctuated Artifact impact path. Verify the branch has four separate one-commit segments after `4185a510054a2a8781659191c1a48178336f8571`: Recovery, timestamp reconciliation, first continuation, and the reader/traceability correction. Reject unexpected parents, merge commits, extra descendants, and paths outside each segment's allowlist. Verify REQ-F01-124 and REQ-F01-128 through REQ-F01-132 each have exactly one linked Specification, Design, Oracle, and Test, plus an executable test source. Count all GitHub writes during exact Applied reconciliation and require a zero-write NOOP. Exercise the CLI route and confirm no second Intent or label/comment write is sent.
+**Setup and action:** Use the approved nine-generation ADC chain through execution-receipt reader ADC #6894441752, including the immutable #6893385802 traceability-only and #6893557456 reader predecessors, both exact canonical markers and Artifact impact declarations, the epoch-3 identity, PR #75, starting HEAD `b5d3c005a5004e3d56103b17c48c13e7bca8e900`, and the existing Intent/Applied pair. Verify exact chain order, approved states, every predecessor link, repository/Issue/owner identity, marker fields, and exact allowlist. Reject missing or duplicate markers, noncanonical JSON, wrong owner/repository, changed Intent/Applied ID or digest, invalid branch/base/HEAD, bad predecessor, or punctuated Artifact impact path. Verify the branch has five separate one-commit segments after `4185a510054a2a8781659191c1a48178336f8571`: Recovery, timestamp reconciliation, first continuation, reader/traceability correction, and execution-receipt reader continuation. Reject unexpected parents, merge commits, extra descendants, and paths outside each segment's allowlist. Verify REQ-F01-124 and REQ-F01-128 through REQ-F01-133 each have one linked Specification, Design, Oracle, and Test plus an executable test source. Count all GitHub writes during exact Applied reconciliation and require a zero-write NOOP. Exercise normal execution advance and capture its current READY proof validation, successful response, and complete Issue-state readback; do not expect a separate execution Phase Decision comment.
 
 <a id="ora-f01-093"></a>
 #### 2.59.1 ORA-F01-093 Expected result
 
-Only the exact approved eight-generation chain and its canonical marker authorize one direct child of `b31cca21da15e18d0e1665827621700f7d774d0a`. Every historical segment keeps its own one-commit boundary and path policy. The current Issue, labels, epoch, Intent, Applied, branch, frozen base, and open/unmerged PR #75 remain bound to the exact subject. REQ-F01-124 gains its executable test source, and REQ-F01-128 through REQ-F01-132 have complete traceability. Reconciliation returns NOOP with zero Issue writes; any malformed marker, lineage, identity, traceability row, or Artifact impact path blocks before a write.
+Only the exact approved nine-generation chain and canonical markers authorize one direct child of `b5d3c005a5004e3d56103b17c48c13e7bca8e900`, after independently validating each earlier one-commit segment. The current Issue, labels, epoch, Intent, Applied, branch, frozen base, and open/unmerged PR #75 remain bound to the exact subject. REQ-F01-124 and REQ-F01-128 through REQ-F01-133 have complete traceability. Reconciliation returns NOOP with zero Issue writes; any malformed marker, lineage, identity, traceability row, or Artifact impact path blocks before a write.
+
+<a id="tst-f01-094"></a>
+### 2.60 TST-F01-094 Execution-receipt reader continuation and transition record
+
+**Setup and action:** Parse the exact approved #6894441752 marker and reject changed bytes, duplicate fields, missing or duplicate marker, wrong predecessor, wrong Issue/epoch/branch/base/PR/Intent/Applied identity, invalid state, or Artifact impact mismatch. Verify the exact nine-generation ADC chain, including all prior approved markers and digests. For the new commit segment, accept exactly one direct child of `b5d3c005a5004e3d56103b17c48c13e7bca8e900` whose changed paths are within the 15-path allowlist; reject no ancestry, wrong parent, extra descendant, merge, empty path set, and outside paths. Verify the reader's pending Intent/Applied reconciliation remains read-only. For the phase path, verify the fresh design→ready receipt is published/read back, then normal `issue advance 71 execution` revalidates the current READY proof before the phase-label write and captures its complete Issue-state readback. The successful advance output plus the READY proof and direct before/after snapshots form the transition record; no execution-target Phase Decision comment is attempted.
+
+<a id="ora-f01-094"></a>
+#### 2.60.1 ORA-F01-094 Expected result
+
+Only the exact nine-generation approved chain and canonical successor marker authorize the one allowlisted direct child of b5d3c00. All earlier commit boundaries remain independently enforced. Exact Applied reconciliation produces NOOP with zero Issue writes. A valid current READY proof permits the normal execution advance only after a complete pre-write revalidation; success is reported only with a complete post-write Issue readback showing `phase:execution`. A distinct execution Phase Decision is neither needed nor supported.

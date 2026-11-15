@@ -46,6 +46,7 @@
   - [5.31 DES-F01-091 Pending phase-rework continuation](#531-des-f01-091-pending-phase-rework-continuation)
   - [5.32 DES-F01-092 Applied timestamp reconciliation and Phase resumption](#532-des-f01-092-applied-timestamp-reconciliation-and-phase-resumption)
   - [5.33 DES-F01-093 Exact continuation ADC reader and lineage](#533-des-f01-093-exact-continuation-adc-reader-and-lineage)
+  - [5.34 DES-F01-094 Execution transition readback record](#534-des-f01-094-execution-transition-readback-record)
 - [6 DES-WF-003 Workspace execution flow](#6-des-wf-003-workspace-execution-flow)
 - [7 DES-WF-004 Failure handling](#7-des-wf-004-failure-handling)
 - [8 DES-WF-005 Authorization boundary and PR handoff](#8-des-wf-005-authorization-boundary-and-pr-handoff)
@@ -91,6 +92,7 @@
 - [DES-F01-091](#des-f01-091) — 5.31 DES-F01-091 Pending phase-rework continuation
 - [DES-F01-092](#des-f01-092) — 5.32 DES-F01-092 Applied timestamp reconciliation and Phase resumption
 - [DES-F01-093](#des-f01-093) — 5.33 DES-F01-093 Exact continuation ADC reader and lineage
+- [DES-F01-094](#des-f01-094) — 5.34 DES-F01-094 Execution transition readback record
 - [DES-WF-003](#des-wf-003) — 6 DES-WF-003 Workspace execution flow
 - [DES-WF-004](#des-wf-004) — 7 DES-WF-004 Failure handling
 - [DES-WF-005](#des-wf-005) — 8 DES-WF-005 Authorization boundary and PR handoff
@@ -395,11 +397,16 @@ After reconciliation and exact-HEAD gates, fresh requirements, specification, de
 <a id="des-f01-093"></a>
 ### 5.33 DES-F01-093 Exact continuation ADC reader and lineage
 
-`phase_rework.py` accepts the reader-continuation generation only after the ADC reader verifies the complete eight-generation approved chain from #6886911700 through #6893557456. It separately validates the immutable traceability-only predecessor #6893385802 and the exact current continuation marker, including canonical JSON, pinned marker bytes/digest, exact predecessor, Artifact impact paths, Issue/repository/owner, existing Intent/Applied, epoch, phase, labels, branch, frozen base, PR, starting HEAD, and allowlist. Earlier ADC generations remain independently pinned, and the generic Artifact impact path parser is unchanged.
+`phase_rework.py` accepts the execution-receipt reader continuation only after the ADC reader verifies the complete nine-generation approved chain from #6886911700 through #6894441752. It separately validates the immutable traceability-only predecessor #6893385802, reader-continuation predecessor #6893557456, and exact current continuation marker, including canonical JSON, pinned marker bytes/digest, exact predecessor, Artifact impact paths, Issue/repository/owner, existing Intent/Applied, epoch, phase, labels, branch, frozen base, PR, starting HEAD, and allowlist. Earlier ADC generations remain independently pinned, and the generic Artifact impact path parser is unchanged.
 
-Lineage validation composes four independent one-commit segments after the pinned pre-recovery boundary: the existing Recovery commit, timestamp reconciliation commit, first reader-continuation commit, and the new reader/traceability correction commit. Each segment requires one direct parent, one exact endpoint, and only its own allowlisted paths. The original bootstrap prefix is still checked with the original bootstrap policy. A missing or duplicate marker, reordered/unapproved generation, changed Intent/Applied binding, invalid live identity, merge, extra descendant, wrong parent, or changed path blocks.
+Lineage validation composes five independent one-commit segments after the pinned pre-recovery boundary: the existing Recovery commit, timestamp reconciliation commit, first reader-continuation commit, reader/traceability correction commit, and execution-receipt reader continuation. Each segment requires one direct parent, one exact endpoint, and only its own allowlisted paths. The original bootstrap prefix is still checked with the original bootstrap policy. A missing or duplicate marker, reordered/unapproved generation, changed Intent/Applied binding, invalid live identity, merge, extra descendant, wrong parent, or changed path blocks.
 
-The continuation preserves the original Intent and Applied journal. Its read-only reconciliation validates the existing pair and local attempt records; PRBinding/checkpoint rebinding remains local-only and create-once. The correction adds the executable `tests/test_phase_rework.py` source to REQ-F01-124 traceability and maps REQ-F01-128 through REQ-F01-132 to the existing lifecycle Oracle and Test. Once the current binding and all exact-HEAD gates pass, fresh `design → ready` and `ready → execution` receipts and adjacent label transitions resume in order. Stop at execution. No Admin, Activation, User Review identity implementation, PR merge, release, tag, Issue #63, or Issue-close operation is part of this continuation.
+The continuation preserves the original Intent and Applied journal. Its read-only reconciliation validates the existing pair and local attempt records; PRBinding/checkpoint rebinding remains local-only and create-once. REQ-F01-124 retains its executable `tests/test_phase_rework.py` source, and REQ-F01-128 through REQ-F01-133 have complete traceability. Once the current binding and all exact-HEAD gates pass, publish/read back the fresh `design → ready` receipt and advance to READY. The normal execution advance then rebuilds the current READY proof before writing `phase:execution`; its successful result and complete Issue-state readback form the execution transition record. No separate execution Phase Decision comment is created. Stop at execution. No Admin, Activation, User Review identity implementation, PR merge, release, tag, Issue #63, or Issue-close operation is part of this continuation.
+
+<a id="des-f01-094"></a>
+### 5.34 DES-F01-094 Execution transition readback record
+
+`PASES_PHASE_DECISION_V1` is supported for specification, design, and ready. Execution has a different record: the normal `issue advance 71 execution` command revalidates the current READY proof immediately before the label write, returns `ADVANCED` after the write, and reads back the full Issue label state. Keep that command result with its READY proof reference and direct before/after Issue snapshots, timestamps, and digests. This is the verifiable `ready → execution` transition record; do not try to publish an execution-target Phase Decision comment.
 
 ## 6 DES-WF-003 Workspace execution flow
 

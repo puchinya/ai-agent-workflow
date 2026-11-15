@@ -105,10 +105,11 @@
   - [9.78 REQ-F01-126 Declare exact Phase artifact paths](#978-req-f01-126-declare-exact-phase-artifact-paths)
   - [9.79 REQ-F01-127 Preserve operation boundaries](#979-req-f01-127-preserve-operation-boundaries)
   - [9.80 REQ-F01-128 Preserve the exact reader-continuation subject](#980-req-f01-128-preserve-the-exact-reader-continuation-subject)
-  - [9.81 REQ-F01-129 Verify the exact eight-generation ADC chain](#981-req-f01-129-verify-the-exact-eight-generation-adc-chain)
+  - [9.81 REQ-F01-129 Verify the exact approved ADC chain](#981-req-f01-129-verify-the-exact-approved-adc-chain)
   - [9.82 REQ-F01-130 Bound the reader-continuation commit](#982-req-f01-130-bound-the-reader-continuation-commit)
   - [9.83 REQ-F01-131 Repair executable-source traceability](#983-req-f01-131-repair-executable-source-traceability)
   - [9.84 REQ-F01-132 Gate the exact HEAD and resume Phase transitions](#984-req-f01-132-gate-the-exact-head-and-resume-phase-transitions)
+  - [9.85 REQ-F01-133 Record the supported execution transition](#985-req-f01-133-record-the-supported-execution-transition)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -203,10 +204,11 @@
 - [REQ-F01-126](#req-f01-126) — 9.78 REQ-F01-126 Declare exact Phase artifact paths
 - [REQ-F01-127](#req-f01-127) — 9.79 REQ-F01-127 Preserve operation boundaries
 - [REQ-F01-128](#req-f01-128) — 9.80 REQ-F01-128 Preserve the exact reader-continuation subject
-- [REQ-F01-129](#req-f01-129) — 9.81 REQ-F01-129 Verify the exact eight-generation ADC chain
+- [REQ-F01-129](#req-f01-129) — 9.81 REQ-F01-129 Verify the exact approved ADC chain
 - [REQ-F01-130](#req-f01-130) — 9.82 REQ-F01-130 Bound the reader-continuation commit
 - [REQ-F01-131](#req-f01-131) — 9.83 REQ-F01-131 Repair executable-source traceability
 - [REQ-F01-132](#req-f01-132) — 9.84 REQ-F01-132 Gate the exact HEAD and resume Phase transitions
+- [REQ-F01-133](#req-f01-133) — 9.85 REQ-F01-133 Record the supported execution transition
 <!-- heading-map:end -->
 
 
@@ -890,9 +892,9 @@ Do not add an Intent/Applied or recovery marker, move phases backward, merge PR 
 Preserve Issue #71 OPEN and its exact body, the complete approved ADC history, active epoch and execution identity, branch and frozen base, PR #75 metadata, existing rework Intent/Applied, current phase labels before continuation, and completed requirements→specification and specification→design receipts as immutable history.
 
 <a id="req-f01-129"></a>
-### 9.81 REQ-F01-129 Verify the exact eight-generation ADC chain
+### 9.81 REQ-F01-129 Verify the exact approved ADC chain
 
-Accept the current approved reader-continuation ADC only after verifying the exact eight-generation chain, every predecessor digest, canonical marker bytes and fields, and the pinned Issue, owner, epoch, branch, PR/base, Intent, Applied, phase, labels, and HEAD identities. Reject missing, duplicate, reordered, edited, unapproved, stale, or mismatched generations.
+Accept the current approved reader-continuation ADC only after verifying every generation in the exact approved chain, every predecessor digest, canonical marker bytes and fields, and the pinned Issue, owner, epoch, branch, PR/base, Intent, Applied, phase, labels, and HEAD identities. Reject missing, duplicate, reordered, edited, unapproved, stale, or mismatched generations.
 
 <a id="req-f01-130"></a>
 ### 9.82 REQ-F01-130 Bound the reader-continuation commit
@@ -907,4 +909,9 @@ Add `../../tests/test_phase_rework.py` to the REQ-F01-124 traceability row while
 <a id="req-f01-132"></a>
 ### 9.84 REQ-F01-132 Gate the exact HEAD and resume Phase transitions
 
-At the one exact pushed HEAD, pass every required local and hosted verification gate, fresh exact-subject Verification/Acceptance/Self-Audit/Independent Review, and P-ASES PRBinding. Reconcile the existing Applied record read-only with a zero-write NOOP. Then publish and verify fresh design→ready and ready→execution receipts in order and apply only those adjacent phase transitions. Keep Issue #71 OPEN and PR #75 OPEN/non-draft/unmerged; stop at execution.
+At the one exact pushed HEAD, pass every required local and hosted verification gate, fresh exact-subject Verification/Acceptance/Self-Audit/Independent Review, and P-ASES PRBinding. Reconcile the existing Applied record read-only with a zero-write NOOP. Then publish and verify the fresh design→ready receipt, advance to READY, and use the supported execution transition evidence defined by REQ-F01-133. Keep Issue #71 OPEN and PR #75 OPEN/non-draft/unmerged; stop at execution.
+
+<a id="req-f01-133"></a>
+### 9.85 REQ-F01-133 Record the supported execution transition
+
+The `ready → execution` transition uses the ordinary `issue advance 71 execution` operation at the exact current subject. Before changing the label, it revalidates the current READY proof; after the label write, it returns success and reads back the complete Issue state with `phase:execution`. Preserve the command result, READY proof reference, pre-write and post-write Issue snapshots, and their exact timestamps and digests as the transition record. Do not require or publish a distinct execution-target `PASES_PHASE_DECISION_V1` comment.

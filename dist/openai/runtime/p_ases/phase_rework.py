@@ -359,6 +359,71 @@ READER_CONTINUATION_AUTHORIZATION: dict[str, Any] = {
     "starting_head_sha40": "b31cca21da15e18d0e1665827621700f7d774d0a",
 }
 READER_CONTINUATION_AUTH_FIELDS = frozenset(READER_CONTINUATION_AUTHORIZATION)
+EXECUTION_RECEIPT_READER_CONTINUATION_ADC_COMMENT_ID = 6894441752
+EXECUTION_RECEIPT_READER_CONTINUATION_ADC_SHA256 = "99dbd0f77ef19df5fb9da6bd02cd8b52235e8bfbb498734ca8846de165cda449"
+EXECUTION_RECEIPT_READER_CONTINUATION_ADC_BYTES = 16073
+EXECUTION_RECEIPT_READER_CONTINUATION_AUTH_SCHEMA = (
+    "PASES_ISSUE_PHASE_EVIDENCE_EXECUTION_RECEIPT_READER_CONTINUATION_V1"
+)
+EXECUTION_RECEIPT_READER_CONTINUATION_AUTH_MARKER_BYTES = 2204
+EXECUTION_RECEIPT_READER_CONTINUATION_AUTH_MARKER_SHA256 = (
+    "25bf67faf49da88b52120d06e5d6ac2cb8737ea1898f1a511c90f22bf07637da"
+)
+EXECUTION_RECEIPT_READER_CONTINUATION_ARTIFACT_IMPACT = (
+    "## Artifact impact\n\n"
+    "- Specification: `docs/specs/workflow-spec.md`.\n"
+    "- Design: `docs/design/workflow-design.md`.\n"
+    "- Testing: `docs/testing/pases-lifecycle-tests.md`, `docs/testing/traceability.md`."
+)
+EXECUTION_RECEIPT_READER_CONTINUATION_AUTHORIZATION: dict[str, Any] = {
+    "active_epoch_id": ACTIVE_EPOCH_ID,
+    "active_epoch_sha256": ACTIVE_EPOCH_SHA256,
+    "active_phase_generation_comment_id": ACTIVE_PHASE_COMMENT_ID,
+    "active_phase_generation_sha256": ACTIVE_PHASE_SHA256,
+    "applied_body_sha256": "b8648cfd2c9c1479791554179069bfc3b57ab5c7d26ccf255184087dcf388b18",
+    "applied_comment_id": 6889965335,
+    "branch_ref": BRANCH_REF,
+    "current_issue_body_sha256": ISSUE_BODY_SHA256,
+    "followup_path_allowlist": [
+        "dist/antigravity/docs/design/workflow-design.md",
+        "dist/antigravity/docs/specs/workflow-spec.md",
+        "dist/antigravity/runtime/p_ases/phase_rework.py",
+        "dist/claude/docs/design/workflow-design.md",
+        "dist/claude/docs/specs/workflow-spec.md",
+        "dist/claude/runtime/p_ases/phase_rework.py",
+        "dist/openai/docs/design/workflow-design.md",
+        "dist/openai/docs/specs/workflow-spec.md",
+        "dist/openai/runtime/p_ases/phase_rework.py",
+        "docs/design/workflow-design.md",
+        "docs/specs/workflow-spec.md",
+        "docs/testing/pases-lifecycle-tests.md",
+        "docs/testing/traceability.md",
+        "runtime/p_ases/phase_rework.py",
+        "tests/test_phase_rework.py",
+    ],
+    "frozen_base_ref": BASE_REF,
+    "frozen_base_sha40": BASE_SHA40,
+    "intent_body_sha256": "ad2b75b99d4d0aa11d2cf021605eae9ecd9386a436f8032033a4cf87e5bd5be5",
+    "intent_comment_id": 6888474848,
+    "issue_id": ISSUE_ID,
+    "issue_number": ISSUE_NUMBER,
+    "labels_at_start": ["enhancement", "kind:single", "phase:design"],
+    "max_followup_commits": 1,
+    "owner_id": OWNER_ID,
+    "predecessor_adc_comment_id": READER_CONTINUATION_ADC_COMMENT_ID,
+    "predecessor_adc_sha256": READER_CONTINUATION_ADC_SHA256,
+    "pr_base_ref": PR_BASE_REF,
+    "pr_base_sha40": PR_BASE_SHA40,
+    "pr_body_sha256": PR_BODY_SHA256,
+    "pr_number": PR_NUMBER,
+    "repository": REPOSITORY,
+    "repository_id": REPOSITORY_ID,
+    "schema": EXECUTION_RECEIPT_READER_CONTINUATION_AUTH_SCHEMA,
+    "starting_head_sha40": "b5d3c005a5004e3d56103b17c48c13e7bca8e900",
+}
+EXECUTION_RECEIPT_READER_CONTINUATION_AUTH_FIELDS = frozenset(
+    EXECUTION_RECEIPT_READER_CONTINUATION_AUTHORIZATION
+)
 COMMON_FIELDS = frozenset({
     "repository", "repository_id", "issue_number", "issue_id", "adc_comment_id", "adc_sha256",
     "authorization_sha256", "predecessor_adc_comment_id", "predecessor_adc_sha256",
@@ -410,6 +475,8 @@ class _Live:
     continuation_authorization_sha256: str | None = None
     reader_continuation_authorization: dict[str, Any] | None = None
     reader_continuation_authorization_sha256: str | None = None
+    execution_receipt_reader_continuation_authorization: dict[str, Any] | None = None
+    execution_receipt_reader_continuation_authorization_sha256: str | None = None
 
 
 def _canonical(value: Any) -> str:
@@ -668,8 +735,62 @@ def parse_reader_continuation_authorization(verified: VerifiedADC) -> tuple[dict
     return value, hashlib.sha256(marker_bytes).hexdigest()
 
 
+def parse_execution_receipt_reader_continuation_authorization(
+    verified: VerifiedADC,
+) -> tuple[dict[str, Any], str]:
+    """Parse the exact approved marker that appends one execution-receipt reader commit."""
+    contract = verified.contract
+    if (verified.pointer.state != "approved"
+            or verified.pointer.comment_id != EXECUTION_RECEIPT_READER_CONTINUATION_ADC_COMMENT_ID
+            or contract.sha256 != EXECUTION_RECEIPT_READER_CONTINUATION_ADC_SHA256
+            or contract.byte_length != EXECUTION_RECEIPT_READER_CONTINUATION_ADC_BYTES
+            or contract.repository.casefold() != REPOSITORY.casefold()):
+        raise PhaseReworkError(
+            "current execution-receipt reader ADC differs from its exact approved generation"
+        )
+    text = contract.content.decode("utf-8", errors="strict")
+    start_marker = f"<!-- {EXECUTION_RECEIPT_READER_CONTINUATION_AUTH_SCHEMA}\n"
+    if text.count(start_marker) != 1:
+        raise PhaseReworkError(
+            "execution-receipt reader ADC must contain exactly one authorization marker"
+        )
+    start = text.index(start_marker)
+    close = text.find("\n-->", start + len(start_marker))
+    if close < 0:
+        raise PhaseReworkError("execution-receipt reader authorization marker is incomplete")
+    raw = text[start + len(start_marker):close]
+    try:
+        value = json.loads(raw, object_pairs_hook=_pairs)
+    except (json.JSONDecodeError, UnicodeError) as exc:
+        raise PhaseReworkError("execution-receipt reader authorization JSON is malformed") from exc
+    marker_bytes = text[start:close + len("\n-->")].encode("utf-8")
+    if (len(marker_bytes) != EXECUTION_RECEIPT_READER_CONTINUATION_AUTH_MARKER_BYTES
+            or hashlib.sha256(marker_bytes).hexdigest()
+            != EXECUTION_RECEIPT_READER_CONTINUATION_AUTH_MARKER_SHA256):
+        raise PhaseReworkError(
+            "execution-receipt reader marker bytes differ from the exact approved marker"
+        )
+    if (not isinstance(value, dict)
+            or set(value) != EXECUTION_RECEIPT_READER_CONTINUATION_AUTH_FIELDS
+            or _canonical(value) != raw
+            or value != EXECUTION_RECEIPT_READER_CONTINUATION_AUTHORIZATION):
+        raise PhaseReworkError(
+            "execution-receipt reader marker differs from its exact canonical tuple"
+        )
+    _validate_adc_predecessor(
+        text, READER_CONTINUATION_ADC_COMMENT_ID, READER_CONTINUATION_ADC_SHA256,
+        "execution-receipt reader ADC",
+    )
+    if text.count(EXECUTION_RECEIPT_READER_CONTINUATION_ARTIFACT_IMPACT) != 1:
+        raise PhaseReworkError(
+            "execution-receipt reader ADC does not declare the exact Artifact impact paths"
+        )
+    return value, hashlib.sha256(marker_bytes).hexdigest()
+
+
 def _authorization_context(github: GitHub, current: VerifiedADC
                             ) -> tuple[dict[str, Any], str, dict[str, Any] | None, str | None,
+                                       dict[str, Any] | None, str | None,
                                        dict[str, Any] | None, str | None,
                                        dict[str, Any] | None, str | None,
                                        dict[str, Any] | None, str | None]:
@@ -690,7 +811,68 @@ def _authorization_context(github: GitHub, current: VerifiedADC
                 (REWORK_ADC_COMMENT_ID, REWORK_ADC_SHA256)):
             raise PhaseReworkError("current ADC is not the exact approved successor of #6886911700")
         authorization, authorization_sha = parse_authorization(current)
-        return authorization, authorization_sha, None, None, None, None, None, None, None, None
+        return (authorization, authorization_sha, None, None, None, None, None, None,
+                None, None, None, None)
+    if current.pointer.comment_id == EXECUTION_RECEIPT_READER_CONTINUATION_ADC_COMMENT_ID:
+        execution_reader_authorization, execution_reader_sha = (
+            parse_execution_receipt_reader_continuation_authorization(current)
+        )
+        try:
+            chain = verify_adc_forward_generations(
+                github, ISSUE_NUMBER,
+                prior_comment_id=PREDECESSOR_ADC_COMMENT_ID,
+                prior_sha256=PREDECESSOR_ADC_SHA256,
+                current_comment_id=current.pointer.comment_id,
+                current_sha256=current.contract.sha256,
+            )
+        except ADCError as exc:
+            raise PhaseReworkError(
+                f"approved execution-receipt reader ADC chain readback failed: {exc}"
+            ) from exc
+        expected_chain = (
+            (PREDECESSOR_ADC_COMMENT_ID, PREDECESSOR_ADC_SHA256),
+            (REWORK_ADC_COMMENT_ID, REWORK_ADC_SHA256),
+            (RECOVERY_ADC_COMMENT_ID, RECOVERY_ADC_SHA256),
+            (TIMESTAMP_RECOVERY_ADC_COMMENT_ID, TIMESTAMP_RECOVERY_ADC_SHA256),
+            (PATH_CORRECTION_ADC_COMMENT_ID, PATH_CORRECTION_ADC_SHA256),
+            (CONTINUATION_ADC_COMMENT_ID, CONTINUATION_ADC_SHA256),
+            (TRACEABILITY_CORRECTION_ADC_COMMENT_ID, TRACEABILITY_CORRECTION_ADC_SHA256),
+            (READER_CONTINUATION_ADC_COMMENT_ID, READER_CONTINUATION_ADC_SHA256),
+            (EXECUTION_RECEIPT_READER_CONTINUATION_ADC_COMMENT_ID,
+             EXECUTION_RECEIPT_READER_CONTINUATION_ADC_SHA256),
+        )
+        actual_chain = tuple((item.pointer.comment_id, item.contract.sha256) for item in chain)
+        if (actual_chain != expected_chain
+                or any(item.pointer.state != "approved" for item in chain)):
+            raise PhaseReworkError(
+                "execution-receipt reader ADC is not the complete exact nine-generation approved chain"
+            )
+        authorization, authorization_sha = parse_authorization(chain[1])
+        recovery_authorization, recovery_sha = parse_authorization(chain[2])
+        timestamp_authorization, timestamp_sha = parse_timestamp_recovery_authorization(chain[3])
+        parse_path_correction_generation(chain[4])
+        continuation_authorization, continuation_sha = parse_continuation_authorization(chain[5])
+        parse_traceability_source_correction_generation(chain[6])
+        reader_authorization, reader_sha = parse_reader_continuation_authorization(chain[7])
+        if (recovery_authorization.get("predecessor_adc_comment_id") != chain[1].pointer.comment_id
+                or recovery_authorization.get("predecessor_adc_sha256") != chain[1].contract.sha256
+                or timestamp_authorization.get("predecessor_adc_comment_id") != chain[2].pointer.comment_id
+                or timestamp_authorization.get("predecessor_adc_sha256") != chain[2].contract.sha256
+                or continuation_authorization.get("predecessor_adc_comment_id") != chain[4].pointer.comment_id
+                or continuation_authorization.get("predecessor_adc_sha256") != chain[4].contract.sha256
+                or reader_authorization.get("predecessor_adc_comment_id") != chain[6].pointer.comment_id
+                or reader_authorization.get("predecessor_adc_sha256") != chain[6].contract.sha256
+                or execution_reader_authorization.get("predecessor_adc_comment_id")
+                != chain[7].pointer.comment_id
+                or execution_reader_authorization.get("predecessor_adc_sha256")
+                != chain[7].contract.sha256):
+            raise PhaseReworkError(
+                "execution-receipt reader marker does not bind its exact approved predecessor chain"
+            )
+        return (authorization, authorization_sha, recovery_authorization, recovery_sha,
+                timestamp_authorization, timestamp_sha, continuation_authorization,
+                continuation_sha, reader_authorization, reader_sha,
+                execution_reader_authorization, execution_reader_sha)
     if current.pointer.comment_id == READER_CONTINUATION_ADC_COMMENT_ID:
         reader_authorization, reader_sha = parse_reader_continuation_authorization(current)
         try:
@@ -734,7 +916,7 @@ def _authorization_context(github: GitHub, current: VerifiedADC
             raise PhaseReworkError("reader-continuation marker does not bind its exact approved predecessor chain")
         return (authorization, authorization_sha, recovery_authorization, recovery_sha,
                 timestamp_authorization, timestamp_sha, continuation_authorization,
-                continuation_sha, reader_authorization, reader_sha)
+                continuation_sha, reader_authorization, reader_sha, None, None)
     if current.pointer.comment_id == CONTINUATION_ADC_COMMENT_ID:
         continuation_authorization, continuation_sha = parse_continuation_authorization(current)
         try:
@@ -774,7 +956,7 @@ def _authorization_context(github: GitHub, current: VerifiedADC
             raise PhaseReworkError("continuation authorization does not bind its exact approved predecessor chain")
         return (authorization, authorization_sha, recovery_authorization, recovery_sha,
                 timestamp_recovery_authorization, timestamp_recovery_sha,
-                continuation_authorization, continuation_sha, None, None)
+                continuation_authorization, continuation_sha, None, None, None, None)
     if current.pointer.comment_id == TIMESTAMP_RECOVERY_ADC_COMMENT_ID:
         timestamp_recovery_authorization, timestamp_recovery_sha = (
             parse_timestamp_recovery_authorization(current)
@@ -806,7 +988,8 @@ def _authorization_context(github: GitHub, current: VerifiedADC
                 or timestamp_recovery_authorization.get("predecessor_adc_sha256") != chain[2].contract.sha256):
             raise PhaseReworkError("timestamp-recovery authorization does not bind its exact approved predecessor")
         return (authorization, authorization_sha, recovery_authorization, recovery_sha,
-                timestamp_recovery_authorization, timestamp_recovery_sha, None, None, None, None)
+                timestamp_recovery_authorization, timestamp_recovery_sha,
+                None, None, None, None, None, None)
     recovery_authorization, recovery_sha = parse_authorization(current)
     if current.pointer.comment_id != RECOVERY_ADC_COMMENT_ID:
         raise PhaseReworkError("current ADC is not an exact Issue #71 rework generation")
@@ -832,7 +1015,8 @@ def _authorization_context(github: GitHub, current: VerifiedADC
     if (recovery_authorization.get("predecessor_adc_comment_id") != chain[1].pointer.comment_id
             or recovery_authorization.get("predecessor_adc_sha256") != chain[1].contract.sha256):
         raise PhaseReworkError("recovery authorization does not bind its exact approved predecessor")
-    return authorization, authorization_sha, recovery_authorization, recovery_sha, None, None, None, None, None, None
+    return (authorization, authorization_sha, recovery_authorization, recovery_sha,
+            None, None, None, None, None, None, None, None)
 
 
 def _label_names(issue: Mapping[str, Any]) -> tuple[str, ...]:
@@ -906,6 +1090,35 @@ def _validate_reader_continuation_subject(live: _Live) -> None:
         raise PhaseReworkError("reader-continuation labels, branch, or PR metadata differ from the exact marker")
 
 
+def _validate_execution_receipt_reader_continuation_subject(live: _Live) -> None:
+    authorization = live.execution_receipt_reader_continuation_authorization
+    if authorization is None:
+        return
+    allowed_labels = {
+        tuple(sorted(("enhancement", "kind:single", "phase:design"))),
+        tuple(sorted(("enhancement", "kind:single", "phase:ready"))),
+        tuple(sorted(("enhancement", "kind:single", "phase:execution"))),
+    }
+    body = live.issue.get("body")
+    if (not isinstance(body, str)
+            or authorization != EXECUTION_RECEIPT_READER_CONTINUATION_AUTHORIZATION
+            or live.execution_receipt_reader_continuation_authorization_sha256
+            != EXECUTION_RECEIPT_READER_CONTINUATION_AUTH_MARKER_SHA256
+            or hashlib.sha256(body.encode("utf-8")).hexdigest()
+            != authorization["current_issue_body_sha256"]):
+        raise PhaseReworkError(
+            "execution-receipt reader Issue or marker differs from its exact approved identity"
+        )
+    pull = live.pr
+    if (live.labels not in allowed_labels or live.branch_ref != authorization["branch_ref"]
+            or pull.get("title") != PR_TITLE or not isinstance(pull.get("body"), str)
+            or hashlib.sha256(pull["body"].encode("utf-8")).hexdigest()
+            != authorization["pr_body_sha256"]):
+        raise PhaseReworkError(
+            "execution-receipt reader labels, branch, or PR metadata differ from the exact marker"
+        )
+
+
 def _validate_post_rework_labels(labels: tuple[str, ...]) -> None:
     if labels == tuple(sorted(LABELS_AFTER)):
         return
@@ -936,11 +1149,69 @@ def _verify_commit_set(root: Path, head: str, allowlist: tuple[str, ...]) -> Non
         raise PhaseReworkError("bootstrap commit enumeration does not end at the exact HEAD")
 
 
+def _verify_execution_receipt_reader_commit_set(
+    root: Path,
+    head: str,
+    recovery_authorization: Mapping[str, Any],
+    timestamp_recovery_authorization: Mapping[str, Any] | None,
+    continuation_authorization: Mapping[str, Any] | None,
+    reader_continuation_authorization: Mapping[str, Any] | None,
+    execution_receipt_reader_authorization: Mapping[str, Any],
+) -> None:
+    followup_head = execution_receipt_reader_authorization.get("starting_head_sha40")
+    allowlist = execution_receipt_reader_authorization.get("followup_path_allowlist")
+    if (execution_receipt_reader_authorization != EXECUTION_RECEIPT_READER_CONTINUATION_AUTHORIZATION
+            or followup_head != EXECUTION_RECEIPT_READER_CONTINUATION_AUTHORIZATION[
+                "starting_head_sha40"
+            ]
+            or execution_receipt_reader_authorization.get("max_followup_commits") != 1
+            or allowlist != EXECUTION_RECEIPT_READER_CONTINUATION_AUTHORIZATION[
+                "followup_path_allowlist"
+            ]
+            or reader_continuation_authorization != READER_CONTINUATION_AUTHORIZATION
+            or continuation_authorization != CONTINUATION_AUTHORIZATION
+            or timestamp_recovery_authorization != TIMESTAMP_RECOVERY_AUTHORIZATION):
+        raise PhaseReworkError(
+            "execution-receipt reader marker differs from the exact follow-up commit tuple"
+        )
+    _verify_recovery_commit_set(
+        root, followup_head, recovery_authorization, timestamp_recovery_authorization,
+        continuation_authorization, reader_continuation_authorization,
+    )
+    if not is_ancestor(root, followup_head, head):
+        raise PhaseReworkError(
+            "execution-receipt reader HEAD must descend from its exact starting HEAD"
+        )
+    rows = run_git(root, "rev-list", "--reverse", f"{followup_head}..{head}").splitlines()
+    if len(rows) != execution_receipt_reader_authorization["max_followup_commits"]:
+        raise PhaseReworkError(
+            "execution-receipt reader continuation must contain exactly one authorized commit"
+        )
+    if commit_parents_sha40(root, rows[0]) != (followup_head,):
+        raise PhaseReworkError("execution-receipt reader commit has an unexpected parent")
+    changed = changed_paths_between(root, followup_head, rows[0])
+    if (not isinstance(allowlist, list) or len(allowlist) != len(set(allowlist))
+            or not changed or any(path not in allowlist for path in changed)):
+        raise PhaseReworkError(
+            "execution-receipt reader commit changes a path outside its exact allowlist"
+        )
+    if rows[0] != head:
+        raise PhaseReworkError("execution-receipt reader commit enumeration does not end at the exact HEAD")
+
+
 def _verify_recovery_commit_set(root: Path, head: str,
                                 recovery_authorization: Mapping[str, Any],
                                 timestamp_recovery_authorization: Mapping[str, Any] | None = None,
                                 continuation_authorization: Mapping[str, Any] | None = None,
-                                reader_continuation_authorization: Mapping[str, Any] | None = None) -> None:
+                                reader_continuation_authorization: Mapping[str, Any] | None = None,
+                                execution_receipt_reader_authorization: Mapping[str, Any] | None = None) -> None:
+    if execution_receipt_reader_authorization is not None:
+        _verify_execution_receipt_reader_commit_set(
+            root, head, recovery_authorization, timestamp_recovery_authorization,
+            continuation_authorization, reader_continuation_authorization,
+            execution_receipt_reader_authorization,
+        )
+        return
     if reader_continuation_authorization is not None:
         followup_head = reader_continuation_authorization.get("starting_head_sha40")
         if (followup_head != READER_CONTINUATION_AUTHORIZATION["starting_head_sha40"]
@@ -1036,9 +1307,11 @@ def _verify_issue71_commit_lineage(root: Path, head: str,
                                    recovery_authorization: Mapping[str, Any] | None,
                                    timestamp_recovery_authorization: Mapping[str, Any] | None,
                                    continuation_authorization: Mapping[str, Any] | None = None,
-                                   reader_continuation_authorization: Mapping[str, Any] | None = None) -> None:
+                                   reader_continuation_authorization: Mapping[str, Any] | None = None,
+                                   execution_receipt_reader_authorization: Mapping[str, Any] | None = None) -> None:
     if recovery_authorization is not None:
-        if ((continuation_authorization is not None or reader_continuation_authorization is not None)
+        if ((continuation_authorization is not None or reader_continuation_authorization is not None
+             or execution_receipt_reader_authorization is not None)
                 and timestamp_recovery_authorization is None):
             raise PhaseReworkError("continuation lineage lacks the exact timestamp-recovery generation")
         if timestamp_recovery_authorization is None:
@@ -1054,6 +1327,7 @@ def _verify_issue71_commit_lineage(root: Path, head: str,
         _verify_recovery_commit_set(
             root, head, recovery_authorization, timestamp_recovery_authorization,
             continuation_authorization, reader_continuation_authorization,
+            execution_receipt_reader_authorization,
         )
     elif head != BASELINE_HEAD:
         _verify_commit_set(root, head, tuple(authorization["bootstrap_path_allowlist"]))
@@ -1081,7 +1355,8 @@ def _live(github: GitHub, root: Path, *, phase: str | None = None,
         authorization, authorization_sha, recovery_authorization, recovery_sha, \
             timestamp_recovery_authorization, timestamp_recovery_sha, \
             continuation_authorization, continuation_sha, \
-            reader_authorization, reader_sha = (
+            reader_authorization, reader_sha, \
+            execution_reader_authorization, execution_reader_sha = (
             _authorization_context(github, current)
         )
         actor = github.authenticated_user()
@@ -1123,15 +1398,17 @@ def _live(github: GitHub, root: Path, *, phase: str | None = None,
             raise PhaseReworkError("local bootstrap HEAD differs from the remote PR branch HEAD")
         _verify_issue71_commit_lineage(
             root, head, authorization, recovery_authorization, timestamp_recovery_authorization,
-            continuation_authorization, reader_authorization,
+            continuation_authorization, reader_authorization, execution_reader_authorization,
         )
         live = _Live(current, epoch, issue, labels, branch, head, pull,
                      actor["id"], authorization_sha, root,
                      recovery_authorization, recovery_sha,
                      timestamp_recovery_authorization, timestamp_recovery_sha,
                      continuation_authorization, continuation_sha,
-                     reader_authorization, reader_sha)
+                     reader_authorization, reader_sha,
+                     execution_reader_authorization, execution_reader_sha)
         _validate_reader_continuation_subject(live)
+        _validate_execution_receipt_reader_continuation_subject(live)
         return live
     except (ADCError, GitError, GitHubError, ValueError) as exc:
         raise PhaseReworkError(str(exc)) from exc
@@ -1428,26 +1705,30 @@ def _validate_recovery_intent(intent: PhaseReworkRecord, live: _Live,
     timestamp_authorization = live.timestamp_recovery_authorization
     continuation_authorization = live.continuation_authorization
     reader_authorization = live.reader_continuation_authorization
+    execution_reader_authorization = live.execution_receipt_reader_continuation_authorization
     if (recovery is None
             or current_adc_id not in {
                 RECOVERY_ADC_COMMENT_ID, TIMESTAMP_RECOVERY_ADC_COMMENT_ID,
                 CONTINUATION_ADC_COMMENT_ID, READER_CONTINUATION_ADC_COMMENT_ID,
+                EXECUTION_RECEIPT_READER_CONTINUATION_ADC_COMMENT_ID,
             }
             or (current_adc_id == RECOVERY_ADC_COMMENT_ID
                 and (timestamp_authorization is not None or continuation_authorization is not None
-                     or reader_authorization is not None))
+                     or reader_authorization is not None or execution_reader_authorization is not None))
             or (current_adc_id == TIMESTAMP_RECOVERY_ADC_COMMENT_ID
                 and (timestamp_authorization != TIMESTAMP_RECOVERY_AUTHORIZATION
                      or live.timestamp_recovery_authorization_sha256
                      != TIMESTAMP_RECOVERY_AUTH_MARKER_SHA256
-                     or continuation_authorization is not None or reader_authorization is not None))
+                     or continuation_authorization is not None or reader_authorization is not None
+                     or execution_reader_authorization is not None))
             or (current_adc_id == CONTINUATION_ADC_COMMENT_ID
                 and (timestamp_authorization != TIMESTAMP_RECOVERY_AUTHORIZATION
                      or live.timestamp_recovery_authorization_sha256
                      != TIMESTAMP_RECOVERY_AUTH_MARKER_SHA256
                      or continuation_authorization != CONTINUATION_AUTHORIZATION
                      or live.continuation_authorization_sha256
-                     != CONTINUATION_AUTH_MARKER_SHA256 or reader_authorization is not None))
+                     != CONTINUATION_AUTH_MARKER_SHA256 or reader_authorization is not None
+                     or execution_reader_authorization is not None))
             or (current_adc_id == READER_CONTINUATION_ADC_COMMENT_ID
                 and (timestamp_authorization != TIMESTAMP_RECOVERY_AUTHORIZATION
                      or live.timestamp_recovery_authorization_sha256
@@ -1456,7 +1737,21 @@ def _validate_recovery_intent(intent: PhaseReworkRecord, live: _Live,
                      or live.continuation_authorization_sha256 != CONTINUATION_AUTH_MARKER_SHA256
                      or reader_authorization != READER_CONTINUATION_AUTHORIZATION
                      or live.reader_continuation_authorization_sha256
-                     != READER_CONTINUATION_AUTH_MARKER_SHA256))):
+                     != READER_CONTINUATION_AUTH_MARKER_SHA256
+                     or execution_reader_authorization is not None))
+            or (current_adc_id == EXECUTION_RECEIPT_READER_CONTINUATION_ADC_COMMENT_ID
+                and (timestamp_authorization != TIMESTAMP_RECOVERY_AUTHORIZATION
+                     or live.timestamp_recovery_authorization_sha256
+                     != TIMESTAMP_RECOVERY_AUTH_MARKER_SHA256
+                     or continuation_authorization != CONTINUATION_AUTHORIZATION
+                     or live.continuation_authorization_sha256 != CONTINUATION_AUTH_MARKER_SHA256
+                     or reader_authorization != READER_CONTINUATION_AUTHORIZATION
+                     or live.reader_continuation_authorization_sha256
+                     != READER_CONTINUATION_AUTH_MARKER_SHA256
+                     or execution_reader_authorization
+                     != EXECUTION_RECEIPT_READER_CONTINUATION_AUTHORIZATION
+                     or live.execution_receipt_reader_continuation_authorization_sha256
+                     != EXECUTION_RECEIPT_READER_CONTINUATION_AUTH_MARKER_SHA256))):
         raise PhaseReworkError("current ADC does not authorize pending Intent recovery")
     if (intent.comment_id != recovery["intent_comment_id"]
             or intent.body_sha256 != recovery["intent_body_sha256"]
@@ -1604,6 +1899,10 @@ def rebind_issue71_recovery_pr(github: GitHub, root: Path, issue_number: int) ->
             or fresh.continuation_authorization_sha256 != live.continuation_authorization_sha256
             or fresh.reader_continuation_authorization != live.reader_continuation_authorization
             or fresh.reader_continuation_authorization_sha256 != live.reader_continuation_authorization_sha256
+            or fresh.execution_receipt_reader_continuation_authorization
+            != live.execution_receipt_reader_continuation_authorization
+            or fresh.execution_receipt_reader_continuation_authorization_sha256
+            != live.execution_receipt_reader_continuation_authorization_sha256
             or fresh.current_adc.pointer != live.current_adc.pointer
             or fresh.current_adc.contract.sha256 != live.current_adc.contract.sha256
             or fresh.epoch.sha256 != live.epoch.sha256 or fresh.issue != live.issue
@@ -1659,6 +1958,10 @@ def rebind_issue71_recovery_pr(github: GitHub, root: Path, issue_number: int) ->
             or final_live.reader_continuation_authorization != fresh.reader_continuation_authorization
             or final_live.reader_continuation_authorization_sha256
             != fresh.reader_continuation_authorization_sha256
+            or final_live.execution_receipt_reader_continuation_authorization
+            != fresh.execution_receipt_reader_continuation_authorization
+            or final_live.execution_receipt_reader_continuation_authorization_sha256
+            != fresh.execution_receipt_reader_continuation_authorization_sha256
             or final_live.current_adc.pointer != fresh.current_adc.pointer
             or final_live.current_adc.contract.sha256 != fresh.current_adc.contract.sha256
             or final_live.epoch.sha256 != fresh.epoch.sha256 or final_live.issue != fresh.issue
@@ -1887,7 +2190,8 @@ def active_phase_generation_for_epoch(github: GitHub, root: Path, current_adc: V
     (_authorization, authorization_sha, recovery_authorization, recovery_sha,
      timestamp_recovery_authorization, timestamp_recovery_sha,
      continuation_authorization, continuation_sha,
-     reader_authorization, reader_sha) = (
+     reader_authorization, reader_sha,
+     execution_reader_authorization, execution_reader_sha) = (
         _authorization_context(github, current_adc)
     )
     history = _read_history(github)
@@ -1910,8 +2214,10 @@ def active_phase_generation_for_epoch(github: GitHub, root: Path, current_adc: V
                  current_head, _pr(github, current_head), OWNER_ID,
                  authorization_sha, root, recovery_authorization, recovery_sha,
                  timestamp_recovery_authorization, timestamp_recovery_sha,
-                 continuation_authorization, continuation_sha, reader_authorization, reader_sha)
+                 continuation_authorization, continuation_sha, reader_authorization, reader_sha,
+                 execution_reader_authorization, execution_reader_sha)
     _validate_reader_continuation_subject(live)
+    _validate_execution_receipt_reader_continuation_subject(live)
     if recovery_authorization is not None:
         _validate_recovery_intent(intent, live, root)
     _validate_intent(intent, live, allow_bootstrap_descendant=True)
