@@ -47,6 +47,7 @@
   - [5.32 DES-F01-092 Applied timestamp reconciliation and Phase resumption](#532-des-f01-092-applied-timestamp-reconciliation-and-phase-resumption)
   - [5.33 DES-F01-093 Exact continuation ADC reader and lineage](#533-des-f01-093-exact-continuation-adc-reader-and-lineage)
   - [5.34 DES-F01-094 Execution transition readback record](#534-des-f01-094-execution-transition-readback-record)
+  - [5.35 DES-F01-095 Exact Markdown predecessor parsing and successor chain](#535-des-f01-095-exact-markdown-predecessor-parsing-and-successor-chain)
 - [6 DES-WF-003 Workspace execution flow](#6-des-wf-003-workspace-execution-flow)
 - [7 DES-WF-004 Failure handling](#7-des-wf-004-failure-handling)
 - [8 DES-WF-005 Authorization boundary and PR handoff](#8-des-wf-005-authorization-boundary-and-pr-handoff)
@@ -93,6 +94,7 @@
 - [DES-F01-092](#des-f01-092) — 5.32 DES-F01-092 Applied timestamp reconciliation and Phase resumption
 - [DES-F01-093](#des-f01-093) — 5.33 DES-F01-093 Exact continuation ADC reader and lineage
 - [DES-F01-094](#des-f01-094) — 5.34 DES-F01-094 Execution transition readback record
+- [DES-F01-095](#des-f01-095) — 5.35 DES-F01-095 Exact Markdown predecessor parsing and successor chain
 - [DES-WF-003](#des-wf-003) — 6 DES-WF-003 Workspace execution flow
 - [DES-WF-004](#des-wf-004) — 7 DES-WF-004 Failure handling
 - [DES-WF-005](#des-wf-005) — 8 DES-WF-005 Authorization boundary and PR handoff
@@ -407,6 +409,11 @@ The continuation preserves the original Intent and Applied journal. Its read-onl
 ### 5.34 DES-F01-094 Execution transition readback record
 
 `PASES_PHASE_DECISION_V1` is supported for specification, design, and ready. Execution has a different record: the normal `issue advance 71 execution` command revalidates the current READY proof immediately before the label write, returns `ADVANCED` after the write, and reads back the full Issue label state. Keep that command result with its READY proof reference and direct before/after Issue snapshots, timestamps, and digests. This is the verifiable `ready → execution` transition record; do not try to publish an execution-target Phase Decision comment.
+
+<a id="des-f01-095"></a>
+### 5.35 DES-F01-095 Exact Markdown predecessor parsing and successor chain
+
+The #6894441752 ADC predecessor header wraps the SHA-256 in one Markdown inline-code pair. The reader accepts exactly either 64 lowercase hex characters or one matched pair around those characters, while still comparing the exact predecessor comment ID and digest. It rejects unmatched or repeated delimiters, extra whitespace, punctuation, or altered identities. The current successor reader pins the ten-generation ADC chain and validates the new direct-child segment from `93477af0aefc22f5723c3de1e5fc7b8dade7ec21` independently after all earlier one-commit segments. Its marker binds the exact Issue, epoch, PR, journal, branch, base, start HEAD, and 15-path allowlist. Only after exact-head gates and zero-write Applied reconciliation pass does the existing design→ready→execution route continue.
 
 ## 6 DES-WF-003 Workspace execution flow
 

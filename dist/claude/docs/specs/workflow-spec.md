@@ -110,6 +110,9 @@
   - [9.83 REQ-F01-131 Repair executable-source traceability](#983-req-f01-131-repair-executable-source-traceability)
   - [9.84 REQ-F01-132 Gate the exact HEAD and resume Phase transitions](#984-req-f01-132-gate-the-exact-head-and-resume-phase-transitions)
   - [9.85 REQ-F01-133 Record the supported execution transition](#985-req-f01-133-record-the-supported-execution-transition)
+  - [9.86 REQ-F01-134 Parse the approved Markdown predecessor digest](#986-req-f01-134-parse-the-approved-markdown-predecessor-digest)
+  - [9.87 REQ-F01-135 Preserve exact ADC chain and commit segments](#987-req-f01-135-preserve-exact-adc-chain-and-commit-segments)
+  - [9.88 REQ-F01-136 Gate the corrected reader before Phase continuation](#988-req-f01-136-gate-the-corrected-reader-before-phase-continuation)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -209,6 +212,9 @@
 - [REQ-F01-131](#req-f01-131) — 9.83 REQ-F01-131 Repair executable-source traceability
 - [REQ-F01-132](#req-f01-132) — 9.84 REQ-F01-132 Gate the exact HEAD and resume Phase transitions
 - [REQ-F01-133](#req-f01-133) — 9.85 REQ-F01-133 Record the supported execution transition
+- [REQ-F01-134](#req-f01-134) — 9.86 REQ-F01-134 Parse the approved Markdown predecessor digest
+- [REQ-F01-135](#req-f01-135) — 9.87 REQ-F01-135 Preserve exact ADC chain and commit segments
+- [REQ-F01-136](#req-f01-136) — 9.88 REQ-F01-136 Gate the corrected reader before Phase continuation
 <!-- heading-map:end -->
 
 
@@ -915,3 +921,18 @@ At the one exact pushed HEAD, pass every required local and hosted verification 
 ### 9.85 REQ-F01-133 Record the supported execution transition
 
 The `ready → execution` transition uses the ordinary `issue advance 71 execution` operation at the exact current subject. Before changing the label, it revalidates the current READY proof; after the label write, it returns success and reads back the complete Issue state with `phase:execution`. Preserve the command result, READY proof reference, pre-write and post-write Issue snapshots, and their exact timestamps and digests as the transition record. Do not require or publish a distinct execution-target `PASES_PHASE_DECISION_V1` comment.
+
+<a id="req-f01-134"></a>
+### 9.86 REQ-F01-134 Parse the approved Markdown predecessor digest
+
+For the approved execution-receipt reader ADC #6894441752, validate the predecessor comment ID and exact 64-character lowercase SHA-256. Accept either the bare digest or exactly one matched pair of Markdown inline-code delimiters around it. Reject unmatched or repeated delimiters, whitespace or punctuation drift, wrong IDs, wrong digests, and malformed declarations.
+
+<a id="req-f01-135"></a>
+### 9.87 REQ-F01-135 Preserve exact ADC chain and commit segments
+
+Validate the exact ten-generation approved ADC chain through the current successor. Preserve every existing one-commit segment through `93477af0aefc22f5723c3de1e5fc7b8dade7ec21`, then permit exactly one direct-child commit on its exact 15-path allowlist. Reject reordered or unapproved generations, stale identities, merges, wrong parents, extra descendants, and changed paths before any Issue write.
+
+<a id="req-f01-136"></a>
+### 9.88 REQ-F01-136 Gate the corrected reader before Phase continuation
+
+At the exact pushed HEAD, require every local and hosted gate, fresh exact-subject Verification, Acceptance, Self-Audit, native Independent Review, and PRBinding before reconciling the existing Applied record. Reconciliation must be a read-only zero-write `NOOP`. Then publish/read back the fresh `design → ready` receipt, advance to READY, and use the ordinary execution advance with complete READY-proof validation and complete Issue-state readback. Leave Issue #71 OPEN and PR #75 OPEN/non-draft/unmerged at completion.

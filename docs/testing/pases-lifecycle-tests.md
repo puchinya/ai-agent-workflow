@@ -129,6 +129,8 @@
     - [2.59.1 ORA-F01-093 Expected result](#2591-ora-f01-093-expected-result)
   - [2.60 TST-F01-094 Execution-receipt reader continuation and transition record](#260-tst-f01-094-execution-receipt-reader-continuation-and-transition-record)
     - [2.60.1 ORA-F01-094 Expected result](#2601-ora-f01-094-expected-result)
+  - [2.61 TST-F01-095 Markdown predecessor reader and exact successor chain](#261-tst-f01-095-markdown-predecessor-reader-and-exact-successor-chain)
+    - [2.61.1 ORA-F01-095 Expected result](#2611-ora-f01-095-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -253,6 +255,8 @@
 - [ORA-F01-093](#ora-f01-093) — 2.59.1 ORA-F01-093 Expected result
 - [TST-F01-094](#tst-f01-094) — 2.60 TST-F01-094 Execution-receipt reader continuation and transition record
 - [ORA-F01-094](#ora-f01-094) — 2.60.1 ORA-F01-094 Expected result
+- [TST-F01-095](#tst-f01-095) — 2.61 TST-F01-095 Markdown predecessor reader and exact successor chain
+- [ORA-F01-095](#ora-f01-095) — 2.61.1 ORA-F01-095 Expected result
 <!-- heading-map:end -->
 
 
@@ -914,3 +918,13 @@ Only the exact approved nine-generation chain and canonical markers authorize on
 #### 2.60.1 ORA-F01-094 Expected result
 
 Only the exact nine-generation approved chain and canonical successor marker authorize the one allowlisted direct child of b5d3c00. All earlier commit boundaries remain independently enforced. Exact Applied reconciliation produces NOOP with zero Issue writes. A valid current READY proof permits the normal execution advance only after a complete pre-write revalidation; success is reported only with a complete post-write Issue readback showing `phase:execution`. A distinct execution Phase Decision is neither needed nor supported.
+
+<a id="tst-f01-095"></a>
+### 2.61 TST-F01-095 Markdown predecessor reader and exact successor chain
+
+**Setup and action:** Parse approved ADC #6894441752 with its paired inline-code predecessor digest and verify the exact predecessor ID/SHA. Also accept the bare digest form. Reject an unmatched opening or closing delimiter, repeated delimiters, whitespace/punctuation changes, wrong ID, and wrong digest. Parse the exact #6896448736 marker and reject changed bytes, duplicate/missing markers, wrong predecessor, changed Artifact impact, stale Issue/epoch/PR/Intent/Applied identity, or invalid state. Verify the exact ten-generation approved ADC chain, including every canonical predecessor and marker. Validate the new one-commit segment as a direct child of `93477af0aefc22f5723c3de1e5fc7b8dade7ec21`; reject wrong parents, extra descendants, merges, missing ancestry, empty changes, and paths outside the marker's 15-path allowlist. Confirm the phase-rework route still requires zero-write Applied `NOOP`, then the fresh design→ready receipt and normal execution advance with complete READY proof and Issue-state readback.
+
+<a id="ora-f01-095"></a>
+#### 2.61.1 ORA-F01-095 Expected result
+
+The reader accepts only the exact approved ten-generation chain and the strictly parsed Markdown predecessor form with matching ID/SHA. Every historic commit segment remains independently bounded, and the new segment contains exactly one direct child with allowlisted paths. Malformed authorization or lineage blocks before writes. The existing Applied record reconciles as a read-only zero-write `NOOP`; after all fresh gates pass, normal phase advancement produces the supported execution transition record and leaves Issue #71 OPEN and PR #75 OPEN/unmerged.
