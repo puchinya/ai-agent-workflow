@@ -138,6 +138,8 @@ AUTHORIZATION: dict[str, Any] = {
     "to_phase": "requirements",
 }
 AUTH_FIELDS = frozenset(AUTHORIZATION)
+REWORK_AUTH_MARKER_BYTES = 3063
+REWORK_AUTH_MARKER_SHA256 = "fde0de816339ae96cbb327bb287cca4da02afecd60f1921b2a32b8b7ef8e4394"
 RECOVERY_AUTH_SCHEMA = "PASES_ISSUE_VERIFICATION_REWORK_RECOVERY_AUTHORIZATION_V1"
 RECOVERY_AUTHORIZATION: dict[str, Any] = {
     "active_epoch_id": ACTIVE_EPOCH_ID,
@@ -491,6 +493,71 @@ MARKDOWN_PREDECESSOR_READER_AUTHORIZATION: dict[str, Any] = {
 }
 MARKDOWN_PREDECESSOR_READER_AUTH_FIELDS = frozenset(
     MARKDOWN_PREDECESSOR_READER_AUTHORIZATION
+)
+APPROVED_HISTORY_READER_ADC_COMMENT_ID = 6897385343
+APPROVED_HISTORY_READER_ADC_SHA256 = (
+    "eded3887c7a8eae192d4b27c2ccccd1a2adaef8a6d14ff821d12b0d8f7ad0ef7"
+)
+APPROVED_HISTORY_READER_ADC_BYTES = 18487
+APPROVED_HISTORY_READER_AUTH_SCHEMA = (
+    "PASES_ISSUE_PHASE_REWORK_APPROVED_HISTORY_READER_V1"
+)
+APPROVED_HISTORY_READER_AUTH_MARKER_BYTES = 4464
+APPROVED_HISTORY_READER_AUTH_MARKER_SHA256 = (
+    "c6ece509dcb63ccff8a383a02e163e3af9c4daabd06f0316b567abd5651d27d8"
+)
+APPROVED_HISTORY_READER_ARTIFACT_IMPACT = MARKDOWN_PREDECESSOR_READER_ARTIFACT_IMPACT
+APPROVED_HISTORY_READER_AUTHORIZATION = json.loads(
+    (
+        '{"active_authorization_digests":{"continuation":"17c3144432b4c5a9310c58fc6274643970bfad3c30f698cd550'
+        'd8ea851832dd3","execution_receipt_reader_continuation":"3af7439eb308e879c727942359e1e136c85e593e4701'
+        '04e6211cafdc6295d11c","reader_continuation":"fff82a9ab1ab3f3138c064e2f99f820ae7af0da3f72657f98cacb5d'
+        '5ba12e844","recovery":"c6b06e27cbd3dfc0b70d575caba2366380f8af6561fec239e2e75b900ad58f0c","rework":"c'
+        'f4363631407e51b6c229d2b7d63eb318968e8af2966fce2d9938b8bc88eb7e9","timestamp_recovery":"880bf8227c978'
+        '85a0782dbbc3074b45b49e6ff4a4225b63c8763cbbce02c7b86"},"active_epoch_id":"50af48a8a0d92f65f362ee37195'
+        '9152de755ab7057604a47a9155e938357ee8a","active_epoch_sha256":"086a8e23601a869e4ec678a80ef82836c1cf76'
+        'd50be13788658b02e037c51d00","active_phase_generation_comment_id":6881839877,"active_phase_generation'
+        '_sha256":"133cba8d9fb815581de12552bac9d76cb634819d012513e9e3be086e4180a3c5","applied_body_sha256":"b'
+        '8648cfd2c9c1479791554179069bfc3b57ab5c7d26ccf255184087dcf388b18","applied_comment_id":6889965335,"ap'
+        'proved_history":[{"byte_length":13519,"comment_id":6886911700,"sha256":"a3c171ab44bf2145aea25b9e43b3'
+        '5fc235b04748e9ad2228847c7379f404e350","state":"approved"},{"byte_length":15113,"comment_id":68874297'
+        '39,"sha256":"c4de9fc1308c63f0de3ba4b8269fa779d2c38688cf420c59031911d1522cb8e2","state":"approved"},{'
+        '"byte_length":15501,"comment_id":6888665795,"sha256":"a12b71873e64a10f119a38df94e55c96c64d6cb1fc2e51'
+        '0432cf7d40116c7e4f","state":"approved"},{"byte_length":15762,"comment_id":6890080277,"sha256":"5fe13'
+        '2fba564d931da116bfa94f3a21efe2f35d943e790bf2087edf2423c52c5","state":"approved"},{"byte_length":9188'
+        ',"comment_id":6891800412,"sha256":"ca22ada47ffb31479ccc57664052486808fa86de3eabf2c1fb5680ca33b05280"'
+        ',"state":"approved"},{"byte_length":16060,"comment_id":6891926625,"sha256":"64c8d8d3ceb06f5e04d6c9eb'
+        '780c0bb3a0607dc61440e136b00bcdf63cf941a8","state":"approved"},{"byte_length":9955,"comment_id":68933'
+        '85802,"sha256":"65e5c9b928ce5b554ea16cf6fc8af2d1867018a0464d3247809c163e69ecd6ab","state":"approved"'
+        '},{"byte_length":16823,"comment_id":6893557456,"sha256":"b19dca5243f90d96d013a432b41ece5892f39fc8217'
+        'ebf63fccb8f0ada4fd81f","state":"approved"},{"byte_length":16073,"comment_id":6894441752,"sha256":"99'
+        'dbd0f77ef19df5fb9da6bd02cd8b52235e8bfbb498734ca8846de165cda449","state":"approved"},{"byte_length":1'
+        '2453,"comment_id":6896448736,"sha256":"fa94892d653cc037195b8886073e94d06118675450559bf5adb6b7ba289ee'
+        'ade","state":"approved"},{"byte_length":14389,"comment_id":6896831619,"sha256":"fcf6bc9062565b0b5ce0'
+        '35c99cee24c51a39116ce1cbc633c6b792f15281f684","state":"approved"}],"branch_ref":"pases/issue-71-loca'
+        'l-activation-v2-phase-rebaseline-epoch-3","current_issue_body_sha256":"5f910c8de4cbe3ec391edf18b69fa'
+        'be0f4c42880b59357083647a8b06e7a6a36","followup_path_allowlist":["dist/antigravity/docs/design/workfl'
+        'ow-design.md","dist/antigravity/docs/specs/workflow-spec.md","dist/antigravity/runtime/p_ases/phase_'
+        'rework.py","dist/claude/docs/design/workflow-design.md","dist/claude/docs/specs/workflow-spec.md","d'
+        'ist/claude/runtime/p_ases/phase_rework.py","dist/openai/docs/design/workflow-design.md","dist/openai'
+        '/docs/specs/workflow-spec.md","dist/openai/runtime/p_ases/phase_rework.py","docs/design/workflow-des'
+        'ign.md","docs/specs/workflow-spec.md","docs/testing/pases-lifecycle-tests.md","docs/testing/traceabi'
+        'lity.md","runtime/p_ases/phase_rework.py","tests/test_phase_rework.py"],"frozen_base_ref":"main","fr'
+        'ozen_base_sha40":"07481c4b451a81750a6c2e1a6a18bdfd4e3459c2","history_predecessor_boundary":{"comment'
+        '_id":6886739124,"sha256":"9c28ac5098565f74ffb5a74ece39a5a92c1264d793c2542b12e5d2efabc8c007"},"intent'
+        '_body_sha256":"ad2b75b99d4d0aa11d2cf021605eae9ecd9386a436f8032033a4cf87e5bd5be5","intent_comment_id"'
+        ':6888474848,"issue_id":6135294757,"issue_number":71,"labels_at_start":["enhancement","kind:single","'
+        'phase:design"],"max_followup_commits":1,"owner_id":3744776,"pr_base_ref":"main","pr_base_sha40":"074'
+        '81c4b451a81750a6c2e1a6a18bdfd4e3459c2","pr_body_sha256":"12f3dc5d45a8ca9d1155a80608d05b31402acd0d39d'
+        '33f61afeee844b93efff7","pr_number":75,"predecessor_adc_byte_length":14389,"predecessor_adc_comment_i'
+        'd":6896831619,"predecessor_adc_sha256":"fcf6bc9062565b0b5ce035c99cee24c51a39116ce1cbc633c6b792f15281'
+        'f684","repository":"puchinya/ai-agent-workflow","repository_id":1401910271,"schema":"PASES_ISSUE_PHA'
+        'SE_REWORK_APPROVED_HISTORY_READER_V1","starting_head_sha40":"d1704c125d4de49e84ffffceb14756c9cc55596'
+        '2"}'
+    )
+)
+APPROVED_HISTORY_READER_AUTH_FIELDS = frozenset(
+    APPROVED_HISTORY_READER_AUTHORIZATION
 )
 COMMON_FIELDS = frozenset({
     "repository", "repository_id", "issue_number", "issue_id", "adc_comment_id", "adc_sha256",
@@ -863,10 +930,28 @@ def parse_execution_receipt_reader_continuation_authorization(
     return value, hashlib.sha256(marker_bytes).hexdigest()
 
 
+def _adc_predecessor_header(text: str, label: str) -> tuple[int, str]:
+    section = re.search(r"(?m)^##[ \t]", text)
+    preamble = text if section is None else text[:section.start()]
+    headers = [line for line in text.splitlines() if line.startswith("Predecessor ADC:")]
+    preamble_headers = [line for line in preamble.splitlines()
+                        if line.startswith("Predecessor ADC:")]
+    if len(headers) != 1 or len(preamble_headers) != 1:
+        raise PhaseReworkError(f"{label} must have exactly one predecessor header")
+    match = re.fullmatch(
+        r"Predecessor ADC: Issue #71 comment #([0-9]+), SHA-256 "
+        r"(?:([0-9a-f]{64})|`([0-9a-f]{64})`)( {0}| {2})",
+        headers[0],
+    )
+    if match is None:
+        raise PhaseReworkError(f"{label} predecessor header is malformed")
+    return int(match.group(1)), match.group(2) or match.group(3)
+
+
 def parse_markdown_predecessor_reader_authorization(
     verified: VerifiedADC,
 ) -> tuple[dict[str, Any], str]:
-    """Parse the exact approved marker that fixes the Markdown predecessor reader."""
+    """Strictly parse the predecessor-reader ADC when it is the current pointer."""
     contract = verified.contract
     if (verified.pointer.state != "approved"
             or verified.pointer.comment_id != MARKDOWN_PREDECESSOR_READER_ADC_COMMENT_ID
@@ -905,16 +990,155 @@ def parse_markdown_predecessor_reader_authorization(
         raise PhaseReworkError(
             "Markdown predecessor reader marker differs from its exact canonical tuple"
         )
-    _validate_adc_predecessor(
-        text, EXECUTION_RECEIPT_READER_CONTINUATION_ADC_COMMENT_ID,
-        EXECUTION_RECEIPT_READER_CONTINUATION_ADC_SHA256,
-        "Markdown predecessor reader ADC", allow_inline_code=True,
-    )
+    if _adc_predecessor_header(text, "Markdown predecessor reader ADC") != (
+            EXECUTION_RECEIPT_READER_CONTINUATION_ADC_COMMENT_ID,
+            EXECUTION_RECEIPT_READER_CONTINUATION_ADC_SHA256):
+        raise PhaseReworkError(
+            "Markdown predecessor reader ADC predecessor differs from its exact pointer"
+        )
     if text.count(MARKDOWN_PREDECESSOR_READER_ARTIFACT_IMPACT) != 1:
         raise PhaseReworkError(
             "Markdown predecessor reader ADC does not declare the exact Artifact impact paths"
         )
     return value, hashlib.sha256(marker_bytes).hexdigest()
+
+
+def parse_approved_history_reader_authorization(
+    verified: VerifiedADC,
+) -> tuple[dict[str, Any], str]:
+    """Strictly parse the current ADC marker that authorizes generic history validation."""
+    contract = verified.contract
+    if (verified.pointer.state != "approved"
+            or verified.pointer.comment_id != APPROVED_HISTORY_READER_ADC_COMMENT_ID
+            or verified.pointer.sha256 != APPROVED_HISTORY_READER_ADC_SHA256
+            or contract.sha256 != APPROVED_HISTORY_READER_ADC_SHA256
+            or contract.byte_length != APPROVED_HISTORY_READER_ADC_BYTES
+            or contract.repository.casefold() != REPOSITORY.casefold()):
+        raise PhaseReworkError(
+            "current approved-history reader ADC differs from its exact approved generation"
+        )
+    text = contract.content.decode("utf-8", errors="strict")
+    start_marker = f"<!-- {APPROVED_HISTORY_READER_AUTH_SCHEMA}\n"
+    if text.count(start_marker) != 1:
+        raise PhaseReworkError(
+            "current approved-history reader ADC must contain exactly one authorization marker"
+        )
+    start = text.index(start_marker)
+    close = text.find("\n-->", start + len(start_marker))
+    if close < 0:
+        raise PhaseReworkError("approved-history authorization marker is incomplete")
+    raw = text[start + len(start_marker):close]
+    try:
+        value = json.loads(raw, object_pairs_hook=_pairs)
+    except (json.JSONDecodeError, UnicodeError) as exc:
+        raise PhaseReworkError("approved-history authorization JSON is malformed") from exc
+    marker_bytes = text[start:close + len("\n-->")].encode("utf-8")
+    if (len(marker_bytes) != APPROVED_HISTORY_READER_AUTH_MARKER_BYTES
+            or hashlib.sha256(marker_bytes).hexdigest()
+            != APPROVED_HISTORY_READER_AUTH_MARKER_SHA256):
+        raise PhaseReworkError(
+            "approved-history authorization marker differs from its exact approved bytes"
+        )
+    if (not isinstance(value, dict)
+            or set(value) != APPROVED_HISTORY_READER_AUTH_FIELDS
+            or _canonical(value) != raw
+            or value != APPROVED_HISTORY_READER_AUTHORIZATION):
+        raise PhaseReworkError(
+            "approved-history authorization differs from its exact canonical tuple"
+        )
+    if _adc_predecessor_header(text, "approved-history reader ADC") != (
+            APPROVED_HISTORY_READER_AUTHORIZATION["predecessor_adc_comment_id"],
+            APPROVED_HISTORY_READER_AUTHORIZATION["predecessor_adc_sha256"]):
+        raise PhaseReworkError(
+            "approved-history reader ADC predecessor differs from its exact approved pointer"
+        )
+    if text.count(APPROVED_HISTORY_READER_ARTIFACT_IMPACT) != 1:
+        raise PhaseReworkError(
+            "approved-history reader ADC does not declare the exact Artifact impact paths"
+        )
+    active_authorization_digests = {
+        "continuation": hashlib.sha256(_canonical(CONTINUATION_AUTHORIZATION).encode("utf-8")).hexdigest(),
+        "execution_receipt_reader_continuation": hashlib.sha256(
+            _canonical(EXECUTION_RECEIPT_READER_CONTINUATION_AUTHORIZATION).encode("utf-8")
+        ).hexdigest(),
+        "reader_continuation": hashlib.sha256(
+            _canonical(READER_CONTINUATION_AUTHORIZATION).encode("utf-8")
+        ).hexdigest(),
+        "recovery": hashlib.sha256(_canonical(RECOVERY_AUTHORIZATION).encode("utf-8")).hexdigest(),
+        "rework": hashlib.sha256(_canonical(AUTHORIZATION).encode("utf-8")).hexdigest(),
+        "timestamp_recovery": hashlib.sha256(
+            _canonical(TIMESTAMP_RECOVERY_AUTHORIZATION).encode("utf-8")
+        ).hexdigest(),
+    }
+    if value["active_authorization_digests"] != active_authorization_digests:
+        raise PhaseReworkError(
+            "approved-history marker does not bind the exact active authorization tuples"
+        )
+    return value, hashlib.sha256(marker_bytes).hexdigest()
+
+
+def _verify_approved_history_reader_chain(
+    github: GitHub, current: VerifiedADC, authorization: Mapping[str, Any],
+) -> tuple[VerifiedADC, ...]:
+    try:
+        chain = verify_adc_forward_generations(
+            github, ISSUE_NUMBER,
+            prior_comment_id=PREDECESSOR_ADC_COMMENT_ID,
+            prior_sha256=PREDECESSOR_ADC_SHA256,
+            current_comment_id=APPROVED_HISTORY_READER_ADC_COMMENT_ID,
+            current_sha256=APPROVED_HISTORY_READER_ADC_SHA256,
+        )
+    except ADCError as exc:
+        raise PhaseReworkError(f"approved ADC history readback failed: {exc}") from exc
+    expected_history = authorization["approved_history"]
+    if not isinstance(expected_history, list) or not expected_history:
+        raise PhaseReworkError("approved ADC history authorization must contain prior generations")
+    for item in chain:
+        pointer = item.pointer
+        contract = item.contract
+        content = contract.content
+        if (pointer.state != "approved" or pointer.sha256 != contract.sha256
+                or contract.repository.casefold() != REPOSITORY.casefold()
+                or len(content) != contract.byte_length):
+            raise PhaseReworkError(
+                f"approved ADC history body or pointer readback differs at comment #{pointer.comment_id}"
+            )
+    actual_history = [
+        {
+            "byte_length": item.contract.byte_length,
+            "comment_id": item.pointer.comment_id,
+            "sha256": item.contract.sha256,
+            "state": item.pointer.state,
+        }
+        for item in chain[:-1]
+    ]
+    current_entry = {
+        "byte_length": current.contract.byte_length,
+        "comment_id": current.pointer.comment_id,
+        "sha256": current.contract.sha256,
+        "state": current.pointer.state,
+    }
+    expected_current = {
+        "byte_length": APPROVED_HISTORY_READER_ADC_BYTES,
+        "comment_id": APPROVED_HISTORY_READER_ADC_COMMENT_ID,
+        "sha256": APPROVED_HISTORY_READER_ADC_SHA256,
+        "state": "approved",
+    }
+    if (actual_history != expected_history or current_entry != expected_current
+            or not chain or chain[-1].pointer != current.pointer):
+        raise PhaseReworkError(
+            "approved ADC history is missing, reordered, changed, unapproved, or not current"
+        )
+    previous = authorization["history_predecessor_boundary"]
+    for item, expected in zip(chain, [previous, *expected_history]):
+        text = item.contract.content.decode("utf-8", errors="strict")
+        if _adc_predecessor_header(text, f"historical ADC #{item.pointer.comment_id}") != (
+                expected["comment_id"], expected["sha256"]):
+            raise PhaseReworkError(
+                f"historical ADC #{item.pointer.comment_id} predecessor link differs from its exact chain"
+            )
+        previous = {"comment_id": item.pointer.comment_id, "sha256": item.contract.sha256}
+    return chain
 
 
 def _authorization_context(github: GitHub, current: VerifiedADC
@@ -924,6 +1148,18 @@ def _authorization_context(github: GitHub, current: VerifiedADC
                                        dict[str, Any] | None, str | None,
                                        dict[str, Any] | None, str | None]:
     """Resolve the original rework authorization and its exact approved successors."""
+    if current.pointer.comment_id == APPROVED_HISTORY_READER_ADC_COMMENT_ID:
+        authorization, _current_marker_sha = parse_approved_history_reader_authorization(current)
+        _verify_approved_history_reader_chain(github, current, authorization)
+        return (
+            AUTHORIZATION, REWORK_AUTH_MARKER_SHA256,
+            RECOVERY_AUTHORIZATION, RECOVERY_AUTH_MARKER_SHA256,
+            TIMESTAMP_RECOVERY_AUTHORIZATION, TIMESTAMP_RECOVERY_AUTH_MARKER_SHA256,
+            CONTINUATION_AUTHORIZATION, CONTINUATION_AUTH_MARKER_SHA256,
+            READER_CONTINUATION_AUTHORIZATION, READER_CONTINUATION_AUTH_MARKER_SHA256,
+            EXECUTION_RECEIPT_READER_CONTINUATION_AUTHORIZATION,
+            EXECUTION_RECEIPT_READER_CONTINUATION_AUTH_MARKER_SHA256,
+        )
     if current.pointer.comment_id == REWORK_ADC_COMMENT_ID:
         try:
             chain = verify_adc_forward_generations(
@@ -942,75 +1178,6 @@ def _authorization_context(github: GitHub, current: VerifiedADC
         authorization, authorization_sha = parse_authorization(current)
         return (authorization, authorization_sha, None, None, None, None, None, None,
                 None, None, None, None)
-    if current.pointer.comment_id == MARKDOWN_PREDECESSOR_READER_ADC_COMMENT_ID:
-        markdown_authorization, _markdown_sha = (
-            parse_markdown_predecessor_reader_authorization(current)
-        )
-        try:
-            chain = verify_adc_forward_generations(
-                github, ISSUE_NUMBER,
-                prior_comment_id=PREDECESSOR_ADC_COMMENT_ID,
-                prior_sha256=PREDECESSOR_ADC_SHA256,
-                current_comment_id=current.pointer.comment_id,
-                current_sha256=current.contract.sha256,
-            )
-        except ADCError as exc:
-            raise PhaseReworkError(
-                f"approved Markdown predecessor reader ADC chain readback failed: {exc}"
-            ) from exc
-        expected_chain = (
-            (PREDECESSOR_ADC_COMMENT_ID, PREDECESSOR_ADC_SHA256),
-            (REWORK_ADC_COMMENT_ID, REWORK_ADC_SHA256),
-            (RECOVERY_ADC_COMMENT_ID, RECOVERY_ADC_SHA256),
-            (TIMESTAMP_RECOVERY_ADC_COMMENT_ID, TIMESTAMP_RECOVERY_ADC_SHA256),
-            (PATH_CORRECTION_ADC_COMMENT_ID, PATH_CORRECTION_ADC_SHA256),
-            (CONTINUATION_ADC_COMMENT_ID, CONTINUATION_ADC_SHA256),
-            (TRACEABILITY_CORRECTION_ADC_COMMENT_ID, TRACEABILITY_CORRECTION_ADC_SHA256),
-            (READER_CONTINUATION_ADC_COMMENT_ID, READER_CONTINUATION_ADC_SHA256),
-            (EXECUTION_RECEIPT_READER_CONTINUATION_ADC_COMMENT_ID,
-             EXECUTION_RECEIPT_READER_CONTINUATION_ADC_SHA256),
-            (MARKDOWN_PREDECESSOR_READER_ADC_COMMENT_ID,
-             MARKDOWN_PREDECESSOR_READER_ADC_SHA256),
-        )
-        actual_chain = tuple((item.pointer.comment_id, item.contract.sha256) for item in chain)
-        if (actual_chain != expected_chain
-                or any(item.pointer.state != "approved" for item in chain)):
-            raise PhaseReworkError(
-                "Markdown predecessor reader ADC is not the complete exact ten-generation approved chain"
-            )
-        authorization, authorization_sha = parse_authorization(chain[1])
-        recovery_authorization, recovery_sha = parse_authorization(chain[2])
-        timestamp_authorization, timestamp_sha = parse_timestamp_recovery_authorization(chain[3])
-        parse_path_correction_generation(chain[4])
-        continuation_authorization, continuation_sha = parse_continuation_authorization(chain[5])
-        parse_traceability_source_correction_generation(chain[6])
-        reader_authorization, reader_sha = parse_reader_continuation_authorization(chain[7])
-        execution_reader_authorization, execution_reader_sha = (
-            parse_execution_receipt_reader_continuation_authorization(chain[8])
-        )
-        if (recovery_authorization.get("predecessor_adc_comment_id") != chain[1].pointer.comment_id
-                or recovery_authorization.get("predecessor_adc_sha256") != chain[1].contract.sha256
-                or timestamp_authorization.get("predecessor_adc_comment_id") != chain[2].pointer.comment_id
-                or timestamp_authorization.get("predecessor_adc_sha256") != chain[2].contract.sha256
-                or continuation_authorization.get("predecessor_adc_comment_id") != chain[4].pointer.comment_id
-                or continuation_authorization.get("predecessor_adc_sha256") != chain[4].contract.sha256
-                or reader_authorization.get("predecessor_adc_comment_id") != chain[6].pointer.comment_id
-                or reader_authorization.get("predecessor_adc_sha256") != chain[6].contract.sha256
-                or execution_reader_authorization.get("predecessor_adc_comment_id")
-                != chain[7].pointer.comment_id
-                or execution_reader_authorization.get("predecessor_adc_sha256")
-                != chain[7].contract.sha256
-                or markdown_authorization.get("predecessor_adc_comment_id")
-                != chain[8].pointer.comment_id
-                or markdown_authorization.get("predecessor_adc_sha256")
-                != chain[8].contract.sha256):
-            raise PhaseReworkError(
-                "Markdown predecessor reader marker does not bind its exact approved predecessor chain"
-            )
-        return (authorization, authorization_sha, recovery_authorization, recovery_sha,
-                timestamp_authorization, timestamp_sha, continuation_authorization,
-                continuation_sha, reader_authorization, reader_sha,
-                execution_reader_authorization, execution_reader_sha)
     if current.pointer.comment_id == EXECUTION_RECEIPT_READER_CONTINUATION_ADC_COMMENT_ID:
         execution_reader_authorization, execution_reader_sha = (
             parse_execution_receipt_reader_continuation_authorization(current)
@@ -1449,13 +1616,76 @@ def _verify_markdown_predecessor_reader_commit_set(
         )
 
 
+def _verify_approved_history_reader_commit_set(
+    root: Path,
+    head: str,
+    recovery_authorization: Mapping[str, Any],
+    timestamp_recovery_authorization: Mapping[str, Any] | None,
+    continuation_authorization: Mapping[str, Any] | None,
+    reader_continuation_authorization: Mapping[str, Any] | None,
+    execution_receipt_reader_authorization: Mapping[str, Any] | None,
+    markdown_predecessor_reader_authorization: Mapping[str, Any],
+    approved_history_reader_authorization: Mapping[str, Any],
+) -> None:
+    if (approved_history_reader_authorization != APPROVED_HISTORY_READER_AUTHORIZATION
+            or markdown_predecessor_reader_authorization
+            != MARKDOWN_PREDECESSOR_READER_AUTHORIZATION
+            or approved_history_reader_authorization.get("starting_head_sha40")
+            != "d1704c125d4de49e84ffffceb14756c9cc555962"
+            or approved_history_reader_authorization.get("max_followup_commits") != 1
+            or approved_history_reader_authorization.get("followup_path_allowlist")
+            != APPROVED_HISTORY_READER_AUTHORIZATION["followup_path_allowlist"]):
+        raise PhaseReworkError(
+            "approved-history authorization differs from the exact successor commit tuple"
+        )
+    predecessor_head = approved_history_reader_authorization["starting_head_sha40"]
+    _verify_markdown_predecessor_reader_commit_set(
+        root, predecessor_head, recovery_authorization, timestamp_recovery_authorization,
+        continuation_authorization, reader_continuation_authorization,
+        execution_receipt_reader_authorization, markdown_predecessor_reader_authorization,
+    )
+    if not is_ancestor(root, predecessor_head, head):
+        raise PhaseReworkError(
+            "approved-history reader HEAD must descend from its exact starting HEAD"
+        )
+    rows = run_git(root, "rev-list", "--reverse", f"{predecessor_head}..{head}").splitlines()
+    if len(rows) != approved_history_reader_authorization["max_followup_commits"]:
+        raise PhaseReworkError(
+            "approved-history reader continuation must contain exactly one authorized commit"
+        )
+    if commit_parents_sha40(root, rows[0]) != (predecessor_head,):
+        raise PhaseReworkError("approved-history reader commit has an unexpected parent")
+    changed = changed_paths_between(root, predecessor_head, rows[0])
+    allowlist = approved_history_reader_authorization.get("followup_path_allowlist")
+    if (not isinstance(allowlist, list) or not changed
+            or any(path not in allowlist for path in changed)):
+        raise PhaseReworkError(
+            "approved-history reader commit changes a path outside its exact allowlist"
+        )
+    if rows[0] != head:
+        raise PhaseReworkError(
+            "approved-history reader commit enumeration does not end at the exact HEAD"
+        )
+
+
 def _verify_recovery_commit_set(root: Path, head: str,
                                 recovery_authorization: Mapping[str, Any],
                                 timestamp_recovery_authorization: Mapping[str, Any] | None = None,
                                 continuation_authorization: Mapping[str, Any] | None = None,
                                 reader_continuation_authorization: Mapping[str, Any] | None = None,
                                 execution_receipt_reader_authorization: Mapping[str, Any] | None = None,
-                                markdown_predecessor_reader_authorization: Mapping[str, Any] | None = None) -> None:
+                                markdown_predecessor_reader_authorization: Mapping[str, Any] | None = None,
+                                approved_history_reader_authorization: Mapping[str, Any] | None = None) -> None:
+    if approved_history_reader_authorization is not None:
+        if markdown_predecessor_reader_authorization is None:
+            raise PhaseReworkError("approved-history lineage lacks its exact predecessor reader")
+        _verify_approved_history_reader_commit_set(
+            root, head, recovery_authorization, timestamp_recovery_authorization,
+            continuation_authorization, reader_continuation_authorization,
+            execution_receipt_reader_authorization, markdown_predecessor_reader_authorization,
+            approved_history_reader_authorization,
+        )
+        return
     if markdown_predecessor_reader_authorization is not None:
         _verify_markdown_predecessor_reader_commit_set(
             root, head, recovery_authorization, timestamp_recovery_authorization,
@@ -1568,11 +1798,13 @@ def _verify_issue71_commit_lineage(root: Path, head: str,
                                    continuation_authorization: Mapping[str, Any] | None = None,
                                    reader_continuation_authorization: Mapping[str, Any] | None = None,
                                    execution_receipt_reader_authorization: Mapping[str, Any] | None = None,
-                                   markdown_predecessor_reader_authorization: Mapping[str, Any] | None = None) -> None:
+                                   markdown_predecessor_reader_authorization: Mapping[str, Any] | None = None,
+                                   approved_history_reader_authorization: Mapping[str, Any] | None = None) -> None:
     if recovery_authorization is not None:
         if ((continuation_authorization is not None or reader_continuation_authorization is not None
              or execution_receipt_reader_authorization is not None
-             or markdown_predecessor_reader_authorization is not None)
+             or markdown_predecessor_reader_authorization is not None
+             or approved_history_reader_authorization is not None)
                 and timestamp_recovery_authorization is None):
             raise PhaseReworkError("continuation lineage lacks the exact timestamp-recovery generation")
         if timestamp_recovery_authorization is None:
@@ -1589,6 +1821,7 @@ def _verify_issue71_commit_lineage(root: Path, head: str,
             root, head, recovery_authorization, timestamp_recovery_authorization,
             continuation_authorization, reader_continuation_authorization,
             execution_receipt_reader_authorization, markdown_predecessor_reader_authorization,
+            approved_history_reader_authorization,
         )
     elif head != BASELINE_HEAD:
         _verify_commit_set(root, head, tuple(authorization["bootstrap_path_allowlist"]))
@@ -1651,7 +1884,15 @@ def _live(github: GitHub, root: Path, *, phase: str | None = None,
         head = head_sha40(root)
         markdown_predecessor_reader_authorization = (
             MARKDOWN_PREDECESSOR_READER_AUTHORIZATION
-            if current.pointer.comment_id == MARKDOWN_PREDECESSOR_READER_ADC_COMMENT_ID
+            if current.pointer.comment_id in {
+                MARKDOWN_PREDECESSOR_READER_ADC_COMMENT_ID,
+                APPROVED_HISTORY_READER_ADC_COMMENT_ID,
+            }
+            else None
+        )
+        approved_history_reader_authorization = (
+            APPROVED_HISTORY_READER_AUTHORIZATION
+            if current.pointer.comment_id == APPROVED_HISTORY_READER_ADC_COMMENT_ID
             else None
         )
         if branch != BRANCH_REF or not is_ancestor(root, BASELINE_HEAD, head):
@@ -1665,7 +1906,7 @@ def _live(github: GitHub, root: Path, *, phase: str | None = None,
         _verify_issue71_commit_lineage(
             root, head, authorization, recovery_authorization, timestamp_recovery_authorization,
             continuation_authorization, reader_authorization, execution_reader_authorization,
-            markdown_predecessor_reader_authorization,
+            markdown_predecessor_reader_authorization, approved_history_reader_authorization,
         )
         live = _Live(current, epoch, issue, labels, branch, head, pull,
                      actor["id"], authorization_sha, root,
@@ -1975,10 +2216,19 @@ def _validate_recovery_intent(intent: PhaseReworkRecord, live: _Live,
     execution_reader_authorization = live.execution_receipt_reader_continuation_authorization
     markdown_predecessor_reader_authorization = None
     markdown_predecessor_reader_sha256 = None
+    approved_history_reader_authorization = None
+    approved_history_reader_marker_sha256 = None
     if current_adc_id == MARKDOWN_PREDECESSOR_READER_ADC_COMMENT_ID:
         (markdown_predecessor_reader_authorization,
          markdown_predecessor_reader_sha256) = (
             parse_markdown_predecessor_reader_authorization(live.current_adc)
+        )
+    elif current_adc_id == APPROVED_HISTORY_READER_ADC_COMMENT_ID:
+        markdown_predecessor_reader_authorization = MARKDOWN_PREDECESSOR_READER_AUTHORIZATION
+        markdown_predecessor_reader_sha256 = MARKDOWN_PREDECESSOR_READER_AUTH_MARKER_SHA256
+        (approved_history_reader_authorization,
+         approved_history_reader_marker_sha256) = (
+            parse_approved_history_reader_authorization(live.current_adc)
         )
     if (recovery is None
             or current_adc_id not in {
@@ -1986,6 +2236,7 @@ def _validate_recovery_intent(intent: PhaseReworkRecord, live: _Live,
                 CONTINUATION_ADC_COMMENT_ID, READER_CONTINUATION_ADC_COMMENT_ID,
                 EXECUTION_RECEIPT_READER_CONTINUATION_ADC_COMMENT_ID,
                 MARKDOWN_PREDECESSOR_READER_ADC_COMMENT_ID,
+                APPROVED_HISTORY_READER_ADC_COMMENT_ID,
             }
             or (current_adc_id == RECOVERY_ADC_COMMENT_ID
                 and (timestamp_authorization is not None or continuation_authorization is not None
@@ -2027,7 +2278,10 @@ def _validate_recovery_intent(intent: PhaseReworkRecord, live: _Live,
                      != EXECUTION_RECEIPT_READER_CONTINUATION_AUTHORIZATION
                      or live.execution_receipt_reader_continuation_authorization_sha256
                      != EXECUTION_RECEIPT_READER_CONTINUATION_AUTH_MARKER_SHA256))
-            or (current_adc_id == MARKDOWN_PREDECESSOR_READER_ADC_COMMENT_ID
+            or (current_adc_id in {
+                    MARKDOWN_PREDECESSOR_READER_ADC_COMMENT_ID,
+                    APPROVED_HISTORY_READER_ADC_COMMENT_ID,
+            }
                 and (timestamp_authorization != TIMESTAMP_RECOVERY_AUTHORIZATION
                      or live.timestamp_recovery_authorization_sha256
                      != TIMESTAMP_RECOVERY_AUTH_MARKER_SHA256
@@ -2043,7 +2297,15 @@ def _validate_recovery_intent(intent: PhaseReworkRecord, live: _Live,
                      or markdown_predecessor_reader_authorization
                      != MARKDOWN_PREDECESSOR_READER_AUTHORIZATION
                      or markdown_predecessor_reader_sha256
-                     != MARKDOWN_PREDECESSOR_READER_AUTH_MARKER_SHA256))):
+                     != MARKDOWN_PREDECESSOR_READER_AUTH_MARKER_SHA256
+                     or (current_adc_id == MARKDOWN_PREDECESSOR_READER_ADC_COMMENT_ID
+                         and (approved_history_reader_authorization is not None
+                              or approved_history_reader_marker_sha256 is not None))
+                     or (current_adc_id == APPROVED_HISTORY_READER_ADC_COMMENT_ID
+                         and (approved_history_reader_authorization
+                              != APPROVED_HISTORY_READER_AUTHORIZATION
+                              or approved_history_reader_marker_sha256
+                              != APPROVED_HISTORY_READER_AUTH_MARKER_SHA256))))):
         raise PhaseReworkError("current ADC does not authorize pending Intent recovery")
     if (intent.comment_id != recovery["intent_comment_id"]
             or intent.body_sha256 != recovery["intent_body_sha256"]

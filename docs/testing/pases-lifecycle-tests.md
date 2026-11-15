@@ -131,6 +131,8 @@
     - [2.60.1 ORA-F01-094 Expected result](#2601-ora-f01-094-expected-result)
   - [2.61 TST-F01-095 Markdown predecessor reader and exact successor chain](#261-tst-f01-095-markdown-predecessor-reader-and-exact-successor-chain)
     - [2.61.1 ORA-F01-095 Expected result](#2611-ora-f01-095-expected-result)
+  - [2.62 TST-F01-096 Approved history reader and bounded continuation](#262-tst-f01-096-approved-history-reader-and-bounded-continuation)
+    - [2.62.1 ORA-F01-096 Expected result](#2621-ora-f01-096-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -257,6 +259,8 @@
 - [ORA-F01-094](#ora-f01-094) — 2.60.1 ORA-F01-094 Expected result
 - [TST-F01-095](#tst-f01-095) — 2.61 TST-F01-095 Markdown predecessor reader and exact successor chain
 - [ORA-F01-095](#ora-f01-095) — 2.61.1 ORA-F01-095 Expected result
+- [TST-F01-096](#tst-f01-096) — 2.62 TST-F01-096 Approved history reader and bounded continuation
+- [ORA-F01-096](#ora-f01-096) — 2.62.1 ORA-F01-096 Expected result
 <!-- heading-map:end -->
 
 
@@ -928,3 +932,13 @@ Only the exact nine-generation approved chain and canonical successor marker aut
 #### 2.61.1 ORA-F01-095 Expected result
 
 The reader accepts only the exact approved ten-generation chain and the strictly parsed Markdown predecessor form with matching ID/SHA. Every historic commit segment remains independently bounded, and the new segment contains exactly one direct child with allowlisted paths. Malformed authorization or lineage blocks before writes. The existing Applied record reconciles as a read-only zero-write `NOOP`; after all fresh gates pass, normal phase advancement produces the supported execution transition record and leaves Issue #71 OPEN and PR #75 OPEN/unmerged.
+
+<a id="tst-f01-096"></a>
+### 2.62 TST-F01-096 Approved history reader and bounded continuation
+
+**Setup and action:** Build an ordered approved ADC chain with exact comment IDs, body digests, byte lengths, pointer states, and predecessor headers. Put malformed marker text in historical bodies and verify the chain succeeds without parsing it. Reject missing, extra, duplicate, reordered, unapproved, changed, or incorrectly linked generations and any noncanonical or duplicated current marker. Check that only the current marker binds the exact Issue/epoch/PR/Intent/Applied identities and six active authorization digests. Preserve each earlier commit segment and require one direct child of `d1704c1` on the exact 15-path allowlist; reject merges, extra descendants, wrong parents, and out-of-scope paths. Confirm fresh exact-head gates and PRBinding precede read-only Applied `NOOP`, then verify design→ready, READY, and normal execution advance.
+
+<a id="ora-f01-096"></a>
+#### 2.62.1 ORA-F01-096 Expected result
+
+Historical markers are never parsed or used as authority. All approved pointer/body identities and predecessor links match in order, and malformed current markers fail closed. The new HEAD is exactly one allowlisted direct child of `d1704c1`. No phase write occurs before fresh exact-subject gates, PRBinding, and zero-write Applied `NOOP`. Completion leaves Issue #71 OPEN at `phase:execution` and PR #75 OPEN/non-draft/unmerged.

@@ -48,6 +48,7 @@
   - [5.33 DES-F01-093 Exact continuation ADC reader and lineage](#533-des-f01-093-exact-continuation-adc-reader-and-lineage)
   - [5.34 DES-F01-094 Execution transition readback record](#534-des-f01-094-execution-transition-readback-record)
   - [5.35 DES-F01-095 Exact Markdown predecessor parsing and successor chain](#535-des-f01-095-exact-markdown-predecessor-parsing-and-successor-chain)
+  - [5.36 DES-F01-096 Generic approved history reader and successor segment](#536-des-f01-096-generic-approved-history-reader-and-successor-segment)
 - [6 DES-WF-003 Workspace execution flow](#6-des-wf-003-workspace-execution-flow)
 - [7 DES-WF-004 Failure handling](#7-des-wf-004-failure-handling)
 - [8 DES-WF-005 Authorization boundary and PR handoff](#8-des-wf-005-authorization-boundary-and-pr-handoff)
@@ -95,6 +96,7 @@
 - [DES-F01-093](#des-f01-093) — 5.33 DES-F01-093 Exact continuation ADC reader and lineage
 - [DES-F01-094](#des-f01-094) — 5.34 DES-F01-094 Execution transition readback record
 - [DES-F01-095](#des-f01-095) — 5.35 DES-F01-095 Exact Markdown predecessor parsing and successor chain
+- [DES-F01-096](#des-f01-096) — 5.36 DES-F01-096 Generic approved history reader and successor segment
 - [DES-WF-003](#des-wf-003) — 6 DES-WF-003 Workspace execution flow
 - [DES-WF-004](#des-wf-004) — 7 DES-WF-004 Failure handling
 - [DES-WF-005](#des-wf-005) — 8 DES-WF-005 Authorization boundary and PR handoff
@@ -414,6 +416,17 @@ The continuation preserves the original Intent and Applied journal. Its read-onl
 ### 5.35 DES-F01-095 Exact Markdown predecessor parsing and successor chain
 
 The #6894441752 ADC predecessor header wraps the SHA-256 in one Markdown inline-code pair. The reader accepts exactly either 64 lowercase hex characters or one matched pair around those characters, while still comparing the exact predecessor comment ID and digest. It rejects unmatched or repeated delimiters, extra whitespace, punctuation, or altered identities. The current successor reader pins the ten-generation ADC chain and validates the new direct-child segment from `93477af0aefc22f5723c3de1e5fc7b8dade7ec21` independently after all earlier one-commit segments. Its marker binds the exact Issue, epoch, PR, journal, branch, base, start HEAD, and 15-path allowlist. Only after exact-head gates and zero-write Applied reconciliation pass does the existing design→ready→execution route continue.
+
+<a id="des-f01-096"></a>
+### 5.36 DES-F01-096 Generic approved history reader and successor segment
+
+D68: Parse the current approved authorization marker strictly. Treat every earlier ADC body as immutable provenance and validate it through the complete ordered pointer chain, exact comment ID, body digest and byte length, approved state, full body readback, and direct predecessor link. Do not interpret historical marker syntax.
+
+D69: The current marker carries the six still-effective authorization tuple digests. Compare them with the pinned implementation constants; historical markers cannot add, remove, or change authority.
+
+D70: Apply one history-validation rule to every earlier generation. The incomplete duplicate opener in ADC #6896448736 remains ordinary immutable body content and receives no suffix, comment-ID, or generation-specific parser exception.
+
+D71: Keep the complete commit lineage segmented. Validate every earlier segment independently, then require exactly one direct child of `d1704c125d4de49e84ffffceb14756c9cc555962` on the exact 15-path allowlist. All exact-head gates and read-only zero-write Applied reconciliation remain prerequisites for `design → ready → execution`.
 
 ## 6 DES-WF-003 Workspace execution flow
 

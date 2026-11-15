@@ -113,6 +113,12 @@
   - [9.86 REQ-F01-134 Parse the approved Markdown predecessor digest](#986-req-f01-134-parse-the-approved-markdown-predecessor-digest)
   - [9.87 REQ-F01-135 Preserve exact ADC chain and commit segments](#987-req-f01-135-preserve-exact-adc-chain-and-commit-segments)
   - [9.88 REQ-F01-136 Gate the corrected reader before Phase continuation](#988-req-f01-136-gate-the-corrected-reader-before-phase-continuation)
+  - [9.89 REQ-F01-137 Preserve the predecessor ADC as immutable history](#989-req-f01-137-preserve-the-predecessor-adc-as-immutable-history)
+  - [9.90 REQ-F01-138 Verify approved history without reading historical markers](#990-req-f01-138-verify-approved-history-without-reading-historical-markers)
+  - [9.91 REQ-F01-139 Gate approved-history continuation](#991-req-f01-139-gate-approved-history-continuation)
+  - [9.92 REQ-F01-140 Verify immutable approved ADC history](#992-req-f01-140-verify-immutable-approved-adc-history)
+  - [9.93 REQ-F01-141 Parse only the current ADC authorization](#993-req-f01-141-parse-only-the-current-adc-authorization)
+  - [9.94 REQ-F01-142 Preserve bounded continuation and delivery gates](#994-req-f01-142-preserve-bounded-continuation-and-delivery-gates)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -215,6 +221,12 @@
 - [REQ-F01-134](#req-f01-134) — 9.86 REQ-F01-134 Parse the approved Markdown predecessor digest
 - [REQ-F01-135](#req-f01-135) — 9.87 REQ-F01-135 Preserve exact ADC chain and commit segments
 - [REQ-F01-136](#req-f01-136) — 9.88 REQ-F01-136 Gate the corrected reader before Phase continuation
+- [REQ-F01-137](#req-f01-137) — 9.89 REQ-F01-137 Preserve the predecessor ADC as immutable history
+- [REQ-F01-138](#req-f01-138) — 9.90 REQ-F01-138 Verify approved history without reading historical markers
+- [REQ-F01-139](#req-f01-139) — 9.91 REQ-F01-139 Gate approved-history continuation
+- [REQ-F01-140](#req-f01-140) — 9.92 REQ-F01-140 Verify immutable approved ADC history
+- [REQ-F01-141](#req-f01-141) — 9.93 REQ-F01-141 Parse only the current ADC authorization
+- [REQ-F01-142](#req-f01-142) — 9.94 REQ-F01-142 Preserve bounded continuation and delivery gates
 <!-- heading-map:end -->
 
 
@@ -936,3 +948,33 @@ Validate the exact ten-generation approved ADC chain through the current success
 ### 9.88 REQ-F01-136 Gate the corrected reader before Phase continuation
 
 At the exact pushed HEAD, require every local and hosted gate, fresh exact-subject Verification, Acceptance, Self-Audit, native Independent Review, and PRBinding before reconciling the existing Applied record. Reconciliation must be a read-only zero-write `NOOP`. Then publish/read back the fresh `design → ready` receipt, advance to READY, and use the ordinary execution advance with complete READY-proof validation and complete Issue-state readback. Leave Issue #71 OPEN and PR #75 OPEN/non-draft/unmerged at completion.
+
+<a id="req-f01-137"></a>
+### 9.89 REQ-F01-137 Preserve the predecessor ADC as immutable history
+
+ADC #6896448736 contains an incomplete duplicate marker opener at end-of-file. Preserve that body as immutable history. Do not parse or normalize its marker text, and do not create a special suffix rule. Verify this generation through the same approved pointer, exact body digest and length, order, and predecessor-link checks used for every historical ADC.
+
+<a id="req-f01-138"></a>
+### 9.90 REQ-F01-138 Verify approved history without reading historical markers
+
+Read the current approved authorization marker for the ordered history identities. Verify each earlier generation by approved comment ID, exact body SHA-256 and byte length, approved state, full body readback, and predecessor link. Reject missing, reordered, duplicated, unapproved, changed, extra, or incorrectly linked generations. Preserve each earlier commit segment independently, including the one-child segment from `93477af0aefc22f5723c3de1e5fc7b8dade7ec21` to `d1704c125d4de49e84ffffceb14756c9cc555962`.
+
+<a id="req-f01-139"></a>
+### 9.91 REQ-F01-139 Gate approved-history continuation
+
+At the exact pushed HEAD, require all local and hosted gates, fresh exact-subject Verification/Acceptance/Self-Audit/native Independent Review, and current PRBinding before read-only zero-write Applied reconciliation. Then publish/read back `design → ready`, advance to READY, and run the normal execution advance with complete READY-proof validation and full Issue-state readback. Leave Issue #71 OPEN and PR #75 OPEN/non-draft/unmerged.
+
+<a id="req-f01-140"></a>
+### 9.92 REQ-F01-140 Verify immutable approved ADC history
+
+Verify every prior ADC generation using the complete ordered approved pointer chain, exact comment IDs, exact body SHA-256 values, byte lengths, approved states, and exact body readback. Require every predecessor header to link to the immediately preceding ID and SHA-256. Parse only the exact `Predecessor ADC: Issue #71 comment #ID, SHA-256 hash` form; accept either a bare digest or one matched inline-code pair and zero or two trailing Markdown hardbreak spaces. Pin the initial boundary to #6886739124 / `9c28ac5098565f74ffb5a74ece39a5a92c1264d793c2542b12e5d2efabc8c007`. Never parse historical markers to infer authority. Reject missing, duplicated, reordered, unapproved, changed, or extra generations.
+
+<a id="req-f01-141"></a>
+### 9.93 REQ-F01-141 Parse only the current ADC authorization
+
+Parse exactly one canonical authorization marker from the current approved successor. Require exact repository, Issue, epoch, branch, frozen base, PR, Intent/Applied, active Phase, starting HEAD, allowlist, predecessor #6896831619, and all six carried-forward authorization tuple digests. Reject unknown fields, duplicate JSON keys, noncanonical JSON, duplicate or incomplete markers, wrong predecessors, and stale identities before writes. Historical marker contents do not grant or change current authority.
+
+<a id="req-f01-142"></a>
+### 9.94 REQ-F01-142 Preserve bounded continuation and delivery gates
+
+Preserve `d1704c125d4de49e84ffffceb14756c9cc555962` and allow exactly one direct-child commit on the exact 15-path allowlist. Preserve and validate each earlier commit segment independently. At the new exact pushed HEAD, require all configured gates, fresh exact-subject Verification/Acceptance/Self-Audit/native Independent Review, and PRBinding. Reconcile Applied read-only as zero-write `NOOP` before phase writes; then use supported `design → ready`, READY, and normal execution advance with full readback. No merge, Admin, Activation, Issue #63, or Issue-close operation is authorized.

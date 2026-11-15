@@ -266,23 +266,25 @@ def execution_receipt_reader_continuation_contract(
     )
 
 
-def markdown_predecessor_reader_contract(
+def approved_history_reader_contract(
     authorization: dict | None = None,
     *,
     predecessor_id: int | None = None,
     predecessor_sha: str | None = None,
     artifact_impact: str | None = None,
+    marker_json: str | None = None,
     duplicate_marker: bool = False,
     missing_marker: bool = False,
     repository: str | None = None,
 ) -> SimpleNamespace:
-    authorization = authorization or module.MARKDOWN_PREDECESSOR_READER_AUTHORIZATION
-    predecessor_id = predecessor_id or module.EXECUTION_RECEIPT_READER_CONTINUATION_ADC_COMMENT_ID
-    predecessor_sha = predecessor_sha or module.EXECUTION_RECEIPT_READER_CONTINUATION_ADC_SHA256
-    impact = artifact_impact or module.MARKDOWN_PREDECESSOR_READER_ARTIFACT_IMPACT
+    authorization = authorization or module.APPROVED_HISTORY_READER_AUTHORIZATION
+    predecessor_id = predecessor_id or authorization["predecessor_adc_comment_id"]
+    predecessor_sha = predecessor_sha or authorization["predecessor_adc_sha256"]
+    impact = artifact_impact or module.APPROVED_HISTORY_READER_ARTIFACT_IMPACT
+    raw = marker_json or module._canonical(authorization)
     marker = (
-        f"<!-- {module.MARKDOWN_PREDECESSOR_READER_AUTH_SCHEMA}\n"
-        f"{module._canonical(authorization)}\n-->"
+        f"<!-- {module.APPROVED_HISTORY_READER_AUTH_SCHEMA}\n"
+        f"{raw}\n-->"
     )
     marker_section = "" if missing_marker else f"\n\n{marker}"
     if duplicate_marker:
@@ -292,15 +294,36 @@ def markdown_predecessor_reader_contract(
         f"SHA-256 `{predecessor_sha}`\n\n{impact}{marker_section}\n"
     )
     content = text.encode("utf-8")
-    if len(content) > module.MARKDOWN_PREDECESSOR_READER_ADC_BYTES:
-        raise AssertionError("Markdown predecessor reader fixture exceeds pinned ADC byte length")
-    content += b" " * (module.MARKDOWN_PREDECESSOR_READER_ADC_BYTES - len(content))
+    if len(content) > module.APPROVED_HISTORY_READER_ADC_BYTES:
+        raise AssertionError("approved-history reader fixture exceeds pinned ADC byte length")
+    content += b" " * (module.APPROVED_HISTORY_READER_ADC_BYTES - len(content))
     return verified_contract(
-        module.MARKDOWN_PREDECESSOR_READER_ADC_COMMENT_ID,
-        module.MARKDOWN_PREDECESSOR_READER_ADC_SHA256,
-        module.MARKDOWN_PREDECESSOR_READER_ADC_BYTES,
+        module.APPROVED_HISTORY_READER_ADC_COMMENT_ID,
+        module.APPROVED_HISTORY_READER_ADC_SHA256,
+        module.APPROVED_HISTORY_READER_ADC_BYTES,
         repository or module.REPOSITORY, content,
     )
+
+
+def approved_history_chain(current: SimpleNamespace) -> tuple[SimpleNamespace, ...]:
+    authorization = module.APPROVED_HISTORY_READER_AUTHORIZATION
+    previous = authorization["history_predecessor_boundary"]
+    rows = []
+    for entry in authorization["approved_history"]:
+        text = (
+            f"Predecessor ADC: Issue #71 comment #{previous['comment_id']}, "
+            f"SHA-256 {previous['sha256']}\n\n"
+            "<!-- deliberately malformed historical authorization marker"
+        ).encode("utf-8")
+        content = text + b" " * (entry["byte_length"] - len(text))
+        row = verified_contract(
+            entry["comment_id"], entry["sha256"], entry["byte_length"],
+            module.REPOSITORY, content,
+        )
+        rows.append(row)
+        previous = entry
+    rows.append(current)
+    return tuple(rows)
 
 
 def recovery_fixture(root: Path, *, labels: tuple[str, ...] | None = None,
@@ -734,43 +757,89 @@ class AuthorizationTests(unittest.TestCase):
         with self.assertRaisesRegex(module.PhaseReworkError, "exact approved generation"):
             module.parse_execution_receipt_reader_continuation_authorization(invalid_state)
 
-    def test_markdown_predecessor_reader_marker_is_exact_and_binds_execution_reader(self):
-        current = markdown_predecessor_reader_contract()
+    def test_approved_history_reader_marker_is_exact_and_binds_current_predecessor(self):
+        current = approved_history_reader_contract()
         marker = (
-            f"<!-- {module.MARKDOWN_PREDECESSOR_READER_AUTH_SCHEMA}\n"
-            f"{module._canonical(module.MARKDOWN_PREDECESSOR_READER_AUTHORIZATION)}\n-->"
+            f"<!-- {module.APPROVED_HISTORY_READER_AUTH_SCHEMA}\n"
+            f"{module._canonical(module.APPROVED_HISTORY_READER_AUTHORIZATION)}\n-->"
         ).encode("utf-8")
-        self.assertEqual(len(marker), module.MARKDOWN_PREDECESSOR_READER_AUTH_MARKER_BYTES)
+        self.assertEqual(len(marker), module.APPROVED_HISTORY_READER_AUTH_MARKER_BYTES)
         self.assertEqual(
             hashlib.sha256(marker).hexdigest(),
-            module.MARKDOWN_PREDECESSOR_READER_AUTH_MARKER_SHA256,
+            module.APPROVED_HISTORY_READER_AUTH_MARKER_SHA256,
         )
-        authorization, marker_sha = module.parse_markdown_predecessor_reader_authorization(current)
-        self.assertEqual(authorization, module.MARKDOWN_PREDECESSOR_READER_AUTHORIZATION)
-        self.assertEqual(marker_sha, module.MARKDOWN_PREDECESSOR_READER_AUTH_MARKER_SHA256)
+        authorization, marker_sha = module.parse_approved_history_reader_authorization(current)
+        self.assertEqual(authorization, module.APPROVED_HISTORY_READER_AUTHORIZATION)
+        self.assertEqual(marker_sha, module.APPROVED_HISTORY_READER_AUTH_MARKER_SHA256)
 
         invalids = (
-            markdown_predecessor_reader_contract(predecessor_id=module.READER_CONTINUATION_ADC_COMMENT_ID),
-            markdown_predecessor_reader_contract(
-                artifact_impact=(module.MARKDOWN_PREDECESSOR_READER_ARTIFACT_IMPACT
-                                 .replace("traceability.md", "traceability.md.")),
+            approved_history_reader_contract(
+                predecessor_id=module.EXECUTION_RECEIPT_READER_CONTINUATION_ADC_COMMENT_ID,
             ),
-            markdown_predecessor_reader_contract(missing_marker=True),
-            markdown_predecessor_reader_contract(duplicate_marker=True),
-            markdown_predecessor_reader_contract(
-                {**module.MARKDOWN_PREDECESSOR_READER_AUTHORIZATION,
-                 "starting_head_sha40": "0" * 40}
+            approved_history_reader_contract(predecessor_sha="0" * 64),
+            approved_history_reader_contract(
+                artifact_impact=module.APPROVED_HISTORY_READER_ARTIFACT_IMPACT.replace(
+                    "traceability.md", "traceability.md."
+                ),
             ),
-            markdown_predecessor_reader_contract(repository="other/repo"),
+            approved_history_reader_contract(missing_marker=True),
+            approved_history_reader_contract(duplicate_marker=True),
+            approved_history_reader_contract(marker_json="{}"),
+            approved_history_reader_contract(
+                marker_json=module._canonical({
+                    **module.APPROVED_HISTORY_READER_AUTHORIZATION,
+                    "unexpected": True,
+                }),
+            ),
+            approved_history_reader_contract(marker_json='{"a":1,"a":1}'),
+            approved_history_reader_contract(marker_json="{"),
+            approved_history_reader_contract(repository="other/repo"),
         )
         for invalid in invalids:
             with self.assertRaises(module.PhaseReworkError):
-                module.parse_markdown_predecessor_reader_authorization(invalid)
+                module.parse_approved_history_reader_authorization(invalid)
 
-        invalid_state = markdown_predecessor_reader_contract()
+        invalid_state = approved_history_reader_contract()
         invalid_state.pointer.state = "draft"
         with self.assertRaisesRegex(module.PhaseReworkError, "exact approved generation"):
-            module.parse_markdown_predecessor_reader_authorization(invalid_state)
+            module.parse_approved_history_reader_authorization(invalid_state)
+        invalid_pointer = approved_history_reader_contract()
+        invalid_pointer.pointer.sha256 = "0" * 64
+        with self.assertRaisesRegex(module.PhaseReworkError, "exact approved generation"):
+            module.parse_approved_history_reader_authorization(invalid_pointer)
+
+    def test_historical_predecessor_header_accepts_only_documented_markdown_forms(self):
+        sha = "a" * 64
+        self.assertEqual(
+            module._adc_predecessor_header(
+                f"Predecessor ADC: Issue #71 comment #123, SHA-256 {sha}", "test ADC",
+            ),
+            (123, sha),
+        )
+        self.assertEqual(
+            module._adc_predecessor_header(
+                f"Predecessor ADC: Issue #71 comment #123, SHA-256 `{sha}`  ", "test ADC",
+            ),
+            (123, sha),
+        )
+        invalid_headers = (
+            f"Predecessor ADC: Issue #72 comment #123, SHA-256 {sha}",
+            f"Predecessor ADC: Issue #71 comment #123, SHA-256 `{sha}",
+            f"Predecessor ADC: Issue #71 comment #123, SHA-256 ``{sha}``",
+            f"Predecessor ADC: Issue #71 comment #123, SHA-256 {sha} ",
+            f"Predecessor ADC: Issue #71 comment #123, SHA-256 {sha}    ",
+            f"Predecessor ADC: Issue #71 comment #１２３, SHA-256 {sha}",
+        )
+        for header in invalid_headers:
+            with self.subTest(header=header):
+                with self.assertRaises(module.PhaseReworkError):
+                    module._adc_predecessor_header(header, "test ADC")
+        with self.assertRaisesRegex(module.PhaseReworkError, "exactly one predecessor"):
+            module._adc_predecessor_header(
+                f"Predecessor ADC: Issue #71 comment #123, SHA-256 {sha}\n"
+                f"## Body\nPredecessor ADC: Issue #71 comment #123, SHA-256 {sha}",
+                "test ADC",
+            )
 
     def test_execution_receipt_reader_requires_the_exact_nine_generation_chain(self):
         predecessor = SimpleNamespace(
@@ -882,96 +951,122 @@ class AuthorizationTests(unittest.TestCase):
                         self.assertRaisesRegex(module.PhaseReworkError, message):
                     module._verify_execution_receipt_reader_commit_set(*base_args)
 
-    def test_markdown_predecessor_reader_requires_the_exact_ten_generation_chain(self):
-        predecessor = SimpleNamespace(
-            pointer=SimpleNamespace(comment_id=module.PREDECESSOR_ADC_COMMENT_ID,
-                                    state="approved", sha256=module.PREDECESSOR_ADC_SHA256),
-            contract=SimpleNamespace(sha256=module.PREDECESSOR_ADC_SHA256,
-                                     repository=module.REPOSITORY),
+    def test_approved_history_reader_uses_exact_chain_without_parsing_history_markers(self):
+        current = approved_history_reader_contract()
+        chain = approved_history_chain(current)
+        github = SimpleNamespace()
+        with patch.object(module, "verify_adc_forward_generations", return_value=chain) as verify:
+            result = module._authorization_context(github, current)
+        verify.assert_called_once_with(
+            github, module.ISSUE_NUMBER,
+            prior_comment_id=module.PREDECESSOR_ADC_COMMENT_ID,
+            prior_sha256=module.PREDECESSOR_ADC_SHA256,
+            current_comment_id=module.APPROVED_HISTORY_READER_ADC_COMMENT_ID,
+            current_sha256=module.APPROVED_HISTORY_READER_ADC_SHA256,
         )
-        old = marker_contract(
-            module.AUTH_SCHEMA, module.AUTHORIZATION,
-            module.PREDECESSOR_ADC_COMMENT_ID, module.PREDECESSOR_ADC_SHA256,
-            module.REWORK_ADC_COMMENT_ID, module.REWORK_ADC_SHA256, module.REWORK_ADC_BYTES,
-        )
-        recovery = marker_contract(
-            module.RECOVERY_AUTH_SCHEMA, module.RECOVERY_AUTHORIZATION,
-            module.REWORK_ADC_COMMENT_ID, module.REWORK_ADC_SHA256,
-            module.RECOVERY_ADC_COMMENT_ID, module.RECOVERY_ADC_SHA256,
-            module.RECOVERY_ADC_BYTES,
-        )
-        timestamp = timestamp_recovery_contract()
-        timestamp.pointer.sha256 = module.TIMESTAMP_RECOVERY_ADC_SHA256
-        timestamp.contract.sha256 = module.TIMESTAMP_RECOVERY_ADC_SHA256
-        timestamp.contract.byte_length = module.TIMESTAMP_RECOVERY_ADC_BYTES
-        path_correction = path_correction_contract()
-        continuation = continuation_contract()
-        traceability = traceability_source_correction_contract()
-        reader = reader_continuation_contract()
-        execution_reader = execution_receipt_reader_continuation_contract()
-        current = markdown_predecessor_reader_contract()
-        chain = (predecessor, old, recovery, timestamp, path_correction,
-                 continuation, traceability, reader, execution_reader, current)
-        with patch.object(module, "verify_adc_forward_generations", return_value=chain):
-            result = module._authorization_context(SimpleNamespace(), current)
         self.assertEqual(result[0], module.AUTHORIZATION)
+        self.assertEqual(result[1], module.REWORK_AUTH_MARKER_SHA256)
         self.assertEqual(result[2], module.RECOVERY_AUTHORIZATION)
         self.assertEqual(result[4], module.TIMESTAMP_RECOVERY_AUTHORIZATION)
         self.assertEqual(result[6], module.CONTINUATION_AUTHORIZATION)
         self.assertEqual(result[8], module.READER_CONTINUATION_AUTHORIZATION)
-        self.assertEqual(result[10], module.EXECUTION_RECEIPT_READER_CONTINUATION_AUTHORIZATION)
         self.assertEqual(
-            result[11], module.EXECUTION_RECEIPT_READER_CONTINUATION_AUTH_MARKER_SHA256,
+            result[10], module.EXECUTION_RECEIPT_READER_CONTINUATION_AUTHORIZATION,
         )
+        self.assertEqual(len(chain) - 1, 11)
+        # Historical bodies deliberately contain malformed markers. Their approved pointer
+        # identity and predecessor links are enough; only the current marker is parsed.
+        self.assertTrue(all(
+            b"deliberately malformed historical authorization marker" in row.contract.content
+            for row in chain[:-1]
+        ))
 
-        wrong_chain = (*chain[:8], current, execution_reader)
-        with patch.object(module, "verify_adc_forward_generations", return_value=wrong_chain), \
-                self.assertRaisesRegex(module.PhaseReworkError, "complete exact ten-generation"):
-            module._authorization_context(SimpleNamespace(), current)
+    def test_approved_history_reader_rejects_changed_or_broken_history(self):
+        current = approved_history_reader_contract()
+        authorization = module.APPROVED_HISTORY_READER_AUTHORIZATION
 
-        unapproved = traceability
-        unapproved.pointer.state = "draft"
-        chain_with_unapproved = (*chain[:6], unapproved, reader, execution_reader, current)
-        with patch.object(module, "verify_adc_forward_generations",
-                          return_value=chain_with_unapproved), \
-                self.assertRaisesRegex(module.PhaseReworkError, "complete exact ten-generation"):
-            module._authorization_context(SimpleNamespace(), current)
+        def rejected(chain):
+            with patch.object(module, "verify_adc_forward_generations", return_value=chain):
+                with self.assertRaises(module.PhaseReworkError):
+                    module._verify_approved_history_reader_chain(
+                        SimpleNamespace(), current, authorization,
+                    )
 
-    def test_markdown_predecessor_reader_commit_segment_is_bounded(self):
-        start = module.MARKDOWN_PREDECESSOR_READER_AUTHORIZATION["starting_head_sha40"]
-        commit = "1" * 40
-        allowed_path = module.MARKDOWN_PREDECESSOR_READER_AUTHORIZATION[
+        chain = list(approved_history_chain(current))
+        chain[2].contract.sha256 = "0" * 64
+        rejected(chain)
+
+        chain = list(approved_history_chain(current))
+        chain[2].contract.byte_length += 1
+        rejected(chain)
+
+        chain = list(approved_history_chain(current))
+        chain[2].pointer.state = "draft"
+        rejected(chain)
+
+        chain = list(approved_history_chain(current))
+        chain[2].pointer.sha256 = "0" * 64
+        rejected(chain)
+
+        chain = list(approved_history_chain(current))
+        chain[2], chain[3] = chain[3], chain[2]
+        rejected(chain)
+
+        chain = list(approved_history_chain(current))
+        chain.pop(4)
+        rejected(chain)
+
+        chain = list(approved_history_chain(current))
+        chain.insert(-1, chain[0])
+        rejected(chain)
+
+        chain = list(approved_history_chain(current))
+        broken = chain[2].contract.content.replace(
+            authorization["approved_history"][1]["sha256"].encode(), b"0" * 64, 1,
+        )
+        chain[2].contract.content = broken
+        rejected(chain)
+
+    def test_approved_history_reader_commit_segment_is_one_direct_child(self):
+        start = module.APPROVED_HISTORY_READER_AUTHORIZATION["starting_head_sha40"]
+        commit = "2" * 40
+        allowed_path = module.APPROVED_HISTORY_READER_AUTHORIZATION[
             "followup_path_allowlist"
         ][-1]
-        base_args = (
-            Path("/tmp/repo"), commit, module.RECOVERY_AUTHORIZATION,
+        root = Path("/tmp/repo")
+        args = (
+            root, commit, module.RECOVERY_AUTHORIZATION,
+            module.TIMESTAMP_RECOVERY_AUTHORIZATION, module.CONTINUATION_AUTHORIZATION,
+            module.READER_CONTINUATION_AUTHORIZATION,
+            module.EXECUTION_RECEIPT_READER_CONTINUATION_AUTHORIZATION,
+            module.MARKDOWN_PREDECESSOR_READER_AUTHORIZATION,
+            module.APPROVED_HISTORY_READER_AUTHORIZATION,
+        )
+        with patch.object(module, "_verify_markdown_predecessor_reader_commit_set") as verify_prior, \
+                patch.object(module, "is_ancestor", return_value=True), \
+                patch.object(module, "run_git", return_value=commit), \
+                patch.object(module, "commit_parents_sha40", return_value=(start,)), \
+                patch.object(module, "changed_paths_between", return_value=(allowed_path,)):
+            module._verify_approved_history_reader_commit_set(*args)
+        verify_prior.assert_called_once_with(
+            root, start, module.RECOVERY_AUTHORIZATION,
             module.TIMESTAMP_RECOVERY_AUTHORIZATION, module.CONTINUATION_AUTHORIZATION,
             module.READER_CONTINUATION_AUTHORIZATION,
             module.EXECUTION_RECEIPT_READER_CONTINUATION_AUTHORIZATION,
             module.MARKDOWN_PREDECESSOR_READER_AUTHORIZATION,
         )
-        with patch.object(module, "_verify_execution_receipt_reader_commit_set") as verify_prior, \
-                patch.object(module, "is_ancestor", return_value=True), \
-                patch.object(module, "run_git", return_value=commit), \
-                patch.object(module, "commit_parents_sha40", return_value=(start,)), \
-                patch.object(module, "changed_paths_between", return_value=(allowed_path,)):
-            module._verify_markdown_predecessor_reader_commit_set(*base_args)
-        verify_prior.assert_called_once_with(
-            Path("/tmp/repo"), start, module.RECOVERY_AUTHORIZATION,
-            module.TIMESTAMP_RECOVERY_AUTHORIZATION, module.CONTINUATION_AUTHORIZATION,
-            module.READER_CONTINUATION_AUTHORIZATION,
-            module.EXECUTION_RECEIPT_READER_CONTINUATION_AUTHORIZATION,
-        )
 
         invalid_cases = (
-            ("extra descendant", {"run_git": {"return_value": f"{commit}\n{'2' * 40}"}},
+            ("extra descendant", {"run_git": {"return_value": f"{commit}\n{'3' * 40}"}},
              "exactly one authorized commit"),
-            ("wrong parent", {"commit_parents_sha40": {"return_value": ("3" * 40,)}},
+            ("wrong parent", {"commit_parents_sha40": {"return_value": ("4" * 40,)}},
              "unexpected parent"),
             ("outside allowlist", {"changed_paths_between": {"return_value": ("outside.py",)}},
              "outside its exact allowlist"),
             ("missing ancestry", {"is_ancestor": {"return_value": False}},
              "must descend from its exact starting HEAD"),
+            ("wrong HEAD", {"run_git": {"return_value": "5" * 40}},
+             "does not end at the exact HEAD"),
         )
         for name, overrides, message in invalid_cases:
             with self.subTest(name=name):
@@ -987,11 +1082,37 @@ class AuthorizationTests(unittest.TestCase):
                 }
                 patchers.update({key: patch.object(module, key, **kwargs)
                                  for key, kwargs in overrides.items()})
-                with patch.object(module, "_verify_execution_receipt_reader_commit_set"), \
+                with patch.object(module, "_verify_markdown_predecessor_reader_commit_set"), \
                         patchers["is_ancestor"], patchers["run_git"], \
                         patchers["commit_parents_sha40"], patchers["changed_paths_between"], \
                         self.assertRaisesRegex(module.PhaseReworkError, message):
-                    module._verify_markdown_predecessor_reader_commit_set(*base_args)
+                    module._verify_approved_history_reader_commit_set(*args)
+
+    def test_approved_history_lineage_keeps_prior_segments_separate(self):
+        root = Path("/tmp/repo")
+        head = "f" * 40
+        with patch.object(module, "_verify_commit_set") as verify_bootstrap, \
+                patch.object(module, "_verify_recovery_commit_set") as verify_segments:
+            module._verify_issue71_commit_lineage(
+                root, head, module.AUTHORIZATION, module.RECOVERY_AUTHORIZATION,
+                module.TIMESTAMP_RECOVERY_AUTHORIZATION, module.CONTINUATION_AUTHORIZATION,
+                module.READER_CONTINUATION_AUTHORIZATION,
+                module.EXECUTION_RECEIPT_READER_CONTINUATION_AUTHORIZATION,
+                module.MARKDOWN_PREDECESSOR_READER_AUTHORIZATION,
+                module.APPROVED_HISTORY_READER_AUTHORIZATION,
+            )
+        verify_bootstrap.assert_called_once_with(
+            root, module.RECOVERY_AUTHORIZATION["pre_recovery_head_sha40"],
+            tuple(module.AUTHORIZATION["bootstrap_path_allowlist"]),
+        )
+        verify_segments.assert_called_once_with(
+            root, head, module.RECOVERY_AUTHORIZATION,
+            module.TIMESTAMP_RECOVERY_AUTHORIZATION, module.CONTINUATION_AUTHORIZATION,
+            module.READER_CONTINUATION_AUTHORIZATION,
+            module.EXECUTION_RECEIPT_READER_CONTINUATION_AUTHORIZATION,
+            module.MARKDOWN_PREDECESSOR_READER_AUTHORIZATION,
+            module.APPROVED_HISTORY_READER_AUTHORIZATION,
+        )
 
 
 class BootstrapAndReadinessTests(unittest.TestCase):
@@ -1059,7 +1180,7 @@ class BootstrapAndReadinessTests(unittest.TestCase):
         )
         verify_successors.assert_called_once_with(
             root, head, module.RECOVERY_AUTHORIZATION,
-            module.TIMESTAMP_RECOVERY_AUTHORIZATION, None, None, None, None,
+            module.TIMESTAMP_RECOVERY_AUTHORIZATION, None, None, None, None, None,
         )
 
     def test_continuation_lineage_preserves_three_separate_one_commit_segments(self):
@@ -1077,7 +1198,8 @@ class BootstrapAndReadinessTests(unittest.TestCase):
         )
         verify_segments.assert_called_once_with(
             root, head, module.RECOVERY_AUTHORIZATION,
-            module.TIMESTAMP_RECOVERY_AUTHORIZATION, module.CONTINUATION_AUTHORIZATION, None, None, None,
+            module.TIMESTAMP_RECOVERY_AUTHORIZATION, module.CONTINUATION_AUTHORIZATION,
+            None, None, None, None,
         )
 
     def test_reader_continuation_lineage_preserves_four_separate_one_commit_segments(self):
@@ -1097,7 +1219,7 @@ class BootstrapAndReadinessTests(unittest.TestCase):
         verify_segments.assert_called_once_with(
             root, head, module.RECOVERY_AUTHORIZATION,
             module.TIMESTAMP_RECOVERY_AUTHORIZATION, module.CONTINUATION_AUTHORIZATION,
-            module.READER_CONTINUATION_AUTHORIZATION, None, None,
+            module.READER_CONTINUATION_AUTHORIZATION, None, None, None,
         )
 
     def test_continuation_commit_is_one_direct_child_on_its_exact_allowlist(self):
