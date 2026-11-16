@@ -1306,6 +1306,13 @@ def _adc_predecessor_header(text: str, label: str) -> tuple[int, str]:
     return int(match.group(1)), match.group(2) or match.group(3)
 
 
+def _optional_historical_adc_predecessor_header(text: str, label: str) -> tuple[int, str] | None:
+    """Validate an optional body-level link on immutable historical ADCs."""
+    if not any(line.startswith("Predecessor ADC:") for line in text.splitlines()):
+        return None
+    return _adc_predecessor_header(text, label)
+
+
 def parse_markdown_predecessor_reader_authorization(
     verified: VerifiedADC,
 ) -> tuple[dict[str, Any], str]:
@@ -1819,13 +1826,19 @@ def verify_issue71_phase_and_user_review_adc_chain(
             "combined ADC approved history is incomplete, reordered, edited, or unapproved"
         )
     previous = boundary
-    for item in chain[1:]:
+    for item in chain[1:-1]:
         body = item.contract.content.decode("utf-8", errors="strict")
-        if _adc_predecessor_header(body, f"approved ADC #{item.pointer.comment_id}") != previous:
+        declared = _optional_historical_adc_predecessor_header(
+            body, f"approved ADC #{item.pointer.comment_id}",
+        )
+        if declared is not None and declared != previous:
             raise PhaseReworkError(
-                f"combined ADC history predecessor differs at comment #{item.pointer.comment_id}"
+                f"approved historical ADC predecessor header differs at comment #{item.pointer.comment_id}"
             )
         previous = (item.pointer.comment_id, item.contract.sha256)
+    current_body = chain[-1].contract.content.decode("utf-8", errors="strict")
+    if _adc_predecessor_header(current_body, "current Issue #71 ADC") != previous:
+        raise PhaseReworkError("current Issue #71 predecessor header differs from its exact approved chain")
     return authorization, chain
 
 

@@ -2230,26 +2230,45 @@ class CombinedAuthorizationTests(unittest.TestCase):
                 "sha256": "a4409eaf60f18138e7465263b3df938ccbc9396a7adc04b16e960d6f13830f29",
                 "state": "approved",
             },
+            {
+                "byte_length": 29094,
+                "comment_id": 6923451031,
+                "sha256": "56bbf15be816c894f23333b275e0ceaa98a0328cf0db5565f24093895b059fbb",
+                "state": "approved",
+            },
+            {
+                "byte_length": 19648,
+                "comment_id": 6924871574,
+                "sha256": "998da293cc84b1e472fb438c125295ac806da6b823fe60a9a7a22f110771b88f",
+                "state": "approved",
+            },
+            {
+                "byte_length": 18621,
+                "comment_id": 6925118922,
+                "sha256": "e1b1b4b2c83c0022571b9b07d63b01f38eaaa8dde027a0996ce4f786449f21bc",
+                "state": "approved",
+            },
+            {
+                "byte_length": 18358,
+                "comment_id": 6925241207,
+                "sha256": "6ae7ba3fb203c7c0cb3ddde817c4e7a4ca1f9f690a42a79d3ae4b83454b1a141",
+                "state": "approved",
+            },
         )
         value["approved_history"].extend(history_entries)
         predecessor = history_entries[-1]
         paths = [
-            "dist/antigravity/runtime/p_ases/phase_evidence.py",
             "dist/antigravity/runtime/p_ases/phase_rework.py",
-            "dist/claude/runtime/p_ases/phase_evidence.py",
             "dist/claude/runtime/p_ases/phase_rework.py",
-            "dist/openai/runtime/p_ases/phase_evidence.py",
             "dist/openai/runtime/p_ases/phase_rework.py",
-            "runtime/p_ases/phase_evidence.py",
             "runtime/p_ases/phase_rework.py",
-            "tests/test_phase_evidence.py",
             "tests/test_phase_rework.py",
         ]
         phase = value["phase_receipt_reconciliation"]
         phase.update(
             predecessor_adc_comment_id=predecessor["comment_id"],
             predecessor_adc_sha256=predecessor["sha256"],
-            starting_head_sha40="2c82634d99aeea997019e667a5c387817c2c8b3d",
+            starting_head_sha40="588b6f73b41477960cb0ad9a0e01b2ebe9d50ba3",
             followup_path_allowlist=paths,
         )
         value["active_authorization_digests"]["phase_receipt_reconciliation"] = hashlib.sha256(
@@ -2259,7 +2278,7 @@ class CombinedAuthorizationTests(unittest.TestCase):
             predecessor_adc_byte_length=predecessor["byte_length"],
             predecessor_adc_comment_id=predecessor["comment_id"],
             predecessor_adc_sha256=predecessor["sha256"],
-            starting_head_sha40="2c82634d99aeea997019e667a5c387817c2c8b3d",
+            starting_head_sha40="588b6f73b41477960cb0ad9a0e01b2ebe9d50ba3",
             followup_path_allowlist=paths,
         )
         canonical = module._canonical(value).encode("utf-8")
@@ -2279,8 +2298,8 @@ class CombinedAuthorizationTests(unittest.TestCase):
         content = (
             "# Agent Development Contract — Issue #71 generic marker and phase-evidence completion\n\n"
             "Repository: puchinya/ai-agent-workflow\n"
-            "Predecessor ADC: Issue #71 comment #6923286006, SHA-256 "
-            "a4409eaf60f18138e7465263b3df938ccbc9396a7adc04b16e960d6f13830f29\n\n"
+            "Predecessor ADC: Issue #71 comment #6925241207, SHA-256 "
+            "6ae7ba3fb203c7c0cb3ddde817c4e7a4ca1f9f690a42a79d3ae4b83454b1a141\n\n"
             "## Artifact impact\n\n"
             f"{artifact_impact}\n\n"
         ).encode("utf-8") + marker + b"\n"
@@ -2320,20 +2339,15 @@ class CombinedAuthorizationTests(unittest.TestCase):
         self.assertEqual(verified.pointer.sha256, digest)
         self.assertEqual(verified.contract.byte_length, byte_length)
         self.assertGreater(len(marker), 0)
-        self.assertEqual(authorization["predecessor_adc_comment_id"], 6923286006)
-        self.assertEqual(len(authorization["approved_history"]), 19)
+        self.assertEqual(authorization["predecessor_adc_comment_id"], 6925241207)
+        self.assertEqual(len(authorization["approved_history"]), 23)
         self.assertEqual(
             authorization["followup_path_allowlist"],
             [
-                "dist/antigravity/runtime/p_ases/phase_evidence.py",
                 "dist/antigravity/runtime/p_ases/phase_rework.py",
-                "dist/claude/runtime/p_ases/phase_evidence.py",
                 "dist/claude/runtime/p_ases/phase_rework.py",
-                "dist/openai/runtime/p_ases/phase_evidence.py",
                 "dist/openai/runtime/p_ases/phase_rework.py",
-                "runtime/p_ases/phase_evidence.py",
                 "runtime/p_ases/phase_rework.py",
-                "tests/test_phase_evidence.py",
                 "tests/test_phase_rework.py",
             ],
         )
@@ -2342,15 +2356,34 @@ class CombinedAuthorizationTests(unittest.TestCase):
             module.ISSUE71_WINDOWS_PROFILE_CURRENT_DOCUMENT_SNAPSHOT_AUTHORIZATION,
         )
 
+    def test_generic_current_marker_still_requires_its_predecessor_header(self):
+        verified, _digest, _byte_length, _marker = self._windows_fixture_verified()
+        content = verified.contract.content.replace(
+            b"Predecessor ADC: Issue #71 comment #6925241207, SHA-256 "
+            b"6ae7ba3fb203c7c0cb3ddde817c4e7a4ca1f9f690a42a79d3ae4b83454b1a141\n",
+            b"",
+            1,
+        )
+        digest = hashlib.sha256(content).hexdigest()
+        verified.contract.content = content
+        verified.contract.sha256 = digest
+        verified.contract.byte_length = len(content)
+        verified.pointer.sha256 = digest
+        with self.assertRaisesRegex(module.PhaseReworkError, "exactly one predecessor header"):
+            module.parse_issue71_phase_and_user_review_authorization(verified)
+
     def test_generic_current_marker_verifies_full_chain_for_unseen_pointer(self):
         verified, _digest, _byte_length, _marker = self._windows_fixture_verified()
         authorization = module.parse_issue71_phase_and_user_review_authorization(verified)
 
         def historical(item, predecessor):
-            body = (
-                f"Predecessor ADC: Issue #71 comment #{predecessor[0]}, "
-                f"SHA-256 {predecessor[1]}\n"
-            ).encode("utf-8")
+            if item["comment_id"] == 6924871574:
+                body = b"Historical approved ADC without a body-level predecessor header\n"
+            else:
+                body = (
+                    f"Predecessor ADC: Issue #71 comment #{predecessor[0]}, "
+                    f"SHA-256 {predecessor[1]}\n"
+                ).encode("utf-8")
             body += b" " * (item["byte_length"] - len(body))
             return SimpleNamespace(
                 pointer=SimpleNamespace(
@@ -2382,13 +2415,25 @@ class CombinedAuthorizationTests(unittest.TestCase):
                 github, verified,
             )
         self.assertEqual(parsed, authorization)
-        self.assertEqual(len(chain) - 2, 19)
+        self.assertEqual(len(chain) - 2, 23)
         verify.assert_called_once_with(
             github, module.ISSUE_NUMBER,
             prior_comment_id=boundary[0], prior_sha256=boundary[1],
             current_comment_id=verified.pointer.comment_id,
             current_sha256=verified.contract.sha256,
         )
+
+        headerless = next(row for row in rows if row.pointer.comment_id == 6924871574)
+        item = next(row for row in authorization["approved_history"]
+                    if row["comment_id"] == 6924871574)
+        conflict = (
+            "Predecessor ADC: Issue #71 comment #1, SHA-256 " + "0" * 64 + "\n"
+        ).encode("utf-8")
+        headerless.contract.content = conflict + b" " * (item["byte_length"] - len(conflict))
+        with patch.object(module, "verify_adc_forward_generations", return_value=tuple(rows)):
+            with self.assertRaisesRegex(
+                    module.PhaseReworkError, "historical ADC predecessor header differs"):
+                module.verify_issue71_phase_and_user_review_adc_chain(github, verified)
 
     def test_windows_profile_current_marker_rejects_unapproved_allowlist_change(self):
         marker = zlib.decompress(base64.b64decode(WINDOWS_PROFILE_MARKER_FIXTURE_B64))
