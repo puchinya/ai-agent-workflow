@@ -1700,7 +1700,6 @@ def _publish_prepared_predecessor(
     else:
         try:
             from .phase_rework import (
-                ISSUE71_COMBINED_CURRENT_ADC_IDS,
                 OWNER_ID,
                 PR_BODY_SHA256,
                 PR_TITLE,
@@ -1735,7 +1734,6 @@ def _publish_prepared_predecessor(
                 or subject.get("repository") != "puchinya/ai-agent-workflow"
                 or subject.get("issue_number") != issue_number
                 or issue_number != 71
-                or live.current_adc.pointer.comment_id not in ISSUE71_COMBINED_CURRENT_ADC_IDS
                 or subject.get("adc_comment_id") != live.current_adc.pointer.comment_id
                 or subject.get("adc_sha256") != live.current_adc.contract.sha256
                 or subject.get("branch_ref") != phase_authorization.get("branch_ref")
@@ -1778,28 +1776,18 @@ def publish_phase_evidence(github: GitHub, root: Path, issue_number: int,
     skips = skip_reasons or {}
     if (issue_number == 71 and source is Phase.DESIGN and target is Phase.READY
             and github.repo.casefold() == "puchinya/ai-agent-workflow"):
-        try:
-            current_adc = verify_adc(github, issue_number)
-        except ADCError as exc:
-            raise PhaseEvidenceError(f"approved Issue #71 ADC is unavailable: {exc}") from exc
-        from .phase_rework import ISSUE71_COMBINED_CURRENT_ADC_IDS
-
-        if current_adc.pointer.comment_id in ISSUE71_COMBINED_CURRENT_ADC_IDS:
-            prepared = _issue71_reconciled_predecessors(github, root, issue_number)
-            decision = prepared[-1][1]
-            for edge, predecessor, predecessor_body in prepared[:-1]:
-                _publish_prepared_predecessor(
-                    github, root, issue_number, predecessor, predecessor_body,
-                )
-            checked, issue, verified, branch_ref, commit_sha = _collect_payload(
-                github, root, issue_number, source, target, skips,
+        prepared = _issue71_reconciled_predecessors(github, root, issue_number)
+        decision = prepared[-1][1]
+        for edge, predecessor, predecessor_body in prepared[:-1]:
+            _publish_prepared_predecessor(
+                github, root, issue_number, predecessor, predecessor_body,
             )
-            if checked.body() != decision.body():
-                raise PhaseEvidenceError("ready Phase Decision changed after predecessor reconciliation")
-            decision = checked
-        else:
-            decision, issue, verified, branch_ref, commit_sha = _collect_payload(
-                github, root, issue_number, source, target, skips)
+        checked, issue, verified, branch_ref, commit_sha = _collect_payload(
+            github, root, issue_number, source, target, skips,
+        )
+        if checked.body() != decision.body():
+            raise PhaseEvidenceError("ready Phase Decision changed after predecessor reconciliation")
+        decision = checked
     else:
         decision, issue, verified, branch_ref, commit_sha = _collect_payload(
             github, root, issue_number, source, target, skips)

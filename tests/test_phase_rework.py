@@ -2205,51 +2205,84 @@ class CombinedAuthorizationTests(unittest.TestCase):
         suffix = b"\n-->"
         previous = zlib.decompress(base64.b64decode(WINDOWS_PROFILE_MARKER_FIXTURE_B64))
         value = json.loads(previous[len(prefix):-len(suffix)])
-        predecessor_id = module.ISSUE71_WINDOWS_PROFILE_READER_ADC_COMMENT_ID
-        predecessor_sha = module.ISSUE71_WINDOWS_PROFILE_READER_ADC_SHA256
-        predecessor_bytes = module.ISSUE71_WINDOWS_PROFILE_READER_ADC_BYTES
-        value["approved_history"].append({
-            "byte_length": predecessor_bytes,
-            "comment_id": predecessor_id,
-            "sha256": predecessor_sha,
-            "state": "approved",
-        })
-        predecessor_id = module.ISSUE71_WINDOWS_FIXTURE_READER_PREDECESSOR_ADC_COMMENT_ID
-        predecessor_sha = module.ISSUE71_WINDOWS_FIXTURE_READER_PREDECESSOR_ADC_SHA256
-        predecessor_bytes = module.ISSUE71_WINDOWS_FIXTURE_READER_PREDECESSOR_ADC_BYTES
-        value["approved_history"].append({
-            "byte_length": predecessor_bytes,
-            "comment_id": predecessor_id,
-            "sha256": predecessor_sha,
-            "state": "approved",
-        })
-        paths = list(module.ISSUE71_WINDOWS_FIXTURE_READER_PATH_ALLOWLIST)
+        history_entries = (
+            {
+                "byte_length": module.ISSUE71_WINDOWS_PROFILE_READER_ADC_BYTES,
+                "comment_id": module.ISSUE71_WINDOWS_PROFILE_READER_ADC_COMMENT_ID,
+                "sha256": module.ISSUE71_WINDOWS_PROFILE_READER_ADC_SHA256,
+                "state": "approved",
+            },
+            {
+                "byte_length": module.ISSUE71_WINDOWS_FIXTURE_READER_PREDECESSOR_ADC_BYTES,
+                "comment_id": module.ISSUE71_WINDOWS_FIXTURE_READER_PREDECESSOR_ADC_COMMENT_ID,
+                "sha256": module.ISSUE71_WINDOWS_FIXTURE_READER_PREDECESSOR_ADC_SHA256,
+                "state": "approved",
+            },
+            {
+                "byte_length": 25230,
+                "comment_id": 6920550362,
+                "sha256": "c2ace5524388354b2b78394d4cd7165070a1a858d4b71cff7440c628dcf45664",
+                "state": "approved",
+            },
+            {
+                "byte_length": 27319,
+                "comment_id": 6923286006,
+                "sha256": "a4409eaf60f18138e7465263b3df938ccbc9396a7adc04b16e960d6f13830f29",
+                "state": "approved",
+            },
+        )
+        value["approved_history"].extend(history_entries)
+        predecessor = history_entries[-1]
+        paths = [
+            "dist/antigravity/runtime/p_ases/phase_evidence.py",
+            "dist/antigravity/runtime/p_ases/phase_rework.py",
+            "dist/claude/runtime/p_ases/phase_evidence.py",
+            "dist/claude/runtime/p_ases/phase_rework.py",
+            "dist/openai/runtime/p_ases/phase_evidence.py",
+            "dist/openai/runtime/p_ases/phase_rework.py",
+            "runtime/p_ases/phase_evidence.py",
+            "runtime/p_ases/phase_rework.py",
+            "tests/test_phase_evidence.py",
+            "tests/test_phase_rework.py",
+        ]
         phase = value["phase_receipt_reconciliation"]
         phase.update(
-            predecessor_adc_comment_id=predecessor_id,
-            predecessor_adc_sha256=predecessor_sha,
-            starting_head_sha40="9369074b89438d57215a49defc74b840d58747be",
+            predecessor_adc_comment_id=predecessor["comment_id"],
+            predecessor_adc_sha256=predecessor["sha256"],
+            starting_head_sha40="2c82634d99aeea997019e667a5c387817c2c8b3d",
             followup_path_allowlist=paths,
         )
         value["active_authorization_digests"]["phase_receipt_reconciliation"] = hashlib.sha256(
             module._canonical(phase).encode("utf-8")
         ).hexdigest()
         value.update(
-            predecessor_adc_byte_length=predecessor_bytes,
-            predecessor_adc_comment_id=predecessor_id,
-            predecessor_adc_sha256=predecessor_sha,
-            starting_head_sha40="9369074b89438d57215a49defc74b840d58747be",
+            predecessor_adc_byte_length=predecessor["byte_length"],
+            predecessor_adc_comment_id=predecessor["comment_id"],
+            predecessor_adc_sha256=predecessor["sha256"],
+            starting_head_sha40="2c82634d99aeea997019e667a5c387817c2c8b3d",
             followup_path_allowlist=paths,
         )
         canonical = module._canonical(value).encode("utf-8")
         marker = prefix + canonical + suffix
+        q = chr(96)
+        artifact_impact = (
+            f"- Specification: {q}docs/specs/workflow-spec.md{q}.\n"
+            f"- Design: {q}docs/design/workflow-design.md{q}.\n"
+            f"- Testing: {q}docs/testing/pases-lifecycle-tests.md{q}, "
+            f"{q}docs/testing/runtime-tests.md{q}, {q}docs/testing/traceability.md{q}.\n"
+            f"- Runtime implementation: {q}runtime/p_ases/phase_evidence.py{q}, "
+            f"{q}runtime/p_ases/phase_rework.py{q}.\n"
+            f"- Tests: {q}tests/test_phase_evidence.py{q}, {q}tests/test_phase_rework.py{q}.\n"
+            "- Generated mirrors: the six matching phase_evidence.py and phase_rework.py files under "
+            "Antigravity, Claude, and OpenAI."
+        )
         content = (
-            "# Agent Development Contract — Issue #71 Windows fixture and current-marker digest correction\n\n"
+            "# Agent Development Contract — Issue #71 generic marker and phase-evidence completion\n\n"
             "Repository: puchinya/ai-agent-workflow\n"
-            "Predecessor ADC: Issue #71 comment #6920296275, SHA-256 "
-            "c19f74bcfa893fad3b357b3d00c3fe212159db4021663d93c3fda82881414f94\n\n"
+            "Predecessor ADC: Issue #71 comment #6923286006, SHA-256 "
+            "a4409eaf60f18138e7465263b3df938ccbc9396a7adc04b16e960d6f13830f29\n\n"
             "## Artifact impact\n\n"
-            f"{module.ISSUE71_WINDOWS_FIXTURE_READER_ARTIFACT_IMPACT}\n\n"
+            f"{artifact_impact}\n\n"
         ).encode("utf-8") + marker + b"\n"
         digest = hashlib.sha256(content).hexdigest()
         contract = SimpleNamespace(
@@ -2257,14 +2290,10 @@ class CombinedAuthorizationTests(unittest.TestCase):
             byte_length=len(content),
             repository=module.REPOSITORY,
             content=content,
-            section=lambda _name: module.ISSUE71_WINDOWS_FIXTURE_READER_ARTIFACT_IMPACT,
+            section=lambda _name: artifact_impact,
         )
         return SimpleNamespace(
-            pointer=SimpleNamespace(
-                comment_id=module.ISSUE71_WINDOWS_FIXTURE_READER_ADC_COMMENT_ID,
-                sha256=digest,
-                state="approved",
-            ),
+            pointer=SimpleNamespace(comment_id=7999999999, sha256=digest, state="approved"),
             contract=contract,
         ), digest, len(content), marker
 
@@ -2284,27 +2313,81 @@ class CombinedAuthorizationTests(unittest.TestCase):
             module.ISSUE71_WINDOWS_PROFILE_CURRENT_DOCUMENT_SNAPSHOT_AUTHORIZATION,
         )
 
-    def test_windows_fixture_current_marker_accepts_exact_successor_generation(self):
+    def test_generic_current_marker_accepts_unseen_pointer_after_exact_history(self):
         verified, digest, byte_length, marker = self._windows_fixture_verified()
-        self.assertEqual(len(marker), module.ISSUE71_WINDOWS_FIXTURE_READER_MARKER_BYTES)
+        authorization = module.parse_issue71_phase_and_user_review_authorization(verified)
+        self.assertEqual(verified.pointer.comment_id, 7999999999)
+        self.assertEqual(verified.pointer.sha256, digest)
+        self.assertEqual(verified.contract.byte_length, byte_length)
+        self.assertGreater(len(marker), 0)
+        self.assertEqual(authorization["predecessor_adc_comment_id"], 6923286006)
+        self.assertEqual(len(authorization["approved_history"]), 19)
         self.assertEqual(
-            hashlib.sha256(marker).hexdigest(),
-            module.ISSUE71_WINDOWS_FIXTURE_READER_MARKER_SHA256,
+            authorization["followup_path_allowlist"],
+            [
+                "dist/antigravity/runtime/p_ases/phase_evidence.py",
+                "dist/antigravity/runtime/p_ases/phase_rework.py",
+                "dist/claude/runtime/p_ases/phase_evidence.py",
+                "dist/claude/runtime/p_ases/phase_rework.py",
+                "dist/openai/runtime/p_ases/phase_evidence.py",
+                "dist/openai/runtime/p_ases/phase_rework.py",
+                "runtime/p_ases/phase_evidence.py",
+                "runtime/p_ases/phase_rework.py",
+                "tests/test_phase_evidence.py",
+                "tests/test_phase_rework.py",
+            ],
         )
-        with patch.object(module, "ISSUE71_WINDOWS_FIXTURE_READER_ADC_SHA256", digest), \
-                patch.object(module, "ISSUE71_WINDOWS_FIXTURE_READER_ADC_BYTES", byte_length), \
-                patch.object(module, "ISSUE71_WINDOWS_FIXTURE_READER_MARKER_BYTES", len(marker)), \
-                patch.object(module, "ISSUE71_WINDOWS_FIXTURE_READER_MARKER_SHA256",
-                             hashlib.sha256(marker).hexdigest()):
-            authorization = module.parse_issue71_phase_and_user_review_authorization(verified)
-        self.assertEqual(authorization["predecessor_adc_comment_id"],
-                         module.ISSUE71_WINDOWS_FIXTURE_READER_PREDECESSOR_ADC_COMMENT_ID)
-        self.assertEqual(len(authorization["approved_history"]), 17)
-        self.assertEqual(authorization["followup_path_allowlist"],
-                         list(module.ISSUE71_WINDOWS_FIXTURE_READER_PATH_ALLOWLIST))
         self.assertEqual(
             authorization["current_document_snapshot_authorization"],
             module.ISSUE71_WINDOWS_PROFILE_CURRENT_DOCUMENT_SNAPSHOT_AUTHORIZATION,
+        )
+
+    def test_generic_current_marker_verifies_full_chain_for_unseen_pointer(self):
+        verified, _digest, _byte_length, _marker = self._windows_fixture_verified()
+        authorization = module.parse_issue71_phase_and_user_review_authorization(verified)
+
+        def historical(item, predecessor):
+            body = (
+                f"Predecessor ADC: Issue #71 comment #{predecessor[0]}, "
+                f"SHA-256 {predecessor[1]}\n"
+            ).encode("utf-8")
+            body += b" " * (item["byte_length"] - len(body))
+            return SimpleNamespace(
+                pointer=SimpleNamespace(
+                    comment_id=item["comment_id"], sha256=item["sha256"], state="approved",
+                ),
+                contract=SimpleNamespace(
+                    sha256=item["sha256"], byte_length=item["byte_length"],
+                    repository=module.REPOSITORY, content=body,
+                ),
+            )
+
+        boundary = module.ISSUE71_COMBINED_ADC_HISTORY_BOUNDARY
+        boundary_body = b"x" * 512
+        rows = [SimpleNamespace(
+            pointer=SimpleNamespace(comment_id=boundary[0], sha256=boundary[1], state="approved"),
+            contract=SimpleNamespace(
+                sha256=boundary[1], byte_length=len(boundary_body),
+                repository=module.REPOSITORY, content=boundary_body,
+            ),
+        )]
+        previous = boundary
+        for item in authorization["approved_history"]:
+            rows.append(historical(item, previous))
+            previous = (item["comment_id"], item["sha256"])
+        rows.append(verified)
+        github = SimpleNamespace()
+        with patch.object(module, "verify_adc_forward_generations", return_value=tuple(rows)) as verify:
+            parsed, chain = module.verify_issue71_phase_and_user_review_adc_chain(
+                github, verified,
+            )
+        self.assertEqual(parsed, authorization)
+        self.assertEqual(len(chain) - 2, 19)
+        verify.assert_called_once_with(
+            github, module.ISSUE_NUMBER,
+            prior_comment_id=boundary[0], prior_sha256=boundary[1],
+            current_comment_id=verified.pointer.comment_id,
+            current_sha256=verified.contract.sha256,
         )
 
     def test_windows_profile_current_marker_rejects_unapproved_allowlist_change(self):
@@ -2313,7 +2396,7 @@ class CombinedAuthorizationTests(unittest.TestCase):
         suffix = b"\n-->"
         raw = marker[len(prefix):-len(suffix)]
         value = json.loads(raw)
-        value["followup_path_allowlist"][-1] = "runtime/p_ases/adc.py"
+        value["followup_path_allowlist"][-1] = "tests/z.py"
         import p_ases.phase_rework as phase_module
         altered_marker = prefix + phase_module._canonical(value).encode("utf-8") + suffix
         verified, digest, byte_length = self._windows_profile_verified(altered_marker)
@@ -2322,15 +2405,15 @@ class CombinedAuthorizationTests(unittest.TestCase):
                 patch.object(module, "ISSUE71_WINDOWS_PROFILE_READER_MARKER_BYTES", len(altered_marker)), \
                 patch.object(module, "ISSUE71_WINDOWS_PROFILE_READER_MARKER_SHA256",
                              hashlib.sha256(altered_marker).hexdigest()):
-            with self.assertRaisesRegex(module.PhaseReworkError, "followup_path_allowlist"):
+            with self.assertRaisesRegex(module.PhaseReworkError, "differs"):
                 module.parse_issue71_phase_and_user_review_authorization(verified)
 
     def test_windows_profile_current_marker_rejects_wrong_pointer_identity(self):
         verified, digest, byte_length = self._windows_profile_verified()
-        verified.pointer.comment_id += 1
+        verified.pointer.sha256 = "0" * 64
         with patch.object(module, "ISSUE71_WINDOWS_PROFILE_READER_ADC_SHA256", digest), \
                 patch.object(module, "ISSUE71_WINDOWS_PROFILE_READER_ADC_BYTES", byte_length):
-            with self.assertRaisesRegex(module.PhaseReworkError, "exact approved generation"):
+            with self.assertRaisesRegex(module.PhaseReworkError, "pointer and exact bytes"):
                 module.parse_issue71_phase_and_user_review_authorization(verified)
 
     def test_comprehensive_reader_accepts_exact_fourteen_generation_history(self):
@@ -2353,7 +2436,7 @@ class CombinedAuthorizationTests(unittest.TestCase):
             )
 
         boundary = module.ISSUE71_COMBINED_ADC_HISTORY_BOUNDARY
-        rows = [generation(*boundary, 80, (1, "0" * 64))]
+        rows = [generation(*boundary, 512, (1, "0" * 64))]
         previous = boundary
         for comment_id, digest, size in module.ISSUE71_COMPREHENSIVE_READER_HISTORY:
             rows.append(generation(comment_id, digest, size, previous))
@@ -2412,7 +2495,7 @@ class CombinedAuthorizationTests(unittest.TestCase):
             )
 
         boundary = module.ISSUE71_COMBINED_ADC_HISTORY_BOUNDARY
-        rows = [generation(*boundary, 80, (1, "0" * 64))]
+        rows = [generation(*boundary, 512, (1, "0" * 64))]
         previous = boundary
         for comment_id, digest, size in module.ISSUE71_WINDOWS_PROFILE_READER_HISTORY:
             rows.append(generation(comment_id, digest, size, previous))
@@ -2463,7 +2546,7 @@ class CombinedAuthorizationTests(unittest.TestCase):
             )
 
         boundary = module.ISSUE71_COMBINED_ADC_HISTORY_BOUNDARY
-        rows = [generation(*boundary, 80, (1, "0" * 64))]
+        rows = [generation(*boundary, 512, (1, "0" * 64))]
         previous = boundary
         for comment_id, digest, size in module.ISSUE71_CURRENT_DOCUMENT_REISSUE_HISTORY:
             rows.append(generation(comment_id, digest, size, previous))
@@ -2503,7 +2586,8 @@ class CombinedAuthorizationTests(unittest.TestCase):
             module.ISSUE71_CURRENT_DOCUMENT_REISSUE_ADC_BYTES,
             module.REPOSITORY, b"approved ADC bytes",
         )
-        with patch.object(module, "verify_issue71_phase_and_user_review_adc_chain") as verify:
+        with patch.object(module, "_has_issue71_current_combined_marker", return_value=True), \
+                patch.object(module, "verify_issue71_phase_and_user_review_adc_chain") as verify:
             result = module._authorization_context(SimpleNamespace(), current)
         verify.assert_called_once_with(SimpleNamespace(), current)
         self.assertEqual(result[0], module.AUTHORIZATION)

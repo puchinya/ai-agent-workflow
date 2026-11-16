@@ -176,6 +176,25 @@ class PhaseEvidenceContinuationTests(unittest.TestCase):
         github.create_issue_comment.assert_not_called()
         github.replace_issue_labels.assert_not_called()
 
+    def test_design_ready_reconciliation_does_not_dispatch_by_adc_comment_id(self):
+        github = SimpleNamespace(
+            repo=REPOSITORY,
+            create_issue_comment=Mock(),
+            replace_issue_labels=Mock(),
+        )
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(
+                    module, "_issue71_reconciled_predecessors",
+                    side_effect=module.PhaseEvidenceError("generic current-marker route reached"),
+                ) as reconcile:
+            with self.assertRaisesRegex(module.PhaseEvidenceError, "generic current-marker route reached"):
+                module.publish_phase_evidence(
+                    github, Path(temporary), 71, Phase.DESIGN, Phase.READY,
+                )
+        reconcile.assert_called_once_with(github, Path(temporary), 71)
+        github.create_issue_comment.assert_not_called()
+        github.replace_issue_labels.assert_not_called()
+
     def test_predecessor_receipt_write_rechecks_exact_live_subject_and_pr_author(self):
         issue_body = "approved Issue body"
         pr_body = "approved PR body"
