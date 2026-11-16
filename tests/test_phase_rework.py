@@ -1029,26 +1029,42 @@ class AuthorizationTests(unittest.TestCase):
         chain[2].contract.content = broken
         rejected(chain)
 
-    def test_approved_history_reader_commit_segment_is_one_direct_child(self):
-        start = module.APPROVED_HISTORY_READER_AUTHORIZATION["starting_head_sha40"]
-        commit = "2" * 40
-        allowed_path = module.APPROVED_HISTORY_READER_AUTHORIZATION[
-            "followup_path_allowlist"
-        ][-1]
+    def test_approved_history_reader_validates_every_exact_historical_segment(self):
+        authorization = module.APPROVED_HISTORY_READER_AUTHORIZATION
+        history = authorization["approved_history"]
+        start = authorization["starting_head_sha40"]
+        middle, head = "1" * 40, "2" * 40
+        path_one = authorization["followup_path_allowlist"][0]
+        path_two = authorization["followup_path_allowlist"][-1]
+        segments = [
+            {
+                "adc_comment_id": history[0]["comment_id"],
+                "adc_sha256": history[0]["sha256"],
+                "parent_sha40": start,
+                "commit_sha40": middle,
+                "path_allowlist": [path_one],
+            },
+            {
+                "adc_comment_id": history[1]["comment_id"],
+                "adc_sha256": history[1]["sha256"],
+                "parent_sha40": middle,
+                "commit_sha40": head,
+                "path_allowlist": [path_two],
+            },
+        ]
         root = Path("/tmp/repo")
         args = (
-            root, commit, module.RECOVERY_AUTHORIZATION,
+            root, head, module.RECOVERY_AUTHORIZATION,
             module.TIMESTAMP_RECOVERY_AUTHORIZATION, module.CONTINUATION_AUTHORIZATION,
             module.READER_CONTINUATION_AUTHORIZATION,
             module.EXECUTION_RECEIPT_READER_CONTINUATION_AUTHORIZATION,
             module.MARKDOWN_PREDECESSOR_READER_AUTHORIZATION,
-            module.APPROVED_HISTORY_READER_AUTHORIZATION,
+            authorization, segments, history,
         )
         with patch.object(module, "_verify_markdown_predecessor_reader_commit_set") as verify_prior, \
-                patch.object(module, "is_ancestor", return_value=True), \
-                patch.object(module, "run_git", return_value=commit), \
-                patch.object(module, "commit_parents_sha40", return_value=(start,)), \
-                patch.object(module, "changed_paths_between", return_value=(allowed_path,)):
+                patch.object(module, "run_git", return_value=f"{middle}\n{head}"), \
+                patch.object(module, "commit_parents_sha40", side_effect=[(start,), (middle,)]), \
+                patch.object(module, "changed_paths_between", side_effect=[(path_one,), (path_two,)]):
             module._verify_approved_history_reader_commit_set(*args)
         verify_prior.assert_called_once_with(
             root, start, module.RECOVERY_AUTHORIZATION,
@@ -1059,36 +1075,39 @@ class AuthorizationTests(unittest.TestCase):
         )
 
         invalid_cases = (
-            ("extra descendant", {"run_git": {"return_value": f"{commit}\n{'3' * 40}"}},
-             "exactly one authorized commit"),
-            ("wrong parent", {"commit_parents_sha40": {"return_value": ("4" * 40,)}},
-             "unexpected parent"),
-            ("outside allowlist", {"changed_paths_between": {"return_value": ("outside.py",)}},
-             "outside its exact allowlist"),
-            ("missing ancestry", {"is_ancestor": {"return_value": False}},
-             "must descend from its exact starting HEAD"),
-            ("wrong HEAD", {"run_git": {"return_value": "5" * 40}},
-             "does not end at the exact HEAD"),
+            ("extra descendant", {"rows": f"{middle}\n{head}\n{'3' * 40}"},
+             "enumeration differs"),
+            ("missing descendant", {"rows": middle}, "enumeration differs"),
+            ("wrong parent", {"parents": [("4" * 40,)]}, "unexpected direct parent"),
+            ("wrong changed paths", {"paths": [("outside.py",), (path_two,)]},
+             "differ from its exact path allowlist"),
         )
         for name, overrides, message in invalid_cases:
             with self.subTest(name=name):
-                patchers = {
-                    "is_ancestor": patch.object(module, "is_ancestor", return_value=True),
-                    "run_git": patch.object(module, "run_git", return_value=commit),
-                    "commit_parents_sha40": patch.object(
-                        module, "commit_parents_sha40", return_value=(start,),
-                    ),
-                    "changed_paths_between": patch.object(
-                        module, "changed_paths_between", return_value=(allowed_path,),
-                    ),
-                }
-                patchers.update({key: patch.object(module, key, **kwargs)
-                                 for key, kwargs in overrides.items()})
+                rows = overrides.get("rows", f"{middle}\n{head}")
+                parents = overrides.get("parents", [(start,), (middle,)])
+                paths = overrides.get("paths", [(path_one,), (path_two,)])
                 with patch.object(module, "_verify_markdown_predecessor_reader_commit_set"), \
-                        patchers["is_ancestor"], patchers["run_git"], \
-                        patchers["commit_parents_sha40"], patchers["changed_paths_between"], \
+                        patch.object(module, "run_git", return_value=rows), \
+                        patch.object(module, "commit_parents_sha40", side_effect=parents), \
+                        patch.object(module, "changed_paths_between", side_effect=paths), \
                         self.assertRaisesRegex(module.PhaseReworkError, message):
                     module._verify_approved_history_reader_commit_set(*args)
+
+        malformed = [dict(segments[0]), dict(segments[1])]
+        malformed[1]["parent_sha40"] = "4" * 40
+        with self.assertRaisesRegex(module.PhaseReworkError, "gap, duplicate"):
+            module._validate_historical_commit_segments(malformed, history, start, head)
+        malformed = [dict(segments[0]), dict(segments[1])]
+        malformed[0]["adc_sha256"] = "0" * 64
+        with self.assertRaisesRegex(module.PhaseReworkError, "approved ADC history row"):
+            module._validate_historical_commit_segments(malformed, history, start, head)
+        malformed = [dict(segments[0]), dict(segments[1])]
+        malformed.reverse()
+        with self.assertRaises(module.PhaseReworkError):
+            module._validate_historical_commit_segments(malformed, history, start, head)
+        with self.assertRaisesRegex(module.PhaseReworkError, "does not end"):
+            module._validate_historical_commit_segments(segments, history, start, "5" * 40)
 
     def test_approved_history_lineage_keeps_prior_segments_separate(self):
         root = Path("/tmp/repo")
@@ -1113,7 +1132,7 @@ class AuthorizationTests(unittest.TestCase):
             module.READER_CONTINUATION_AUTHORIZATION,
             module.EXECUTION_RECEIPT_READER_CONTINUATION_AUTHORIZATION,
             module.MARKDOWN_PREDECESSOR_READER_AUTHORIZATION,
-            module.APPROVED_HISTORY_READER_AUTHORIZATION,
+            module.APPROVED_HISTORY_READER_AUTHORIZATION, None, None,
         )
 
 
@@ -1183,6 +1202,7 @@ class BootstrapAndReadinessTests(unittest.TestCase):
         verify_successors.assert_called_once_with(
             root, head, module.RECOVERY_AUTHORIZATION,
             module.TIMESTAMP_RECOVERY_AUTHORIZATION, None, None, None, None, None,
+            None, None,
         )
 
     def test_continuation_lineage_preserves_three_separate_one_commit_segments(self):
@@ -1201,7 +1221,7 @@ class BootstrapAndReadinessTests(unittest.TestCase):
         verify_segments.assert_called_once_with(
             root, head, module.RECOVERY_AUTHORIZATION,
             module.TIMESTAMP_RECOVERY_AUTHORIZATION, module.CONTINUATION_AUTHORIZATION,
-            None, None, None, None,
+            None, None, None, None, None, None,
         )
 
     def test_reader_continuation_lineage_preserves_four_separate_one_commit_segments(self):
@@ -1221,7 +1241,7 @@ class BootstrapAndReadinessTests(unittest.TestCase):
         verify_segments.assert_called_once_with(
             root, head, module.RECOVERY_AUTHORIZATION,
             module.TIMESTAMP_RECOVERY_AUTHORIZATION, module.CONTINUATION_AUTHORIZATION,
-            module.READER_CONTINUATION_AUTHORIZATION, None, None, None,
+            module.READER_CONTINUATION_AUTHORIZATION, None, None, None, None, None,
         )
 
     def test_continuation_commit_is_one_direct_child_on_its_exact_allowlist(self):
@@ -2171,9 +2191,31 @@ WINDOWS_PROFILE_MARKER_FIXTURE_B64 = (
 
 class CombinedAuthorizationTests(unittest.TestCase):
     @staticmethod
+    def _with_test_historical_segment(marker: bytes) -> bytes:
+        prefix = b"<!-- PASES_ISSUE_PHASE_AND_USER_REVIEW_V2\n"
+        suffix = b"\n-->"
+        value = json.loads(marker[len(prefix):-len(suffix)])
+        phase = value["phase_receipt_reconciliation"]
+        approval = value["approved_history"][-1]
+        phase["historical_commit_segments"] = [{
+            "adc_comment_id": approval["comment_id"],
+            "adc_sha256": approval["sha256"],
+            "parent_sha40": module.APPROVED_HISTORY_READER_AUTHORIZATION[
+                "starting_head_sha40"
+            ],
+            "commit_sha40": phase["starting_head_sha40"],
+            "path_allowlist": ["runtime/p_ases/phase_rework.py"],
+        }]
+        value["active_authorization_digests"]["phase_receipt_reconciliation"] = (
+            hashlib.sha256(module._canonical(phase).encode("utf-8")).hexdigest()
+        )
+        return prefix + module._canonical(value).encode("utf-8") + suffix
+
+    @staticmethod
     def _windows_profile_verified(marker: bytes | None = None):
         if marker is None:
             marker = zlib.decompress(base64.b64decode(WINDOWS_PROFILE_MARKER_FIXTURE_B64))
+        marker = CombinedAuthorizationTests._with_test_historical_segment(marker)
         content = (
             "# Agent Development Contract — Issue #71 Windows-stable profile identity and phase continuation\n\n"
             "Repository: puchinya/ai-agent-workflow\n"
@@ -2281,6 +2323,10 @@ class CombinedAuthorizationTests(unittest.TestCase):
             starting_head_sha40="588b6f73b41477960cb0ad9a0e01b2ebe9d50ba3",
             followup_path_allowlist=paths,
         )
+        marker = CombinedAuthorizationTests._with_test_historical_segment(
+            prefix + module._canonical(value).encode("utf-8") + suffix
+        )
+        value = json.loads(marker[len(prefix):-len(suffix)])
         canonical = module._canonical(value).encode("utf-8")
         marker = prefix + canonical + suffix
         q = chr(96)
@@ -2355,6 +2401,48 @@ class CombinedAuthorizationTests(unittest.TestCase):
             authorization["current_document_snapshot_authorization"],
             module.ISSUE71_WINDOWS_PROFILE_CURRENT_DOCUMENT_SNAPSHOT_AUTHORIZATION,
         )
+
+    def test_generic_current_marker_requires_complete_ordered_historical_commit_segments(self):
+        verified, _digest, _byte_length, marker = self._windows_fixture_verified()
+        prefix = b"<!-- PASES_ISSUE_PHASE_AND_USER_REVIEW_V2\n"
+        suffix = b"\n-->"
+        start = marker.index(prefix)
+        end = marker.index(suffix, start) + len(suffix)
+        original = marker[start:end]
+        base = json.loads(original[len(prefix):-len(suffix)])
+        invalid_cases = (
+            ("missing map", lambda phase: phase.pop("historical_commit_segments"),
+             "unknown or missing fields"),
+            ("wrong ADC digest", lambda phase: phase["historical_commit_segments"][0].update(
+                adc_sha256="0" * 64), "approved ADC history row"),
+            ("chain gap", lambda phase: phase["historical_commit_segments"][0].update(
+                parent_sha40="1" * 40), "gap, duplicate"),
+            ("noncanonical paths", lambda phase: phase["historical_commit_segments"][0].update(
+                path_allowlist=["z.py", "a.py"]), "path allowlist is malformed"),
+        )
+        for name, mutate, message in invalid_cases:
+            with self.subTest(name=name):
+                value = json.loads(json.dumps(base))
+                phase = value["phase_receipt_reconciliation"]
+                mutate(phase)
+                value["active_authorization_digests"]["phase_receipt_reconciliation"] = (
+                    hashlib.sha256(module._canonical(phase).encode("utf-8")).hexdigest()
+                )
+                altered = prefix + module._canonical(value).encode("utf-8") + suffix
+                content = verified.contract.content.replace(original, altered, 1)
+                digest = hashlib.sha256(content).hexdigest()
+                contract = SimpleNamespace(
+                    sha256=digest, byte_length=len(content), repository=module.REPOSITORY,
+                    content=content, section=verified.contract.section,
+                )
+                candidate = SimpleNamespace(
+                    pointer=SimpleNamespace(
+                        comment_id=verified.pointer.comment_id, sha256=digest, state="approved",
+                    ),
+                    contract=contract,
+                )
+                with self.assertRaisesRegex(module.PhaseReworkError, message):
+                    module.parse_issue71_phase_and_user_review_authorization(candidate)
 
     def test_generic_current_marker_still_requires_its_predecessor_header(self):
         verified, _digest, _byte_length, _marker = self._windows_fixture_verified()

@@ -131,6 +131,7 @@
   - [9.104 REQ-F01-152 Enforce the authorization exclusions](#9104-req-f01-152-enforce-the-authorization-exclusions)
   - [9.105 REQ-F01-165 Verify historical ADC predecessor evidence generically](#9105-req-f01-165-verify-historical-adc-predecessor-evidence-generically)
   - [9.106 REQ-F01-166 Apply one strict history rule to every generation](#9106-req-f01-166-apply-one-strict-history-rule-to-every-generation)
+  - [9.107 REQ-F01-167 Verify authorized historical commit segments generically](#9107-req-f01-167-verify-authorized-historical-commit-segments-generically)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -251,6 +252,7 @@
 - [REQ-F01-152](#req-f01-152) — 9.104 REQ-F01-152 Enforce the authorization exclusions
 - [REQ-F01-165](#req-f01-165) — 9.105 REQ-F01-165 Verify historical ADC predecessor evidence generically
 - [REQ-F01-166](#req-f01-166) — 9.106 REQ-F01-166 Apply one strict history rule to every generation
+- [REQ-F01-167](#req-f01-167) — 9.107 REQ-F01-167 Verify authorized historical commit segments generically
 <!-- heading-map:end -->
 
 
@@ -1062,3 +1064,8 @@ For every historical ADC in the verified approved generation chain, validate the
 ### 9.106 REQ-F01-166 Apply one strict history rule to every generation
 
 Apply the same pointer-chain rule to every historical generation without comment-ID exceptions or historical-body rewrites. Reject missing, duplicated, reordered, unapproved, wrong-digest, wrong-byte-length, malformed, or non-adjacent pointer/journal entries. Reject malformed, duplicate, or conflicting historical predecessor declarations when present, and always reject a missing or mismatched current predecessor declaration.
+
+<a id="req-f01-167"></a>
+### 9.107 REQ-F01-167 Verify authorized historical commit segments generically
+
+For Issue #71 phase continuation, the current approved ADC marker MUST carry a complete ordered `historical_commit_segments` list from the approved-history reader boundary to its exact current start HEAD. Each row binds one ADC comment ID and SHA to one commit SHA, its exact direct parent SHA, and the sorted exact changed-path allowlist. The ADC tuple MUST match an approved row in the current marker's complete approved history; rows MUST be ordered, contiguous, unique, and end at the current start HEAD. Before any Issue write, the runtime MUST compare the full `git rev-list --reverse` result with the listed commits, require every commit to have only its listed direct parent, and require the actual changed paths to equal that segment's allowlist exactly. Historical ADC marker bodies remain opaque. Missing, extra, reordered, merged, mis-parented, unapproved, mis-digested, or path-drifted segments fail closed.

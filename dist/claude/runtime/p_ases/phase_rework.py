@@ -9,7 +9,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from .adc import (
     ADCError, VerifiedADC, verify_adc, verify_adc_forward_generations,
@@ -828,7 +828,8 @@ ISSUE71_PHASE_RECEIPT_AUTH_FIELDS = frozenset({
     "intent_comment_id", "issue_body_sha256", "issue_id", "issue_number", "labels_at_start",
     "max_followup_commits", "owner_id", "permitted_current_adc_edges",
     "permitted_label_transitions", "pr_base_ref", "pr_base_sha40", "pr_body_sha256",
-    "pr_number", "predecessor_adc_comment_id", "predecessor_adc_sha256", "reissue_edges",
+    "pr_number", "predecessor_adc_comment_id", "predecessor_adc_sha256",
+    "historical_commit_segments", "reissue_edges",
     "repository", "repository_id", "schema", "starting_head_sha40",
 })
 ISSUE71_USER_REVIEW_AUTH_SCHEMA = "PASES_ISSUE71_SOLO_OWNER_USER_REVIEW_AUTH_V1"
@@ -1515,6 +1516,61 @@ def _has_issue71_current_combined_marker(verified: VerifiedADC) -> bool:
     return f"<!-- {ISSUE71_CURRENT_COMBINED_SCHEMA}\n" in content
 
 
+def _validate_historical_commit_segments(
+    segments: Any,
+    approved_history: Sequence[Mapping[str, Any]],
+    start_head: Any,
+    end_head: Any,
+) -> None:
+    """Validate the current ADC's exact, ordered authorization map for prior commits."""
+    if (not isinstance(start_head, str) or SHA40.fullmatch(start_head) is None
+            or not isinstance(end_head, str) or SHA40.fullmatch(end_head) is None
+            or start_head == end_head or not isinstance(segments, list) or not segments):
+        raise PhaseReworkError("historical commit segment map has invalid endpoints or is empty")
+    history_positions = {
+        row["comment_id"]: (index, row["sha256"])
+        for index, row in enumerate(approved_history)
+    }
+    previous_head = start_head
+    previous_history_index = -1
+    seen_commits: set[str] = set()
+    for segment in segments:
+        if (not isinstance(segment, dict)
+                or set(segment) != {
+                    "adc_comment_id", "adc_sha256", "commit_sha40", "parent_sha40",
+                    "path_allowlist",
+                }):
+            raise PhaseReworkError("historical commit segment has unknown or missing fields")
+        adc_id = segment.get("adc_comment_id")
+        adc_sha256 = segment.get("adc_sha256")
+        parent = segment.get("parent_sha40")
+        commit = segment.get("commit_sha40")
+        paths = segment.get("path_allowlist")
+        history_row = history_positions.get(adc_id) if type(adc_id) is int else None
+        if (history_row is None or not isinstance(adc_sha256, str)
+                or history_row[1] != adc_sha256 or SHA256.fullmatch(adc_sha256) is None):
+            raise PhaseReworkError("historical commit segment does not bind an approved ADC history row")
+        history_index = history_row[0]
+        if history_index <= previous_history_index:
+            raise PhaseReworkError("historical commit segments reorder or reuse approved ADC generations")
+        if (not isinstance(parent, str) or SHA40.fullmatch(parent) is None
+                or parent != previous_head or not isinstance(commit, str)
+                or SHA40.fullmatch(commit) is None or commit in seen_commits):
+            raise PhaseReworkError("historical commit segments contain a gap, duplicate, or invalid SHA")
+        if (not isinstance(paths, list) or not paths
+                or any(not isinstance(path, str) or not path or path.startswith("/")
+                       or "\\" in path or any(part in {"", ".", ".."}
+                                               for part in path.split("/"))
+                       for path in paths)
+                or paths != sorted(set(paths))):
+            raise PhaseReworkError("historical commit segment path allowlist is malformed")
+        previous_head = commit
+        previous_history_index = history_index
+        seen_commits.add(commit)
+    if previous_head != end_head:
+        raise PhaseReworkError("historical commit segment map does not end at the exact current start HEAD")
+
+
 def parse_issue71_phase_and_user_review_authorization(
     verified: VerifiedADC,
 ) -> dict[str, Any]:
@@ -1592,6 +1648,12 @@ def parse_issue71_phase_and_user_review_authorization(
     if (not isinstance(phase, dict) or set(phase) != ISSUE71_PHASE_RECEIPT_AUTH_FIELDS
             or not isinstance(user_review, dict) or set(user_review) != ISSUE71_USER_REVIEW_AUTH_FIELDS):
         raise PhaseReworkError("current Issue #71 ADC authorization tuples have unknown or missing fields")
+    historical_commit_segments = phase.get("historical_commit_segments")
+    _validate_historical_commit_segments(
+        historical_commit_segments, history_rows,
+        APPROVED_HISTORY_READER_AUTHORIZATION["starting_head_sha40"],
+        phase.get("starting_head_sha40"),
+    )
     historical_documents = value.get("historical_document_reissue_authorization")
     if historical_documents != ISSUE71_HISTORICAL_DOCUMENT_REISSUE_AUTHORIZATION:
         raise PhaseReworkError("historical document reissue authorization differs from its immutable tuple")
@@ -1679,6 +1741,7 @@ def parse_issue71_phase_and_user_review_authorization(
         "max_followup_commits": 1,
         "starting_head_sha40": starting_head,
         "followup_path_allowlist": allowlist,
+        "historical_commit_segments": historical_commit_segments,
     }
     expected_user_review = {
         "schema": ISSUE71_USER_REVIEW_AUTH_SCHEMA,
@@ -2366,6 +2429,8 @@ def _verify_approved_history_reader_commit_set(
     execution_receipt_reader_authorization: Mapping[str, Any] | None,
     markdown_predecessor_reader_authorization: Mapping[str, Any],
     approved_history_reader_authorization: Mapping[str, Any],
+    historical_commit_segments: Sequence[Mapping[str, Any]],
+    approved_history: Sequence[Mapping[str, Any]],
 ) -> None:
     if (approved_history_reader_authorization != APPROVED_HISTORY_READER_AUTHORIZATION
             or markdown_predecessor_reader_authorization
@@ -2384,27 +2449,28 @@ def _verify_approved_history_reader_commit_set(
         continuation_authorization, reader_continuation_authorization,
         execution_receipt_reader_authorization, markdown_predecessor_reader_authorization,
     )
-    if not is_ancestor(root, predecessor_head, head):
-        raise PhaseReworkError(
-            "approved-history reader HEAD must descend from its exact starting HEAD"
-        )
+    _validate_historical_commit_segments(
+        list(historical_commit_segments), list(approved_history), predecessor_head, head,
+    )
     rows = run_git(root, "rev-list", "--reverse", f"{predecessor_head}..{head}").splitlines()
-    if len(rows) != approved_history_reader_authorization["max_followup_commits"]:
+    expected_rows = [segment["commit_sha40"] for segment in historical_commit_segments]
+    if rows != expected_rows:
         raise PhaseReworkError(
-            "approved-history reader continuation must contain exactly one authorized commit"
+            "approved-history commit enumeration differs from the exact authorized segment map"
         )
-    if commit_parents_sha40(root, rows[0]) != (predecessor_head,):
-        raise PhaseReworkError("approved-history reader commit has an unexpected parent")
-    changed = changed_paths_between(root, predecessor_head, rows[0])
-    allowlist = approved_history_reader_authorization.get("followup_path_allowlist")
-    if (not isinstance(allowlist, list) or not changed
-            or any(path not in allowlist for path in changed)):
+    parent = predecessor_head
+    for row, segment in zip(rows, historical_commit_segments):
+        if commit_parents_sha40(root, row) != (parent,):
+            raise PhaseReworkError("approved-history segment commit has an unexpected direct parent")
+        changed = changed_paths_between(root, parent, row)
+        if changed != tuple(segment["path_allowlist"]):
+            raise PhaseReworkError(
+                "approved-history segment changed paths differ from its exact path allowlist"
+            )
+        parent = row
+    if parent != head:
         raise PhaseReworkError(
-            "approved-history reader commit changes a path outside its exact allowlist"
-        )
-    if rows[0] != head:
-        raise PhaseReworkError(
-            "approved-history reader commit enumeration does not end at the exact HEAD"
+            "approved-history segment enumeration does not end at the exact current start HEAD"
         )
 
 
@@ -2415,15 +2481,18 @@ def _verify_recovery_commit_set(root: Path, head: str,
                                 reader_continuation_authorization: Mapping[str, Any] | None = None,
                                 execution_receipt_reader_authorization: Mapping[str, Any] | None = None,
                                 markdown_predecessor_reader_authorization: Mapping[str, Any] | None = None,
-                                approved_history_reader_authorization: Mapping[str, Any] | None = None) -> None:
+                                approved_history_reader_authorization: Mapping[str, Any] | None = None,
+                                historical_commit_segments: Sequence[Mapping[str, Any]] | None = None,
+                                approved_history: Sequence[Mapping[str, Any]] | None = None) -> None:
     if approved_history_reader_authorization is not None:
-        if markdown_predecessor_reader_authorization is None:
-            raise PhaseReworkError("approved-history lineage lacks its exact predecessor reader")
+        if (markdown_predecessor_reader_authorization is None
+                or historical_commit_segments is None or approved_history is None):
+            raise PhaseReworkError("approved-history lineage lacks its exact segment map and predecessor reader")
         _verify_approved_history_reader_commit_set(
             root, head, recovery_authorization, timestamp_recovery_authorization,
             continuation_authorization, reader_continuation_authorization,
             execution_receipt_reader_authorization, markdown_predecessor_reader_authorization,
-            approved_history_reader_authorization,
+            approved_history_reader_authorization, historical_commit_segments, approved_history,
         )
         return
     if markdown_predecessor_reader_authorization is not None:
@@ -2539,7 +2608,9 @@ def _verify_issue71_commit_lineage(root: Path, head: str,
                                    reader_continuation_authorization: Mapping[str, Any] | None = None,
                                    execution_receipt_reader_authorization: Mapping[str, Any] | None = None,
                                    markdown_predecessor_reader_authorization: Mapping[str, Any] | None = None,
-                                   approved_history_reader_authorization: Mapping[str, Any] | None = None) -> None:
+                                   approved_history_reader_authorization: Mapping[str, Any] | None = None,
+                                   historical_commit_segments: Sequence[Mapping[str, Any]] | None = None,
+                                   approved_history: Sequence[Mapping[str, Any]] | None = None) -> None:
     if recovery_authorization is not None:
         if ((continuation_authorization is not None or reader_continuation_authorization is not None
              or execution_receipt_reader_authorization is not None
@@ -2561,7 +2632,7 @@ def _verify_issue71_commit_lineage(root: Path, head: str,
             root, head, recovery_authorization, timestamp_recovery_authorization,
             continuation_authorization, reader_continuation_authorization,
             execution_receipt_reader_authorization, markdown_predecessor_reader_authorization,
-            approved_history_reader_authorization,
+            approved_history_reader_authorization, historical_commit_segments, approved_history,
         )
     elif head != BASELINE_HEAD:
         _verify_commit_set(root, head, tuple(authorization["bootstrap_path_allowlist"]))
@@ -2647,10 +2718,13 @@ def _live(github: GitHub, root: Path, *, phase: str | None = None,
         if current_combined:
             combined_authorization, _chain = verify_issue71_phase_and_user_review_adc_chain(github, current)
             lineage_head = combined_authorization["starting_head_sha40"]
+            phase_authorization = combined_authorization["phase_receipt_reconciliation"]
             _verify_issue71_commit_lineage(
                 root, lineage_head, authorization, recovery_authorization, timestamp_recovery_authorization,
                 continuation_authorization, reader_authorization, execution_reader_authorization,
                 markdown_predecessor_reader_authorization, approved_history_reader_authorization,
+                phase_authorization["historical_commit_segments"],
+                combined_authorization["approved_history"],
             )
             _verify_combined_followup_commit_set(root, head, combined_authorization)
         else:

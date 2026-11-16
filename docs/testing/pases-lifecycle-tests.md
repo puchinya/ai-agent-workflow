@@ -137,6 +137,8 @@
     - [2.63.1 ORA-F01-097 Expected result](#2631-ora-f01-097-expected-result)
   - [2.64 TST-F01-098 Generic historical ADC predecessor validation](#264-tst-f01-098-generic-historical-adc-predecessor-validation)
     - [2.64.1 ORA-F01-098 Expected result](#2641-ora-f01-098-expected-result)
+  - [2.65 TST-F01-099 Exact approved historical commit segment map](#265-tst-f01-099-exact-approved-historical-commit-segment-map)
+    - [2.65.1 ORA-F01-099 Expected result](#2651-ora-f01-099-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -269,6 +271,8 @@
 - [ORA-F01-097](#ora-f01-097) — 2.63.1 ORA-F01-097 Expected result
 - [TST-F01-098](#tst-f01-098) — 2.64 TST-F01-098 Generic historical ADC predecessor validation
 - [ORA-F01-098](#ora-f01-098) — 2.64.1 ORA-F01-098 Expected result
+- [TST-F01-099](#tst-f01-099) — 2.65 TST-F01-099 Exact approved historical commit segment map
+- [ORA-F01-099](#ora-f01-099) — 2.65.1 ORA-F01-099 Expected result
 <!-- heading-map:end -->
 
 
@@ -970,3 +974,13 @@ Only the exact current combined ADC and one direct child of its marker-authorize
 #### 2.64.1 ORA-F01-098 Expected result
 
 Historical declarations may be absent, but exact approved pointer-chain identity and journal adjacency are mandatory for every generation. A present historical declaration must occur once and match the immediately preceding pointer. The current ADC declaration must occur exactly once and match its verified predecessor. All malformed or mismatched history blocks before phase-evidence writes; no historical ADC is rewritten and no comment-ID-specific exception is used.
+
+<a id="tst-f01-099"></a>
+### 2.65 TST-F01-099 Exact approved historical commit segment map
+
+**Setup and action:** Build a current marker whose ordered segment map binds each ADC comment ID/SHA to one parent/commit pair and exact sorted path list. Accept a contiguous map that enumerates the full Git range from the pinned reader boundary to the current start HEAD. Independently remove a segment, add an unlisted commit, reorder rows, reuse or change an ADC pointer, break a parent link, change the final endpoint, introduce a merge parent, and add, remove, reorder, or duplicate a path. Require every mutation to fail before any Issue write. Historical ADC body markers remain opaque. The executable parser and Git-boundary regressions are in tests/test_phase_rework.py.
+
+<a id="ora-f01-099"></a>
+#### 2.65.1 ORA-F01-099 Expected result
+
+The exact `rev-list --reverse` commit sequence equals the current marker's complete segment map. Every approved pointer is in history order, every commit is one direct child of the prior endpoint, and every actual changed-path list exactly equals the sorted allowlist in its segment. Missing, extra, reordered, duplicated, merged, mis-parented, unapproved, mis-digested, or path-drifted segments fail closed before GitHub writes.
