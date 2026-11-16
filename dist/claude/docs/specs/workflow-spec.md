@@ -129,6 +129,8 @@
   - [9.102 REQ-F01-150 Preserve exact append-only User Review decisions](#9102-req-f01-150-preserve-exact-append-only-user-review-decisions)
   - [9.103 REQ-F01-151 Start User Review and leave its decision pending](#9103-req-f01-151-start-user-review-and-leave-its-decision-pending)
   - [9.104 REQ-F01-152 Enforce the authorization exclusions](#9104-req-f01-152-enforce-the-authorization-exclusions)
+  - [9.105 REQ-F01-165 Verify historical ADC predecessor evidence generically](#9105-req-f01-165-verify-historical-adc-predecessor-evidence-generically)
+  - [9.106 REQ-F01-166 Apply one strict history rule to every generation](#9106-req-f01-166-apply-one-strict-history-rule-to-every-generation)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -247,6 +249,8 @@
 - [REQ-F01-150](#req-f01-150) — 9.102 REQ-F01-150 Preserve exact append-only User Review decisions
 - [REQ-F01-151](#req-f01-151) — 9.103 REQ-F01-151 Start User Review and leave its decision pending
 - [REQ-F01-152](#req-f01-152) — 9.104 REQ-F01-152 Enforce the authorization exclusions
+- [REQ-F01-165](#req-f01-165) — 9.105 REQ-F01-165 Verify historical ADC predecessor evidence generically
+- [REQ-F01-166](#req-f01-166) — 9.106 REQ-F01-166 Apply one strict history rule to every generation
 <!-- heading-map:end -->
 
 
@@ -1048,3 +1052,13 @@ After exact current-head Verification, Acceptance, audits, PRBinding, and READY 
 ### 9.104 REQ-F01-152 Enforce the authorization exclusions
 
 This continuation authorizes no Issue #63 operation, Admin or Ruleset operation, Setup PR, Activation, PR merge, release, tag push, or Issue close. A 403 or empty Rulesets result is not proof of absent protection. Keep the Admin policy readback BLOCKED until a complete verified read succeeds.
+
+<a id="req-f01-165"></a>
+### 9.105 REQ-F01-165 Verify historical ADC predecessor evidence generically
+
+For every historical ADC in the verified approved generation chain, validate the exact pointer identity, approved state, body bytes, byte length, digest, ordering, and immediate journal adjacency. A historical body may omit its visible predecessor declaration. When a historical body contains that declaration, require exactly one well-formed declaration matching the immediately preceding approved pointer. The current ADC must still contain exactly one canonical visible predecessor declaration matching the final historical pointer. Perform these checks before any phase-evidence write.
+
+<a id="req-f01-166"></a>
+### 9.106 REQ-F01-166 Apply one strict history rule to every generation
+
+Apply the same pointer-chain rule to every historical generation without comment-ID exceptions or historical-body rewrites. Reject missing, duplicated, reordered, unapproved, wrong-digest, wrong-byte-length, malformed, or non-adjacent pointer/journal entries. Reject malformed, duplicate, or conflicting historical predecessor declarations when present, and always reject a missing or mismatched current predecessor declaration.

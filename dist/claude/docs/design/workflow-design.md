@@ -51,6 +51,7 @@
   - [5.36 DES-F01-096 Generic approved history reader and successor segment](#536-des-f01-096-generic-approved-history-reader-and-successor-segment)
 - [6 DES-WF-003 Workspace execution flow](#6-des-wf-003-workspace-execution-flow)
   - [6.1 5.37 DES-F01-097 Combined Phase continuation and Issue #71 User Review](#61-537-des-f01-097-combined-phase-continuation-and-issue-71-user-review)
+  - [6.2 5.38 DES-F01-098 Generic historical ADC predecessor validation](#62-538-des-f01-098-generic-historical-adc-predecessor-validation)
 - [7 DES-WF-004 Failure handling](#7-des-wf-004-failure-handling)
 - [8 DES-WF-005 Authorization boundary and PR handoff](#8-des-wf-005-authorization-boundary-and-pr-handoff)
 - [9 Alternatives considered](#9-alternatives-considered)
@@ -100,6 +101,7 @@
 - [DES-F01-096](#des-f01-096) — 5.36 DES-F01-096 Generic approved history reader and successor segment
 - [DES-WF-003](#des-wf-003) — 6 DES-WF-003 Workspace execution flow
 - [DES-F01-097](#des-f01-097) — 6.1 5.37 DES-F01-097 Combined Phase continuation and Issue #71 User Review
+- [DES-F01-098](#des-f01-098) — 6.2 5.38 DES-F01-098 Generic historical ADC predecessor validation
 - [DES-WF-004](#des-wf-004) — 7 DES-WF-004 Failure handling
 - [DES-WF-005](#des-wf-005) — 8 DES-WF-005 Authorization boundary and PR handoff
 - [DES-WF-006](#des-wf-006) — 11 DES-WF-006 Human review and final delivery
@@ -468,6 +470,11 @@ Historical Phase receipts are checked against their immutable ADC, Phase generat
 Issue #71 solo_owner identity uses a dedicated GET-only client and the current approved ADC returned by complete chain verification. User Review and V3 authorization retain repository, Issue, PR, profile, verifier, HEAD, session, Readiness, feedback, actor, carrier, and direct-chat checks. The profile SHA is computed from UTF-8 bytes after normalizing CRLF pairs to LF, rejects bare CR, and never parses or reserializes JSON. The Issue #71 routes do not consult Issue #63.
 
 After fresh exact-HEAD gates and read-only Applied NOOP, the normal phase commands reconcile only already-completed receipts, publish/read back the current ready receipt, and advance through supported transitions. User Review starts once after Verification and Readiness PASS, reads back the full feedback snapshot, and remains pending without an owner decision.
+
+<a id="des-f01-098"></a>
+### 6.2 5.38 DES-F01-098 Generic historical ADC predecessor validation
+
+The verified approved pointer journal and current marker's exact ordered history are authoritative for every historical ADC generation. Validate each historical pointer's comment ID, approved state, exact body SHA-256 and UTF-8 byte length, order, and adjacency before phase-evidence writes. A historical body-level predecessor declaration is supplemental: absence is permitted; one well-formed declaration is accepted only when it names the immediately preceding verified pointer. Duplicate, malformed, or conflicting declarations fail closed. Apply this rule uniformly without comment-ID dispatch or rewriting history. The current ADC remains stricter: exactly one canonical visible predecessor declaration must match its predecessor tuple and the final approved-history entry.
 
 <a id="des-wf-004"></a>
 <a id="des-wf-004-failure-handling"></a>
