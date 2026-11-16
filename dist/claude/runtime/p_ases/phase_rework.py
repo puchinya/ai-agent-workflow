@@ -614,11 +614,28 @@ ISSUE71_WINDOWS_PROFILE_READER_MARKER_SHA256 = (
     "83e4ef63098d51eeeb4442a8893c56974416418be257e432ee8d8faf30b2dc90"
 )
 ISSUE71_WINDOWS_PROFILE_READER_MARKER_FIELDS = ISSUE71_COMPREHENSIVE_READER_MARKER_FIELDS
+ISSUE71_WINDOWS_FIXTURE_READER_ADC_COMMENT_ID = 6920550362
+ISSUE71_WINDOWS_FIXTURE_READER_ADC_SHA256 = (
+    "c2ace5524388354b2b78394d4cd7165070a1a858d4b71cff7440c628dcf45664"
+)
+ISSUE71_WINDOWS_FIXTURE_READER_ADC_BYTES = 25230
+ISSUE71_WINDOWS_FIXTURE_READER_PREDECESSOR_ADC_COMMENT_ID = 6920296275
+ISSUE71_WINDOWS_FIXTURE_READER_PREDECESSOR_ADC_SHA256 = (
+    "c19f74bcfa893fad3b357b3d00c3fe212159db4021663d93c3fda82881414f94"
+)
+ISSUE71_WINDOWS_FIXTURE_READER_PREDECESSOR_ADC_BYTES = 25989
+ISSUE71_WINDOWS_FIXTURE_READER_SCHEMA = "PASES_ISSUE_PHASE_AND_USER_REVIEW_V2"
+ISSUE71_WINDOWS_FIXTURE_READER_MARKER_BYTES = 11499
+ISSUE71_WINDOWS_FIXTURE_READER_MARKER_SHA256 = (
+    "173b81a61d1d1e871e488e9ffc1fc494da1de3ff2d43e3c138e9f9da20c9c8e3"
+)
+ISSUE71_WINDOWS_FIXTURE_READER_MARKER_FIELDS = ISSUE71_WINDOWS_PROFILE_READER_MARKER_FIELDS
 ISSUE71_COMBINED_CURRENT_ADC_IDS = frozenset({
     ISSUE71_PHASE_AND_USER_REVIEW_ADC_COMMENT_ID,
     ISSUE71_CURRENT_DOCUMENT_REISSUE_ADC_COMMENT_ID,
     ISSUE71_COMPREHENSIVE_READER_ADC_COMMENT_ID,
     ISSUE71_WINDOWS_PROFILE_READER_ADC_COMMENT_ID,
+    ISSUE71_WINDOWS_FIXTURE_READER_ADC_COMMENT_ID,
 })
 ISSUE71_CURRENT_DOCUMENT_REISSUE_PATH_ALLOWLIST = (
     "dist/antigravity/runtime/p_ases/phase_evidence.py",
@@ -695,6 +712,15 @@ ISSUE71_WINDOWS_PROFILE_READER_PATH_ALLOWLIST = (
     "runtime/p_ases/profile.py",
     "tests/test_owner_authorization.py",
     "tests/test_phase_evidence.py",
+    "tests/test_phase_rework.py",
+    "tests/test_user_review_cli.py",
+)
+ISSUE71_WINDOWS_FIXTURE_READER_PATH_ALLOWLIST = (
+    "dist/antigravity/runtime/p_ases/phase_rework.py",
+    "dist/claude/runtime/p_ases/phase_rework.py",
+    "dist/openai/runtime/p_ases/phase_rework.py",
+    "runtime/p_ases/phase_rework.py",
+    "tests/test_owner_authorization.py",
     "tests/test_phase_rework.py",
     "tests/test_user_review_cli.py",
 )
@@ -789,6 +815,14 @@ ISSUE71_WINDOWS_PROFILE_READER_ARTIFACT_IMPACT = (
     "- Tests: tests/test_phase_rework.py, tests/test_phase_evidence.py, tests/test_user_review_cli.py, tests/test_owner_authorization.py\n"
     "- Generated mirrors: the exact twelve runtime and six Specification/Design paths listed in the marker for Antigravity, Claude, and OpenAI."
 )
+ISSUE71_WINDOWS_FIXTURE_READER_ARTIFACT_IMPACT = (
+    "- Runtime: `runtime/p_ases/phase_rework.py`.\n"
+    "- Tests: `tests/test_owner_authorization.py`, `tests/test_phase_rework.py`, and "
+    "`tests/test_user_review_cli.py`.\n"
+    "- Generated mirrors: `dist/antigravity/runtime/p_ases/phase_rework.py`, "
+    "`dist/claude/runtime/p_ases/phase_rework.py`, and "
+    "`dist/openai/runtime/p_ases/phase_rework.py`."
+)
 ISSUE71_PHASE_RECEIPT_AUTH_SCHEMA = "PASES_ISSUE_PHASE_RECEIPT_RECONCILIATION_AUTH_V1"
 ISSUE71_PHASE_RECEIPT_AUTH_FIELDS = frozenset({
     "active_epoch_id", "active_epoch_sha256", "active_phase_generation_comment_id",
@@ -844,6 +878,15 @@ ISSUE71_WINDOWS_PROFILE_READER_HISTORY = (
     (ISSUE71_COMPREHENSIVE_READER_ADC_COMMENT_ID,
      ISSUE71_COMPREHENSIVE_READER_ADC_SHA256,
      ISSUE71_COMPREHENSIVE_READER_ADC_BYTES),
+)
+ISSUE71_WINDOWS_FIXTURE_READER_HISTORY = (
+    *ISSUE71_WINDOWS_PROFILE_READER_HISTORY,
+    (ISSUE71_WINDOWS_PROFILE_READER_ADC_COMMENT_ID,
+     ISSUE71_WINDOWS_PROFILE_READER_ADC_SHA256,
+     ISSUE71_WINDOWS_PROFILE_READER_ADC_BYTES),
+    (ISSUE71_WINDOWS_FIXTURE_READER_PREDECESSOR_ADC_COMMENT_ID,
+     ISSUE71_WINDOWS_FIXTURE_READER_PREDECESSOR_ADC_SHA256,
+     ISSUE71_WINDOWS_FIXTURE_READER_PREDECESSOR_ADC_BYTES),
 )
 ISSUE71_COMBINED_FOLLOWUP_PATH_ALLOWLIST = (
     "dist/antigravity/docs/design/workflow-design.md",
@@ -1469,6 +1512,9 @@ def parse_issue71_phase_and_user_review_authorization(
     comprehensive_reader = (
         verified.pointer.comment_id == ISSUE71_COMPREHENSIVE_READER_ADC_COMMENT_ID
     )
+    windows_fixture_reader = (
+        verified.pointer.comment_id == ISSUE71_WINDOWS_FIXTURE_READER_ADC_COMMENT_ID
+    )
     windows_profile_reader = (
         verified.pointer.comment_id == ISSUE71_WINDOWS_PROFILE_READER_ADC_COMMENT_ID
     )
@@ -1476,6 +1522,10 @@ def parse_issue71_phase_and_user_review_authorization(
         verified.pointer.comment_id == ISSUE71_CURRENT_DOCUMENT_REISSUE_ADC_COMMENT_ID
     )
     expected_pointer = ((
+        ISSUE71_WINDOWS_FIXTURE_READER_ADC_COMMENT_ID,
+        ISSUE71_WINDOWS_FIXTURE_READER_ADC_SHA256,
+        ISSUE71_WINDOWS_FIXTURE_READER_ADC_BYTES,
+    ) if windows_fixture_reader else (
         ISSUE71_WINDOWS_PROFILE_READER_ADC_COMMENT_ID,
         ISSUE71_WINDOWS_PROFILE_READER_ADC_SHA256,
         ISSUE71_WINDOWS_PROFILE_READER_ADC_BYTES,
@@ -1493,12 +1543,14 @@ def parse_issue71_phase_and_user_review_authorization(
         ISSUE71_PHASE_AND_USER_REVIEW_ADC_BYTES,
     ))
     expected_schema = (
+        ISSUE71_WINDOWS_FIXTURE_READER_SCHEMA if windows_fixture_reader else
         ISSUE71_WINDOWS_PROFILE_READER_SCHEMA if windows_profile_reader else
         ISSUE71_COMPREHENSIVE_READER_SCHEMA if comprehensive_reader
         else ISSUE71_CURRENT_DOCUMENT_REISSUE_SCHEMA if current_document_reissue
         else ISSUE71_PHASE_AND_USER_REVIEW_SCHEMA
     )
     expected_fields = (
+        ISSUE71_WINDOWS_FIXTURE_READER_MARKER_FIELDS if windows_fixture_reader else
         ISSUE71_WINDOWS_PROFILE_READER_MARKER_FIELDS if windows_profile_reader else
         ISSUE71_COMPREHENSIVE_READER_MARKER_FIELDS if comprehensive_reader
         else ISSUE71_CURRENT_DOCUMENT_REISSUE_MARKER_FIELDS if current_document_reissue
@@ -1529,6 +1581,8 @@ def parse_issue71_phase_and_user_review_authorization(
         raise PhaseReworkError("current Issue #71 combined authorization JSON is malformed") from exc
     marker_bytes = text[start:close + len("\n-->")].encode("utf-8")
     expected_marker = (
+        (ISSUE71_WINDOWS_FIXTURE_READER_MARKER_BYTES,
+         ISSUE71_WINDOWS_FIXTURE_READER_MARKER_SHA256) if windows_fixture_reader else
         (ISSUE71_WINDOWS_PROFILE_READER_MARKER_BYTES,
          ISSUE71_WINDOWS_PROFILE_READER_MARKER_SHA256) if windows_profile_reader else
         (ISSUE71_COMPREHENSIVE_READER_MARKER_BYTES,
@@ -1549,6 +1603,7 @@ def parse_issue71_phase_and_user_review_authorization(
     expected_history = [
         {"byte_length": byte_length, "comment_id": comment_id, "sha256": sha256, "state": "approved"}
         for comment_id, sha256, byte_length in (
+            ISSUE71_WINDOWS_FIXTURE_READER_HISTORY if windows_fixture_reader else
             ISSUE71_WINDOWS_PROFILE_READER_HISTORY if windows_profile_reader else
             ISSUE71_COMPREHENSIVE_READER_HISTORY if comprehensive_reader
             else ISSUE71_CURRENT_DOCUMENT_REISSUE_HISTORY if current_document_reissue
@@ -1576,7 +1631,7 @@ def parse_issue71_phase_and_user_review_authorization(
             _canonical(TIMESTAMP_RECOVERY_AUTHORIZATION).encode("utf-8")
         ).hexdigest(),
     }
-    if current_document_reissue or comprehensive_reader or windows_profile_reader:
+    if current_document_reissue or comprehensive_reader or windows_profile_reader or windows_fixture_reader:
         expected_digests["historical_document_reissue"] = hashlib.sha256(
             _canonical(ISSUE71_HISTORICAL_DOCUMENT_REISSUE_AUTHORIZATION).encode("utf-8")
         ).hexdigest()
@@ -1585,10 +1640,11 @@ def parse_issue71_phase_and_user_review_authorization(
             raise PhaseReworkError(
                 "current-document reissue authorization differs from its exact approved tuple"
             )
-    if comprehensive_reader or windows_profile_reader:
+    if comprehensive_reader or windows_profile_reader or windows_fixture_reader:
         document_snapshot = (
             ISSUE71_WINDOWS_PROFILE_CURRENT_DOCUMENT_SNAPSHOT_AUTHORIZATION
-            if windows_profile_reader else ISSUE71_COMPREHENSIVE_CURRENT_DOCUMENT_SNAPSHOT_AUTHORIZATION
+            if windows_profile_reader or windows_fixture_reader
+            else ISSUE71_COMPREHENSIVE_CURRENT_DOCUMENT_SNAPSHOT_AUTHORIZATION
         )
         expected_digests["current_document_snapshot"] = hashlib.sha256(
             _canonical(document_snapshot).encode("utf-8")
@@ -1614,12 +1670,14 @@ def parse_issue71_phase_and_user_review_authorization(
         "pr_base_sha40": PR_BASE_SHA40,
         "pr_body_sha256": PR_BODY_SHA256,
         "predecessor_adc_comment_id": (
+            ISSUE71_WINDOWS_FIXTURE_READER_PREDECESSOR_ADC_COMMENT_ID if windows_fixture_reader else
             ISSUE71_COMPREHENSIVE_READER_ADC_COMMENT_ID if windows_profile_reader else
             ISSUE71_CURRENT_DOCUMENT_REISSUE_ADC_COMMENT_ID if comprehensive_reader
             else ISSUE71_PHASE_AND_USER_REVIEW_ADC_COMMENT_ID if current_document_reissue
             else APPROVED_HISTORY_READER_ADC_COMMENT_ID
         ),
         "predecessor_adc_sha256": (
+            ISSUE71_WINDOWS_FIXTURE_READER_PREDECESSOR_ADC_SHA256 if windows_fixture_reader else
             ISSUE71_COMPREHENSIVE_READER_ADC_SHA256 if windows_profile_reader else
             ISSUE71_CURRENT_DOCUMENT_REISSUE_ADC_SHA256 if comprehensive_reader
             else ISSUE71_PHASE_AND_USER_REVIEW_ADC_SHA256 if current_document_reissue
@@ -1663,12 +1721,14 @@ def parse_issue71_phase_and_user_review_authorization(
                                         ["execution", "verification"], ["verification", "user-review"]],
         "max_followup_commits": 1,
         "starting_head_sha40": (
+            "9369074b89438d57215a49defc74b840d58747be" if windows_fixture_reader else
             "3524f9790813fe14351abd0bb2f4db48e8a28296" if windows_profile_reader else
             "bf754961c238eab9d48f0767d53fac724375f428" if comprehensive_reader
             else "c464ae659efaae856aad669d69c3bfe2389efd18" if current_document_reissue
             else "dfdde9a8e29edd9c69e312a290b6e1cef9eb50a2"
         ),
         "followup_path_allowlist": list(
+            ISSUE71_WINDOWS_FIXTURE_READER_PATH_ALLOWLIST if windows_fixture_reader else
             ISSUE71_WINDOWS_PROFILE_READER_PATH_ALLOWLIST if windows_profile_reader else
             ISSUE71_COMPREHENSIVE_READER_PATH_ALLOWLIST if comprehensive_reader
             else ISSUE71_CURRENT_DOCUMENT_REISSUE_PATH_ALLOWLIST if current_document_reissue
@@ -1703,6 +1763,7 @@ def parse_issue71_phase_and_user_review_authorization(
         "branch_ref": BRANCH_REF,
         "current_issue_body_sha256": ISSUE_BODY_SHA256,
         "followup_path_allowlist": list(
+            ISSUE71_WINDOWS_FIXTURE_READER_PATH_ALLOWLIST if windows_fixture_reader else
             ISSUE71_WINDOWS_PROFILE_READER_PATH_ALLOWLIST if windows_profile_reader else
             ISSUE71_COMPREHENSIVE_READER_PATH_ALLOWLIST if comprehensive_reader
             else ISSUE71_CURRENT_DOCUMENT_REISSUE_PATH_ALLOWLIST if current_document_reissue
@@ -1726,18 +1787,21 @@ def parse_issue71_phase_and_user_review_authorization(
         "pr_body_sha256": PR_BODY_SHA256,
         "pr_number": PR_NUMBER,
         "predecessor_adc_byte_length": (
+            ISSUE71_WINDOWS_FIXTURE_READER_PREDECESSOR_ADC_BYTES if windows_fixture_reader else
             ISSUE71_COMPREHENSIVE_READER_ADC_BYTES if windows_profile_reader else
             ISSUE71_CURRENT_DOCUMENT_REISSUE_ADC_BYTES if comprehensive_reader
             else ISSUE71_PHASE_AND_USER_REVIEW_ADC_BYTES if current_document_reissue
             else APPROVED_HISTORY_READER_ADC_BYTES
         ),
         "predecessor_adc_comment_id": (
+            ISSUE71_WINDOWS_FIXTURE_READER_PREDECESSOR_ADC_COMMENT_ID if windows_fixture_reader else
             ISSUE71_COMPREHENSIVE_READER_ADC_COMMENT_ID if windows_profile_reader else
             ISSUE71_CURRENT_DOCUMENT_REISSUE_ADC_COMMENT_ID if comprehensive_reader
             else ISSUE71_PHASE_AND_USER_REVIEW_ADC_COMMENT_ID if current_document_reissue
             else APPROVED_HISTORY_READER_ADC_COMMENT_ID
         ),
         "predecessor_adc_sha256": (
+            ISSUE71_WINDOWS_FIXTURE_READER_PREDECESSOR_ADC_SHA256 if windows_fixture_reader else
             ISSUE71_COMPREHENSIVE_READER_ADC_SHA256 if windows_profile_reader else
             ISSUE71_CURRENT_DOCUMENT_REISSUE_ADC_SHA256 if comprehensive_reader
             else ISSUE71_PHASE_AND_USER_REVIEW_ADC_SHA256 if current_document_reissue
@@ -1747,14 +1811,15 @@ def parse_issue71_phase_and_user_review_authorization(
         "repository_id": REPOSITORY_ID,
         "starting_head_sha40": expected_phase["starting_head_sha40"],
     }
-    if current_document_reissue or comprehensive_reader or windows_profile_reader:
+    if current_document_reissue or comprehensive_reader or windows_profile_reader or windows_fixture_reader:
         expected_top["historical_document_reissue_authorization"] = (
             ISSUE71_HISTORICAL_DOCUMENT_REISSUE_AUTHORIZATION
         )
-    if comprehensive_reader or windows_profile_reader:
+    if comprehensive_reader or windows_profile_reader or windows_fixture_reader:
         expected_top["current_document_snapshot_authorization"] = (
             ISSUE71_WINDOWS_PROFILE_CURRENT_DOCUMENT_SNAPSHOT_AUTHORIZATION
-            if windows_profile_reader else ISSUE71_COMPREHENSIVE_CURRENT_DOCUMENT_SNAPSHOT_AUTHORIZATION
+            if windows_profile_reader or windows_fixture_reader
+            else ISSUE71_COMPREHENSIVE_CURRENT_DOCUMENT_SNAPSHOT_AUTHORIZATION
         )
     mismatches = [key for key, expected in expected_top.items() if value.get(key) != expected]
     mismatches.extend(f"phase.{key}" for key, expected in expected_phase.items()
@@ -1766,7 +1831,9 @@ def parse_issue71_phase_and_user_review_authorization(
             "current Issue #71 ADC marker differs from its exact approved fields: "
             + ", ".join(mismatches)
         )
-    artifact_impact = (ISSUE71_WINDOWS_PROFILE_READER_ARTIFACT_IMPACT
+    artifact_impact = (ISSUE71_WINDOWS_FIXTURE_READER_ARTIFACT_IMPACT
+                       if windows_fixture_reader else
+                       ISSUE71_WINDOWS_PROFILE_READER_ARTIFACT_IMPACT
                        if windows_profile_reader else
                        ISSUE71_COMPREHENSIVE_READER_ARTIFACT_IMPACT
                        if comprehensive_reader else
@@ -1782,6 +1849,9 @@ def parse_issue71_phase_and_user_review_authorization(
     if contract.section("artifact_impact").count(artifact_impact) != 1:
         raise PhaseReworkError("current Issue #71 ADC Artifact impact does not match its exact path roles")
     expected_predecessor = (
+        (ISSUE71_WINDOWS_FIXTURE_READER_PREDECESSOR_ADC_COMMENT_ID,
+         ISSUE71_WINDOWS_FIXTURE_READER_PREDECESSOR_ADC_SHA256)
+        if windows_fixture_reader else
         (ISSUE71_COMPREHENSIVE_READER_ADC_COMMENT_ID,
          ISSUE71_COMPREHENSIVE_READER_ADC_SHA256)
         if windows_profile_reader else

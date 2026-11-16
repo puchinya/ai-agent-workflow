@@ -149,7 +149,9 @@ class UserReviewCliRegressionTests(unittest.TestCase):
             (root / ".agent").mkdir()
             profile_bytes = (ROOT / ".agent" / "project.json").read_bytes()
             profile_path = root / ".agent" / "project.json"
-            crlf_profile_bytes = profile_bytes.replace(b"\n", b"\r\n")
+            crlf_profile_bytes = profile_bytes.replace(b"\r\n", b"\n").replace(
+                b"\n", b"\r\n",
+            )
             self.assertEqual(
                 canonical_project_profile_sha256(profile_bytes),
                 canonical_project_profile_sha256(crlf_profile_bytes),
@@ -240,8 +242,10 @@ class UserReviewCliRegressionTests(unittest.TestCase):
             root = Path(temporary)
             (root / ".agent").mkdir()
             profile_bytes = (ROOT / ".agent" / "project.json").read_bytes()
-            (root / ".agent" / "project.json").write_bytes(
-                profile_bytes.replace(b"\n", b"\r\n"))
+            crlf_profile_bytes = profile_bytes.replace(b"\r\n", b"\n").replace(
+                b"\n", b"\r\n",
+            )
+            (root / ".agent" / "project.json").write_bytes(crlf_profile_bytes)
             verification_subject = SimpleNamespace(
                 repository="puchinya/ai-agent-workflow", issue_number=71, pr_number=75,
                 pr_head_sha40=HEAD, adc_sha256="a" * 64,

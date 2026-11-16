@@ -1018,7 +1018,9 @@ class OwnerAuthorizationTests(unittest.TestCase):
             (root / ".agent").mkdir()
             profile = root / ".agent" / "project.json"
             profile_bytes = (ROOT / ".agent" / "project.json").read_bytes()
-            crlf_profile_bytes = profile_bytes.replace(b"\n", b"\r\n")
+            crlf_profile_bytes = profile_bytes.replace(b"\r\n", b"\n").replace(
+                b"\n", b"\r\n",
+            )
             self.assertEqual(
                 owner_module.canonical_project_profile_sha256(profile_bytes),
                 owner_module.canonical_project_profile_sha256(crlf_profile_bytes),

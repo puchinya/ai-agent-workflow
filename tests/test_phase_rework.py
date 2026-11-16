@@ -2199,6 +2199,75 @@ class CombinedAuthorizationTests(unittest.TestCase):
             contract=contract,
         ), digest, len(content)
 
+    @staticmethod
+    def _windows_fixture_verified():
+        prefix = b"<!-- PASES_ISSUE_PHASE_AND_USER_REVIEW_V2\n"
+        suffix = b"\n-->"
+        previous = zlib.decompress(base64.b64decode(WINDOWS_PROFILE_MARKER_FIXTURE_B64))
+        value = json.loads(previous[len(prefix):-len(suffix)])
+        predecessor_id = module.ISSUE71_WINDOWS_PROFILE_READER_ADC_COMMENT_ID
+        predecessor_sha = module.ISSUE71_WINDOWS_PROFILE_READER_ADC_SHA256
+        predecessor_bytes = module.ISSUE71_WINDOWS_PROFILE_READER_ADC_BYTES
+        value["approved_history"].append({
+            "byte_length": predecessor_bytes,
+            "comment_id": predecessor_id,
+            "sha256": predecessor_sha,
+            "state": "approved",
+        })
+        predecessor_id = module.ISSUE71_WINDOWS_FIXTURE_READER_PREDECESSOR_ADC_COMMENT_ID
+        predecessor_sha = module.ISSUE71_WINDOWS_FIXTURE_READER_PREDECESSOR_ADC_SHA256
+        predecessor_bytes = module.ISSUE71_WINDOWS_FIXTURE_READER_PREDECESSOR_ADC_BYTES
+        value["approved_history"].append({
+            "byte_length": predecessor_bytes,
+            "comment_id": predecessor_id,
+            "sha256": predecessor_sha,
+            "state": "approved",
+        })
+        paths = list(module.ISSUE71_WINDOWS_FIXTURE_READER_PATH_ALLOWLIST)
+        phase = value["phase_receipt_reconciliation"]
+        phase.update(
+            predecessor_adc_comment_id=predecessor_id,
+            predecessor_adc_sha256=predecessor_sha,
+            starting_head_sha40="9369074b89438d57215a49defc74b840d58747be",
+            followup_path_allowlist=paths,
+        )
+        value["active_authorization_digests"]["phase_receipt_reconciliation"] = hashlib.sha256(
+            module._canonical(phase).encode("utf-8")
+        ).hexdigest()
+        value.update(
+            predecessor_adc_byte_length=predecessor_bytes,
+            predecessor_adc_comment_id=predecessor_id,
+            predecessor_adc_sha256=predecessor_sha,
+            starting_head_sha40="9369074b89438d57215a49defc74b840d58747be",
+            followup_path_allowlist=paths,
+        )
+        canonical = module._canonical(value).encode("utf-8")
+        marker = prefix + canonical + suffix
+        content = (
+            "# Agent Development Contract — Issue #71 Windows fixture and current-marker digest correction\n\n"
+            "Repository: puchinya/ai-agent-workflow\n"
+            "Predecessor ADC: Issue #71 comment #6920296275, SHA-256 "
+            "c19f74bcfa893fad3b357b3d00c3fe212159db4021663d93c3fda82881414f94\n\n"
+            "## Artifact impact\n\n"
+            f"{module.ISSUE71_WINDOWS_FIXTURE_READER_ARTIFACT_IMPACT}\n\n"
+        ).encode("utf-8") + marker + b"\n"
+        digest = hashlib.sha256(content).hexdigest()
+        contract = SimpleNamespace(
+            sha256=digest,
+            byte_length=len(content),
+            repository=module.REPOSITORY,
+            content=content,
+            section=lambda _name: module.ISSUE71_WINDOWS_FIXTURE_READER_ARTIFACT_IMPACT,
+        )
+        return SimpleNamespace(
+            pointer=SimpleNamespace(
+                comment_id=module.ISSUE71_WINDOWS_FIXTURE_READER_ADC_COMMENT_ID,
+                sha256=digest,
+                state="approved",
+            ),
+            contract=contract,
+        ), digest, len(content), marker
+
     def test_windows_profile_current_marker_accepts_exact_authorized_generation(self):
         verified, digest, byte_length = self._windows_profile_verified()
         with patch.object(module, "ISSUE71_WINDOWS_PROFILE_READER_ADC_SHA256", digest), \
@@ -2210,6 +2279,29 @@ class CombinedAuthorizationTests(unittest.TestCase):
         self.assertEqual(len(authorization["followup_path_allowlist"]), 31)
         self.assertEqual(authorization["followup_path_allowlist"],
                          list(module.ISSUE71_WINDOWS_PROFILE_READER_PATH_ALLOWLIST))
+        self.assertEqual(
+            authorization["current_document_snapshot_authorization"],
+            module.ISSUE71_WINDOWS_PROFILE_CURRENT_DOCUMENT_SNAPSHOT_AUTHORIZATION,
+        )
+
+    def test_windows_fixture_current_marker_accepts_exact_successor_generation(self):
+        verified, digest, byte_length, marker = self._windows_fixture_verified()
+        self.assertEqual(len(marker), module.ISSUE71_WINDOWS_FIXTURE_READER_MARKER_BYTES)
+        self.assertEqual(
+            hashlib.sha256(marker).hexdigest(),
+            module.ISSUE71_WINDOWS_FIXTURE_READER_MARKER_SHA256,
+        )
+        with patch.object(module, "ISSUE71_WINDOWS_FIXTURE_READER_ADC_SHA256", digest), \
+                patch.object(module, "ISSUE71_WINDOWS_FIXTURE_READER_ADC_BYTES", byte_length), \
+                patch.object(module, "ISSUE71_WINDOWS_FIXTURE_READER_MARKER_BYTES", len(marker)), \
+                patch.object(module, "ISSUE71_WINDOWS_FIXTURE_READER_MARKER_SHA256",
+                             hashlib.sha256(marker).hexdigest()):
+            authorization = module.parse_issue71_phase_and_user_review_authorization(verified)
+        self.assertEqual(authorization["predecessor_adc_comment_id"],
+                         module.ISSUE71_WINDOWS_FIXTURE_READER_PREDECESSOR_ADC_COMMENT_ID)
+        self.assertEqual(len(authorization["approved_history"]), 17)
+        self.assertEqual(authorization["followup_path_allowlist"],
+                         list(module.ISSUE71_WINDOWS_FIXTURE_READER_PATH_ALLOWLIST))
         self.assertEqual(
             authorization["current_document_snapshot_authorization"],
             module.ISSUE71_WINDOWS_PROFILE_CURRENT_DOCUMENT_SNAPSHOT_AUTHORIZATION,
