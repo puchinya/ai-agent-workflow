@@ -1,0 +1,182 @@
+from __future__ import annotations
+
+import hashlib
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "runtime"))
+
+from p_ases import phase_evidence as module  # noqa: E402
+from p_ases import phase_rework as rework  # noqa: E402
+from p_ases.phases import IssueKind, Phase  # noqa: E402
+
+
+REPOSITORY = "puchinya/ai-agent-workflow"
+HEAD = "d" * 40
+ADC_SHA = "a" * 64
+GENERATION = (6889965335, "b" * 64)
+
+
+def decision() -> module.PhaseDecision:
+    return module.PhaseDecision({
+        "schema": module.SENTINEL_V2,
+        "repository": REPOSITORY,
+        "issue_number": 71,
+        "issue_kind": "single",
+        "from_phase": "requirements",
+        "to_phase": "specification",
+        "adc_comment_id": 6902977193,
+        "adc_sha256": ADC_SHA,
+        "branch_ref": "pases/issue-71-local-activation-v2-phase-rebaseline-epoch-3",
+        "commit_sha40": HEAD,
+        "documents": [{
+            "role": "specification",
+            "path": "docs/specs/workflow-spec.md",
+            "sha256": "c" * 64,
+        }],
+        "skip_reasons": {},
+        "phase_generation_comment_id": GENERATION[0],
+        "phase_generation_sha256": GENERATION[1],
+    })
+
+
+class PhaseEvidenceContinuationTests(unittest.TestCase):
+    def test_exact_precomputed_receipt_is_accepted_for_current_adc_generation_and_head(self):
+        prior = decision()
+        with tempfile.TemporaryDirectory() as temporary, patch.object(module, "is_ancestor", return_value=True):
+            result, previous = module._verify_predecessor_receipt(
+                SimpleNamespace(repo=REPOSITORY), Path(temporary), 71,
+                (Phase.REQUIREMENTS, Phase.SPECIFICATION),
+                SimpleNamespace(
+                    pointer=SimpleNamespace(comment_id=6902977193),
+                    contract=SimpleNamespace(sha256=ADC_SHA),
+                ),
+                IssueKind.SINGLE,
+                "pases/issue-71-local-activation-v2-phase-rebaseline-epoch-3",
+                HEAD,
+                {"specification": ("docs/specs/workflow-spec.md",)},
+                {},
+                {"docs/specs/workflow-spec.md": {
+                    "role": "specification", "path": "docs/specs/workflow-spec.md", "sha256": "c" * 64,
+                }},
+                None,
+                GENERATION,
+                (6893000001, prior),
+            )
+        self.assertIs(result, prior)
+        self.assertEqual(previous, HEAD)
+
+    def test_precomputed_receipt_with_wrong_commit_is_rejected(self):
+        prior = decision()
+        prior.payload["commit_sha40"] = "e" * 40
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(module.PhaseEvidenceError, "current authorized subject"):
+                module._verify_predecessor_receipt(
+                    SimpleNamespace(repo=REPOSITORY), Path(temporary), 71,
+                    (Phase.REQUIREMENTS, Phase.SPECIFICATION),
+                    SimpleNamespace(
+                        pointer=SimpleNamespace(comment_id=6902977193),
+                        contract=SimpleNamespace(sha256=ADC_SHA),
+                    ),
+                    IssueKind.SINGLE,
+                    "pases/issue-71-local-activation-v2-phase-rebaseline-epoch-3",
+                    HEAD,
+                    {"specification": ("docs/specs/workflow-spec.md",)},
+                    {},
+                    {"docs/specs/workflow-spec.md": {
+                        "role": "specification", "path": "docs/specs/workflow-spec.md", "sha256": "c" * 64,
+                    }},
+                    None,
+                    GENERATION,
+                    (6893000001, prior),
+                )
+
+    def test_design_ready_preflight_failure_performs_no_comment_or_label_write(self):
+        github = SimpleNamespace(
+            repo=REPOSITORY,
+            create_issue_comment=Mock(),
+            replace_issue_labels=Mock(),
+        )
+        current = SimpleNamespace(pointer=SimpleNamespace(comment_id=6902977193))
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(module, "verify_adc", return_value=current), \
+                patch.object(module, "_issue71_reconciled_predecessors",
+                             side_effect=module.PhaseEvidenceError("pinned receipt mismatch")):
+            with self.assertRaisesRegex(module.PhaseEvidenceError, "pinned receipt mismatch"):
+                module.publish_phase_evidence(
+                    github, Path(temporary), 71, Phase.DESIGN, Phase.READY,
+                )
+        github.create_issue_comment.assert_not_called()
+        github.replace_issue_labels.assert_not_called()
+
+    def test_predecessor_receipt_write_rechecks_exact_live_subject_and_pr_author(self):
+        issue_body = "approved Issue body"
+        pr_body = "approved PR body"
+        phase_authorization = {
+            "branch_ref": "pases/issue-71-local-activation-v2-phase-rebaseline-epoch-3",
+            "issue_body_sha256": hashlib.sha256(issue_body.encode("utf-8")).hexdigest(),
+            "labels_at_start": ["enhancement", "kind:single", "phase:design"],
+        }
+
+        def live_subject(*, labels=None, head=HEAD, author_id=3744776, adc_id=6902977193):
+            return SimpleNamespace(
+                current_adc=SimpleNamespace(
+                    pointer=SimpleNamespace(comment_id=adc_id),
+                    contract=SimpleNamespace(sha256=rework.ISSUE71_PHASE_AND_USER_REVIEW_ADC_SHA256),
+                ),
+                issue={"body": issue_body},
+                labels=tuple(labels or ("enhancement", "kind:single", "phase:design")),
+                branch_ref=phase_authorization["branch_ref"],
+                head_sha40=head,
+                pr={
+                    "title": rework.PR_TITLE,
+                    "body": pr_body,
+                    "user": {"type": "User", "id": author_id},
+                },
+            )
+
+        cases = (
+            ("labels", {"labels": ("enhancement", "kind:single", "phase:ready")}),
+            ("head", {"head": "e" * 40}),
+            ("PR author", {"author_id": 999}),
+            ("ADC pointer", {"adc_id": 123}),
+        )
+        for mismatch, changes in cases:
+            with self.subTest(mismatch=mismatch), tempfile.TemporaryDirectory() as temporary:
+                live = live_subject(**changes)
+                receipt = decision()
+                receipt.payload["adc_sha256"] = rework.ISSUE71_PHASE_AND_USER_REVIEW_ADC_SHA256
+                github = SimpleNamespace(
+                    repo=REPOSITORY,
+                    issue_comments=Mock(return_value=[]),
+                    create_issue_comment=Mock(return_value={"id": 1234}),
+                )
+                with patch.object(rework, "_live", return_value=live), \
+                        patch.object(
+                            module,
+                            "verify_ordinary_issue_context",
+                            return_value=SimpleNamespace(
+                                commit_sha40=live.head_sha40,
+                                verified_adc=live.current_adc,
+                            ),
+                        ), \
+                        patch.object(
+                            rework,
+                            "verify_issue71_phase_and_user_review_adc_chain",
+                            return_value=({"phase_receipt_reconciliation": phase_authorization}, []),
+                        ), \
+                        patch.object(rework, "PR_BODY_SHA256", hashlib.sha256(pr_body.encode("utf-8")).hexdigest()):
+                    with self.assertRaisesRegex(module.PhaseEvidenceError, "changed before predecessor receipt publication"):
+                        module._publish_prepared_predecessor(
+                            github, Path(temporary), 71, receipt, receipt.body(),
+                        )
+                github.create_issue_comment.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()

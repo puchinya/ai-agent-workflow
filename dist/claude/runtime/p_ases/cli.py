@@ -2462,7 +2462,8 @@ def _ruleset_operation_plan(github: GitHub, plan_path: Path) -> tuple[dict[str, 
 
 
 def _user_review_owner_context(args: argparse.Namespace, repository: str,
-                               github: GitHub) -> dict[str, Any]:
+                               root: Path, github: GitHub, *, issue_number: int = 63
+                               ) -> dict[str, Any]:
     github = _read_only_github(github)
     if args.session is None or args.readiness is None or args.feedback_snapshot is None:
         raise OwnerAuthorizationError(
@@ -2474,13 +2475,15 @@ def _user_review_owner_context(args: argparse.Namespace, repository: str,
     subject = session.subject
     verification_subject = subject.verification_subject
     if (verification_subject.repository != repository
-            or verification_subject.issue_number != 63 or snapshot.subject != subject
+            or verification_subject.issue_number != issue_number or snapshot.subject != subject
             or readiness.status != "PASS" or readiness.subject != verification_subject
             or readiness.sha256 != subject.readiness_sha256
             or snapshot.unresolved_thread_ids):
         raise OwnerAuthorizationError("User Review session, Readiness, feedback snapshot, or Issue identity is stale")
-    _solo_owner_identity(github, repository, 63, verification_subject.pr_number,
-                         verification_subject.pr_head_sha40)
+    owner_id, pr_author_id, verifier_id = _solo_owner_identity(
+        github, repository, issue_number, verification_subject.pr_number,
+        verification_subject.pr_head_sha40, root=root,
+    )
     observed_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
     current = _review_payload_from_github(github, subject, observed_at=observed_at)
     if (current.events != snapshot.events
@@ -2494,13 +2497,27 @@ def _user_review_owner_context(args: argparse.Namespace, repository: str,
         "feedback_sha256": feedback_digest(current.events),
     }
     subject_sha256 = hashlib.sha256(_canonical({
-        "repository": repository, "issue_number": 63,
+        "repository": repository, "issue_number": issue_number,
         "pr_number": verification_subject.pr_number, **details,
     })).hexdigest()
+    if issue_number == 71:
+        details = {
+            **details,
+            "project_profile_sha256": hashlib.sha256(
+                (root / ".agent" / "project.json").read_bytes()
+            ).hexdigest(),
+            "verifier_user_id": verifier_id,
+        }
+        subject_sha256 = hashlib.sha256(_canonical({
+            "repository": repository, "issue_number": issue_number,
+            "pr_number": verification_subject.pr_number, **details,
+        })).hexdigest()
     return {"session": session, "readiness": readiness, "snapshot": snapshot,
             "details": details, "subject_sha256": subject_sha256,
             "pr_number": verification_subject.pr_number,
-            "pr_head_sha40": verification_subject.pr_head_sha40}
+            "pr_head_sha40": verification_subject.pr_head_sha40,
+            "owner_id": owner_id, "pr_author_id": pr_author_id,
+            "verifier_id": verifier_id, "issue_number": issue_number}
 
 
 def _owner_authorization_plan_command(args: argparse.Namespace, repository: str,
@@ -2554,10 +2571,17 @@ def _owner_authorization_plan_command(args: argparse.Namespace, repository: str,
     elif operation == "USER_REVIEW":
         if args.subject_file is not None or args.ruleset_plan is not None:
             raise OwnerAuthorizationError("USER_REVIEW plan does not accept ADC or Ruleset source files")
-        context = _user_review_owner_context(args, repository, github)
+        requested_issue = getattr(args, "target_issue", None)
+        if requested_issue not in {None, 63, 71}:
+            raise OwnerAuthorizationError("USER_REVIEW target is limited to the configured Issue #63 or Issue #71 path")
+        plan_issue = 71 if requested_issue == 71 else 63
+        context = _user_review_owner_context(
+            args, repository, root, github, issue_number=plan_issue,
+        )
         subject_sha256 = context["subject_sha256"]
         pr_number, pr_head = context["pr_number"], context["pr_head_sha40"]
         details = context["details"]
+        target_issue = None
     elif operation == "PR_MERGE":
         if (args.subject_file is not None or args.ruleset_plan is not None
                 or args.pr is None or args.head is None or args.target_issue is None):
@@ -2587,13 +2611,14 @@ def _owner_authorization_plan_command(args: argparse.Namespace, repository: str,
         raise OwnerAuthorizationError("unsupported owner authorization operation")
     plan = create_authorization_plan(
         github, root, operation=operation, subject_sha256=subject_sha256,
-        issue_number=63, target_issue_number=target_issue,
+        issue_number=(plan_issue if operation == "USER_REVIEW" else 63),
+        target_issue_number=target_issue,
         pr_number=pr_number, pr_head_sha40=pr_head, details=details,
     )
     write_authorization_plan(args.output, plan)
     _json({"status": "PLANNED", "operation": operation, "output": str(args.output),
            "subject_sha256": subject_sha256, "plan_sha256": plan["plan_sha256"],
-           "repository": repository, "issue": 63, "target_issue": target_issue,
+           "repository": repository, "issue": plan["issue_number"], "target_issue": target_issue,
            "pr": pr_number, "head": pr_head, "chat_signature": False})
     return 0
 
@@ -2645,7 +2670,10 @@ def _validate_owner_authorization_source(args: argparse.Namespace, plan: dict[st
         if expected != plan["subject_sha256"] or details != plan["details"]:
             raise OwnerAuthorizationError("PR merge subject digest differs from the exact target PR")
     elif plan["operation"] == "USER_REVIEW":
-        context = _user_review_owner_context(args, repository, github)
+        context = _user_review_owner_context(
+            args, repository, args.root or _runtime_root(args), github,
+            issue_number=plan["issue_number"],
+        )
         if (context["subject_sha256"] != plan["subject_sha256"]
                 or context["details"] != plan["details"]
                 or context["pr_number"] != plan["pr_number"]
@@ -3071,16 +3099,24 @@ def _owner_authorization_resume_command(args: argparse.Namespace, repository: st
             or session.subject.readiness_sha256 != details["readiness_sha256"]
             or readiness.status != "PASS" or readiness.sha256 != details["readiness_sha256"]
             or verification_subject.repository != repository
-            or verification_subject.issue_number != 63
+            or verification_subject.issue_number != plan["issue_number"]
             or verification_subject.pr_number != plan["pr_number"]
             or verification_subject.pr_head_sha40 != details["pr_head_sha40"]
             or verification_subject.adc_sha256 != details["adc_sha256"]):
         raise OwnerAuthorizationError("User Review recovery session or Readiness differs from the plan")
+    read_github = _read_only_github(github)
     owner_id, pr_author_id, verifier_id = _solo_owner_identity(
-        github, repository, 63, plan["pr_number"], details["pr_head_sha40"],
+        read_github, repository, plan["issue_number"], plan["pr_number"],
+        details["pr_head_sha40"], root=root,
     )
+    if plan["issue_number"] == 71 and (
+            details.get("project_profile_sha256") != hashlib.sha256(
+                (root / ".agent" / "project.json").read_bytes()
+            ).hexdigest()
+            or details.get("verifier_user_id") != verifier_id):
+        raise OwnerAuthorizationError("Issue #71 profile or independent verifier differs from the exact plan")
     approval = _read_user_review_relay_approval(
-        github, session=session, readiness=readiness, owner_id=owner_id, verifier_id=verifier_id,
+        read_github, session=session, readiness=readiness, owner_id=owner_id, verifier_id=verifier_id,
         feedback_sha256=details["feedback_sha256"], plan_sha256=plan["plan_sha256"],
         approval_scope_sha256=plan["approval_scope_sha256"],
     )
@@ -3096,7 +3132,7 @@ def _owner_authorization_resume_command(args: argparse.Namespace, repository: st
                "reasons": ["exact chat-confirmed User Review scope is missing or stale"]})
         return 2
     observed_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-    fresh = _review_payload_from_github(github, session.subject, observed_at=observed_at)
+    fresh = _review_payload_from_github(read_github, session.subject, observed_at=observed_at)
     prior_events = [event for event in fresh.events
                     if not (event.channel == "issue-comment" and event.event_id == str(approval.comment_id))]
     if (fresh.unresolved_thread_ids
@@ -3159,7 +3195,8 @@ def _verify_ruleset_noop(github: GitHub, plan: dict[str, Any]) -> dict[str, Any]
 
 
 def _solo_owner_identity(github: ReadOnlyGitHub, repository: str, issue_number: int,
-                         pr_number: int, expected_head_sha40: str) -> tuple[int, int, int]:
+                         pr_number: int, expected_head_sha40: str, *,
+                         root: Path | None = None) -> tuple[int, int, int]:
     """Read configured owner, fresh PR author and independent read-only principal."""
     if type(github) is not ReadOnlyGitHub:
         raise CLIError("User Review verifier must use the dedicated read-only GitHub client")
@@ -3167,8 +3204,88 @@ def _solo_owner_identity(github: ReadOnlyGitHub, repository: str, issue_number: 
         github.verify_read_only_scope()
     except GitHubError as exc:
         raise CLIError("User Review read-only verifier route is not positively verified") from exc
-    if repository.casefold() != "puchinya/ai-agent-workflow" or issue_number != 63:
-        raise CLIError("solo_owner identity is only configured for puchinya/ai-agent-workflow Issue #63")
+    if repository.casefold() != "puchinya/ai-agent-workflow" or issue_number not in {63, 71}:
+        raise CLIError("solo_owner identity is not configured for this repository and Issue")
+    if issue_number == 71:
+        if root is None:
+            raise CLIError("Issue #71 solo_owner identity requires the exact repository root")
+        root = Path(root)
+        try:
+            from .phase_rework import (
+                ISSUE71_PHASE_AND_USER_REVIEW_ADC_COMMENT_ID,
+                ISSUE71_PHASE_AND_USER_REVIEW_ADC_SHA256,
+                PR_BODY_SHA256,
+                PR_TITLE,
+                verify_issue71_phase_and_user_review_adc_chain,
+            )
+            current_adc = verify_adc(github, 71)
+            authorization, _chain = verify_issue71_phase_and_user_review_adc_chain(github, current_adc)
+        except (ADCError, ValueError) as exc:
+            raise CLIError(f"Issue #71 current approved ADC authority is invalid: {exc}") from exc
+        if (current_adc.pointer.comment_id != ISSUE71_PHASE_AND_USER_REVIEW_ADC_COMMENT_ID
+                or current_adc.contract.sha256 != ISSUE71_PHASE_AND_USER_REVIEW_ADC_SHA256):
+            raise CLIError("Issue #71 current ADC differs from its approved User Review authorization")
+        profile_path = root / ".agent" / "project.json"
+        if (root.is_symlink() or not root.is_dir() or profile_path.parent.is_symlink()
+                or profile_path.is_symlink()
+                or not profile_path.is_file()):
+            raise CLIError("Issue #71 project profile must be a regular file in the exact repository root")
+        profile_sha256 = hashlib.sha256(profile_path.read_bytes()).hexdigest()
+        user_review_auth = authorization["issue71_user_review_authorization"]
+        if (profile_sha256 != user_review_auth["project_profile_sha256"]
+                or load_profile(root).final_delivery_review_mode != "solo_owner"):
+            raise CLIError("Issue #71 current project profile differs from the approved solo_owner profile")
+        metadata = github.repository_metadata()
+        owner = metadata.get("owner") if isinstance(metadata, dict) else None
+        full_name = metadata.get("full_name") if isinstance(metadata, dict) else None
+        owner_login = owner.get("login") if isinstance(owner, dict) else None
+        if (not isinstance(metadata, dict) or metadata.get("id") != authorization["repository_id"]
+                or not isinstance(full_name, str) or full_name.casefold() != repository.casefold()
+                or not isinstance(owner, dict) or owner.get("type") != "User"
+                or owner.get("id") != authorization["owner_id"]
+                or not isinstance(owner_login, str) or owner_login.casefold() != "puchinya"):
+            raise CLIError("fresh repository metadata differs from the Issue #71 owner and repository IDs")
+        issue = github.issue(71)
+        issue_labels = [row.get("name") for row in issue.get("labels", []) if isinstance(row, dict)]
+        issue_body = issue.get("body")
+        if (issue.get("number") != 71 or issue.get("id") != 6135294757
+                or issue.get("state") != "open" or issue.get("pull_request") is not None
+                or issue.get("repository_url") != f"https://api.github.com/repos/{repository}"
+                or not isinstance(issue_body, str)
+                or hashlib.sha256(issue_body.encode("utf-8")).hexdigest()
+                != authorization["current_issue_body_sha256"]
+                or len(issue_labels) != len(set(issue_labels))
+                or tuple(sorted(issue_labels)) not in {
+                    tuple(sorted(("enhancement", "kind:single", "phase:verification"))),
+                    tuple(sorted(("enhancement", "kind:single", "phase:user-review"))),
+                }):
+            raise CLIError("fresh Issue #71 identity, body, state, or phase labels differ from the authorized subject")
+        pr = github.pull_request(pr_number)
+        head = pr.get("head") if isinstance(pr, dict) else None
+        base = pr.get("base") if isinstance(pr, dict) else None
+        author = pr.get("user") if isinstance(pr, dict) else None
+        head_repo = head.get("repo") if isinstance(head, dict) else None
+        base_repo = base.get("repo") if isinstance(base, dict) else None
+        pr_body = pr.get("body") if isinstance(pr, dict) else None
+        if (not isinstance(pr, dict) or pr.get("number") != user_review_auth["pr_number"]
+                or pr.get("state") != "open" or pr.get("draft") is not False
+                or pr.get("merged_at") is not None or pr.get("merged") is True
+                or pr.get("title") != PR_TITLE or not isinstance(pr_body, str)
+                or hashlib.sha256(pr_body.encode("utf-8")).hexdigest() != PR_BODY_SHA256
+                or not isinstance(head, dict) or head.get("sha") != expected_head_sha40
+                or head.get("ref") != authorization["branch_ref"]
+                or not isinstance(head_repo, dict) or head_repo.get("id") != authorization["repository_id"]
+                or not isinstance(base, dict) or base.get("ref") != authorization["frozen_base_ref"]
+                or base.get("sha") != authorization["frozen_base_sha40"]
+                or not isinstance(base_repo, dict) or base_repo.get("id") != authorization["repository_id"]
+                or not isinstance(author, dict) or author.get("type") != "User"
+                or author.get("id") != authorization["owner_id"]):
+            raise CLIError("fresh PR #75 author, state, HEAD, base, or repository differs from the approved subject")
+        verifier = github.authenticated_user()
+        verifier_id = verifier.get("id") if isinstance(verifier, dict) else None
+        if type(verifier_id) is not int or verifier_id < 1:
+            raise CLIError("read-only GitHub verifier principal is unavailable")
+        return authorization["owner_id"], author["id"], verifier_id
     metadata = github.repository_metadata()
     owner = metadata.get("owner") if isinstance(metadata, dict) else None
     full_name = metadata.get("full_name") if isinstance(metadata, dict) else None
@@ -3364,7 +3481,7 @@ def _user_review_run(args: argparse.Namespace, repository: str, root: Path, gith
         review_mode = profile.final_delivery_review_mode
         if review_mode == "solo_owner":
             owner_id, pr_author_id, verifier_id = _solo_owner_identity(
-                github, repository, args.issue, args.pr, args.head,
+                github, repository, args.issue, args.pr, args.head, root=root,
             )
             allowed_user_ids = (owner_id,)
         else:
@@ -3442,7 +3559,7 @@ def _user_review_run(args: argparse.Namespace, repository: str, root: Path, gith
         current_readiness = read_readiness(args.readiness)
         if review_mode == "solo_owner":
             current_owner_id, current_author_id, current_verifier_id = _solo_owner_identity(
-                github, repository, args.issue, args.pr, args.head,
+                github, repository, args.issue, args.pr, args.head, root=root,
             )
             second_relay_approval = _read_user_review_relay_approval(
                 github, session=session, readiness=current_readiness,
@@ -3538,7 +3655,9 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
         )
         review_mode = profile.final_delivery_review_mode
         if review_mode == "solo_owner":
-            identity = _solo_owner_identity(github, repository, args.issue, args.pr, args.head)
+            identity = _solo_owner_identity(
+                github, repository, args.issue, args.pr, args.head, root=root,
+            )
             owner_id, pr_author_id, verifier_id = identity
             allowed_user_ids = (owner_id,)
         else:
@@ -3657,7 +3776,9 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
         final_feedback = _review_payload_from_github(github, fresh_subject, observed_at=final_observed)
         final_feedback = merge_feedback_history(previous, final_feedback)
         if review_mode == "solo_owner":
-            final_identity = _solo_owner_identity(github, repository, args.issue, args.pr, args.head)
+            final_identity = _solo_owner_identity(
+                github, repository, args.issue, args.pr, args.head, root=root,
+            )
             final_relay_approval = _read_user_review_relay_approval(
                 github, session=final_session, readiness=final_readiness,
                 owner_id=final_identity[0], verifier_id=final_identity[2],

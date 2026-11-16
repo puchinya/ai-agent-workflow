@@ -69,6 +69,8 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
     - [2.28.1 ORA-RT-028 Expected result](#2281-ora-rt-028-expected-result)
   - [2.29 TST-RT-029 Issue #71 Applied timestamp reconciliation CLI](#229-tst-rt-029-issue-71-applied-timestamp-reconciliation-cli)
     - [2.29.1 ORA-RT-029 Expected result](#2291-ora-rt-029-expected-result)
+  - [2.30 TST-RT-030 Combined ADC receipts and Issue #71 User Review identity](#230-tst-rt-030-combined-adc-receipts-and-issue-71-user-review-identity)
+    - [2.30.1 ORA-RT-030 Expected result](#2301-ora-rt-030-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -131,6 +133,8 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
 - [ORA-RT-028](#ora-rt-028) — 2.28.1 ORA-RT-028 Expected result
 - [TST-RT-029](#tst-rt-029) — 2.29 TST-RT-029 Issue #71 Applied timestamp reconciliation CLI
 - [ORA-RT-029](#ora-rt-029) — 2.29.1 ORA-RT-029 Expected result
+- [TST-RT-030](#tst-rt-030) — 2.30 TST-RT-030 Combined ADC receipts and Issue #71 User Review identity
+- [ORA-RT-030](#ora-rt-030) — 2.30.1 ORA-RT-030 Expected result
 <!-- heading-map:end -->
 
 
@@ -475,3 +479,13 @@ Recovery accepts only the exact current approved successor and its one pending I
 #### 2.29.1 ORA-RT-029 Expected result
 
 The CLI accepts only the exact timestamp-recovery successor and its pinned Applied record. Applied reconciliation with the current binding is a read-only NOOP. Without the binding, it may append only local immutable binding/checkpoint evidence. Neither path writes Issue labels/comments or recomputes Readiness.
+
+<a id="tst-rt-030"></a>
+### 2.30 TST-RT-030 Combined ADC receipts and Issue #71 User Review identity
+
+**Setup and action:** Unit-test the combined marker's exact pointer/length/digest gate, canonical duplicate and malformed-marker rejection, exact ordered history links, and one-child path boundary. Exercise historical Phase receipt overrides with exact current ADC/generation/HEAD subjects and wrong-ID, wrong-SHA, wrong-commit, stale-document, duplicate, and conflicting cases. Inject a preflight failure into design→ready and assert zero comment or label writes. For owner authorization, create an exact Issue #71 USER_REVIEW plan through a GET-only fake that records every Issue request; vary profile, verifier, PR number/title/body/author/base/HEAD, ADC, Issue phase/body, session, Readiness, and feedback. Confirm the V3 plan rejects CLI/file consent, requires the typed direct-chat grant, targets only Issue #71, and never requests Issue #63. Preserve Issue #63 plan and relay compatibility tests.
+
+<a id="ora-rt-030"></a>
+#### 2.30.1 ORA-RT-030 Expected result
+
+Only a complete canonical combined marker and exact pinned chain pass. Historical receipt continuations bind current generation and HEAD; every malformed or stale case stops before writes. Issue #71 owner authorization accepts only its exact GET-verified subject and V3 grant, publishes or reads only through the bound Issue #71 route, and never touches Issue #63. Issue #63 regressions retain their prior results.

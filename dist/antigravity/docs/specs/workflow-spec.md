@@ -119,6 +119,16 @@
   - [9.92 REQ-F01-140 Verify immutable approved ADC history](#992-req-f01-140-verify-immutable-approved-adc-history)
   - [9.93 REQ-F01-141 Parse only the current ADC authorization](#993-req-f01-141-parse-only-the-current-adc-authorization)
   - [9.94 REQ-F01-142 Preserve bounded continuation and delivery gates](#994-req-f01-142-preserve-bounded-continuation-and-delivery-gates)
+  - [9.95 REQ-F01-143 Validate the combined current ADC authorization](#995-req-f01-143-validate-the-combined-current-adc-authorization)
+  - [9.96 REQ-F01-144 Validate completed historical Phase receipts](#996-req-f01-144-validate-completed-historical-phase-receipts)
+  - [9.97 REQ-F01-145 Reissue only completed predecessor receipts](#997-req-f01-145-reissue-only-completed-predecessor-receipts)
+  - [9.98 REQ-F01-146 Make Phase receipt reconciliation idempotent](#998-req-f01-146-make-phase-receipt-reconciliation-idempotent)
+  - [9.99 REQ-F01-147 Gate the bounded continuation and advance normally](#999-req-f01-147-gate-the-bounded-continuation-and-advance-normally)
+  - [9.100 REQ-F01-148 Verify Issue #71 solo-owner identity](#9100-req-f01-148-verify-issue-71-solo-owner-identity)
+  - [9.101 REQ-F01-149 Bind the Issue #71 User Review plan](#9101-req-f01-149-bind-the-issue-71-user-review-plan)
+  - [9.102 REQ-F01-150 Preserve exact append-only User Review decisions](#9102-req-f01-150-preserve-exact-append-only-user-review-decisions)
+  - [9.103 REQ-F01-151 Start User Review and leave its decision pending](#9103-req-f01-151-start-user-review-and-leave-its-decision-pending)
+  - [9.104 REQ-F01-152 Enforce the authorization exclusions](#9104-req-f01-152-enforce-the-authorization-exclusions)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -227,6 +237,16 @@
 - [REQ-F01-140](#req-f01-140) — 9.92 REQ-F01-140 Verify immutable approved ADC history
 - [REQ-F01-141](#req-f01-141) — 9.93 REQ-F01-141 Parse only the current ADC authorization
 - [REQ-F01-142](#req-f01-142) — 9.94 REQ-F01-142 Preserve bounded continuation and delivery gates
+- [REQ-F01-143](#req-f01-143) — 9.95 REQ-F01-143 Validate the combined current ADC authorization
+- [REQ-F01-144](#req-f01-144) — 9.96 REQ-F01-144 Validate completed historical Phase receipts
+- [REQ-F01-145](#req-f01-145) — 9.97 REQ-F01-145 Reissue only completed predecessor receipts
+- [REQ-F01-146](#req-f01-146) — 9.98 REQ-F01-146 Make Phase receipt reconciliation idempotent
+- [REQ-F01-147](#req-f01-147) — 9.99 REQ-F01-147 Gate the bounded continuation and advance normally
+- [REQ-F01-148](#req-f01-148) — 9.100 REQ-F01-148 Verify Issue #71 solo-owner identity
+- [REQ-F01-149](#req-f01-149) — 9.101 REQ-F01-149 Bind the Issue #71 User Review plan
+- [REQ-F01-150](#req-f01-150) — 9.102 REQ-F01-150 Preserve exact append-only User Review decisions
+- [REQ-F01-151](#req-f01-151) — 9.103 REQ-F01-151 Start User Review and leave its decision pending
+- [REQ-F01-152](#req-f01-152) — 9.104 REQ-F01-152 Enforce the authorization exclusions
 <!-- heading-map:end -->
 
 
@@ -978,3 +998,53 @@ Parse exactly one canonical authorization marker from the current approved succe
 ### 9.94 REQ-F01-142 Preserve bounded continuation and delivery gates
 
 Preserve `d1704c125d4de49e84ffffceb14756c9cc555962` and allow exactly one direct-child commit on the exact 15-path allowlist. Preserve and validate each earlier commit segment independently. At the new exact pushed HEAD, require all configured gates, fresh exact-subject Verification/Acceptance/Self-Audit/native Independent Review, and PRBinding. Reconcile Applied read-only as zero-write `NOOP` before phase writes; then use supported `design → ready`, READY, and normal execution advance with full readback. No merge, Admin, Activation, Issue #63, or Issue-close operation is authorized.
+
+<a id="req-f01-143"></a>
+### 9.95 REQ-F01-143 Validate the combined current ADC authorization
+
+Verify the exact approved pointer, direct predecessor #6897385343, all twelve ordered approved generations, exact byte lengths and body digests, and every predecessor link. Parse only one strict canonical current marker. Bind the repository, owner, Issue/body, epoch, active Phase generation, Intent/Applied, branch, frozen base, PR #75 metadata, starting HEAD, previous and new authorization digests, Issue #71 `solo_owner` profile SHA, and exact 32-path allowlist. Reject duplicates, unknown/missing fields, noncanonical JSON, stale identity, altered history, or any mismatch before a write; historical ADC markers remain opaque.
+
+<a id="req-f01-144"></a>
+### 9.96 REQ-F01-144 Validate completed historical Phase receipts
+
+Read the pinned requirements→specification and specification→design receipts by exact comment IDs and full body SHA-256. Require their authenticated owner author, approved source ADC #6891926625 in the verified chain, current active Phase generation, exact Issue/branch/source commit, and document bytes from the historical commit. Read each direct/list/direct. Never parse a historical ADC marker or alter an old receipt.
+
+<a id="req-f01-145"></a>
+### 9.97 REQ-F01-145 Reissue only completed predecessor receipts
+
+Before design→ready evidence is published, prepare current-generation requirements→specification and specification→design receipts from the current approved ADC, committed specification/design bytes, exact pushed HEAD, and unchanged Phase generation. Require the exact pinned prior chain. Reissue only those already-completed edges; do not create an uncompleted edge, alter labels, or fabricate history.
+
+<a id="req-f01-146"></a>
+### 9.98 REQ-F01-146 Make Phase receipt reconciliation idempotent
+
+Validate historical inputs and precompute every new receipt body before the first POST. Reuse one unique exact existing body. Recover an ambiguous POST only through exact direct/list/direct readback and never retry it. Duplicates, conflicting bodies, historical drift, identity drift, changed artifacts, or any preflight failure block before writes. A partial append resumes only by reusing its exact previously prepared body.
+
+<a id="req-f01-147"></a>
+### 9.99 REQ-F01-147 Gate the bounded continuation and advance normally
+
+Preserve starting HEAD `dfdde9a8e29edd9c69e312a290b6e1cef9eb50a2` and allow one direct-child commit containing only the exact marker allowlist. At the exact pushed HEAD complete every local and hosted gate, fresh Verification/Acceptance/Self-Audit/native Independent Review, PRBinding, and read-only Applied `NOOP` with zero Issue writes before phase writes. Reissue the two completed edges, publish/read back design→ready, then use only supported design→ready, ready→execution, execution→verification, and verification→user-review transitions with fresh exact-subject evidence.
+
+<a id="req-f01-148"></a>
+### 9.100 REQ-F01-148 Verify Issue #71 solo-owner identity
+
+In `solo_owner` mode, use the dedicated GET-only GitHub client to re-read repository ID 1401910271, owner User ID 3744776, current ADC, exact profile SHA, Issue #71 body/state/phase, and PR #75 author/state/title/body/base/HEAD/repository identity. Accept only the marker's exact Issue #71 and PR #75 subject at the current expected HEAD. Preserve the existing Issue #63 identity behavior; any other Issue, PR, actor, profile, ADC, or HEAD blocks before User Review or phase evidence writes.
+
+<a id="req-f01-149"></a>
+### 9.101 REQ-F01-149 Bind the Issue #71 User Review plan
+
+The Issue #71 `USER_REVIEW` plan binds the exact repository, Issue, PR, HEAD, ADC SHA, Readiness SHA, immutable session SHA, full pre-decision feedback SHA, profile SHA, owner ID, and independent verifier ID. Accept this plan only for Issue #71 and PR #75 under the current combined ADC. Require the existing in-process direct same-conversation user-role confirmation; CLI input, environment variables, files, copied plans, and assistant text are not consent. A confirmed action may publish one V3 decision carrier only to Issue #71 with direct/list/direct readback. This route makes no Issue #63 reads or writes.
+
+<a id="req-f01-150"></a>
+### 9.102 REQ-F01-150 Preserve exact append-only User Review decisions
+
+Keep User Review decision history append-only and bound to one exact session. Reject stale session, Readiness, ADC, HEAD, changed feedback, unresolved threads, non-owner actor, wrong decision carrier, duplicate decision, ambiguous body, or failed readback. Never retry an ambiguous POST. Preserve Issue #63 User Review V1/V2/V3 behavior.
+
+<a id="req-f01-151"></a>
+### 9.103 REQ-F01-151 Start User Review and leave its decision pending
+
+After exact current-head Verification, Acceptance, audits, PRBinding, and READY proof, use the ordinary Issue #71 User Review start path only from `phase:verification` with current Readiness PASS. Persist and read back the immutable session and complete feedback snapshot, then leave Issue #71 at `phase:user-review`. A pending result may establish the session but must never create an approval, change requirements, or bypass feedback checks. The human decision is a separate action bound to that exact session.
+
+<a id="req-f01-152"></a>
+### 9.104 REQ-F01-152 Enforce the authorization exclusions
+
+This continuation authorizes no Issue #63 operation, Admin or Ruleset operation, Setup PR, Activation, PR merge, release, tag push, or Issue close. A 403 or empty Rulesets result is not proof of absent protection. Keep the Admin policy readback BLOCKED until a complete verified read succeeds.

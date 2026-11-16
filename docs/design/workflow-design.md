@@ -50,6 +50,7 @@
   - [5.35 DES-F01-095 Exact Markdown predecessor parsing and successor chain](#535-des-f01-095-exact-markdown-predecessor-parsing-and-successor-chain)
   - [5.36 DES-F01-096 Generic approved history reader and successor segment](#536-des-f01-096-generic-approved-history-reader-and-successor-segment)
 - [6 DES-WF-003 Workspace execution flow](#6-des-wf-003-workspace-execution-flow)
+  - [6.1 5.37 DES-F01-097 Combined Phase continuation and Issue #71 User Review](#61-537-des-f01-097-combined-phase-continuation-and-issue-71-user-review)
 - [7 DES-WF-004 Failure handling](#7-des-wf-004-failure-handling)
 - [8 DES-WF-005 Authorization boundary and PR handoff](#8-des-wf-005-authorization-boundary-and-pr-handoff)
 - [9 Alternatives considered](#9-alternatives-considered)
@@ -98,6 +99,7 @@
 - [DES-F01-095](#des-f01-095) — 5.35 DES-F01-095 Exact Markdown predecessor parsing and successor chain
 - [DES-F01-096](#des-f01-096) — 5.36 DES-F01-096 Generic approved history reader and successor segment
 - [DES-WF-003](#des-wf-003) — 6 DES-WF-003 Workspace execution flow
+- [DES-F01-097](#des-f01-097) — 6.1 5.37 DES-F01-097 Combined Phase continuation and Issue #71 User Review
 - [DES-WF-004](#des-wf-004) — 7 DES-WF-004 Failure handling
 - [DES-WF-005](#des-wf-005) — 8 DES-WF-005 Authorization boundary and PR handoff
 - [DES-WF-006](#des-wf-006) — 11 DES-WF-006 Human review and final delivery
@@ -452,6 +454,18 @@ The one-time Issue #63 / PR #64 adoption is a separate prospective origin, not a
 The adopted epoch is the immutable execution origin, while the latest PRBinding is the generation-specific authority. For the single adopted #63/#64 execution, a new approved ADC must first form a complete forward chain from the epoch ADC and have its own completed V2 Phase pair. A dedicated `work adoption-refresh 63` then appends one PRBinding V3 preserving adoption ID, Issue, PR, frozen base and branch while binding the current ADC and exact current PR HEAD; its V2 checkpoint retains the original epoch SHA. Before that append, normal verification blocks as `ADC_REFRESH_REQUIRED`; before the current generation's Applied receipt it blocks as `ADC_REFRESH_PENDING_PHASE_REBASELINE`. The operation revalidates the immutable remote adoption history and all local/remote ancestry immediately before its create-only append. If only the checkpoint is absent on retry, it appends that one artifact; if both records exist, it is a zero-write NOOP. `work recover` never refreshes, and `pr ensure` can only append a same-current-generation HEAD row. No generic adoption journal or V1 Binding migration is introduced.
 
 Git cleanliness sees untracked content in the main checkout. Claude Code’s default `.claude/worktrees/` location is nested under that checkout, but host settings or `WorktreeCreate` hooks can place worktrees elsewhere. Project-owned ignore rules are therefore guidance and configuration, not runtime host-path inference or a universal preflight. This does not change host-owned worktree lifecycle or PR gates. If a local original binding is lost, an exact PR continuation by itself is not evidence for that original base, worktree, or initial HEAD. The current runtime blocks `work recover` without an authenticated binding. Only the distinct one-time Issue #63 / PR #64 adoption route above can create a prospective epoch after final-HEAD CI and a separate typed Owner decision; normal executions do not receive this exception. Durable remote anchors and workspace reattachment for ordinary new work remain a separate follow-up.
+
+<a id="des-f01-097"></a>
+<a id="537-des-f01-097-combined-phase-continuation-and-issue-71-user-review"></a>
+### 6.1 5.37 DES-F01-097 Combined Phase continuation and Issue #71 User Review
+
+The current ADC reader has one typed combined authorization path. It verifies the current pointer and predecessor, the full ordered approved history, every predecessor link, the exact canonical marker, all carried and new authorization digests, and the complete path allowlist. Prior generations are verified as opaque bodies; their markers never grant authority. The continuation validator checks the bounded one-child segment from the pinned starting HEAD before phase work.
+
+The Phase evidence path first verifies the two immutable historical receipts against their exact IDs and body digests, approved source ADC, active Phase generation, owner-authored comment identity, historical source commit, and document blobs at that commit. It then prepares replacements for the two completed edges and the design→ready body from current committed artifacts and HEAD. The complete set is preflighted before POST. Existing exact bodies are reused; conflicts and duplicates stop. Each permitted append is preceded by fresh Issue/ADC/branch checks and followed by direct/list/direct readback. Ambiguous writes are reconciled once by reads and never retried.
+
+Issue #71 `solo_owner` validation uses a dedicated GET-only client for repository, Issue, PR, ADC, profile, and verifier identity. The plan includes session, Readiness, ADC, HEAD, pre-decision feedback, profile, owner, and verifier digests/IDs. In-process chat confirmation is required for a decision; that path publishes only the exact V3 carrier to Issue #71 and reads it back without consulting Issue #63. The existing Issue #63 path remains unchanged.
+
+The standard phase commands perform the supported transitions after fresh evidence: reissued completed receipts, design→ready, ready→execution, execution→verification, then verification→user-review. User Review start requires current Readiness PASS and preserves the complete feedback snapshot. It leaves a pending immutable session at `phase:user-review`; it cannot synthesize the owner's separate decision. Admin policy, Activation, merge, release, tag, Issue #63, and Issue-close operations remain outside this continuation.
 
 <a id="des-wf-004"></a>
 <a id="des-wf-004-failure-handling"></a>

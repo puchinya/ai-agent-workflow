@@ -20,6 +20,7 @@ from p_ases.owner_authorization import (
     capture_direct_chat_confirmation, create_authorization_plan, resume_authorization,
     issue63_deferred_merge_details, read_authorization_plan, write_authorization_plan,
 )
+from p_ases import owner_authorization as owner_module
 from p_ases.admin_auth import AdminAuthError
 from p_ases.github import GitHubError
 from p_ases.cli import (_create_merge_attempt, _merge_readback, _perform_authorized_merge,
@@ -33,6 +34,34 @@ REPOSITORY_ID = 1401910271
 OWNER_ID = 3744776
 SUBJECT_SHA = "a" * 64
 PLAN_HEAD = "b" * 40
+
+
+def issue71_user_review_plan() -> dict[str, object]:
+    payload: dict[str, object] = {
+        "schema": owner_module.PLAN_SCHEMA,
+        "repository": REPOSITORY,
+        "repository_id": REPOSITORY_ID,
+        "owner_id": OWNER_ID,
+        "issue_number": 71,
+        "operation": "USER_REVIEW",
+        "subject_sha256": "1" * 64,
+        "pr_number": 75,
+        "pr_head_sha40": PLAN_HEAD,
+        "target_issue_number": None,
+        "source_head_sha40": "2" * 40,
+        "details": {
+            "review_session_sha256": "3" * 64,
+            "readiness_sha256": "4" * 64,
+            "adc_sha256": "5" * 64,
+            "pr_head_sha40": PLAN_HEAD,
+            "feedback_sha256": "6" * 64,
+            "project_profile_sha256": owner_module.ISSUE71_PROFILE_SHA256,
+            "verifier_user_id": 9881,
+        },
+    }
+    payload["approval_scope_sha256"] = owner_module._approval_scope_sha256(payload)
+    payload["plan_sha256"] = hashlib.sha256(owner_module._canonical(payload)).hexdigest()
+    return owner_module._validate_plan(payload)
 
 
 def adoption_plan_payload() -> dict[str, object]:
@@ -962,6 +991,79 @@ class OwnerAuthorizationTests(unittest.TestCase):
                 with self.assertRaises(OwnerAuthorizationError):
                     authorize_plan(stale, root, path, stdin=TTY(), input_fn=lambda _prompt: "")
             self.assertEqual(stale.writes, [])
+
+    def test_issue71_user_review_plan_binds_profile_and_pr75(self):
+        plan = issue71_user_review_plan()
+        self.assertEqual((plan["issue_number"], plan["pr_number"]), (71, 75))
+        self.assertEqual(owner_module._validate_plan(plan), plan)
+
+        altered = dict(plan)
+        altered["details"] = {**plan["details"], "project_profile_sha256": "0" * 64}
+        unsigned = {key: value for key, value in altered.items()
+                    if key not in {"approval_scope_sha256", "plan_sha256"}}
+        altered["approval_scope_sha256"] = owner_module._approval_scope_sha256(unsigned)
+        unsigned["approval_scope_sha256"] = altered["approval_scope_sha256"]
+        altered["plan_sha256"] = hashlib.sha256(owner_module._canonical(unsigned)).hexdigest()
+        with self.assertRaisesRegex(OwnerAuthorizationError, "User Review authorization plan details are invalid"):
+            owner_module._validate_plan(altered)
+
+    def test_issue71_v3_confirmation_publishes_only_to_issue71(self):
+        plan = issue71_user_review_plan()
+        grant = capture_direct_chat_confirmation(
+            plan, response="承認する", user_role="user", same_conversation=True,
+        )
+        with self.assertRaisesRegex(OwnerAuthorizationError, "CHAT_PROVENANCE_UNAVAILABLE"):
+            capture_direct_chat_confirmation(
+                plan, response="承認する", user_role="user", same_conversation=False,
+            )
+        session = SimpleNamespace(
+            sha256=plan["details"]["review_session_sha256"],
+            subject=SimpleNamespace(readiness_sha256=plan["details"]["readiness_sha256"]),
+        )
+        context = {
+            "session": session,
+            "subject_sha256": plan["subject_sha256"],
+            "details": plan["details"],
+        }
+
+        class ChatGitHub:
+            repo = REPOSITORY
+
+            def __init__(self):
+                self.issue_reads: list[int] = []
+
+            def authenticated_user(self):
+                return {"type": "User", "id": OWNER_ID, "login": "puchinya"}
+
+            def issue(self, number):
+                self.issue_reads.append(number)
+                raise AssertionError("Issue #71 V3 chat path must not read an owner-decision carrier Issue")
+
+        github = ChatGitHub()
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch("p_ases.owner_authorization.worktree_clean", return_value=True), \
+                patch("p_ases.owner_authorization.head_sha40", return_value=plan["source_head_sha40"]), \
+                patch("p_ases.owner_authorization.create_authorization_plan", return_value=plan), \
+                patch("p_ases.user_review_relay.publish_chat_confirmed_user_review_decision",
+                      return_value=SimpleNamespace(comment_id=808, evidence_type="PASES_USER_REVIEW_DECISION_V3",
+                                                   evidence_channel="chat_confirmed_gh_v1")) as publish:
+            result = authorize_chat_confirmed_plan(
+                github, Path(temporary), plan, grant, user_review_context=context,
+                source_validator=lambda: context,
+            )
+        self.assertEqual(result["operation"], "USER_REVIEW")
+        self.assertEqual(result["owner_decision_comment_id"], 808)
+        self.assertEqual(github.issue_reads, [])
+        self.assertEqual(publish.call_args.kwargs["issue_number"], 71)
+
+    def test_issue71_user_review_cannot_use_owner_local_v2(self):
+        plan = issue71_user_review_plan()
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "plan.json"
+            write_authorization_plan(path, plan)
+            with patch("p_ases.owner_authorization._check_owner_local_tty"):
+                with self.assertRaisesRegex(OwnerAuthorizationError, "owner-local V2 is disabled"):
+                    authorize_plan(FakeGitHub(), Path(temporary), path)
 
 
 if __name__ == "__main__":

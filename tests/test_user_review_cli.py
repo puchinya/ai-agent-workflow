@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import json
 import sys
@@ -25,6 +26,7 @@ from p_ases.cli import (
     CLIError, _latest_review_snapshot, _parser, _read_only_github, _readiness_phase_blocker,
     _review_phase_transition, _solo_owner_identity, _user_review_run,
 )
+from p_ases import phase_rework as phase_rework_module
 
 
 HEAD = "a" * 40
@@ -139,6 +141,78 @@ class UserReviewCliRegressionTests(unittest.TestCase):
             _solo_owner_identity(reader, "puchinya/ai-agent-workflow", 63, 64, HEAD),
             (3744776, 3744776, 9881),
         )
+
+    def test_issue71_solo_owner_identity_is_exact_and_never_reads_issue63(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / ".agent").mkdir()
+            profile_bytes = (ROOT / ".agent" / "project.json").read_bytes()
+            profile_path = root / ".agent" / "project.json"
+            profile_path.write_bytes(profile_bytes)
+            profile_sha = hashlib.sha256(profile_bytes).hexdigest()
+            issue_body = "Exact Issue 71 body"
+            issue_body_sha = hashlib.sha256(issue_body.encode()).hexdigest()
+            pr_body = "Refs #71"
+            pr_body_sha = hashlib.sha256(pr_body.encode()).hexdigest()
+            phase_authorization = {
+                "repository_id": 1401910271,
+                "owner_id": 3744776,
+                "current_issue_body_sha256": issue_body_sha,
+                "branch_ref": phase_rework_module.BRANCH_REF,
+                "frozen_base_ref": "main",
+                "frozen_base_sha40": "b" * 40,
+                "issue71_user_review_authorization": {
+                    "project_profile_sha256": profile_sha,
+                    "pr_number": 75,
+                },
+            }
+            reader = ReadOnlyGitHub("puchinya/ai-agent-workflow")
+            reader.verify_read_only_scope()
+            issue_numbers = []
+            reader.repository_metadata = lambda: {
+                "id": 1401910271, "full_name": "puchinya/ai-agent-workflow",
+                "owner": {"id": 3744776, "login": "puchinya", "type": "User"},
+            }
+
+            def read_issue(number):
+                issue_numbers.append(number)
+                if number != 71:
+                    raise AssertionError("Issue #71 User Review must not read Issue #63")
+                return {
+                    "number": 71, "id": 6135294757, "state": "open", "pull_request": None,
+                    "repository_url": "https://api.github.com/repos/puchinya/ai-agent-workflow",
+                    "body": issue_body,
+                    "labels": [{"name": label} for label in
+                               ("enhancement", "kind:single", "phase:user-review")],
+                }
+
+            reader.issue = read_issue
+            reader.pull_request = lambda number: {
+                "number": number, "state": "open", "draft": False, "merged": False,
+                "merged_at": None, "title": phase_rework_module.PR_TITLE, "body": pr_body,
+                "head": {"sha": HEAD, "ref": phase_rework_module.BRANCH_REF,
+                         "repo": {"id": 1401910271}},
+                "base": {"ref": "main", "sha": "b" * 40, "repo": {"id": 1401910271}},
+                "user": {"id": 3744776, "type": "User"},
+            }
+            reader.authenticated_user = lambda: {"id": 9881, "type": "User"}
+            verified = SimpleNamespace(
+                pointer=SimpleNamespace(
+                    comment_id=6902977193,
+                    sha256=phase_rework_module.ISSUE71_PHASE_AND_USER_REVIEW_ADC_SHA256,
+                    state="approved",
+                ),
+                contract=SimpleNamespace(sha256=phase_rework_module.ISSUE71_PHASE_AND_USER_REVIEW_ADC_SHA256),
+            )
+            with patch("p_ases.cli.verify_adc", return_value=verified), \
+                    patch("p_ases.phase_rework.verify_issue71_phase_and_user_review_adc_chain",
+                          return_value=(phase_authorization, ())), \
+                    patch("p_ases.phase_rework.PR_BODY_SHA256", pr_body_sha):
+                self.assertEqual(
+                    _solo_owner_identity(reader, "puchinya/ai-agent-workflow", 71, 75, HEAD, root=root),
+                    (3744776, 3744776, 9881),
+                )
+            self.assertEqual(issue_numbers, [71])
 
     def test_user_review_parser_leaves_kind_unset_unless_explicitly_requested(self):
         for verb in ("start", "sync", "status"):

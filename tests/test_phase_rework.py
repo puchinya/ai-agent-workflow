@@ -2115,5 +2115,43 @@ class ActiveGenerationTests(unittest.TestCase):
                     )
 
 
+class CombinedAuthorizationTests(unittest.TestCase):
+    def test_combined_marker_rejects_duplicate_current_marker_before_payload_parsing(self):
+        marker = f"<!-- {module.ISSUE71_PHASE_AND_USER_REVIEW_SCHEMA}\n{{}}\n-->"
+        content = (marker + "\n" + marker).encode("utf-8")
+        digest = hashlib.sha256(content).hexdigest()
+        verified = verified_contract(
+            module.ISSUE71_PHASE_AND_USER_REVIEW_ADC_COMMENT_ID,
+            digest, len(content), module.REPOSITORY, content,
+        )
+        with patch.object(module, "ISSUE71_PHASE_AND_USER_REVIEW_ADC_SHA256", digest), \
+                patch.object(module, "ISSUE71_PHASE_AND_USER_REVIEW_ADC_BYTES", len(content)), \
+                self.assertRaisesRegex(module.PhaseReworkError, "exactly one combined authorization marker"):
+            module.parse_issue71_phase_and_user_review_authorization(verified)
+
+    def test_combined_followup_requires_one_allowlisted_direct_child(self):
+        start = "dfdde9a8e29edd9c69e312a290b6e1cef9eb50a2"
+        head = "f" * 40
+        authorization = {
+            "starting_head_sha40": start,
+            "max_followup_commits": 1,
+            "followup_path_allowlist": list(module.ISSUE71_COMBINED_FOLLOWUP_PATH_ALLOWLIST),
+        }
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(module, "is_ancestor", return_value=True), \
+                patch.object(module, "run_git", return_value=head), \
+                patch.object(module, "commit_parents_sha40", return_value=(start,)), \
+                patch.object(module, "changed_paths_between", return_value=(
+                    "runtime/p_ases/cli.py", "docs/specs/workflow-spec.md")):
+            module._verify_combined_followup_commit_set(Path(temporary), head, authorization)
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(module, "is_ancestor", return_value=True), \
+                patch.object(module, "run_git", return_value=head), \
+                patch.object(module, "commit_parents_sha40", return_value=(start,)), \
+                patch.object(module, "changed_paths_between", return_value=("runtime/p_ases/github.py",)):
+            with self.assertRaisesRegex(module.PhaseReworkError, "exact path allowlist"):
+                module._verify_combined_followup_commit_set(Path(temporary), head, authorization)
+
+
 if __name__ == "__main__":
     unittest.main()

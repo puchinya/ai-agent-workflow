@@ -133,6 +133,8 @@
     - [2.61.1 ORA-F01-095 Expected result](#2611-ora-f01-095-expected-result)
   - [2.62 TST-F01-096 Approved history reader and bounded continuation](#262-tst-f01-096-approved-history-reader-and-bounded-continuation)
     - [2.62.1 ORA-F01-096 Expected result](#2621-ora-f01-096-expected-result)
+  - [2.63 TST-F01-097 Combined Phase continuation and pending User Review](#263-tst-f01-097-combined-phase-continuation-and-pending-user-review)
+    - [2.63.1 ORA-F01-097 Expected result](#2631-ora-f01-097-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -261,6 +263,8 @@
 - [ORA-F01-095](#ora-f01-095) — 2.61.1 ORA-F01-095 Expected result
 - [TST-F01-096](#tst-f01-096) — 2.62 TST-F01-096 Approved history reader and bounded continuation
 - [ORA-F01-096](#ora-f01-096) — 2.62.1 ORA-F01-096 Expected result
+- [TST-F01-097](#tst-f01-097) — 2.63 TST-F01-097 Combined Phase continuation and pending User Review
+- [ORA-F01-097](#ora-f01-097) — 2.63.1 ORA-F01-097 Expected result
 <!-- heading-map:end -->
 
 
@@ -942,3 +946,13 @@ The reader accepts only the exact approved ten-generation chain and the strictly
 #### 2.62.1 ORA-F01-096 Expected result
 
 Historical markers are never parsed or used as authority. All approved pointer/body identities and predecessor links match in order, and malformed current markers fail closed. The new HEAD is exactly one allowlisted direct child of `d1704c1`. No phase write occurs before fresh exact-subject gates, PRBinding, and zero-write Applied `NOOP`. Completion leaves Issue #71 OPEN at `phase:execution` and PR #75 OPEN/non-draft/unmerged.
+
+<a id="tst-f01-097"></a>
+### 2.63 TST-F01-097 Combined Phase continuation and pending User Review
+
+**Setup and action:** Use the exact approved thirteen-generation chain, predecessor #6897385343, current marker, starting HEAD `dfdde9a8e29edd9c69e312a290b6e1cef9eb50a2`, Issue #71, PR #75, epoch, active Phase generation, Intent/Applied, profile, and allowlist. Exercise canonical marker parsing, duplicate/unknown/missing fields, altered predecessor/history, missing/duplicate/reordered/unapproved generations, wrong identities, and one direct-child path boundary. Validate historical receipts #6892886558/#6892997518 against ADC #6891926625, generation #6889965335, historical commit `b31cca21da15e18d0e1665827621700f7d774d0a`, source document blobs, authors, and direct/list/direct comment reads. Mutate each pinned body, author, ADC, generation, commit, and document and assert that preflight stops with zero writes. Exercise the successful receipt preflight, exact-body reuse, append interruption recovery without POST retry, duplicate/conflict rejection, and current design→ready readback. At the exact pushed HEAD run all required gates, PRBinding, and Applied read-only `NOOP` before supported phase transitions. Verify exact Issue #71 owner/PR/profile/verifier identity, the plan's session/Readiness/ADC/HEAD/feedback binding, direct-chat confirmation provenance, V3 carrier Issue target and readback, no Issue #63 calls, and Issue #63 V1/V2/V3 regression behavior. Start the ordinary User Review session only after verification and Readiness PASS, and assert that PENDING leaves one session at `phase:user-review` without a decision carrier. Verify Admin/Ruleset/Activation/merge/release/tag/close routes remain uncalled.
+
+<a id="ora-f01-097"></a>
+#### 2.63.1 ORA-F01-097 Expected result
+
+Only the exact current combined ADC and one allowlisted direct child are accepted. Historical receipts are verified from their immutable pinned bytes and historical source commit without parsing old ADC markers. All old and current receipt bodies are prepared and validated before the first write; each existing exact body is reused and each new body is read back exactly once. Any drift, ambiguity, duplicate, conflict, or incomplete identity blocks with no phase mutation or retry. Issue #71's exact User Review plan can be exercised only through direct same-conversation chat authorization and the dedicated target Issue carrier; this execution stops before approval and creates no decision. With all exact-head gates and Applied NOOP complete, supported transitions finish with Issue #71 OPEN at `phase:user-review`, one immutable pending session and full feedback snapshot, and PR #75 OPEN/non-draft/unmerged. Issue #63 behavior and all out-of-scope operations remain untouched.
