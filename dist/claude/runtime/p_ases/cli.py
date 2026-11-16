@@ -3212,19 +3212,17 @@ def _solo_owner_identity(github: ReadOnlyGitHub, repository: str, issue_number: 
         root = Path(root)
         try:
             from .phase_rework import (
-                ISSUE71_PHASE_AND_USER_REVIEW_ADC_COMMENT_ID,
-                ISSUE71_PHASE_AND_USER_REVIEW_ADC_SHA256,
                 PR_BODY_SHA256,
                 PR_TITLE,
                 verify_issue71_phase_and_user_review_adc_chain,
             )
             current_adc = verify_adc(github, 71)
-            authorization, _chain = verify_issue71_phase_and_user_review_adc_chain(github, current_adc)
+            authorization, chain = verify_issue71_phase_and_user_review_adc_chain(github, current_adc)
         except (ADCError, ValueError) as exc:
             raise CLIError(f"Issue #71 current approved ADC authority is invalid: {exc}") from exc
-        if (current_adc.pointer.comment_id != ISSUE71_PHASE_AND_USER_REVIEW_ADC_COMMENT_ID
-                or current_adc.contract.sha256 != ISSUE71_PHASE_AND_USER_REVIEW_ADC_SHA256):
-            raise CLIError("Issue #71 current ADC differs from its approved User Review authorization")
+        if (not chain or chain[-1].pointer != current_adc.pointer
+                or chain[-1].contract.content != current_adc.contract.content):
+            raise CLIError("Issue #71 User Review authorization is not bound to the verified current ADC chain")
         profile_path = root / ".agent" / "project.json"
         if (root.is_symlink() or not root.is_dir() or profile_path.parent.is_symlink()
                 or profile_path.is_symlink()

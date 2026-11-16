@@ -1007,6 +1007,98 @@ class OwnerAuthorizationTests(unittest.TestCase):
         with self.assertRaisesRegex(OwnerAuthorizationError, "User Review authorization plan details are invalid"):
             owner_module._validate_plan(altered)
 
+    def test_issue71_v3_subject_uses_verified_current_adc_chain_without_issue63_reads(self):
+        from p_ases.phase_rework import (
+            BRANCH_REF, PR_TITLE, ISSUE71_COMPREHENSIVE_READER_ADC_COMMENT_ID,
+            ISSUE71_COMPREHENSIVE_READER_ADC_SHA256,
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / ".agent").mkdir()
+            profile = root / ".agent" / "project.json"
+            profile.write_bytes((ROOT / ".agent" / "project.json").read_bytes())
+            issue_body = "Exact Issue #71 body"
+            pr_body = "Exact PR #75 body"
+            base_sha = "c" * 40
+            issue_reads: list[int] = []
+            reader = SimpleNamespace(repo=REPOSITORY)
+
+            def issue(number):
+                issue_reads.append(number)
+                if number != 71:
+                    raise AssertionError("Issue #71 User Review must never read Issue #63")
+                return {
+                    "number": 71, "state": "open", "pull_request": None,
+                    "repository_url": f"https://api.github.com/repos/{REPOSITORY}",
+                    "body": issue_body,
+                    "labels": [{"name": label} for label in
+                               ("enhancement", "kind:single", "phase:user-review")],
+                }
+
+            reader.issue = issue
+            reader.pull_request = lambda number: {
+                "number": number, "state": "open", "draft": False, "merged": False,
+                "merged_at": None, "title": PR_TITLE, "body": pr_body,
+                "head": {"sha": PLAN_HEAD, "ref": BRANCH_REF, "repo": {"id": REPOSITORY_ID}},
+                "base": {"ref": "main", "sha": base_sha, "repo": {"id": REPOSITORY_ID}},
+                "user": {"id": OWNER_ID, "type": "User"},
+            }
+            reader.authenticated_user = lambda: {"id": 9881, "type": "User"}
+            verified = SimpleNamespace(
+                pointer=SimpleNamespace(
+                    comment_id=ISSUE71_COMPREHENSIVE_READER_ADC_COMMENT_ID,
+                    sha256=ISSUE71_COMPREHENSIVE_READER_ADC_SHA256,
+                    state="approved",
+                ),
+                contract=SimpleNamespace(
+                    sha256=ISSUE71_COMPREHENSIVE_READER_ADC_SHA256,
+                    content=b"exact current ADC bytes",
+                ),
+            )
+            authorization = {
+                "repository_id": REPOSITORY_ID,
+                "owner_id": OWNER_ID,
+                "current_issue_body_sha256": hashlib.sha256(issue_body.encode()).hexdigest(),
+                "branch_ref": BRANCH_REF,
+                "frozen_base_ref": "main",
+                "frozen_base_sha40": base_sha,
+                "issue71_user_review_authorization": {
+                    "project_profile_sha256": owner_module.ISSUE71_PROFILE_SHA256,
+                    "pr_number": 75,
+                },
+            }
+            details = {
+                "review_session_sha256": "1" * 64,
+                "readiness_sha256": "2" * 64,
+                "adc_sha256": ISSUE71_COMPREHENSIVE_READER_ADC_SHA256,
+                "pr_head_sha40": PLAN_HEAD,
+                "feedback_sha256": "3" * 64,
+                "project_profile_sha256": owner_module.ISSUE71_PROFILE_SHA256,
+                "verifier_user_id": 9881,
+            }
+            with patch("p_ases.adc.verify_adc", return_value=verified), \
+                    patch("p_ases.phase_rework.verify_issue71_phase_and_user_review_adc_chain",
+                          return_value=(authorization, (verified,))), \
+                    patch("p_ases.phase_rework.PR_BODY_SHA256",
+                          hashlib.sha256(pr_body.encode()).hexdigest()):
+                owner_module._validate_issue71_user_review_subject(
+                    reader, root, pr_number=75, pr_head_sha40=PLAN_HEAD, details=details,
+                )
+            self.assertEqual(issue_reads, [71])
+
+            stale = {**details, "adc_sha256": "5" * 64}
+            with patch("p_ases.adc.verify_adc", return_value=verified), \
+                    patch("p_ases.phase_rework.verify_issue71_phase_and_user_review_adc_chain",
+                          return_value=(authorization, (verified,))), \
+                    patch("p_ases.phase_rework.PR_BODY_SHA256",
+                          hashlib.sha256(pr_body.encode()).hexdigest()):
+                with self.assertRaisesRegex(OwnerAuthorizationError, "current ADC, profile, or PR"):
+                    owner_module._validate_issue71_user_review_subject(
+                        reader, root, pr_number=75, pr_head_sha40=PLAN_HEAD, details=stale,
+                    )
+            self.assertEqual(issue_reads, [71])
+
     def test_issue71_v3_confirmation_publishes_only_to_issue71(self):
         plan = issue71_user_review_plan()
         grant = capture_direct_chat_confirmation(

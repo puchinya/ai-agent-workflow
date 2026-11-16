@@ -198,15 +198,18 @@ class UserReviewCliRegressionTests(unittest.TestCase):
             reader.authenticated_user = lambda: {"id": 9881, "type": "User"}
             verified = SimpleNamespace(
                 pointer=SimpleNamespace(
-                    comment_id=6902977193,
-                    sha256=phase_rework_module.ISSUE71_PHASE_AND_USER_REVIEW_ADC_SHA256,
+                    comment_id=phase_rework_module.ISSUE71_COMPREHENSIVE_READER_ADC_COMMENT_ID,
+                    sha256=phase_rework_module.ISSUE71_COMPREHENSIVE_READER_ADC_SHA256,
                     state="approved",
                 ),
-                contract=SimpleNamespace(sha256=phase_rework_module.ISSUE71_PHASE_AND_USER_REVIEW_ADC_SHA256),
+                contract=SimpleNamespace(
+                    sha256=phase_rework_module.ISSUE71_COMPREHENSIVE_READER_ADC_SHA256,
+                    content=b"current approved ADC bytes",
+                ),
             )
             with patch("p_ases.cli.verify_adc", return_value=verified), \
                     patch("p_ases.phase_rework.verify_issue71_phase_and_user_review_adc_chain",
-                          return_value=(phase_authorization, ())), \
+                          return_value=(phase_authorization, (verified,))), \
                     patch("p_ases.phase_rework.PR_BODY_SHA256", pr_body_sha):
                 self.assertEqual(
                     _solo_owner_identity(reader, "puchinya/ai-agent-workflow", 71, 75, HEAD, root=root),

@@ -1602,7 +1602,9 @@ def _issue71_reconciled_predecessors(
         check_source_phase=False, verified_context=context,
         predecessor_receipts={(Phase.REQUIREMENTS, Phase.SPECIFICATION): (1, first)},
     )
-    document_authorization = authorization.get("historical_document_reissue_authorization")
+    document_authorization = authorization.get("current_document_snapshot_authorization")
+    if document_authorization is None:
+        document_authorization = authorization.get("historical_document_reissue_authorization")
     if not isinstance(document_authorization, dict):
         raise PhaseEvidenceError("current Issue #71 ADC lacks historical/current document authorization")
     _validate_issue71_current_document_snapshot(

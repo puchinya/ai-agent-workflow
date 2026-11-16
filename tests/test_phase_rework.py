@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import base64
 import json
 import sys
 import tempfile
 import unittest
+import zlib
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -2115,7 +2117,182 @@ class ActiveGenerationTests(unittest.TestCase):
                     )
 
 
+COMPREHENSIVE_MARKER_FIXTURE_B64 = (
+    "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"
+)
+
 class CombinedAuthorizationTests(unittest.TestCase):
+    @staticmethod
+    def _comprehensive_verified(marker: bytes | None = None):
+        if marker is None:
+            marker = zlib.decompress(base64.b64decode(COMPREHENSIVE_MARKER_FIXTURE_B64))
+        content = (
+            "# Agent Development Contract — Issue #71 Comprehensive Phase Reader and User Review Completion\n\n"
+            "Repository: puchinya/ai-agent-workflow\n"
+            "Predecessor ADC: Issue #71 comment #6904919120, SHA-256 "
+            "0cca59c49e16e8e2eacc2627cc9ea21667513d2123143ae6b2f641da74a5ac31\n\n"
+            "## Artifact impact\n\n"
+            f"{module.ISSUE71_COMPREHENSIVE_READER_ARTIFACT_IMPACT}\n\n"
+        ).encode("utf-8") + marker + b"\n"
+        digest = hashlib.sha256(content).hexdigest()
+        contract = SimpleNamespace(
+            sha256=digest,
+            byte_length=len(content),
+            repository=module.REPOSITORY,
+            content=content,
+            section=lambda _name: module.ISSUE71_COMPREHENSIVE_READER_ARTIFACT_IMPACT,
+        )
+        return SimpleNamespace(
+            pointer=SimpleNamespace(
+                comment_id=module.ISSUE71_COMPREHENSIVE_READER_ADC_COMMENT_ID,
+                sha256=digest,
+                state="approved",
+            ),
+            contract=contract,
+        ), digest, len(content)
+
+    def test_comprehensive_current_marker_accepts_exact_authorized_generation(self):
+        verified, digest, byte_length = self._comprehensive_verified()
+        with patch.object(module, "ISSUE71_COMPREHENSIVE_READER_ADC_SHA256", digest), \
+                patch.object(module, "ISSUE71_COMPREHENSIVE_READER_ADC_BYTES", byte_length):
+            authorization = module.parse_issue71_phase_and_user_review_authorization(verified)
+        self.assertEqual(authorization["predecessor_adc_comment_id"],
+                         module.ISSUE71_CURRENT_DOCUMENT_REISSUE_ADC_COMMENT_ID)
+        self.assertEqual(len(authorization["approved_history"]), 14)
+        self.assertEqual(len(authorization["followup_path_allowlist"]), 31)
+
+    def test_comprehensive_current_marker_rejects_unapproved_allowlist_change(self):
+        marker = zlib.decompress(base64.b64decode(COMPREHENSIVE_MARKER_FIXTURE_B64))
+        prefix = b"<!-- PASES_ISSUE_PHASE_AND_USER_REVIEW_V2\n"
+        suffix = b"\n-->"
+        raw = marker[len(prefix):-len(suffix)]
+        value = json.loads(raw)
+        value["followup_path_allowlist"][-1] = "runtime/p_ases/adc.py"
+        import p_ases.phase_rework as phase_module
+        altered_marker = prefix + phase_module._canonical(value).encode("utf-8") + suffix
+        verified, digest, byte_length = self._comprehensive_verified(altered_marker)
+        with patch.object(module, "ISSUE71_COMPREHENSIVE_READER_ADC_SHA256", digest), \
+                patch.object(module, "ISSUE71_COMPREHENSIVE_READER_ADC_BYTES", byte_length), \
+                patch.object(module, "ISSUE71_COMPREHENSIVE_READER_MARKER_BYTES", len(altered_marker)), \
+                patch.object(module, "ISSUE71_COMPREHENSIVE_READER_MARKER_SHA256",
+                             hashlib.sha256(altered_marker).hexdigest()):
+            with self.assertRaisesRegex(module.PhaseReworkError, "followup_path_allowlist"):
+                module.parse_issue71_phase_and_user_review_authorization(verified)
+
+    def test_comprehensive_current_marker_rejects_wrong_pointer_identity(self):
+        verified, digest, byte_length = self._comprehensive_verified()
+        verified.pointer.comment_id += 1
+        with patch.object(module, "ISSUE71_COMPREHENSIVE_READER_ADC_SHA256", digest), \
+                patch.object(module, "ISSUE71_COMPREHENSIVE_READER_ADC_BYTES", byte_length):
+            with self.assertRaisesRegex(module.PhaseReworkError, "exact approved generation"):
+                module.parse_issue71_phase_and_user_review_authorization(verified)
+
+    def test_comprehensive_reader_accepts_exact_fourteen_generation_history(self):
+        history = [
+            {"comment_id": comment_id, "sha256": digest, "byte_length": size, "state": "approved"}
+            for comment_id, digest, size in module.ISSUE71_COMPREHENSIVE_READER_HISTORY
+        ]
+        authorization = {"approved_history": history}
+
+        def generation(comment_id, digest, size, predecessor):
+            body = (
+                f"Predecessor ADC: Issue #71 comment #{predecessor[0]}, "
+                f"SHA-256 {predecessor[1]}\n"
+            ).encode()
+            body += b" " * (size - len(body))
+            return SimpleNamespace(
+                pointer=SimpleNamespace(comment_id=comment_id, sha256=digest, state="approved"),
+                contract=SimpleNamespace(sha256=digest, byte_length=size,
+                                         repository=module.REPOSITORY, content=body),
+            )
+
+        boundary = module.ISSUE71_COMBINED_ADC_HISTORY_BOUNDARY
+        rows = [generation(*boundary, 80, (1, "0" * 64))]
+        previous = boundary
+        for comment_id, digest, size in module.ISSUE71_COMPREHENSIVE_READER_HISTORY:
+            rows.append(generation(comment_id, digest, size, previous))
+            previous = (comment_id, digest)
+        current_body = (
+            f"Predecessor ADC: Issue #71 comment #{previous[0]}, SHA-256 {previous[1]}\n"
+        ).encode()
+        current_body += b" " * (module.ISSUE71_COMPREHENSIVE_READER_ADC_BYTES - len(current_body))
+        current = verified_contract(
+            module.ISSUE71_COMPREHENSIVE_READER_ADC_COMMENT_ID,
+            module.ISSUE71_COMPREHENSIVE_READER_ADC_SHA256,
+            module.ISSUE71_COMPREHENSIVE_READER_ADC_BYTES,
+            module.REPOSITORY,
+            current_body,
+        )
+        rows.append(current)
+        with patch.object(module, "parse_issue71_phase_and_user_review_authorization",
+                          return_value=authorization), \
+                patch.object(module, "verify_adc_forward_generations", return_value=tuple(rows)) as verify:
+            parsed, chain = module.verify_issue71_phase_and_user_review_adc_chain(SimpleNamespace(), current)
+        self.assertEqual(parsed, authorization)
+        self.assertEqual(len(chain) - 2, 14)
+        verify.assert_called_once_with(
+            SimpleNamespace(), module.ISSUE_NUMBER,
+            prior_comment_id=module.ISSUE71_COMBINED_ADC_HISTORY_BOUNDARY[0],
+            prior_sha256=module.ISSUE71_COMBINED_ADC_HISTORY_BOUNDARY[1],
+            current_comment_id=module.ISSUE71_COMPREHENSIVE_READER_ADC_COMMENT_ID,
+            current_sha256=module.ISSUE71_COMPREHENSIVE_READER_ADC_SHA256,
+        )
+
+        altered = dict(authorization)
+        altered["approved_history"] = history[:-1]
+        with patch.object(module, "parse_issue71_phase_and_user_review_authorization",
+                          return_value=altered), \
+                patch.object(module, "verify_adc_forward_generations", return_value=tuple(rows)):
+            with self.assertRaisesRegex(module.PhaseReworkError, "incomplete, reordered, edited, or unapproved"):
+                module.verify_issue71_phase_and_user_review_adc_chain(SimpleNamespace(), current)
+
     def test_current_document_reissue_reader_accepts_exact_thirteen_generation_history(self):
         history = [
             {"comment_id": comment_id, "sha256": digest, "byte_length": size, "state": "approved"}
@@ -2213,6 +2390,23 @@ class CombinedAuthorizationTests(unittest.TestCase):
                 patch.object(module, "changed_paths_between", return_value=(
                     "runtime/p_ases/cli.py", "docs/specs/workflow-spec.md")):
             module._verify_combined_followup_commit_set(Path(temporary), head, authorization)
+
+    def test_comprehensive_followup_rejects_paths_outside_exact_allowlist(self):
+        head = "f" * 40
+        start = "bf754961c238eab9d48f0767d53fac724375f428"
+        authorization = {
+            "starting_head_sha40": start,
+            "max_followup_commits": 1,
+            "followup_path_allowlist": list(module.ISSUE71_COMPREHENSIVE_READER_PATH_ALLOWLIST),
+        }
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(module, "is_ancestor", return_value=True), \
+                patch.object(module, "run_git", return_value=head), \
+                patch.object(module, "commit_parents_sha40",
+                             return_value=(authorization["starting_head_sha40"],)), \
+                patch.object(module, "changed_paths_between", return_value=("runtime/p_ases/adc.py",)):
+            with self.assertRaisesRegex(module.PhaseReworkError, "exceeds its exact path allowlist"):
+                module._verify_combined_followup_commit_set(Path(temporary), head, authorization)
         with tempfile.TemporaryDirectory() as temporary, \
                 patch.object(module, "is_ancestor", return_value=True), \
                 patch.object(module, "run_git", return_value=head), \

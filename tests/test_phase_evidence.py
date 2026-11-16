@@ -185,11 +185,12 @@ class PhaseEvidenceContinuationTests(unittest.TestCase):
             "labels_at_start": ["enhancement", "kind:single", "phase:design"],
         }
 
-        def live_subject(*, labels=None, head=HEAD, author_id=3744776, adc_id=6902977193):
+        def live_subject(*, labels=None, head=HEAD, author_id=3744776,
+                         adc_id=rework.ISSUE71_COMPREHENSIVE_READER_ADC_COMMENT_ID):
             return SimpleNamespace(
                 current_adc=SimpleNamespace(
                     pointer=SimpleNamespace(comment_id=adc_id),
-                    contract=SimpleNamespace(sha256=rework.ISSUE71_PHASE_AND_USER_REVIEW_ADC_SHA256),
+                    contract=SimpleNamespace(sha256=rework.ISSUE71_COMPREHENSIVE_READER_ADC_SHA256),
                 ),
                 issue={"body": issue_body},
                 labels=tuple(labels or ("enhancement", "kind:single", "phase:design")),
@@ -212,7 +213,7 @@ class PhaseEvidenceContinuationTests(unittest.TestCase):
             with self.subTest(mismatch=mismatch), tempfile.TemporaryDirectory() as temporary:
                 live = live_subject(**changes)
                 receipt = decision()
-                receipt.payload["adc_sha256"] = rework.ISSUE71_PHASE_AND_USER_REVIEW_ADC_SHA256
+                receipt.payload["adc_sha256"] = rework.ISSUE71_COMPREHENSIVE_READER_ADC_SHA256
                 github = SimpleNamespace(
                     repo=REPOSITORY,
                     issue_comments=Mock(return_value=[]),
@@ -238,6 +239,52 @@ class PhaseEvidenceContinuationTests(unittest.TestCase):
                             github, Path(temporary), 71, receipt, receipt.body(),
                         )
                 github.create_issue_comment.assert_not_called()
+
+    def test_comprehensive_artifact_impact_uses_generic_role_path_grammar(self):
+        impact = rework.ISSUE71_COMPREHENSIVE_READER_ARTIFACT_IMPACT
+        verified = SimpleNamespace(contract=SimpleNamespace(section=lambda _name: impact))
+        paths, reasons = module._artifact_impacts(verified)
+        self.assertEqual(paths, {
+            "specification": ("docs/specs/workflow-spec.md",),
+            "design": ("docs/design/workflow-design.md",),
+            "test-oracle": (
+                "docs/testing/pases-lifecycle-tests.md",
+                "docs/testing/runtime-tests.md",
+                "docs/testing/traceability.md",
+            ),
+        })
+        self.assertEqual(reasons, {})
+
+    def test_comprehensive_artifact_impact_rejects_duplicate_and_incomplete_roles(self):
+        impact = rework.ISSUE71_COMPREHENSIVE_READER_ARTIFACT_IMPACT
+        duplicate = impact.replace(
+            "- Specification: docs/specs/workflow-spec.md",
+            "- Specification: docs/specs/workflow-spec.md\n- Specification: docs/specs/workflow-spec.md",
+        )
+        with self.assertRaisesRegex(module.PhaseEvidenceError, "duplicates its Specification"):
+            module._artifact_impacts(SimpleNamespace(contract=SimpleNamespace(section=lambda _name: duplicate)))
+        incomplete = "- Specification: docs/specs/workflow-spec.md\n- Design: docs/design/workflow-design.md"
+        with self.assertRaisesRegex(module.PhaseEvidenceError, "must declare Specification, Design, and Testing"):
+            module._artifact_impacts(SimpleNamespace(contract=SimpleNamespace(section=lambda _name: incomplete)))
+
+    def test_comprehensive_current_document_snapshot_accepts_only_authorized_hashes(self):
+        authorization = rework.ISSUE71_COMPREHENSIVE_CURRENT_DOCUMENT_SNAPSHOT_AUTHORIZATION
+        rows = authorization["current_source_document_digests"]
+        spec = decision()
+        spec.payload["documents"] = [{"role": "specification", **rows[1]}]
+        design = decision()
+        design.payload["from_phase"] = "specification"
+        design.payload["to_phase"] = "design"
+        design.payload["documents"] = [{"role": "design", **rows[0]}]
+        decisions = (spec, design)
+        module._validate_issue71_current_document_snapshot(decisions, authorization)
+        changed = dict(authorization)
+        changed["current_source_document_digests"] = [
+            {**row, "sha256": "0" * 64} if row["path"].endswith("workflow-design.md") else row
+            for row in rows
+        ]
+        with self.assertRaisesRegex(module.PhaseEvidenceError, "approved reissue snapshot"):
+            module._validate_issue71_current_document_snapshot(decisions, changed)
 
 
 if __name__ == "__main__":

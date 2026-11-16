@@ -200,8 +200,6 @@ def _validate_issue71_user_review_subject(
     """Validate Issue #71's exact V3 User Review scope without consulting Issue #63."""
     from .adc import ADCError, verify_adc
     from .phase_rework import (
-        ISSUE71_PHASE_AND_USER_REVIEW_ADC_COMMENT_ID,
-        ISSUE71_PHASE_AND_USER_REVIEW_ADC_SHA256,
         verify_issue71_phase_and_user_review_adc_chain,
     )
     expected_detail_fields = {
@@ -224,12 +222,12 @@ def _validate_issue71_user_review_subject(
         raise OwnerAuthorizationError("Issue #71 project profile differs from the approved solo_owner profile")
     try:
         verified = verify_adc(github, ISSUE71_NUMBER)
-        authorization, _chain = verify_issue71_phase_and_user_review_adc_chain(github, verified)
+        authorization, chain = verify_issue71_phase_and_user_review_adc_chain(github, verified)
     except (ADCError, ValueError) as exc:
         raise OwnerAuthorizationError(f"Issue #71 current ADC authorization is invalid: {exc}") from exc
     user_review = authorization["issue71_user_review_authorization"]
-    if (verified.pointer.comment_id != ISSUE71_PHASE_AND_USER_REVIEW_ADC_COMMENT_ID
-            or verified.contract.sha256 != ISSUE71_PHASE_AND_USER_REVIEW_ADC_SHA256
+    if (not chain or chain[-1].pointer != verified.pointer
+            or chain[-1].contract.content != verified.contract.content
             or details["adc_sha256"] != verified.contract.sha256
             or user_review["project_profile_sha256"] != ISSUE71_PROFILE_SHA256
             or user_review["pr_number"] != pr_number):

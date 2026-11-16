@@ -992,17 +992,17 @@ Verify every prior ADC generation using the complete ordered approved pointer ch
 <a id="req-f01-141"></a>
 ### 9.93 REQ-F01-141 Parse only the current ADC authorization
 
-Parse exactly one canonical authorization marker from the current approved successor. Require exact repository, Issue, epoch, branch, frozen base, PR, Intent/Applied, active Phase, starting HEAD, allowlist, predecessor #6896831619, and all six carried-forward authorization tuple digests. Reject unknown fields, duplicate JSON keys, noncanonical JSON, duplicate or incomplete markers, wrong predecessors, and stale identities before writes. Historical marker contents do not grant or change current authority.
+Read the one current authorization marker from the live approved pointer after verifying the pointer's exact comment, body bytes, SHA-256, approved state, the complete ordered history, and every immediate predecessor link. Bind the marker to the repository, owner, Issue/body, epoch, active Phase generation, Intent/Applied, branch, frozen base, PR, current start HEAD, immediate predecessor, authorization digests, current-document snapshot, and exact follow-up path allowlist. Require the Artifact impact roles and paths to be accepted by the generic phase-evidence parser and agree with the current marker. Historical ADC bodies remain opaque and never grant current authority. Normative behavior derives current generation values from the verified marker; it does not pin a predecessor ID, history count, HEAD, or path count from a prior generation.
 
 <a id="req-f01-142"></a>
 ### 9.94 REQ-F01-142 Preserve bounded continuation and delivery gates
 
-Preserve `d1704c125d4de49e84ffffceb14756c9cc555962` and allow exactly one direct-child commit on the exact 15-path allowlist. Preserve and validate each earlier commit segment independently. At the new exact pushed HEAD, require all configured gates, fresh exact-subject Verification/Acceptance/Self-Audit/native Independent Review, and PRBinding. Reconcile Applied read-only as zero-write `NOOP` before phase writes; then use supported `design → ready`, READY, and normal execution advance with full readback. No merge, Admin, Activation, Issue #63, or Issue-close operation is authorized.
+Validate every existing commit segment independently, then permit only the bounded direct-child segment from the current marker's start HEAD with exactly its allowlisted changed paths. Require all fresh exact-HEAD local and hosted gates, Verification, Acceptance, Self-Audit, native Independent Review, PRBinding/checkpoint, and read-only zero-write Applied reconciliation before phase writes. Reconcile only already-completed predecessor receipts, publish and read back the current ready receipt, and use supported phase transitions with fresh exact-subject evidence. Keep the Issue open and the PR open, non-draft, and unmerged unless a separate authorization permits otherwise.
 
 <a id="req-f01-143"></a>
 ### 9.95 REQ-F01-143 Validate the combined current ADC authorization
 
-Verify the exact approved pointer, direct predecessor #6897385343, all twelve ordered approved generations, exact byte lengths and body digests, and every predecessor link. Parse only one strict canonical current marker. Bind the repository, owner, Issue/body, epoch, active Phase generation, Intent/Applied, branch, frozen base, PR #75 metadata, starting HEAD, previous and new authorization digests, Issue #71 `solo_owner` profile SHA, and exact 32-path allowlist. Reject duplicates, unknown/missing fields, noncanonical JSON, stale identity, altered history, or any mismatch before a write; historical ADC markers remain opaque.
+Verify the current approved pointer and complete ordered history by exact comment IDs, UTF-8 byte lengths, body SHA-256 values, approved states, body readbacks, and immediate predecessor links. Parse exactly one strict canonical current marker and bind repository, owner, Issue/body, epoch, active Phase generation, Intent/Applied, branch, frozen base, PR metadata, start HEAD, immediate predecessor, all carried/new authorization digests, current-document snapshot digests, profile, and exact allowlist. Require the current Artifact impact section to use a generic Specification/Design/Testing or supported canonical path-list form that the phase-evidence reader accepts. Reject duplicates, unknown or missing fields, noncanonical JSON, stale identity, altered history, artifact mismatch, or any other mismatch before writes. Never parse historical markers.
 
 <a id="req-f01-144"></a>
 ### 9.96 REQ-F01-144 Validate completed historical Phase receipts
@@ -1012,7 +1012,7 @@ Read the pinned requirements→specification and specification→design receipts
 <a id="req-f01-145"></a>
 ### 9.97 REQ-F01-145 Reissue only completed predecessor receipts
 
-Before design→ready evidence is published, prepare current-generation requirements→specification and specification→design receipts from the current approved ADC, committed specification/design bytes, exact pushed HEAD, and unchanged Phase generation. Require the exact pinned prior chain. Reissue only those already-completed edges; do not create an uncompleted edge, alter labels, or fabricate history.
+Before design→ready evidence is published, validate the pinned historical receipts, then prepare current-generation requirements→specification and specification→design receipts from the current approved ADC, unchanged active Phase generation, exact pushed HEAD, and the exact Specification/Design path and SHA-256 pairs in the current marker's current-document snapshot authorization. Each current document must match its authorized digest at that pushed HEAD; historical document bytes are checked only at their historical commit. Reissue only the two already-completed edges. Do not create an uncompleted edge, alter labels, or fabricate history.
 
 <a id="req-f01-146"></a>
 ### 9.98 REQ-F01-146 Make Phase receipt reconciliation idempotent
@@ -1022,12 +1022,12 @@ Validate historical inputs and precompute every new receipt body before the firs
 <a id="req-f01-147"></a>
 ### 9.99 REQ-F01-147 Gate the bounded continuation and advance normally
 
-Preserve starting HEAD `dfdde9a8e29edd9c69e312a290b6e1cef9eb50a2` and allow one direct-child commit containing only the exact marker allowlist. At the exact pushed HEAD complete every local and hosted gate, fresh Verification/Acceptance/Self-Audit/native Independent Review, PRBinding, and read-only Applied `NOOP` with zero Issue writes before phase writes. Reissue the two completed edges, publish/read back design→ready, then use only supported design→ready, ready→execution, execution→verification, and verification→user-review transitions with fresh exact-subject evidence.
+Preserve all validated history and permit exactly one direct-child commit from the current marker's exact start HEAD on only its path allowlist. At the new exact pushed HEAD require every local and hosted gate, fresh exact-subject Verification, Acceptance, Self-Audit, native Independent Review, PRBinding/checkpoint, and read-only zero-write Applied NOOP before phase writes. Reconcile only previously completed edges, publish/read back the current ready proof, then use supported ordinary transitions through execution, verification, and user-review with fresh exact-subject evidence. Do not substitute CI or test results for P-ASES evidence.
 
 <a id="req-f01-148"></a>
 ### 9.100 REQ-F01-148 Verify Issue #71 solo-owner identity
 
-In `solo_owner` mode, use the dedicated GET-only GitHub client to re-read repository ID 1401910271, owner User ID 3744776, current ADC, exact profile SHA, Issue #71 body/state/phase, and PR #75 author/state/title/body/base/HEAD/repository identity. Accept only the marker's exact Issue #71 and PR #75 subject at the current expected HEAD. Preserve the existing Issue #63 identity behavior; any other Issue, PR, actor, profile, ADC, or HEAD blocks before User Review or phase evidence writes.
+In solo_owner mode, use the dedicated GET-only GitHub client to verify repository, owner, Issue, PR, current approved ADC pointer and complete chain, exact project profile, and verifier identity. Bind all checks to the ADC pointer returned by the live verification and the authorization resolved from that exact current chain; do not pin the consumer to an older ADC ID/SHA. Require the exact authorized Issue/PR/branch/base/HEAD and owner identity before User Review or phase writes. Preserve Issue #63 behavior and keep Issue #71 routes from reading or writing Issue #63.
 
 <a id="req-f01-149"></a>
 ### 9.101 REQ-F01-149 Bind the Issue #71 User Review plan
