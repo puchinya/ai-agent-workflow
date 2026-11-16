@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Mapping, NamedTuple
 from urllib.parse import urlsplit
 
-from .adc import ADCError, VerifiedADC, verify_adc
+from .adc import ADCError, VerifiedADC, adc_forward_generation_session, verify_adc
 from .gate_policy import BOOTSTRAP_REPOSITORY, GatePolicyError, read_gate_selection, select_gate
 from .consumer_activation import ConsumerActivationError, read_consumer_activation_history
 from .github import GitHub, GitHubError
@@ -1776,7 +1776,10 @@ def publish_phase_evidence(github: GitHub, root: Path, issue_number: int,
     skips = skip_reasons or {}
     if (issue_number == 71 and source is Phase.DESIGN and target is Phase.READY
             and github.repo.casefold() == "puchinya/ai-agent-workflow"):
-        prepared = _issue71_reconciled_predecessors(github, root, issue_number)
+        # Share immutable ADC-chain verification only within the read-only
+        # reconciliation. The context closes before any comment is published.
+        with adc_forward_generation_session(github, issue_number):
+            prepared = _issue71_reconciled_predecessors(github, root, issue_number)
         decision = prepared[-1][1]
         for edge, predecessor, predecessor_body in prepared[:-1]:
             _publish_prepared_predecessor(

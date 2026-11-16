@@ -4,6 +4,7 @@ import hashlib
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -192,6 +193,60 @@ class PhaseEvidenceContinuationTests(unittest.TestCase):
                     github, Path(temporary), 71, Phase.DESIGN, Phase.READY,
                 )
         reconcile.assert_called_once_with(github, Path(temporary), 71)
+        github.create_issue_comment.assert_not_called()
+        github.replace_issue_labels.assert_not_called()
+
+    def test_design_ready_adc_session_closes_before_predecessor_write_boundary(self):
+        github = SimpleNamespace(
+            repo=REPOSITORY,
+            create_issue_comment=Mock(),
+            replace_issue_labels=Mock(),
+        )
+        active = False
+        events = []
+
+        @contextmanager
+        def session(client, issue_number):
+            nonlocal active
+            self.assertIs(client, github)
+            self.assertEqual(issue_number, 71)
+            self.assertFalse(active)
+            active = True
+            events.append("session-open")
+            try:
+                yield
+            finally:
+                active = False
+                events.append("session-close")
+
+        prepared = [
+            ((Phase.REQUIREMENTS, Phase.SPECIFICATION), decision(), "predecessor body"),
+            ((Phase.DESIGN, Phase.READY), decision(), "ready body"),
+        ]
+
+        def reconcile(client, root, issue_number):
+            self.assertTrue(active)
+            events.append("read-only-reconciliation")
+            return prepared
+
+        def stop_before_write(*_args):
+            self.assertFalse(active)
+            events.append("predecessor-write-boundary")
+            raise module.PhaseEvidenceError("stopped before any GitHub write")
+
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(module, "adc_forward_generation_session", session), \
+                patch.object(module, "_issue71_reconciled_predecessors", side_effect=reconcile), \
+                patch.object(module, "_publish_prepared_predecessor", side_effect=stop_before_write):
+            with self.assertRaisesRegex(module.PhaseEvidenceError, "stopped before"):
+                module.publish_phase_evidence(
+                    github, Path(temporary), 71, Phase.DESIGN, Phase.READY,
+                )
+
+        self.assertEqual(events, [
+            "session-open", "read-only-reconciliation", "session-close",
+            "predecessor-write-boundary",
+        ])
         github.create_issue_comment.assert_not_called()
         github.replace_issue_labels.assert_not_called()
 
