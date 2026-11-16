@@ -135,6 +135,8 @@
     - [2.62.1 ORA-F01-096 Expected result](#2621-ora-f01-096-expected-result)
   - [2.63 TST-F01-097 Combined Phase continuation and pending User Review](#263-tst-f01-097-combined-phase-continuation-and-pending-user-review)
     - [2.63.1 ORA-F01-097 Expected result](#2631-ora-f01-097-expected-result)
+  - [2.64 TST-F01-098 Generic historical ADC predecessor validation](#264-tst-f01-098-generic-historical-adc-predecessor-validation)
+    - [2.64.1 ORA-F01-098 Expected result](#2641-ora-f01-098-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -265,6 +267,8 @@
 - [ORA-F01-096](#ora-f01-096) — 2.62.1 ORA-F01-096 Expected result
 - [TST-F01-097](#tst-f01-097) — 2.63 TST-F01-097 Combined Phase continuation and pending User Review
 - [ORA-F01-097](#ora-f01-097) — 2.63.1 ORA-F01-097 Expected result
+- [TST-F01-098](#tst-f01-098) — 2.64 TST-F01-098 Generic historical ADC predecessor validation
+- [ORA-F01-098](#ora-f01-098) — 2.64.1 ORA-F01-098 Expected result
 <!-- heading-map:end -->
 
 
@@ -956,3 +960,13 @@ Historical markers are never parsed or used as authority. All approved pointer/b
 #### 2.63.1 ORA-F01-097 Expected result
 
 Only the exact current combined ADC and one direct child of its marker-authorized start HEAD with allowlisted paths are accepted. Historical receipts are verified from their immutable pinned bytes and historical source commit without parsing old ADC markers. The generic phase-evidence parser accepts the current structured artifact roles and rejects malformed or duplicated declarations. Current receipts bind only the separately authorized current document snapshot. All old and current receipt bodies are prepared and validated before the first write; each existing exact body is reused and each new body is read back exactly once. Any drift, ambiguity, duplicate, conflict, or incomplete identity blocks with no phase mutation or retry. Both Issue #71 User Review start and V3 authorization use the verified current ADC chain, exact subject, direct same-conversation chat authorization, and dedicated Issue #71 carrier; this execution stops before approval and creates no decision. With all exact-head gates and Applied NOOP complete, supported transitions finish with Issue #71 OPEN at `phase:user-review`, one immutable pending session and full feedback snapshot, and PR #75 OPEN/non-draft/unmerged. Issue #63 behavior and all out-of-scope operations remain untouched.
+
+<a id="tst-f01-098"></a>
+### 2.64 TST-F01-098 Generic historical ADC predecessor validation
+
+**Setup and action:** Construct an ordered approved pointer chain with exact body bytes, byte lengths, digests, states, and immediate predecessor links. Exercise multiple historical generations with no visible predecessor declaration and with a single exact declaration. Mutate a present declaration to the wrong ID or digest; add duplicate or malformed declarations; and independently mutate pointer order, state, byte length, digest, and adjacency. Verify that all historical mismatches fail before any phase-evidence write. Remove, duplicate, or alter the current ADC predecessor declaration and verify that the current generation always fails closed. The executable cases are in tests/test_phase_rework.py.
+
+<a id="ora-f01-098"></a>
+#### 2.64.1 ORA-F01-098 Expected result
+
+Historical declarations may be absent, but exact approved pointer-chain identity and journal adjacency are mandatory for every generation. A present historical declaration must occur once and match the immediately preceding pointer. The current ADC declaration must occur exactly once and match its verified predecessor. All malformed or mismatched history blocks before phase-evidence writes; no historical ADC is rewritten and no comment-ID-specific exception is used.
