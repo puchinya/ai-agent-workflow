@@ -186,11 +186,11 @@ class PhaseEvidenceContinuationTests(unittest.TestCase):
         }
 
         def live_subject(*, labels=None, head=HEAD, author_id=3744776,
-                         adc_id=rework.ISSUE71_COMPREHENSIVE_READER_ADC_COMMENT_ID):
+                         adc_id=rework.ISSUE71_WINDOWS_PROFILE_READER_ADC_COMMENT_ID):
             return SimpleNamespace(
                 current_adc=SimpleNamespace(
                     pointer=SimpleNamespace(comment_id=adc_id),
-                    contract=SimpleNamespace(sha256=rework.ISSUE71_COMPREHENSIVE_READER_ADC_SHA256),
+                    contract=SimpleNamespace(sha256=rework.ISSUE71_WINDOWS_PROFILE_READER_ADC_SHA256),
                 ),
                 issue={"body": issue_body},
                 labels=tuple(labels or ("enhancement", "kind:single", "phase:design")),
@@ -213,7 +213,7 @@ class PhaseEvidenceContinuationTests(unittest.TestCase):
             with self.subTest(mismatch=mismatch), tempfile.TemporaryDirectory() as temporary:
                 live = live_subject(**changes)
                 receipt = decision()
-                receipt.payload["adc_sha256"] = rework.ISSUE71_COMPREHENSIVE_READER_ADC_SHA256
+                receipt.payload["adc_sha256"] = rework.ISSUE71_WINDOWS_PROFILE_READER_ADC_SHA256
                 github = SimpleNamespace(
                     repo=REPOSITORY,
                     issue_comments=Mock(return_value=[]),
@@ -240,8 +240,8 @@ class PhaseEvidenceContinuationTests(unittest.TestCase):
                         )
                 github.create_issue_comment.assert_not_called()
 
-    def test_comprehensive_artifact_impact_uses_generic_role_path_grammar(self):
-        impact = rework.ISSUE71_COMPREHENSIVE_READER_ARTIFACT_IMPACT
+    def test_windows_profile_artifact_impact_uses_generic_role_path_grammar(self):
+        impact = rework.ISSUE71_WINDOWS_PROFILE_READER_ARTIFACT_IMPACT
         verified = SimpleNamespace(contract=SimpleNamespace(section=lambda _name: impact))
         paths, reasons = module._artifact_impacts(verified)
         self.assertEqual(paths, {
@@ -255,8 +255,8 @@ class PhaseEvidenceContinuationTests(unittest.TestCase):
         })
         self.assertEqual(reasons, {})
 
-    def test_comprehensive_artifact_impact_rejects_duplicate_and_incomplete_roles(self):
-        impact = rework.ISSUE71_COMPREHENSIVE_READER_ARTIFACT_IMPACT
+    def test_windows_profile_artifact_impact_rejects_duplicate_and_incomplete_roles(self):
+        impact = rework.ISSUE71_WINDOWS_PROFILE_READER_ARTIFACT_IMPACT
         duplicate = impact.replace(
             "- Specification: docs/specs/workflow-spec.md",
             "- Specification: docs/specs/workflow-spec.md\n- Specification: docs/specs/workflow-spec.md",
@@ -267,8 +267,8 @@ class PhaseEvidenceContinuationTests(unittest.TestCase):
         with self.assertRaisesRegex(module.PhaseEvidenceError, "must declare Specification, Design, and Testing"):
             module._artifact_impacts(SimpleNamespace(contract=SimpleNamespace(section=lambda _name: incomplete)))
 
-    def test_comprehensive_current_document_snapshot_accepts_only_authorized_hashes(self):
-        authorization = rework.ISSUE71_COMPREHENSIVE_CURRENT_DOCUMENT_SNAPSHOT_AUTHORIZATION
+    def test_windows_profile_current_document_snapshot_accepts_only_authorized_hashes(self):
+        authorization = rework.ISSUE71_WINDOWS_PROFILE_CURRENT_DOCUMENT_SNAPSHOT_AUTHORIZATION
         rows = authorization["current_source_document_digests"]
         spec = decision()
         spec.payload["documents"] = [{"role": "specification", **rows[1]}]

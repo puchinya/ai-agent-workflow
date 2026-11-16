@@ -1009,15 +1009,25 @@ class OwnerAuthorizationTests(unittest.TestCase):
 
     def test_issue71_v3_subject_uses_verified_current_adc_chain_without_issue63_reads(self):
         from p_ases.phase_rework import (
-            BRANCH_REF, PR_TITLE, ISSUE71_COMPREHENSIVE_READER_ADC_COMMENT_ID,
-            ISSUE71_COMPREHENSIVE_READER_ADC_SHA256,
+            BRANCH_REF, PR_TITLE, ISSUE71_WINDOWS_PROFILE_READER_ADC_COMMENT_ID,
+            ISSUE71_WINDOWS_PROFILE_READER_ADC_SHA256,
         )
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / ".agent").mkdir()
             profile = root / ".agent" / "project.json"
-            profile.write_bytes((ROOT / ".agent" / "project.json").read_bytes())
+            profile_bytes = (ROOT / ".agent" / "project.json").read_bytes()
+            crlf_profile_bytes = profile_bytes.replace(b"\n", b"\r\n")
+            self.assertEqual(
+                owner_module.canonical_project_profile_sha256(profile_bytes),
+                owner_module.canonical_project_profile_sha256(crlf_profile_bytes),
+            )
+            self.assertNotEqual(
+                owner_module.canonical_project_profile_sha256(profile_bytes),
+                owner_module.canonical_project_profile_sha256(profile_bytes + b" "),
+            )
+            profile.write_bytes(crlf_profile_bytes)
             issue_body = "Exact Issue #71 body"
             pr_body = "Exact PR #75 body"
             base_sha = "c" * 40
@@ -1047,12 +1057,12 @@ class OwnerAuthorizationTests(unittest.TestCase):
             reader.authenticated_user = lambda: {"id": 9881, "type": "User"}
             verified = SimpleNamespace(
                 pointer=SimpleNamespace(
-                    comment_id=ISSUE71_COMPREHENSIVE_READER_ADC_COMMENT_ID,
-                    sha256=ISSUE71_COMPREHENSIVE_READER_ADC_SHA256,
+                    comment_id=ISSUE71_WINDOWS_PROFILE_READER_ADC_COMMENT_ID,
+                    sha256=ISSUE71_WINDOWS_PROFILE_READER_ADC_SHA256,
                     state="approved",
                 ),
                 contract=SimpleNamespace(
-                    sha256=ISSUE71_COMPREHENSIVE_READER_ADC_SHA256,
+                    sha256=ISSUE71_WINDOWS_PROFILE_READER_ADC_SHA256,
                     content=b"exact current ADC bytes",
                 ),
             )
@@ -1071,7 +1081,7 @@ class OwnerAuthorizationTests(unittest.TestCase):
             details = {
                 "review_session_sha256": "1" * 64,
                 "readiness_sha256": "2" * 64,
-                "adc_sha256": ISSUE71_COMPREHENSIVE_READER_ADC_SHA256,
+                    "adc_sha256": ISSUE71_WINDOWS_PROFILE_READER_ADC_SHA256,
                 "pr_head_sha40": PLAN_HEAD,
                 "feedback_sha256": "3" * 64,
                 "project_profile_sha256": owner_module.ISSUE71_PROFILE_SHA256,
@@ -1086,6 +1096,18 @@ class OwnerAuthorizationTests(unittest.TestCase):
                     reader, root, pr_number=75, pr_head_sha40=PLAN_HEAD, details=details,
                 )
             self.assertEqual(issue_reads, [71])
+
+            for invalid_profile in (
+                    profile_bytes.replace(b"\n", b"\r", 1),
+                    profile_bytes + b" "):
+                profile.write_bytes(invalid_profile)
+                with self.assertRaisesRegex(
+                        OwnerAuthorizationError,
+                        "project profile differs from the approved solo_owner profile"):
+                    owner_module._validate_issue71_user_review_subject(
+                        reader, root, pr_number=75, pr_head_sha40=PLAN_HEAD, details=details,
+                    )
+            profile.write_bytes(crlf_profile_bytes)
 
             stale = {**details, "adc_sha256": "5" * 64}
             with patch("p_ases.adc.verify_adc", return_value=verified), \

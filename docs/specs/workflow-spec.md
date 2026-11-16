@@ -1027,7 +1027,7 @@ Preserve all validated history and permit exactly one direct-child commit from t
 <a id="req-f01-148"></a>
 ### 9.100 REQ-F01-148 Verify Issue #71 solo-owner identity
 
-In solo_owner mode, use the dedicated GET-only GitHub client to verify repository, owner, Issue, PR, current approved ADC pointer and complete chain, exact project profile, and verifier identity. Bind all checks to the ADC pointer returned by the live verification and the authorization resolved from that exact current chain; do not pin the consumer to an older ADC ID/SHA. Require the exact authorized Issue/PR/branch/base/HEAD and owner identity before User Review or phase writes. Preserve Issue #63 behavior and keep Issue #71 routes from reading or writing Issue #63.
+In solo_owner mode, use the dedicated GET-only GitHub client to verify repository, owner, Issue, PR, current approved ADC pointer and complete chain, exact project profile, and verifier identity. Bind all checks to the ADC pointer returned by the live verification and the authorization resolved from that exact current chain; do not pin the consumer to an older ADC ID/SHA. Require the exact authorized Issue/PR/branch/base/HEAD and owner identity before User Review or phase writes. Preserve Issue #63 behavior and keep Issue #71 routes from reading or writing Issue #63. For the Issue #71 profile binding, calculate SHA-256 from UTF-8 file bytes after replacing CRLF pairs with LF; reject bare CR bytes and do not parse or reserialize JSON for hashing, so Windows checkouts with core.autocrlf=true retain the pinned Git-blob identity.
 
 <a id="req-f01-149"></a>
 ### 9.101 REQ-F01-149 Bind the Issue #71 User Review plan

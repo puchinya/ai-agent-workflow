@@ -465,7 +465,7 @@ The ADC declares structured Specification, Design, and Testing paths in the Arti
 
 Historical Phase receipts are checked against their immutable ADC, Phase generation, source commit, authors, and document blobs. Replacement receipts separately bind the exact current Specification/Design bytes authorized by the current-document snapshot. The two snapshots may differ across generations; each must match its own exact subject.
 
-Issue #71 solo_owner identity uses a dedicated GET-only client and the current approved ADC returned by complete chain verification. User Review and V3 authorization retain repository, Issue, PR, profile, verifier, HEAD, session, Readiness, feedback, actor, carrier, and direct-chat checks. The Issue #71 routes do not consult Issue #63.
+Issue #71 solo_owner identity uses a dedicated GET-only client and the current approved ADC returned by complete chain verification. User Review and V3 authorization retain repository, Issue, PR, profile, verifier, HEAD, session, Readiness, feedback, actor, carrier, and direct-chat checks. The profile SHA is computed from UTF-8 bytes after normalizing CRLF pairs to LF, rejects bare CR, and never parses or reserializes JSON. The Issue #71 routes do not consult Issue #63.
 
 After fresh exact-HEAD gates and read-only Applied NOOP, the normal phase commands reconcile only already-completed receipts, publish/read back the current ready receipt, and advance through supported transitions. User Review starts once after Verification and Readiness PASS, reads back the full feedback snapshot, and remains pending without an owner decision.
 

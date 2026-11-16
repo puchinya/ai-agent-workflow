@@ -18,13 +18,14 @@ from p_ases.delivery import ReadinessResult
 from p_ases.evidence_store import VerificationSubject
 from p_ases.github import GitHub, GitHubError, ReadOnlyGitHub
 from p_ases.phases import Attention, IssueKind, Phase
+from p_ases.profile import canonical_project_profile_sha256
 from p_ases.user_review import (
     FeedbackSnapshot, UserReviewError, UserReviewResult, UserReviewSession, UserReviewSubject,
     feedback_snapshot_path, review_session_path, write_review_session,
 )
 from p_ases.cli import (
     CLIError, _latest_review_snapshot, _parser, _read_only_github, _readiness_phase_blocker,
-    _review_phase_transition, _solo_owner_identity, _user_review_run,
+    _review_phase_transition, _solo_owner_identity, _user_review_owner_context, _user_review_run,
 )
 from p_ases import phase_rework as phase_rework_module
 
@@ -148,8 +149,17 @@ class UserReviewCliRegressionTests(unittest.TestCase):
             (root / ".agent").mkdir()
             profile_bytes = (ROOT / ".agent" / "project.json").read_bytes()
             profile_path = root / ".agent" / "project.json"
-            profile_path.write_bytes(profile_bytes)
-            profile_sha = hashlib.sha256(profile_bytes).hexdigest()
+            crlf_profile_bytes = profile_bytes.replace(b"\n", b"\r\n")
+            self.assertEqual(
+                canonical_project_profile_sha256(profile_bytes),
+                canonical_project_profile_sha256(crlf_profile_bytes),
+            )
+            self.assertNotEqual(
+                canonical_project_profile_sha256(profile_bytes),
+                canonical_project_profile_sha256(profile_bytes + b" "),
+            )
+            profile_path.write_bytes(crlf_profile_bytes)
+            profile_sha = canonical_project_profile_sha256(profile_bytes)
             issue_body = "Exact Issue 71 body"
             issue_body_sha = hashlib.sha256(issue_body.encode()).hexdigest()
             pr_body = "Refs #71"
@@ -198,12 +208,12 @@ class UserReviewCliRegressionTests(unittest.TestCase):
             reader.authenticated_user = lambda: {"id": 9881, "type": "User"}
             verified = SimpleNamespace(
                 pointer=SimpleNamespace(
-                    comment_id=phase_rework_module.ISSUE71_COMPREHENSIVE_READER_ADC_COMMENT_ID,
-                    sha256=phase_rework_module.ISSUE71_COMPREHENSIVE_READER_ADC_SHA256,
+                    comment_id=phase_rework_module.ISSUE71_WINDOWS_PROFILE_READER_ADC_COMMENT_ID,
+                    sha256=phase_rework_module.ISSUE71_WINDOWS_PROFILE_READER_ADC_SHA256,
                     state="approved",
                 ),
                 contract=SimpleNamespace(
-                    sha256=phase_rework_module.ISSUE71_COMPREHENSIVE_READER_ADC_SHA256,
+                    sha256=phase_rework_module.ISSUE71_WINDOWS_PROFILE_READER_ADC_SHA256,
                     content=b"current approved ADC bytes",
                 ),
             )
@@ -215,7 +225,49 @@ class UserReviewCliRegressionTests(unittest.TestCase):
                     _solo_owner_identity(reader, "puchinya/ai-agent-workflow", 71, 75, HEAD, root=root),
                     (3744776, 3744776, 9881),
                 )
+                for invalid_profile in (
+                        profile_bytes.replace(b"\n", b"\r", 1),
+                        profile_bytes + b" "):
+                    profile_path.write_bytes(invalid_profile)
+                    with self.assertRaisesRegex(CLIError, "project profile"):
+                        _solo_owner_identity(
+                            reader, "puchinya/ai-agent-workflow", 71, 75, HEAD, root=root,
+                        )
             self.assertEqual(issue_numbers, [71])
+
+    def test_issue71_user_review_owner_context_produces_canonical_profile_digest(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / ".agent").mkdir()
+            profile_bytes = (ROOT / ".agent" / "project.json").read_bytes()
+            (root / ".agent" / "project.json").write_bytes(
+                profile_bytes.replace(b"\n", b"\r\n"))
+            verification_subject = SimpleNamespace(
+                repository="puchinya/ai-agent-workflow", issue_number=71, pr_number=75,
+                pr_head_sha40=HEAD, adc_sha256="a" * 64,
+            )
+            subject = SimpleNamespace(
+                verification_subject=verification_subject, readiness_sha256="b" * 64,
+            )
+            session = SimpleNamespace(subject=subject, sha256="c" * 64)
+            readiness = SimpleNamespace(status="PASS", subject=verification_subject, sha256="b" * 64)
+            snapshot = SimpleNamespace(subject=subject, unresolved_thread_ids=(), events=())
+            current = SimpleNamespace(events=(), unresolved_thread_ids=())
+            args = SimpleNamespace(session=Path("session.json"), readiness=Path("readiness.json"),
+                                   feedback_snapshot=Path("feedback.json"))
+            with patch("p_ases.cli.read_review_session", return_value=session), \
+                    patch("p_ases.cli.read_readiness", return_value=readiness), \
+                    patch("p_ases.cli.read_feedback_snapshot", return_value=snapshot), \
+                    patch("p_ases.cli._solo_owner_identity", return_value=(3744776, 3744776, 9881)), \
+                    patch("p_ases.cli._review_payload_from_github", return_value=current):
+                result = _user_review_owner_context(
+                    args, "puchinya/ai-agent-workflow", root,
+                    ReadOnlyGitHub("puchinya/ai-agent-workflow"), issue_number=71,
+                )
+            self.assertEqual(
+                result["details"]["project_profile_sha256"],
+                canonical_project_profile_sha256(profile_bytes),
+            )
 
     def test_user_review_parser_leaves_kind_unset_unless_explicitly_requested(self):
         for verb in ("start", "sync", "status"):

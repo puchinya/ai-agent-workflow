@@ -2117,69 +2117,70 @@ class ActiveGenerationTests(unittest.TestCase):
                     )
 
 
-COMPREHENSIVE_MARKER_FIXTURE_B64 = (
-    "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"
+WINDOWS_PROFILE_MARKER_FIXTURE_B64 = (
+    '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'
+    'b3mAjPhuOPz7vwByiJfR'
 )
 
 class CombinedAuthorizationTests(unittest.TestCase):
     @staticmethod
-    def _comprehensive_verified(marker: bytes | None = None):
+    def _windows_profile_verified(marker: bytes | None = None):
         if marker is None:
-            marker = zlib.decompress(base64.b64decode(COMPREHENSIVE_MARKER_FIXTURE_B64))
+            marker = zlib.decompress(base64.b64decode(WINDOWS_PROFILE_MARKER_FIXTURE_B64))
         content = (
-            "# Agent Development Contract — Issue #71 Comprehensive Phase Reader and User Review Completion\n\n"
+            "# Agent Development Contract — Issue #71 Windows-stable profile identity and phase continuation\n\n"
             "Repository: puchinya/ai-agent-workflow\n"
-            "Predecessor ADC: Issue #71 comment #6904919120, SHA-256 "
-            "0cca59c49e16e8e2eacc2627cc9ea21667513d2123143ae6b2f641da74a5ac31\n\n"
+            "Predecessor ADC: Issue #71 comment #6917910120, SHA-256 "
+            "fe89e0150761291fd07745feaf6d23e68fa4cef66f7ad7feb413254d5ba9a691\n\n"
             "## Artifact impact\n\n"
-            f"{module.ISSUE71_COMPREHENSIVE_READER_ARTIFACT_IMPACT}\n\n"
+            f"{module.ISSUE71_WINDOWS_PROFILE_READER_ARTIFACT_IMPACT}\n\n"
         ).encode("utf-8") + marker + b"\n"
         digest = hashlib.sha256(content).hexdigest()
         contract = SimpleNamespace(
@@ -2187,29 +2188,35 @@ class CombinedAuthorizationTests(unittest.TestCase):
             byte_length=len(content),
             repository=module.REPOSITORY,
             content=content,
-            section=lambda _name: module.ISSUE71_COMPREHENSIVE_READER_ARTIFACT_IMPACT,
+            section=lambda _name: module.ISSUE71_WINDOWS_PROFILE_READER_ARTIFACT_IMPACT,
         )
         return SimpleNamespace(
             pointer=SimpleNamespace(
-                comment_id=module.ISSUE71_COMPREHENSIVE_READER_ADC_COMMENT_ID,
+                comment_id=module.ISSUE71_WINDOWS_PROFILE_READER_ADC_COMMENT_ID,
                 sha256=digest,
                 state="approved",
             ),
             contract=contract,
         ), digest, len(content)
 
-    def test_comprehensive_current_marker_accepts_exact_authorized_generation(self):
-        verified, digest, byte_length = self._comprehensive_verified()
-        with patch.object(module, "ISSUE71_COMPREHENSIVE_READER_ADC_SHA256", digest), \
-                patch.object(module, "ISSUE71_COMPREHENSIVE_READER_ADC_BYTES", byte_length):
+    def test_windows_profile_current_marker_accepts_exact_authorized_generation(self):
+        verified, digest, byte_length = self._windows_profile_verified()
+        with patch.object(module, "ISSUE71_WINDOWS_PROFILE_READER_ADC_SHA256", digest), \
+                patch.object(module, "ISSUE71_WINDOWS_PROFILE_READER_ADC_BYTES", byte_length):
             authorization = module.parse_issue71_phase_and_user_review_authorization(verified)
         self.assertEqual(authorization["predecessor_adc_comment_id"],
-                         module.ISSUE71_CURRENT_DOCUMENT_REISSUE_ADC_COMMENT_ID)
-        self.assertEqual(len(authorization["approved_history"]), 14)
+                         module.ISSUE71_COMPREHENSIVE_READER_ADC_COMMENT_ID)
+        self.assertEqual(len(authorization["approved_history"]), 15)
         self.assertEqual(len(authorization["followup_path_allowlist"]), 31)
+        self.assertEqual(authorization["followup_path_allowlist"],
+                         list(module.ISSUE71_WINDOWS_PROFILE_READER_PATH_ALLOWLIST))
+        self.assertEqual(
+            authorization["current_document_snapshot_authorization"],
+            module.ISSUE71_WINDOWS_PROFILE_CURRENT_DOCUMENT_SNAPSHOT_AUTHORIZATION,
+        )
 
-    def test_comprehensive_current_marker_rejects_unapproved_allowlist_change(self):
-        marker = zlib.decompress(base64.b64decode(COMPREHENSIVE_MARKER_FIXTURE_B64))
+    def test_windows_profile_current_marker_rejects_unapproved_allowlist_change(self):
+        marker = zlib.decompress(base64.b64decode(WINDOWS_PROFILE_MARKER_FIXTURE_B64))
         prefix = b"<!-- PASES_ISSUE_PHASE_AND_USER_REVIEW_V2\n"
         suffix = b"\n-->"
         raw = marker[len(prefix):-len(suffix)]
@@ -2217,20 +2224,20 @@ class CombinedAuthorizationTests(unittest.TestCase):
         value["followup_path_allowlist"][-1] = "runtime/p_ases/adc.py"
         import p_ases.phase_rework as phase_module
         altered_marker = prefix + phase_module._canonical(value).encode("utf-8") + suffix
-        verified, digest, byte_length = self._comprehensive_verified(altered_marker)
-        with patch.object(module, "ISSUE71_COMPREHENSIVE_READER_ADC_SHA256", digest), \
-                patch.object(module, "ISSUE71_COMPREHENSIVE_READER_ADC_BYTES", byte_length), \
-                patch.object(module, "ISSUE71_COMPREHENSIVE_READER_MARKER_BYTES", len(altered_marker)), \
-                patch.object(module, "ISSUE71_COMPREHENSIVE_READER_MARKER_SHA256",
+        verified, digest, byte_length = self._windows_profile_verified(altered_marker)
+        with patch.object(module, "ISSUE71_WINDOWS_PROFILE_READER_ADC_SHA256", digest), \
+                patch.object(module, "ISSUE71_WINDOWS_PROFILE_READER_ADC_BYTES", byte_length), \
+                patch.object(module, "ISSUE71_WINDOWS_PROFILE_READER_MARKER_BYTES", len(altered_marker)), \
+                patch.object(module, "ISSUE71_WINDOWS_PROFILE_READER_MARKER_SHA256",
                              hashlib.sha256(altered_marker).hexdigest()):
             with self.assertRaisesRegex(module.PhaseReworkError, "followup_path_allowlist"):
                 module.parse_issue71_phase_and_user_review_authorization(verified)
 
-    def test_comprehensive_current_marker_rejects_wrong_pointer_identity(self):
-        verified, digest, byte_length = self._comprehensive_verified()
+    def test_windows_profile_current_marker_rejects_wrong_pointer_identity(self):
+        verified, digest, byte_length = self._windows_profile_verified()
         verified.pointer.comment_id += 1
-        with patch.object(module, "ISSUE71_COMPREHENSIVE_READER_ADC_SHA256", digest), \
-                patch.object(module, "ISSUE71_COMPREHENSIVE_READER_ADC_BYTES", byte_length):
+        with patch.object(module, "ISSUE71_WINDOWS_PROFILE_READER_ADC_SHA256", digest), \
+                patch.object(module, "ISSUE71_WINDOWS_PROFILE_READER_ADC_BYTES", byte_length):
             with self.assertRaisesRegex(module.PhaseReworkError, "exact approved generation"):
                 module.parse_issue71_phase_and_user_review_authorization(verified)
 
@@ -2292,6 +2299,57 @@ class CombinedAuthorizationTests(unittest.TestCase):
                 patch.object(module, "verify_adc_forward_generations", return_value=tuple(rows)):
             with self.assertRaisesRegex(module.PhaseReworkError, "incomplete, reordered, edited, or unapproved"):
                 module.verify_issue71_phase_and_user_review_adc_chain(SimpleNamespace(), current)
+
+    def test_windows_profile_reader_accepts_exact_fifteen_generation_history(self):
+        history = [
+            {"comment_id": comment_id, "sha256": digest, "byte_length": size, "state": "approved"}
+            for comment_id, digest, size in module.ISSUE71_WINDOWS_PROFILE_READER_HISTORY
+        ]
+        authorization = {"approved_history": history}
+
+        def generation(comment_id, digest, size, predecessor):
+            body = (
+                f"Predecessor ADC: Issue #71 comment #{predecessor[0]}, "
+                f"SHA-256 {predecessor[1]}\n"
+            ).encode()
+            body += b" " * (size - len(body))
+            return SimpleNamespace(
+                pointer=SimpleNamespace(comment_id=comment_id, sha256=digest, state="approved"),
+                contract=SimpleNamespace(sha256=digest, byte_length=size,
+                                         repository=module.REPOSITORY, content=body),
+            )
+
+        boundary = module.ISSUE71_COMBINED_ADC_HISTORY_BOUNDARY
+        rows = [generation(*boundary, 80, (1, "0" * 64))]
+        previous = boundary
+        for comment_id, digest, size in module.ISSUE71_WINDOWS_PROFILE_READER_HISTORY:
+            rows.append(generation(comment_id, digest, size, previous))
+            previous = (comment_id, digest)
+        current_body = (
+            f"Predecessor ADC: Issue #71 comment #{previous[0]}, SHA-256 {previous[1]}\n"
+        ).encode()
+        current_body += b" " * (module.ISSUE71_WINDOWS_PROFILE_READER_ADC_BYTES - len(current_body))
+        current = verified_contract(
+            module.ISSUE71_WINDOWS_PROFILE_READER_ADC_COMMENT_ID,
+            module.ISSUE71_WINDOWS_PROFILE_READER_ADC_SHA256,
+            module.ISSUE71_WINDOWS_PROFILE_READER_ADC_BYTES,
+            module.REPOSITORY,
+            current_body,
+        )
+        rows.append(current)
+        with patch.object(module, "parse_issue71_phase_and_user_review_authorization",
+                          return_value=authorization), \
+                patch.object(module, "verify_adc_forward_generations", return_value=tuple(rows)) as verify:
+            parsed, chain = module.verify_issue71_phase_and_user_review_adc_chain(SimpleNamespace(), current)
+        self.assertEqual(parsed, authorization)
+        self.assertEqual(len(chain) - 2, 15)
+        verify.assert_called_once_with(
+            SimpleNamespace(), module.ISSUE_NUMBER,
+            prior_comment_id=module.ISSUE71_COMBINED_ADC_HISTORY_BOUNDARY[0],
+            prior_sha256=module.ISSUE71_COMBINED_ADC_HISTORY_BOUNDARY[1],
+            current_comment_id=module.ISSUE71_WINDOWS_PROFILE_READER_ADC_COMMENT_ID,
+            current_sha256=module.ISSUE71_WINDOWS_PROFILE_READER_ADC_SHA256,
+        )
 
     def test_current_document_reissue_reader_accepts_exact_thirteen_generation_history(self):
         history = [
@@ -2375,29 +2433,29 @@ class CombinedAuthorizationTests(unittest.TestCase):
                 self.assertRaisesRegex(module.PhaseReworkError, "exactly one combined authorization marker"):
             module.parse_issue71_phase_and_user_review_authorization(verified)
 
-    def test_combined_followup_requires_one_allowlisted_direct_child(self):
-        start = "dfdde9a8e29edd9c69e312a290b6e1cef9eb50a2"
+    def test_windows_profile_followup_requires_one_allowlisted_direct_child(self):
+        start = "3524f9790813fe14351abd0bb2f4db48e8a28296"
         head = "f" * 40
         authorization = {
             "starting_head_sha40": start,
             "max_followup_commits": 1,
-            "followup_path_allowlist": list(module.ISSUE71_COMBINED_FOLLOWUP_PATH_ALLOWLIST),
+            "followup_path_allowlist": list(module.ISSUE71_WINDOWS_PROFILE_READER_PATH_ALLOWLIST),
         }
         with tempfile.TemporaryDirectory() as temporary, \
                 patch.object(module, "is_ancestor", return_value=True), \
                 patch.object(module, "run_git", return_value=head), \
                 patch.object(module, "commit_parents_sha40", return_value=(start,)), \
                 patch.object(module, "changed_paths_between", return_value=(
-                    "runtime/p_ases/cli.py", "docs/specs/workflow-spec.md")):
+                    "runtime/p_ases/profile.py", "docs/specs/workflow-spec.md")):
             module._verify_combined_followup_commit_set(Path(temporary), head, authorization)
 
-    def test_comprehensive_followup_rejects_paths_outside_exact_allowlist(self):
+    def test_windows_profile_followup_rejects_paths_outside_exact_allowlist(self):
         head = "f" * 40
-        start = "bf754961c238eab9d48f0767d53fac724375f428"
+        start = "3524f9790813fe14351abd0bb2f4db48e8a28296"
         authorization = {
             "starting_head_sha40": start,
             "max_followup_commits": 1,
-            "followup_path_allowlist": list(module.ISSUE71_COMPREHENSIVE_READER_PATH_ALLOWLIST),
+            "followup_path_allowlist": list(module.ISSUE71_WINDOWS_PROFILE_READER_PATH_ALLOWLIST),
         }
         with tempfile.TemporaryDirectory() as temporary, \
                 patch.object(module, "is_ancestor", return_value=True), \

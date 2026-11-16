@@ -24,6 +24,7 @@ from .owner_consent import (
     OwnerDecisionError, read_verified_owner_decision,
     verify_owner_decision_history_tail, _comment_fingerprint, _has_owner_decision_marker,
 )
+from .profile import ProfileError, canonical_project_profile_sha256
 from .work import WorkError, closing_issue_references, parse_issue_association
 
 REPOSITORY = "puchinya/ai-agent-workflow"
@@ -217,8 +218,15 @@ def _validate_issue71_user_review_subject(
         raise OwnerAuthorizationError("Issue #71 User Review details do not bind the exact session, profile, and PR")
     profile_path = Path(root) / ".agent" / "project.json"
     if (Path(root).is_symlink() or profile_path.parent.is_symlink()
-            or profile_path.is_symlink() or not profile_path.is_file()
-            or hashlib.sha256(profile_path.read_bytes()).hexdigest() != ISSUE71_PROFILE_SHA256):
+            or profile_path.is_symlink() or not profile_path.is_file()):
+        raise OwnerAuthorizationError("Issue #71 project profile differs from the approved solo_owner profile")
+    try:
+        profile_sha256 = canonical_project_profile_sha256(profile_path.read_bytes())
+    except (OSError, ProfileError) as exc:
+        raise OwnerAuthorizationError(
+            "Issue #71 project profile differs from the approved solo_owner profile"
+        ) from exc
+    if profile_sha256 != ISSUE71_PROFILE_SHA256:
         raise OwnerAuthorizationError("Issue #71 project profile differs from the approved solo_owner profile")
     try:
         verified = verify_adc(github, ISSUE71_NUMBER)

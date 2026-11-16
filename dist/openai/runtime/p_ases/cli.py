@@ -61,7 +61,7 @@ from .current_base import (
     verify_current_base_advance,
 )
 from .context import WorkContext
-from .profile import ProfileError, load_profile
+from .profile import ProfileError, canonical_project_profile_sha256, load_profile
 from .gate_policy import (
     BOOTSTRAP_COHORT, BOOTSTRAP_ISSUES, BOOTSTRAP_POLICY, BOOTSTRAP_REPOSITORY,
     BootstrapResult, BootstrapSubject, GateSelection,
@@ -2503,9 +2503,9 @@ def _user_review_owner_context(args: argparse.Namespace, repository: str,
     if issue_number == 71:
         details = {
             **details,
-            "project_profile_sha256": hashlib.sha256(
+            "project_profile_sha256": canonical_project_profile_sha256(
                 (root / ".agent" / "project.json").read_bytes()
-            ).hexdigest(),
+            ),
             "verifier_user_id": verifier_id,
         }
         subject_sha256 = hashlib.sha256(_canonical({
@@ -3110,9 +3110,9 @@ def _owner_authorization_resume_command(args: argparse.Namespace, repository: st
         details["pr_head_sha40"], root=root,
     )
     if plan["issue_number"] == 71 and (
-            details.get("project_profile_sha256") != hashlib.sha256(
+            details.get("project_profile_sha256") != canonical_project_profile_sha256(
                 (root / ".agent" / "project.json").read_bytes()
-            ).hexdigest()
+            )
             or details.get("verifier_user_id") != verifier_id):
         raise OwnerAuthorizationError("Issue #71 profile or independent verifier differs from the exact plan")
     approval = _read_user_review_relay_approval(
@@ -3228,7 +3228,10 @@ def _solo_owner_identity(github: ReadOnlyGitHub, repository: str, issue_number: 
                 or profile_path.is_symlink()
                 or not profile_path.is_file()):
             raise CLIError("Issue #71 project profile must be a regular file in the exact repository root")
-        profile_sha256 = hashlib.sha256(profile_path.read_bytes()).hexdigest()
+        try:
+            profile_sha256 = canonical_project_profile_sha256(profile_path.read_bytes())
+        except ProfileError as exc:
+            raise CLIError(f"Issue #71 project profile bytes are invalid: {exc}") from exc
         user_review_auth = authorization["issue71_user_review_authorization"]
         if (profile_sha256 != user_review_auth["project_profile_sha256"]
                 or load_profile(root).final_delivery_review_mode != "solo_owner"):
