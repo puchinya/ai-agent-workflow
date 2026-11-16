@@ -2116,6 +2116,75 @@ class ActiveGenerationTests(unittest.TestCase):
 
 
 class CombinedAuthorizationTests(unittest.TestCase):
+    def test_current_document_reissue_reader_accepts_exact_thirteen_generation_history(self):
+        history = [
+            {"comment_id": comment_id, "sha256": digest, "byte_length": size, "state": "approved"}
+            for comment_id, digest, size in module.ISSUE71_CURRENT_DOCUMENT_REISSUE_HISTORY
+        ]
+        authorization = {"approved_history": history}
+
+        def generation(comment_id, digest, size, predecessor, *, content=None):
+            body = content or (
+                f"Predecessor ADC: Issue #71 comment #{predecessor[0]}, "
+                f"SHA-256 {predecessor[1]}\n"
+            ).encode()
+            body = body + b" " * (size - len(body))
+            return SimpleNamespace(
+                pointer=SimpleNamespace(comment_id=comment_id, sha256=digest, state="approved"),
+                contract=SimpleNamespace(sha256=digest, byte_length=size,
+                                         repository=module.REPOSITORY, content=body),
+            )
+
+        boundary = module.ISSUE71_COMBINED_ADC_HISTORY_BOUNDARY
+        rows = [generation(*boundary, 80, (1, "0" * 64))]
+        previous = boundary
+        for comment_id, digest, size in module.ISSUE71_CURRENT_DOCUMENT_REISSUE_HISTORY:
+            rows.append(generation(comment_id, digest, size, previous))
+            previous = (comment_id, digest)
+        current_content = (
+            f"Predecessor ADC: Issue #71 comment #{previous[0]}, "
+            f"SHA-256 {previous[1]}\n"
+        ).encode()
+        current_content += b" " * (module.ISSUE71_CURRENT_DOCUMENT_REISSUE_ADC_BYTES
+                                    - len(current_content))
+        current = verified_contract(
+            module.ISSUE71_CURRENT_DOCUMENT_REISSUE_ADC_COMMENT_ID,
+            module.ISSUE71_CURRENT_DOCUMENT_REISSUE_ADC_SHA256,
+            module.ISSUE71_CURRENT_DOCUMENT_REISSUE_ADC_BYTES,
+            module.REPOSITORY,
+            current_content,
+        )
+        rows.append(current)
+        with patch.object(module, "parse_issue71_phase_and_user_review_authorization",
+                          return_value=authorization), \
+                patch.object(module, "verify_adc_forward_generations", return_value=tuple(rows)) as verify:
+            parsed, chain = module.verify_issue71_phase_and_user_review_adc_chain(SimpleNamespace(), current)
+        self.assertEqual(parsed, authorization)
+        self.assertEqual(len(chain) - 2, 13)
+        verify.assert_called_once_with(
+            SimpleNamespace(), module.ISSUE_NUMBER,
+            prior_comment_id=module.ISSUE71_COMBINED_ADC_HISTORY_BOUNDARY[0],
+            prior_sha256=module.ISSUE71_COMBINED_ADC_HISTORY_BOUNDARY[1],
+            current_comment_id=module.ISSUE71_CURRENT_DOCUMENT_REISSUE_ADC_COMMENT_ID,
+            current_sha256=module.ISSUE71_CURRENT_DOCUMENT_REISSUE_ADC_SHA256,
+        )
+
+    def test_current_document_reissue_reader_dispatches_through_combined_authorization(self):
+        current = verified_contract(
+            module.ISSUE71_CURRENT_DOCUMENT_REISSUE_ADC_COMMENT_ID,
+            module.ISSUE71_CURRENT_DOCUMENT_REISSUE_ADC_SHA256,
+            module.ISSUE71_CURRENT_DOCUMENT_REISSUE_ADC_BYTES,
+            module.REPOSITORY, b"approved ADC bytes",
+        )
+        with patch.object(module, "verify_issue71_phase_and_user_review_adc_chain") as verify:
+            result = module._authorization_context(SimpleNamespace(), current)
+        verify.assert_called_once_with(SimpleNamespace(), current)
+        self.assertEqual(result[0], module.AUTHORIZATION)
+        self.assertEqual(result[2], module.RECOVERY_AUTHORIZATION)
+        self.assertEqual(result[4], module.TIMESTAMP_RECOVERY_AUTHORIZATION)
+        self.assertEqual(result[8], module.READER_CONTINUATION_AUTHORIZATION)
+        self.assertEqual(result[10], module.EXECUTION_RECEIPT_READER_CONTINUATION_AUTHORIZATION)
+
     def test_combined_marker_rejects_duplicate_current_marker_before_payload_parsing(self):
         marker = f"<!-- {module.ISSUE71_PHASE_AND_USER_REVIEW_SCHEMA}\n{{}}\n-->"
         content = (marker + "\n" + marker).encode("utf-8")
@@ -2151,6 +2220,22 @@ class CombinedAuthorizationTests(unittest.TestCase):
                 patch.object(module, "changed_paths_between", return_value=("runtime/p_ases/github.py",)):
             with self.assertRaisesRegex(module.PhaseReworkError, "exact path allowlist"):
                 module._verify_combined_followup_commit_set(Path(temporary), head, authorization)
+
+    def test_current_document_reissue_commit_uses_its_exact_direct_child_allowlist(self):
+        start = "c464ae659efaae856aad669d69c3bfe2389efd18"
+        head = "f" * 40
+        authorization = {
+            "starting_head_sha40": start,
+            "max_followup_commits": 1,
+            "followup_path_allowlist": list(module.ISSUE71_CURRENT_DOCUMENT_REISSUE_PATH_ALLOWLIST),
+        }
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(module, "is_ancestor", return_value=True), \
+                patch.object(module, "run_git", return_value=head), \
+                patch.object(module, "commit_parents_sha40", return_value=(start,)), \
+                patch.object(module, "changed_paths_between", return_value=(
+                    "runtime/p_ases/phase_evidence.py", "tests/test_phase_evidence.py")):
+            module._verify_combined_followup_commit_set(Path(temporary), head, authorization)
 
 
 if __name__ == "__main__":

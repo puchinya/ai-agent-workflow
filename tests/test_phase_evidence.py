@@ -46,6 +46,68 @@ def decision() -> module.PhaseDecision:
 
 
 class PhaseEvidenceContinuationTests(unittest.TestCase):
+    def test_current_document_reissue_accepts_valid_current_bytes_after_historical_evolution(self):
+        old_documents = {
+            "docs/design/workflow-design.md": "f64c7dfc6ba43c0ac62c84dcbc21c560bdd34be4004fa24804b512b191b64450",
+            "docs/specs/workflow-spec.md": "4104666b05561b5b70caff0b0c26b7c9dea65d6811af78a1a51a7d0b58bff90c",
+        }
+        current_documents = {
+            row["path"]: row["sha256"]
+            for row in rework.ISSUE71_HISTORICAL_DOCUMENT_REISSUE_AUTHORIZATION[
+                "current_source_document_digests"
+            ]
+        }
+        self.assertNotEqual(old_documents, current_documents)
+        generation = GENERATION
+        spec = module.PhaseDecision({
+            "schema": module.SENTINEL_V2, "repository": REPOSITORY, "issue_number": 71,
+            "issue_kind": "single", "from_phase": "requirements", "to_phase": "specification",
+            "adc_comment_id": rework.ISSUE71_CURRENT_DOCUMENT_REISSUE_ADC_COMMENT_ID,
+            "adc_sha256": rework.ISSUE71_CURRENT_DOCUMENT_REISSUE_ADC_SHA256,
+            "branch_ref": rework.BRANCH_REF, "commit_sha40": HEAD,
+            "documents": [{"role": "specification", "path": path, "sha256": digest}
+                          for path, digest in current_documents.items()
+                          if path == "docs/specs/workflow-spec.md"],
+            "skip_reasons": {}, "phase_generation_comment_id": generation[0],
+            "phase_generation_sha256": generation[1],
+        })
+        design = module.PhaseDecision({
+            "schema": module.SENTINEL_V2, "repository": REPOSITORY, "issue_number": 71,
+            "issue_kind": "single", "from_phase": "specification", "to_phase": "design",
+            "adc_comment_id": rework.ISSUE71_CURRENT_DOCUMENT_REISSUE_ADC_COMMENT_ID,
+            "adc_sha256": rework.ISSUE71_CURRENT_DOCUMENT_REISSUE_ADC_SHA256,
+            "branch_ref": rework.BRANCH_REF, "commit_sha40": HEAD,
+            "documents": [{"role": "design" if path.endswith("workflow-design.md") else "specification",
+                            "path": path, "sha256": digest}
+                           for path, digest in current_documents.items()],
+            "skip_reasons": {}, "phase_generation_comment_id": generation[0],
+            "phase_generation_sha256": generation[1],
+        })
+        module._validate_issue71_current_document_snapshot(
+            (spec, design), rework.ISSUE71_HISTORICAL_DOCUMENT_REISSUE_AUTHORIZATION,
+        )
+
+    def test_current_document_reissue_rejects_current_snapshot_drift(self):
+        authorization = rework.ISSUE71_HISTORICAL_DOCUMENT_REISSUE_AUTHORIZATION
+        expected = authorization["current_source_document_digests"]
+        design = module.PhaseDecision({
+            "schema": module.SENTINEL_V2, "repository": REPOSITORY, "issue_number": 71,
+            "issue_kind": "single", "from_phase": "specification", "to_phase": "design",
+            "adc_comment_id": rework.ISSUE71_CURRENT_DOCUMENT_REISSUE_ADC_COMMENT_ID,
+            "adc_sha256": rework.ISSUE71_CURRENT_DOCUMENT_REISSUE_ADC_SHA256,
+            "branch_ref": rework.BRANCH_REF, "commit_sha40": HEAD,
+            "documents": [{"role": "design" if row["path"].endswith("workflow-design.md") else "specification",
+                            "path": row["path"],
+                            "sha256": "0" * 64 if row["path"].endswith("workflow-design.md") else row["sha256"]}
+                           for row in expected],
+            "skip_reasons": {}, "phase_generation_comment_id": GENERATION[0],
+            "phase_generation_sha256": GENERATION[1],
+        })
+        with self.assertRaisesRegex(module.PhaseEvidenceError, "approved reissue snapshot"):
+            module._validate_issue71_current_document_snapshot(
+                (design,), authorization,
+            )
+
     def test_exact_precomputed_receipt_is_accepted_for_current_adc_generation_and_head(self):
         prior = decision()
         with tempfile.TemporaryDirectory() as temporary, patch.object(module, "is_ancestor", return_value=True):

@@ -1602,12 +1602,12 @@ def _issue71_reconciled_predecessors(
         check_source_phase=False, verified_context=context,
         predecessor_receipts={(Phase.REQUIREMENTS, Phase.SPECIFICATION): (1, first)},
     )
-    for edge, old in historical_decisions.items():
-        replacement = first if edge == (Phase.REQUIREMENTS, Phase.SPECIFICATION) else second
-        old_documents = {row["path"]: row["sha256"] for row in old.payload["documents"]}
-        new_documents = {row["path"]: row["sha256"] for row in replacement.payload["documents"]}
-        if any(new_documents.get(path) != digest for path, digest in old_documents.items()):
-            raise PhaseEvidenceError("current specification/design artifact differs from its historical receipt")
+    document_authorization = authorization.get("historical_document_reissue_authorization")
+    if not isinstance(document_authorization, dict):
+        raise PhaseEvidenceError("current Issue #71 ADC lacks historical/current document authorization")
+    _validate_issue71_current_document_snapshot(
+        (first, second), document_authorization,
+    )
     prepared = {
         (Phase.REQUIREMENTS, Phase.SPECIFICATION): (1, first),
         (Phase.SPECIFICATION, Phase.DESIGN): (2, second),
@@ -1640,6 +1640,38 @@ def _issue71_reconciled_predecessors(
     return (*replacements, ((Phase.DESIGN, Phase.READY), ready, ready.body()))
 
 
+def _validate_issue71_current_document_snapshot(
+    decisions: tuple[PhaseDecision, ...], authorization: Mapping[str, Any],
+) -> None:
+    """Bind replacement Phase receipts to the exact current documents, independently of history."""
+    authorized_rows = authorization.get("current_source_document_digests")
+    if not isinstance(authorized_rows, list) or not authorized_rows:
+        raise PhaseEvidenceError("current Issue #71 document digest authorization is incomplete")
+    expected: dict[str, str] = {}
+    for row in authorized_rows:
+        if (not isinstance(row, dict) or set(row) != {"path", "sha256"}
+                or not isinstance(row.get("path"), str)
+                or not isinstance(row.get("sha256"), str)
+                or not SHA256.fullmatch(row["sha256"])
+                or row["path"] in expected):
+            raise PhaseEvidenceError("current Issue #71 document digest authorization is malformed")
+        expected[row["path"]] = row["sha256"]
+    actual: dict[str, str] = {}
+    for decision in decisions:
+        for row in decision.payload.get("documents", []):
+            if not isinstance(row, dict) or row.get("role") not in {"specification", "design"}:
+                continue
+            path, digest = row.get("path"), row.get("sha256")
+            if (not isinstance(path, str) or not isinstance(digest, str)
+                    or not SHA256.fullmatch(digest) or path not in expected):
+                raise PhaseEvidenceError("replacement Phase receipt includes an unauthorized current document")
+            if path in actual and actual[path] != digest:
+                raise PhaseEvidenceError("current source-document bytes differ between replacement receipts")
+            actual[path] = digest
+    if actual != expected:
+        raise PhaseEvidenceError("current source-document bytes differ from the approved reissue snapshot")
+
+
 def _publish_prepared_predecessor(
     github: GitHub, root: Path, issue_number: int, decision: PhaseDecision, body: str,
 ) -> int:
@@ -1666,8 +1698,7 @@ def _publish_prepared_predecessor(
     else:
         try:
             from .phase_rework import (
-                ISSUE71_PHASE_AND_USER_REVIEW_ADC_COMMENT_ID,
-                ISSUE71_PHASE_AND_USER_REVIEW_ADC_SHA256,
+                ISSUE71_COMBINED_CURRENT_ADC_IDS,
                 OWNER_ID,
                 PR_BODY_SHA256,
                 PR_TITLE,
@@ -1702,10 +1733,9 @@ def _publish_prepared_predecessor(
                 or subject.get("repository") != "puchinya/ai-agent-workflow"
                 or subject.get("issue_number") != issue_number
                 or issue_number != 71
-                or subject.get("adc_comment_id") != ISSUE71_PHASE_AND_USER_REVIEW_ADC_COMMENT_ID
-                or subject.get("adc_sha256") != ISSUE71_PHASE_AND_USER_REVIEW_ADC_SHA256
-                or live.current_adc.pointer.comment_id != ISSUE71_PHASE_AND_USER_REVIEW_ADC_COMMENT_ID
-                or live.current_adc.contract.sha256 != ISSUE71_PHASE_AND_USER_REVIEW_ADC_SHA256
+                or live.current_adc.pointer.comment_id not in ISSUE71_COMBINED_CURRENT_ADC_IDS
+                or subject.get("adc_comment_id") != live.current_adc.pointer.comment_id
+                or subject.get("adc_sha256") != live.current_adc.contract.sha256
                 or subject.get("branch_ref") != phase_authorization.get("branch_ref")
                 or live.branch_ref != phase_authorization.get("branch_ref")
                 or subject.get("commit_sha40") != live.head_sha40
@@ -1750,7 +1780,9 @@ def publish_phase_evidence(github: GitHub, root: Path, issue_number: int,
             current_adc = verify_adc(github, issue_number)
         except ADCError as exc:
             raise PhaseEvidenceError(f"approved Issue #71 ADC is unavailable: {exc}") from exc
-        if current_adc.pointer.comment_id == 6902977193:
+        from .phase_rework import ISSUE71_COMBINED_CURRENT_ADC_IDS
+
+        if current_adc.pointer.comment_id in ISSUE71_COMBINED_CURRENT_ADC_IDS:
             prepared = _issue71_reconciled_predecessors(github, root, issue_number)
             decision = prepared[-1][1]
             for edge, predecessor, predecessor_body in prepared[:-1]:
