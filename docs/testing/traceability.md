@@ -210,6 +210,7 @@ A row is complete only when each linked stable ID resolves to its owning documen
 | [REQ-F01-165](../specs/workflow-spec.md#req-f01-165) | [DES-F01-098](../design/workflow-design.md#des-f01-098) | [ORA-F01-098](pases-lifecycle-tests.md#ora-f01-098) | [TST-F01-098](pases-lifecycle-tests.md#tst-f01-098) | [Generic exact history and header validation tests](../../tests/test_phase_rework.py) |
 | [REQ-F01-166](../specs/workflow-spec.md#req-f01-166) | [DES-F01-098](../design/workflow-design.md#des-f01-098) | [ORA-F01-098](pases-lifecycle-tests.md#ora-f01-098) | [TST-F01-098](pases-lifecycle-tests.md#tst-f01-098) | [Historical header and pointer-chain regression tests](../../tests/test_phase_rework.py) |
 | [REQ-F01-167](../specs/workflow-spec.md#req-f01-167) | [DES-F01-099](../design/workflow-design.md#des-f01-099) | [ORA-F01-099](pases-lifecycle-tests.md#ora-f01-099) | [TST-F01-099](pases-lifecycle-tests.md#tst-f01-099) | [Exact historical commit segment parser and Git-boundary regressions](../../tests/test_phase_rework.py) |
+| [REQ-F01-170](../specs/workflow-spec.md#req-f01-170) | [DES-F01-100](../design/workflow-design.md#des-f01-100) | [ORA-F01-102](pases-lifecycle-tests.md#ora-f01-102) | [TST-F01-102](pases-lifecycle-tests.md#tst-f01-102) | [Post-rework phase label validation](../../tests/test_phase_rework.py) |
 
 <a id="artifact-impact"></a>
 ## 3 Artifact impact

@@ -374,6 +374,41 @@ def recovery_fixture(root: Path, *, labels: tuple[str, ...] | None = None,
     return intent, original_readiness, live
 
 
+class PostReworkLabelValidationTests(unittest.TestCase):
+    def test_accepts_each_known_single_issue_lifecycle_phase(self):
+        phases = (
+            "phase:requirements", "phase:specification", "phase:design", "phase:ready",
+            "phase:verification", "phase:execution", "phase:integration", "phase:user-review",
+        )
+        for phase in phases:
+            with self.subTest(phase=phase):
+                module._validate_post_rework_labels(
+                    tuple(sorted(("enhancement", "kind:single", phase)))
+                )
+
+    def test_rejects_unknown_or_duplicate_phases(self):
+        invalid_labels = (
+            ("enhancement", "kind:single", "phase:unknown"),
+            ("enhancement", "kind:single", "phase:verification", "phase:execution"),
+            ("enhancement", "kind:single", "phase:verification", "phase:verification"),
+            ("enhancement", "kind:single", "phase:"),
+        )
+        for labels in invalid_labels:
+            with self.subTest(labels=labels), self.assertRaises(module.PhaseReworkError):
+                module._validate_post_rework_labels(tuple(sorted(labels)))
+
+    def test_rejects_duplicate_or_mismatched_kinds_and_missing_enhancement(self):
+        invalid_labels = (
+            ("enhancement", "kind:single", "kind:single", "phase:verification"),
+            ("enhancement", "kind:child", "phase:verification"),
+            ("enhancement", "kind:single", "kind:child", "phase:verification"),
+            ("kind:single", "phase:verification"),
+        )
+        for labels in invalid_labels:
+            with self.subTest(labels=labels), self.assertRaises(module.PhaseReworkError):
+                module._validate_post_rework_labels(tuple(sorted(labels)))
+
+
 class AuthorizationTests(unittest.TestCase):
     def test_exact_v2_marker_is_bound_to_adc_bytes_and_predecessor(self):
         raw = json.dumps(module.AUTHORIZATION, sort_keys=True, separators=(",", ":"))

@@ -2292,9 +2292,11 @@ def _validate_post_rework_labels(labels: tuple[str, ...]) -> None:
         return
     phases = [label for label in labels if label.startswith("phase:")]
     kinds = [label for label in labels if label.startswith("kind:")]
-    if (len(phases) != 1 or phases[0] not in {
-            "phase:specification", "phase:design", "phase:ready", "phase:execution",
-            "phase:user-review", "phase:integration"}
+    recognized_phases = {
+        "phase:requirements", "phase:specification", "phase:design", "phase:ready",
+        "phase:verification", "phase:execution", "phase:integration", "phase:user-review",
+    }
+    if (len(phases) != 1 or phases[0] not in recognized_phases
             or kinds != ["kind:single"] or "enhancement" not in labels):
         raise PhaseReworkError("post-rework Issue labels do not have one active forward phase")
 

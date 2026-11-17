@@ -139,6 +139,8 @@
     - [2.64.1 ORA-F01-098 Expected result](#2641-ora-f01-098-expected-result)
   - [2.65 TST-F01-099 Exact approved historical commit segment map](#265-tst-f01-099-exact-approved-historical-commit-segment-map)
     - [2.65.1 ORA-F01-099 Expected result](#2651-ora-f01-099-expected-result)
+  - [2.66 TST-F01-102 Verification-phase post-rework label validation](#266-tst-f01-102-verification-phase-post-rework-label-validation)
+    - [2.66.1 ORA-F01-102 Expected result](#2661-ora-f01-102-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -273,6 +275,8 @@
 - [ORA-F01-098](#ora-f01-098) — 2.64.1 ORA-F01-098 Expected result
 - [TST-F01-099](#tst-f01-099) — 2.65 TST-F01-099 Exact approved historical commit segment map
 - [ORA-F01-099](#ora-f01-099) — 2.65.1 ORA-F01-099 Expected result
+- [TST-F01-102](#tst-f01-102) — 2.66 TST-F01-102 Verification-phase post-rework label validation
+- [ORA-F01-102](#ora-f01-102) — 2.66.1 ORA-F01-102 Expected result
 <!-- heading-map:end -->
 
 
@@ -984,3 +988,13 @@ Historical declarations may be absent, but exact approved pointer-chain identity
 #### 2.65.1 ORA-F01-099 Expected result
 
 The exact `rev-list --reverse` commit sequence equals the current marker's complete segment map. Every approved pointer is in history order, every commit is one direct child of the prior endpoint, and every actual changed-path list exactly equals the sorted allowlist in its segment. Missing, extra, reordered, duplicated, merged, mis-parented, unapproved, mis-digested, or path-drifted segments fail closed before GitHub writes.
+
+<a id="tst-f01-102"></a>
+### 2.66 TST-F01-102 Verification-phase post-rework label validation
+
+**Setup and action:** Exercise the production post-rework label validator through its direct unit boundary. Accept the exact `enhancement`, `kind:single`, `phase:verification` label set; retain acceptance for every previously supported valid post-rework phase; reject an unknown phase, duplicate phase labels, duplicate/mismatched Issue-kind labels, and a missing enhancement label. Assert the operation is read-only and does not invoke a GitHub label write.
+
+<a id="ora-f01-102"></a>
+#### 2.66.1 ORA-F01-102 Expected result
+
+The validator accepts `phase:verification` as a normal valid lifecycle state without an Issue-specific exception. Existing valid states remain accepted; unknown or duplicate labels fail closed before any write.
