@@ -6,14 +6,23 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
 
-from p_ases.checkpoint import read_checkpoint
+from p_ases.checkpoint import (
+    PRBinding, WorkCheckpoint, checkpoint_path, read_checkpoint, read_pr_binding,
+    write_checkpoint, write_pr_binding,
+)
 from p_ases.execution import ExecutionBinding, binding_digest, read_binding, read_binding_history
 from p_ases.git import head_sha40, run_git
-from p_ases.work import WorkError, bind_work, ensure_branch, ensure_pull_request, latest_checkpoint, recover_work
+from p_ases import work as work_module
+from p_ases.work import (
+    WorkError, bind_work, ensure_branch, ensure_epoch_pull_request, ensure_pull_request,
+    latest_checkpoint, recover_work,
+)
 
 
 class WorkExecutionTests(unittest.TestCase):
@@ -100,6 +109,147 @@ class WorkExecutionTests(unittest.TestCase):
                     title="Issue #71", body="Closes #71",
                 )
             self.assertFalse(binding_path.exists())
+
+    def _issue71_epoch_pr_fixture(self, root: Path, *, malformed_checkpoint: bool = False,
+                                  unbound_checkpoint_digest: bool = False):
+        directory = root / ".p_ases" / "state" / "71"
+        directory.mkdir(parents=True)
+        branch = "pases/issue-71-local-activation-v2-phase-rebaseline-epoch-3"
+        base = "b" * 40
+        head = "c" * 40
+        epoch_sha = "d" * 64
+        old_adc_sha = "7a88073fd6b48d91e43a6f74272757b834192397ca43e4d685ccee1357635050"
+        new_adc_sha = "4eb60c4a1a7c3f161f1fbaaf64fa2f174399d01c06637b68f21a5f32b1bcfd84"
+        old_binding = PRBinding(
+            "puchinya/ai-agent-workflow", 71, 6933476928, old_adc_sha,
+            base, branch, 75, head, execution_epoch_sha256=epoch_sha,
+        ).validate()
+        old_binding_path = directory / "pr-binding-000001.json"
+        write_pr_binding(old_binding_path, old_binding)
+        artifacts = [
+            ("execution-epoch", epoch_sha),
+            ("pr-binding", old_binding.sha256),
+        ]
+        if malformed_checkpoint:
+            artifacts.append(("unexpected", "e" * 64))
+        if unbound_checkpoint_digest:
+            artifacts = [
+                (name, "f" * 64 if name == "pr-binding" else digest)
+                for name, digest in artifacts
+            ]
+        prior_checkpoint = WorkCheckpoint(
+            None, head, True, "pr", tuple(sorted(artifacts)), 1,
+            execution_epoch_sha256=epoch_sha,
+        ).validate()
+        prior_checkpoint_path = checkpoint_path(root, 71, 1)
+        write_checkpoint(prior_checkpoint_path, prior_checkpoint)
+        epoch = SimpleNamespace(
+            sha256=epoch_sha,
+            adc_comment_id=6934055740,
+            adc_sha256=new_adc_sha,
+            base_ref="main",
+            base_sha40=base,
+            branch_ref=branch,
+        )
+
+        def history(*_args, **_kwargs):
+            paths = sorted(directory.glob("pr-binding-*.json"))
+            return [(path, read_pr_binding(path)) for path in paths]
+
+        class FakeGitHub:
+            repo = "puchinya/ai-agent-workflow"
+
+            def pull_requests_for_refs(self, *, base_ref: str, head_ref: str):
+                self.assert_refs = (base_ref, head_ref)
+                return [{"number": 75}]
+
+        github = FakeGitHub()
+        pull = {"number": 75, "title": "Issue #71", "body": "Closes #71"}
+        patches = (
+            patch.object(work_module, "read_active_epoch", return_value=epoch),
+            patch.object(work_module, "is_issue71_execution_epoch", return_value=True),
+            patch.object(work_module, "worktree_clean", return_value=True),
+            patch.object(work_module, "current_branch", return_value=branch),
+            patch.object(work_module, "head_sha40", return_value=head),
+            patch.object(work_module, "is_ancestor", return_value=True),
+            patch.object(work_module, "remote_branch_sha", side_effect=lambda _root, ref:
+                         head if ref == branch else base),
+            patch.object(work_module, "read_pr_binding_history", side_effect=history),
+            patch.object(work_module, "_readback_pull", return_value=pull),
+        )
+        return github, epoch, old_binding, prior_checkpoint_path, prior_checkpoint, patches
+
+    def test_issue71_same_head_adc_pr_binding_appends_checkpoint_and_retry_reuses_it(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            github, epoch, old_binding, prior_path, prior_checkpoint, patches = \
+                self._issue71_epoch_pr_fixture(root)
+            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], \
+                    patches[6], patches[7], patches[8]:
+                first = ensure_epoch_pull_request(
+                    root, github, repository="puchinya/ai-agent-workflow", issue_number=71,
+                    execution_epoch=epoch, branch_ref=epoch.branch_ref, base_ref=epoch.base_ref,
+                    title="Issue #71", body="Closes #71",
+                )
+                old_bytes = prior_path.read_bytes()
+                self.assertEqual(read_checkpoint(prior_path), prior_checkpoint)
+                self.assertEqual(first.binding.adc_comment_id, epoch.adc_comment_id)
+                self.assertEqual(first.checkpoint_path, checkpoint_path(root.resolve(), 71, 2))
+                self.assertEqual(read_checkpoint(first.checkpoint_path).artifact_digests, tuple(sorted((
+                    ("execution-epoch", epoch.sha256), ("pr-binding", first.binding.sha256),
+                ))))
+                self.assertEqual(len(list((root / ".p_ases/state/71").glob("pr-binding-*.json"))), 2)
+                self.assertEqual(len(list((root / ".p_ases/state/71").glob("checkpoint-*.json"))), 2)
+
+                second = ensure_epoch_pull_request(
+                    root, github, repository="puchinya/ai-agent-workflow", issue_number=71,
+                    execution_epoch=epoch, branch_ref=epoch.branch_ref, base_ref=epoch.base_ref,
+                    title="Issue #71", body="Closes #71",
+                )
+                self.assertEqual(second.binding, first.binding)
+                self.assertEqual(second.checkpoint_path, first.checkpoint_path)
+                self.assertEqual(second.checkpoint_sha256, first.checkpoint_sha256)
+                self.assertEqual(prior_path.read_bytes(), old_bytes)
+                self.assertEqual(len(list((root / ".p_ases/state/71").glob("pr-binding-*.json"))), 2)
+                self.assertEqual(len(list((root / ".p_ases/state/71").glob("checkpoint-*.json"))), 2)
+
+    def test_issue71_same_head_checkpoint_conflict_blocks_before_binding_append(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            github, epoch, _old_binding, prior_path, prior_checkpoint, patches = \
+                self._issue71_epoch_pr_fixture(root, malformed_checkpoint=True)
+            original_bytes = prior_path.read_bytes()
+            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], \
+                    patches[6], patches[7], patches[8]:
+                with self.assertRaisesRegex(WorkError, "checkpoint retry conflicts"):
+                    ensure_epoch_pull_request(
+                        root, github, repository="puchinya/ai-agent-workflow", issue_number=71,
+                        execution_epoch=epoch, branch_ref=epoch.branch_ref, base_ref=epoch.base_ref,
+                        title="Issue #71", body="Closes #71",
+                    )
+            self.assertEqual(read_checkpoint(prior_path), prior_checkpoint)
+            self.assertEqual(prior_path.read_bytes(), original_bytes)
+            self.assertEqual(len(list((root / ".p_ases/state/71").glob("pr-binding-*.json"))), 1)
+            self.assertEqual(len(list((root / ".p_ases/state/71").glob("checkpoint-*.json"))), 1)
+
+    def test_issue71_same_head_checkpoint_must_reference_binding_history(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            github, epoch, _old_binding, prior_path, prior_checkpoint, patches = \
+                self._issue71_epoch_pr_fixture(root, unbound_checkpoint_digest=True)
+            original_bytes = prior_path.read_bytes()
+            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], \
+                    patches[6], patches[7], patches[8]:
+                with self.assertRaisesRegex(WorkError, "checkpoint retry conflicts"):
+                    ensure_epoch_pull_request(
+                        root, github, repository="puchinya/ai-agent-workflow", issue_number=71,
+                        execution_epoch=epoch, branch_ref=epoch.branch_ref, base_ref=epoch.base_ref,
+                        title="Issue #71", body="Closes #71",
+                    )
+            self.assertEqual(read_checkpoint(prior_path), prior_checkpoint)
+            self.assertEqual(prior_path.read_bytes(), original_bytes)
+            self.assertEqual(len(list((root / ".p_ases/state/71").glob("pr-binding-*.json"))), 1)
+            self.assertEqual(len(list((root / ".p_ases/state/71").glob("checkpoint-*.json"))), 1)
 
     def test_reapproved_adc_appends_binding_generation_without_changing_issue_branch_or_base(self):
         with tempfile.TemporaryDirectory() as temporary:

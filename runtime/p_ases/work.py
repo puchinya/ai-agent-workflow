@@ -356,6 +356,35 @@ def ensure_epoch_pull_request(repository_root: Path, github: GitHub, *, reposito
         execution_epoch.base_sha40, branch_ref, pr_number, local_head,
         execution_epoch_sha256=execution_epoch.sha256,
     ).validate()
+    previous = latest_checkpoint(root, issue_number)
+    if previous is not None and previous[1].execution_epoch_sha256 != execution_epoch.sha256:
+        raise WorkError("Issue #71 checkpoint history does not belong to the active epoch-3 identity")
+    checkpoint_artifacts = tuple(sorted((
+        ("execution-epoch", execution_epoch.sha256), ("pr-binding", pr_binding.sha256),
+    )))
+    checkpoint_step = 1 if previous is None else previous[1].step + 1
+    reuse_checkpoint = False
+    if (previous is not None and previous[1].completed_stage == "pr"
+            and previous[1].current_head_sha40 == local_head):
+        previous_checkpoint = previous[1]
+        previous_artifacts = dict(previous_checkpoint.artifact_digests)
+        if (not previous_checkpoint.worktree_clean
+                or set(previous_artifacts) != {"execution-epoch", "pr-binding"}
+                or previous_artifacts.get("execution-epoch") != execution_epoch.sha256
+                or previous_artifacts.get("pr-binding") not in {item.sha256 for _path, item in history}):
+            raise WorkError("Issue #71 PR checkpoint retry conflicts with its immutable epoch record")
+        checkpoint_step = previous_checkpoint.step
+        if previous_artifacts["pr-binding"] == pr_binding.sha256:
+            reuse_checkpoint = True
+        else:
+            checkpoint_step += 1
+    checkpoint = WorkCheckpoint(
+        None, local_head, True, "pr", checkpoint_artifacts, checkpoint_step,
+        execution_epoch_sha256=execution_epoch.sha256,
+    ).validate()
+    if reuse_checkpoint and checkpoint != previous[1]:
+        raise WorkError("Issue #71 PR checkpoint retry conflicts with its immutable epoch record")
+
     if history and history[-1][1] != pr_binding:
         if not _same_pr_execution_identity(history[-1][1], pr_binding):
             raise WorkError("existing Issue #71 PRBinding changes the PR or execution epoch")
@@ -364,27 +393,10 @@ def ensure_epoch_pull_request(repository_root: Path, github: GitHub, *, reposito
         write_pr_binding(_pr_binding_version_path(root, issue_number, len(history) + 1), pr_binding)
     elif not history:
         write_pr_binding(_pr_binding_version_path(root, issue_number, 1), pr_binding)
-
-    previous = latest_checkpoint(root, issue_number)
-    if previous is not None and previous[1].execution_epoch_sha256 != execution_epoch.sha256:
-        raise WorkError("Issue #71 checkpoint history does not belong to the active epoch-3 identity")
-    if previous is not None and previous[1].completed_stage == "pr" and previous[1].current_head_sha40 == local_head:
-        checkpoint = WorkCheckpoint(
-            None, local_head, True, "pr", tuple(sorted((
-                ("execution-epoch", execution_epoch.sha256), ("pr-binding", pr_binding.sha256),
-            ))), previous[1].step, execution_epoch_sha256=execution_epoch.sha256,
-        ).validate()
-        if checkpoint != previous[1]:
-            raise WorkError("Issue #71 PR checkpoint retry conflicts with its immutable epoch record")
+    if reuse_checkpoint:
         checkpoint_file = previous[0]
     else:
-        step = 1 if previous is None else previous[1].step + 1
-        checkpoint = WorkCheckpoint(
-            None, local_head, True, "pr", tuple(sorted((
-                ("execution-epoch", execution_epoch.sha256), ("pr-binding", pr_binding.sha256),
-            ))), step, execution_epoch_sha256=execution_epoch.sha256,
-        ).validate()
-        checkpoint_file = checkpoint_path(root, issue_number, step)
+        checkpoint_file = checkpoint_path(root, issue_number, checkpoint_step)
         write_checkpoint(checkpoint_file, checkpoint)
     return PREnsureResult(pull, pr_binding, checkpoint_file, checkpoint.sha256, reused)
 

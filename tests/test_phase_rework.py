@@ -1109,6 +1109,109 @@ class AuthorizationTests(unittest.TestCase):
         with self.assertRaisesRegex(module.PhaseReworkError, "does not end"):
             module._validate_historical_commit_segments(segments, history, start, "5" * 40)
 
+    def test_historical_segment_parser_rejects_duplicate_commit_and_wrong_adc_identity(self):
+        authorization = module.APPROVED_HISTORY_READER_AUTHORIZATION
+        history = authorization["approved_history"]
+        start = authorization["starting_head_sha40"]
+        middle, head = "1" * 40, "2" * 40
+        path_one = authorization["followup_path_allowlist"][0]
+        path_two = authorization["followup_path_allowlist"][-1]
+        segments = [
+            {
+                "adc_comment_id": history[0]["comment_id"],
+                "adc_sha256": history[0]["sha256"],
+                "parent_sha40": start,
+                "commit_sha40": middle,
+                "path_allowlist": [path_one],
+            },
+            {
+                "adc_comment_id": history[1]["comment_id"],
+                "adc_sha256": history[1]["sha256"],
+                "parent_sha40": middle,
+                "commit_sha40": head,
+                "path_allowlist": [path_two],
+            },
+        ]
+
+        duplicate = [dict(segment) for segment in segments]
+        duplicate[1]["commit_sha40"] = middle
+        with self.assertRaisesRegex(module.PhaseReworkError, "gap, duplicate"):
+            module._validate_historical_commit_segments(duplicate, history, start, head)
+
+        wrong_identity = [dict(segment) for segment in segments]
+        wrong_identity[0]["adc_comment_id"] = history[1]["comment_id"]
+        with self.assertRaisesRegex(module.PhaseReworkError, "approved ADC history row"):
+            module._validate_historical_commit_segments(wrong_identity, history, start, head)
+
+    def test_approved_history_reader_rejects_merge_and_each_exact_path_drift(self):
+        authorization = module.APPROVED_HISTORY_READER_AUTHORIZATION
+        history = authorization["approved_history"]
+        start = authorization["starting_head_sha40"]
+        middle, head = "1" * 40, "2" * 40
+        path_one = authorization["followup_path_allowlist"][0]
+        path_two = authorization["followup_path_allowlist"][-1]
+        segments = [
+            {
+                "adc_comment_id": history[0]["comment_id"],
+                "adc_sha256": history[0]["sha256"],
+                "parent_sha40": start,
+                "commit_sha40": middle,
+                "path_allowlist": [path_one, path_two],
+            },
+            {
+                "adc_comment_id": history[1]["comment_id"],
+                "adc_sha256": history[1]["sha256"],
+                "parent_sha40": middle,
+                "commit_sha40": head,
+                "path_allowlist": [path_two],
+            },
+        ]
+        root = Path("/tmp/repo")
+        args = (
+            root, head, module.RECOVERY_AUTHORIZATION,
+            module.TIMESTAMP_RECOVERY_AUTHORIZATION, module.CONTINUATION_AUTHORIZATION,
+            module.READER_CONTINUATION_AUTHORIZATION,
+            module.EXECUTION_RECEIPT_READER_CONTINUATION_AUTHORIZATION,
+            module.MARKDOWN_PREDECESSOR_READER_AUTHORIZATION,
+            authorization, segments, history,
+        )
+        rows = chr(10).join((middle, head))
+        with (
+            patch.object(module, "_verify_markdown_predecessor_reader_commit_set"),
+            patch.object(module, "run_git", return_value=rows),
+            patch.object(module, "commit_parents_sha40", return_value=(start, "4" * 40)),
+            patch.object(module, "changed_paths_between") as changed_paths,
+            self.assertRaisesRegex(module.PhaseReworkError, "unexpected direct parent"),
+        ):
+            module._verify_approved_history_reader_commit_set(*args)
+        changed_paths.assert_not_called()
+
+        cases = (
+            ("added path", (path_one, path_two, "outside.py")),
+            ("omitted path", (path_one,)),
+            ("duplicate path", (path_one, path_one, path_two)),
+            ("reordered paths", (path_two, path_one)),
+        )
+        for name, actual_paths in cases:
+            with self.subTest(name=name):
+                with (
+                    patch.object(module, "_verify_markdown_predecessor_reader_commit_set"),
+                    patch.object(module, "run_git", return_value=rows),
+                    patch.object(
+                        module, "commit_parents_sha40",
+                        side_effect=[(start,), (middle,)],
+                    ),
+                    patch.object(
+                        module, "changed_paths_between",
+                        side_effect=[actual_paths, (path_two,)],
+                    ),
+                    self.assertRaisesRegex(
+                        module.PhaseReworkError,
+                        "differ from its exact path allowlist",
+                    ),
+                ):
+                    module._verify_approved_history_reader_commit_set(*args)
+
     def test_approved_history_lineage_keeps_prior_segments_separate(self):
         root = Path("/tmp/repo")
         head = "f" * 40
