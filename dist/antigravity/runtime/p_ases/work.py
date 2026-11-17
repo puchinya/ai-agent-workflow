@@ -364,15 +364,34 @@ def ensure_epoch_pull_request(repository_root: Path, github: GitHub, *, reposito
     )))
     checkpoint_step = 1 if previous is None else previous[1].step + 1
     reuse_checkpoint = False
-    if (previous is not None and previous[1].completed_stage == "pr"
-            and previous[1].current_head_sha40 == local_head):
+    same_head_history = [row for _path, row in history if row.pr_head_sha40 == local_head]
+    if same_head_history:
+        # A same-HEAD binding is a retry/ADC-pointer successor, not a new PR
+        # head.  Validate the complete immutable record chain before either
+        # append below so a stale or non-PR checkpoint cannot be bypassed.
+        if history[-1][1].pr_head_sha40 != local_head or previous is None:
+            raise WorkError("Issue #71 same-HEAD PR history conflicts with its latest checkpoint")
         previous_checkpoint = previous[1]
         previous_artifacts = dict(previous_checkpoint.artifact_digests)
-        if (not previous_checkpoint.worktree_clean
+        latest_binding = history[-1][1]
+        if (previous_checkpoint.completed_stage != "pr"
+                or previous_checkpoint.current_head_sha40 != local_head
+                or not previous_checkpoint.worktree_clean
                 or set(previous_artifacts) != {"execution-epoch", "pr-binding"}
                 or previous_artifacts.get("execution-epoch") != execution_epoch.sha256
-                or previous_artifacts.get("pr-binding") not in {item.sha256 for _path, item in history}):
-            raise WorkError("Issue #71 PR checkpoint retry conflicts with its immutable epoch record")
+                or previous_artifacts.get("pr-binding") != latest_binding.sha256):
+            raise WorkError("Issue #71 same-HEAD checkpoint conflicts with the latest immutable PRBinding")
+        if (latest_binding.repository != pr_binding.repository
+                or latest_binding.issue_number != pr_binding.issue_number
+                or latest_binding.base_sha40 != pr_binding.base_sha40
+                or latest_binding.branch_ref != pr_binding.branch_ref
+                or latest_binding.pr_number != pr_binding.pr_number
+                or latest_binding.pr_head_sha40 != pr_binding.pr_head_sha40
+                or latest_binding.current_base_sha40 != pr_binding.current_base_sha40
+                or latest_binding.current_base_advance_sha256 != pr_binding.current_base_advance_sha256
+                or latest_binding.adoption_id != pr_binding.adoption_id
+                or latest_binding.execution_epoch_sha256 != pr_binding.execution_epoch_sha256):
+            raise WorkError("Issue #71 same-HEAD PRBinding successor changes its immutable execution identity")
         checkpoint_step = previous_checkpoint.step
         if previous_artifacts["pr-binding"] == pr_binding.sha256:
             reuse_checkpoint = True
