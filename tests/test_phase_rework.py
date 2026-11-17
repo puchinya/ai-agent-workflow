@@ -2275,6 +2275,225 @@ class ActiveGenerationTests(unittest.TestCase):
                     )
 
 
+class V3PhaseReworkTests(unittest.TestCase):
+    def test_current_v3_marker_uses_authorized_history_route(self):
+        current = SimpleNamespace(
+            contract=SimpleNamespace(content=(
+                f"<!-- {module.ISSUE71_PHASE_AND_USER_REVIEW_V3_SCHEMA}\n{{}}\n-->"
+            ).encode("utf-8")),
+            pointer=SimpleNamespace(comment_id=7999999999, state="approved"),
+        )
+        github = Mock()
+        with patch.object(module, "verify_issue71_phase_and_user_review_adc_chain",
+                          return_value=({}, ())) as verify_chain:
+            authorization = module._authorization_context(github, current)
+        verify_chain.assert_called_once_with(github, current)
+        self.assertEqual(authorization[0], module.AUTHORIZATION)
+
+    @staticmethod
+    def _v2_pair() -> tuple[module.PhaseReworkRecord, module.PhaseReworkRecord]:
+        intent_body = "immutable V2 Intent bytes"
+        applied_body = "immutable V2 Applied bytes"
+        intent = module.PhaseReworkRecord(
+            101, module.INTENT_SCHEMA, {}, intent_body, module.OWNER_ID,
+            "2026-11-15T00:00:00Z",
+        )
+        applied = module.PhaseReworkRecord(
+            102, module.APPLIED_SCHEMA, {}, applied_body, module.OWNER_ID,
+            "2026-11-15T00:00:01Z",
+        )
+        return intent, applied
+
+    @staticmethod
+    def _generation(v2_intent: module.PhaseReworkRecord,
+                    v2_applied: module.PhaseReworkRecord) -> dict:
+        return {
+            "new_generation_number": 2,
+            "preserve_prior_v2_intent_comment_id": v2_intent.comment_id,
+            "preserve_prior_v2_intent_body_sha256": v2_intent.body_sha256,
+            "preserve_prior_v2_applied_comment_id": v2_applied.comment_id,
+            "preserve_prior_v2_applied_body_sha256": v2_applied.body_sha256,
+            "predecessor_adc_comment_id": module.REWORK_ADC_COMMENT_ID - 1,
+            "predecessor_adc_sha256": "d" * 64,
+            "active_epoch_id": module.ACTIVE_EPOCH_ID,
+            "active_epoch_sha256": module.ACTIVE_EPOCH_SHA256,
+            "prior_phase_generation_comment_id": module.ACTIVE_PHASE_COMMENT_ID,
+            "prior_phase_generation_sha256": module.ACTIVE_PHASE_SHA256,
+            "starting_head_sha40": "e" * 40,
+            "branch_ref": module.BRANCH_REF,
+            "pr_number": module.PR_NUMBER,
+            "pr_base_ref": module.PR_BASE_REF,
+            "pr_base_sha40": module.PR_BASE_SHA40,
+            "current_issue_body_sha256": module.ISSUE_BODY_SHA256,
+            "labels_before": list(module.LABELS_BEFORE),
+            "labels_after": list(module.LABELS_AFTER),
+            "from_phase": "verification",
+            "to_phase": "requirements",
+            "max_applications": 1,
+            "owner_id": module.OWNER_ID,
+        }
+
+    @staticmethod
+    def _live(root: Path, generation: dict, *, after: bool = False) -> module._Live:
+        base = live_subject(
+            root, labels=tuple(sorted(generation["labels_after" if after else "labels_before"])),
+        )
+        digest = hashlib.sha256(module._canonical(generation).encode("utf-8")).hexdigest()
+        return replace(
+            base, phase_rework_generation_authorization=generation,
+            phase_rework_generation_authorization_sha256=digest,
+        )
+
+    @staticmethod
+    def _v3_record(schema: str, comment_id: int, payload: dict | None = None
+                   ) -> module.PhaseReworkRecord:
+        payload = payload or {"schema": schema, "generation_number": 2}
+        body = module._record_body(schema, payload)
+        timestamp = payload.get("created_at", payload.get("applied_at", "2026-11-15T00:00:02Z"))
+        return module.PhaseReworkRecord(comment_id, schema, payload, body, module.OWNER_ID, timestamp)
+
+    def test_history_preserves_v2_bytes_and_accepts_one_ordered_v3_pair(self):
+        v2_intent, v2_applied = self._v2_pair()
+        original = (v2_intent.body, v2_applied.body)
+        generation = self._generation(v2_intent, v2_applied)
+        self.assertEqual(module._v3_rework_records((v2_intent, v2_applied), generation), (None, None))
+        intent = self._v3_record(module.ISSUE71_REWORK_INTENT_V3_SCHEMA, 103)
+        applied = self._v3_record(module.ISSUE71_REWORK_APPLIED_V3_SCHEMA, 104)
+        self.assertEqual(
+            module._v3_rework_records((v2_intent, v2_applied, intent, applied), generation),
+            (intent, applied),
+        )
+        self.assertEqual((v2_intent.body, v2_applied.body), original)
+
+    def test_history_rejects_partial_duplicate_and_out_of_order_v3_records(self):
+        v2_intent, v2_applied = self._v2_pair()
+        generation = self._generation(v2_intent, v2_applied)
+        intent = self._v3_record(module.ISSUE71_REWORK_INTENT_V3_SCHEMA, 103)
+        applied = self._v3_record(module.ISSUE71_REWORK_APPLIED_V3_SCHEMA, 104)
+        with self.assertRaisesRegex(module.PhaseReworkError, "duplicated or incomplete"):
+            module._v3_rework_records((v2_intent, v2_applied, applied), generation)
+        with self.assertRaisesRegex(module.PhaseReworkError, "duplicated or out of order"):
+            module._v3_rework_records((v2_intent, v2_applied, intent, intent), generation)
+        with self.assertRaisesRegex(module.PhaseReworkError, "duplicated or out of order"):
+            module._v3_rework_records((v2_intent, v2_applied, applied, intent), generation)
+
+    def test_v3_intent_binds_exact_current_adc_and_head(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            v2_intent, v2_applied = self._v2_pair()
+            generation = self._generation(v2_intent, v2_applied)
+            live = self._live(root, generation)
+            result = readiness(root)
+            with patch.object(module, "_validate_readiness"):
+                payload = module._v3_intent_payload(live, result)
+            intent = self._v3_record(module.ISSUE71_REWORK_INTENT_V3_SCHEMA, 103, payload)
+            with patch.object(module, "_validate_readiness"):
+                module._validate_v3_intent(intent, live, readiness=result)
+                with self.assertRaisesRegex(module.PhaseReworkError, "exact current follow-up HEAD"):
+                    module._validate_v3_intent(intent, replace(live, head_sha40="f" * 40))
+                stale_adc = SimpleNamespace(
+                    pointer=SimpleNamespace(comment_id=live.current_adc.pointer.comment_id + 1),
+                    contract=SimpleNamespace(sha256="f" * 64),
+                )
+                with self.assertRaisesRegex(module.PhaseReworkError, "exact ADC and active subject"):
+                    module._validate_v3_intent(intent, replace(live, current_adc=stale_adc))
+
+    def test_v3_apply_writes_once_and_exact_retry_is_noop(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            v2_intent, v2_applied = self._v2_pair()
+            generation = self._generation(v2_intent, v2_applied)
+            before = self._live(root, generation)
+            after = self._live(root, generation, after=True)
+            result = readiness(root)
+            history = [v2_intent, v2_applied]
+
+            class FakeGitHub:
+                repo = module.REPOSITORY
+                label_writes = 0
+
+                def replace_issue_labels(self, _number: int, _labels: list[str]) -> None:
+                    self.label_writes += 1
+
+            github = FakeGitHub()
+            next_comment_id = 103
+            posts: list[str] = []
+
+            def post_once(_github, local_root, schema, payload, *, before_write=None):
+                nonlocal next_comment_id
+                if before_write is not None:
+                    before_write()
+                operation = {
+                    module.ISSUE71_REWORK_INTENT_V3_SCHEMA: "intent_v3",
+                    module.ISSUE71_REWORK_APPLIED_V3_SCHEMA: "applied_v3",
+                }[schema]
+                module._write_attempt_once(local_root, operation, payload)
+                record = self._v3_record(schema, next_comment_id, dict(payload))
+                next_comment_id += 1
+                history.append(record)
+                posts.append(schema)
+                return record
+
+            with patch.object(module, "_live", side_effect=[before, after]), \
+                    patch.object(module, "_read_history", side_effect=lambda _github: tuple(history)), \
+                    patch.object(module, "_user_review_absent"), \
+                    patch.object(module, "_validate_readiness"), \
+                    patch.object(module, "_validate_v3_intent"), \
+                    patch.object(module, "_validate_v3_recorded_readiness"), \
+                    patch.object(module, "_validate_v3_applied"), \
+                    patch.object(module, "_verify_v3_subject"), \
+                    patch.object(module, "_issue", return_value=(
+                        {"body": before.issue.get("body"), "state": "open"},
+                        tuple(sorted(generation["labels_after"])),
+                    )), \
+                    patch.object(module, "_post_record_once", side_effect=post_once):
+                applied_result = module.apply_issue71_phase_rework(
+                    github, root, 71, readiness_factory=lambda: result,
+                )
+            self.assertEqual(applied_result["status"], "APPLIED")
+            self.assertEqual(applied_result["label_write_count"], 1)
+            self.assertEqual(github.label_writes, 1)
+            self.assertEqual(posts, [module.ISSUE71_REWORK_INTENT_V3_SCHEMA,
+                                     module.ISSUE71_REWORK_APPLIED_V3_SCHEMA])
+
+            with patch.object(module, "_live", return_value=after), \
+                    patch.object(module, "_read_history", return_value=tuple(history)), \
+                    patch.object(module, "_validate_v3_intent"), \
+                    patch.object(module, "_validate_v3_recorded_readiness"), \
+                    patch.object(module, "_validate_v3_applied"), \
+                    patch.object(module, "_post_record_once") as post_again:
+                retry_result = module.apply_issue71_phase_rework(github, root, 71)
+            self.assertEqual(retry_result["status"], "NOOP")
+            self.assertEqual(retry_result["label_write_count"], 0)
+            self.assertEqual(github.label_writes, 1)
+            post_again.assert_not_called()
+
+    def test_partial_v3_intent_fails_without_retrying_any_write(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            v2_intent, v2_applied = self._v2_pair()
+            generation = self._generation(v2_intent, v2_applied)
+            live = self._live(root, generation)
+            intent = self._v3_record(module.ISSUE71_REWORK_INTENT_V3_SCHEMA, 103)
+            class FakeGitHub:
+                repo = module.REPOSITORY
+                label_writes = 0
+
+                def replace_issue_labels(self, _number: int, _labels: list[str]) -> None:
+                    self.label_writes += 1
+
+            github = FakeGitHub()
+            with patch.object(module, "_validate_v3_intent"), \
+                    patch.object(module, "_validate_v3_recorded_readiness"), \
+                    patch.object(module, "_post_record_once") as post_again, \
+                    self.assertRaisesRegex(module.PhaseReworkError, "partial; retry writes are prohibited"):
+                module._apply_v3_phase_rework(
+                    github, root, live, (v2_intent, v2_applied, intent), None,
+                )
+            self.assertEqual(github.label_writes, 0)
+            post_again.assert_not_called()
+
+
 WINDOWS_PROFILE_MARKER_FIXTURE_B64 = (
     'eNrtW2tvG8cV/Z5f0fKzGM37IRQFDEeABaS2YdnOB8NYzOOOtQ1FMnzYUYz8955ZktJSpBTWlVK3MAxb4u7szJ37OPecWfpvfx0O'
     '//LyyfnpeXN2fv7mtHn5DB+aJ89/aN6cn75qXp2+PTv9qXkrvvs8CGnRfqQmLBcXk1n7W1i0k3GT2w80X8wHJ58HaTJetONld31w'

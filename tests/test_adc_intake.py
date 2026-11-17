@@ -100,6 +100,9 @@ class FakeGitHub:
         self.issue_update_calls = 0
         self.extra_listed_comments: list[dict[str, object]] = []
         self.altered_readback: dict[int, str] = {}
+        self.issue_comments_calls = 0
+        self.issue_comment_calls = 0
+        self.after_first_comment_list = None
         self.comment_identity: dict[str, object] | None = {
             "user": {"id": 101, "login": "octo", "type": "User"},
             "author_association": "OWNER",
@@ -145,6 +148,9 @@ class FakeGitHub:
 
     def issue_comment(self, number: int, comment_id: int) -> dict[str, object]:
         assert number == self.issue_number
+        self.issue_comment_calls += 1
+        if comment_id not in self.comments:
+            raise GitHubError("Issue comment not found")
         comment = copy.deepcopy(self.comments[comment_id])
         if comment_id in self.altered_readback:
             comment["body"] = self.altered_readback[comment_id]
@@ -156,8 +162,14 @@ class FakeGitHub:
 
     def issue_comments(self, number: int) -> list[dict[str, object]]:
         assert number == self.issue_number
-        return ([copy.deepcopy(comment) for comment in self.comments.values()]
+        self.issue_comments_calls += 1
+        rows = ([copy.deepcopy(comment) for comment in self.comments.values()]
                 + copy.deepcopy(self.extra_listed_comments))
+        if self.issue_comments_calls == 1 and callable(self.after_first_comment_list):
+            callback = self.after_first_comment_list
+            self.after_first_comment_list = None
+            callback(self)
+        return rows
 
     def update_issue(self, number: int, body: str) -> dict[str, object]:
         assert number == self.issue_number
@@ -348,6 +360,74 @@ class ADCForwardGenerationCacheTests(unittest.TestCase):
                 )
                 self.assertEqual(verify.call_count, 2)
 
+
+class ADCForwardGenerationBatchTests(unittest.TestCase):
+    def _published_chain(self, count: int) -> tuple[FakeGitHub, list[ADCPointer]]:
+        github = FakeGitHub()
+        pointers: list[ADCPointer] = []
+        for index in range(count):
+            payload = adc_bytes(requirement_id=f"REQ-{index + 1}")
+            pointer = publish_adc(
+                github, 1, payload, state="approved", explicitly_approved=True,
+                supersede=bool(pointers),
+            )
+            pointers.append(pointer)
+        github.issue_comments_calls = 0
+        github.issue_comment_calls = 0
+        return github, pointers
+
+    def test_one_successor_and_many_successors_use_exactly_two_full_snapshots(self):
+        for generation_count in (2, 9):
+            with self.subTest(generation_count=generation_count):
+                github, pointers = self._published_chain(generation_count)
+                rows = verify_adc_forward_generations(
+                    github, 1,
+                    prior_comment_id=pointers[0].comment_id,
+                    prior_sha256=pointers[0].sha256,
+                    current_comment_id=pointers[-1].comment_id,
+                    current_sha256=pointers[-1].sha256,
+                )
+                self.assertEqual(len(rows), generation_count)
+                self.assertEqual(github.issue_comments_calls, 2)
+                self.assertEqual(github.issue_comment_calls, 2 * generation_count)
+
+    def test_pointer_and_adc_snapshot_drift_fails_closed(self):
+        for mutation in ("insert", "delete", "duplicate", "reorder", "edit"):
+            with self.subTest(mutation=mutation):
+                github, pointers = self._published_chain(3)
+                pointer_rows = [
+                    row for row in github.comments.values()
+                    if isinstance(row.get("body"), str)
+                    and row["body"].startswith("<!-- PASES_ADC_POINTER_V1")
+                ]
+
+                def mutate(target: FakeGitHub) -> None:
+                    if mutation == "insert":
+                        duplicate = copy.deepcopy(pointer_rows[-1])
+                        duplicate_id = max(target.comments) + 1
+                        duplicate["id"] = duplicate_id
+                        duplicate["url"] = f"https://api.github.com/repos/octo/repo/issues/comments/{duplicate_id}"
+                        duplicate["html_url"] = f"https://github.com/octo/repo/issues/1#issuecomment-{duplicate_id}"
+                        target.comments[duplicate_id] = duplicate
+                    elif mutation == "delete":
+                        del target.comments[pointers[1].comment_id]
+                    elif mutation == "duplicate":
+                        target.extra_listed_comments.append(copy.deepcopy(pointer_rows[0]))
+                    elif mutation == "reorder":
+                        target.comments = dict(reversed(list(target.comments.items())))
+                    elif mutation == "edit":
+                        target.comments[pointers[1].comment_id]["body"] = "changed ADC bytes"
+
+                github.after_first_comment_list = mutate
+                with self.assertRaises(ADCError):
+                    verify_adc_forward_generations(
+                        github, 1,
+                        prior_comment_id=pointers[0].comment_id,
+                        prior_sha256=pointers[0].sha256,
+                        current_comment_id=pointers[-1].comment_id,
+                        current_sha256=pointers[-1].sha256,
+                    )
+                self.assertEqual(github.issue_comments_calls, 2)
 
 class ADCPublicationTests(unittest.TestCase):
     def setUp(self):

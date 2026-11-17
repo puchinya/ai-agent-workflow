@@ -54,6 +54,8 @@
   - [6.2 6.3 5.39 DES-F01-099 Approved historical commit segment map](#62-63-539-des-f01-099-approved-historical-commit-segment-map)
   - [6.3 6.4 5.40 DES-F01-100 Verification-phase post-rework label validation](#63-64-540-des-f01-100-verification-phase-post-rework-label-validation)
   - [6.4 6.3 6.2 5.38 DES-F01-098 Generic historical ADC predecessor validation](#64-63-62-538-des-f01-098-generic-historical-adc-predecessor-validation)
+  - [6.5 DES-F01-101 Batch the selected ADC journal range](#65-des-f01-101-batch-the-selected-adc-journal-range)
+  - [6.6 DES-F01-102 Append one V3 rework generation](#66-des-f01-102-append-one-v3-rework-generation)
 - [7 DES-WF-004 Failure handling](#7-des-wf-004-failure-handling)
 - [8 DES-WF-005 Authorization boundary and PR handoff](#8-des-wf-005-authorization-boundary-and-pr-handoff)
 - [9 Alternatives considered](#9-alternatives-considered)
@@ -106,6 +108,8 @@
 - [DES-F01-099](#des-f01-099) — 6.2 6.3 5.39 DES-F01-099 Approved historical commit segment map
 - [DES-F01-100](#des-f01-100) — 6.3 6.4 5.40 DES-F01-100 Verification-phase post-rework label validation
 - [DES-F01-098](#des-f01-098) — 6.4 6.3 6.2 5.38 DES-F01-098 Generic historical ADC predecessor validation
+- [DES-F01-101](#des-f01-101) — 6.5 DES-F01-101 Batch the selected ADC journal range
+- [DES-F01-102](#des-f01-102) — 6.6 DES-F01-102 Append one V3 rework generation
 - [DES-WF-004](#des-wf-004) — 7 DES-WF-004 Failure handling
 - [DES-WF-005](#des-wf-005) — 8 DES-WF-005 Authorization boundary and PR handoff
 - [DES-WF-006](#des-wf-006) — 11 DES-WF-006 Human review and final delivery
@@ -141,6 +145,8 @@ Legacy design note: detailed procedures below that still mention the former flat
 | Implementation owns end-to-end handoff | The implementation flow continues through a review-ready PR, exact-HEAD self-review, and delivery gate before reporting completion. |
 | New Contract layout is checked without changing legacy publication | A separate read-only preflight validates the canonical template's physical H2 structure before new-template contracts are saved or published; the historical comment and mirror path remains unchanged. |
 | Chat project instructions work across hosts | One Japanese project-instructions body uses one repository URL substitution and describes only capabilities available to the active chat; it does not depend on installing this workflow plugin. |
+| [REQ-F01-171](../specs/workflow-spec.md#req-f01-171) | [DES-F01-101](#des-f01-101): Two complete journal snapshots bound one selected ADC range; per-generation direct reads and exact immutable fingerprints remain mandatory. |
+| [REQ-F01-172](../specs/workflow-spec.md#req-f01-172) | [DES-F01-102](#des-f01-102): The append-only V3 phase-rework generation preserves V2 bytes and permits one exact one-shot transition. |
 
 <a id="des-wf-001"></a>
 <a id="des-wf-001-architecture-and-phase-authority"></a>
@@ -495,6 +501,16 @@ The active phase-rework reader uses the same recognized phase vocabulary as the 
 ### 6.4 6.3 6.2 5.38 DES-F01-098 Generic historical ADC predecessor validation
 
 The verified approved pointer journal and current marker's exact ordered history are authoritative for every historical ADC generation. Validate each historical pointer's comment ID, approved state, exact body SHA-256 and UTF-8 byte length, order, and adjacency before phase-evidence writes. A historical body-level predecessor declaration is supplemental: absence is permitted; one well-formed declaration is accepted only when it names the immediately preceding verified pointer. Duplicate, malformed, or conflicting declarations fail closed. Apply this rule uniformly without comment-ID dispatch or rewriting history. The current ADC remains stricter: exactly one canonical visible predecessor declaration must match its predecessor tuple and the final approved-history entry.
+
+<a id="des-f01-101"></a>
+### 6.5 DES-F01-101 Batch the selected ADC journal range
+
+`adc.py` owns forward-range validation. One range read consists of a complete initial paginated Issue-comment snapshot, direct reads of each selected ADC body before and after validation, and one complete final snapshot. Every pointer in the initial journal is validated in order; selected ADC fingerprints must agree across both direct reads and both snapshots. The final pointer journal and selected entries must equal the initial snapshot. Snapshot count is constant at two for one or many generations; direct reads remain two per selected ADC. No cache or historical-marker parsing may skip an identity, predecessor, state, length, digest, or drift check.
+
+<a id="des-f01-102"></a>
+### 6.6 DES-F01-102 Append one V3 rework generation
+
+`phase_rework.py` retains the completed V2 Intent/Applied pair as immutable history and recognizes at most one ordered V3 successor pair. The V3 payload binds the current approved ADC authorization, epoch, original Phase generation, repository/Issue, branch, base, PR, bootstrap HEAD, exact label sets, and fresh Readiness. First application records the Intent, durably records one-shot attempts, updates labels once, appends Applied, and reads the full subject back. A complete pair is a zero-write retry; partial, ambiguous, duplicate, out-of-order, or stale state blocks without another POST or label PUT. The new generation becomes active only after complete readback.
 
 <a id="des-wf-004"></a>
 <a id="des-wf-004-failure-handling"></a>

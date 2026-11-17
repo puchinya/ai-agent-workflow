@@ -141,6 +141,10 @@
     - [2.65.1 ORA-F01-099 Expected result](#2651-ora-f01-099-expected-result)
   - [2.66 TST-F01-102 Verification-phase post-rework label validation](#266-tst-f01-102-verification-phase-post-rework-label-validation)
     - [2.66.1 ORA-F01-102 Expected result](#2661-ora-f01-102-expected-result)
+  - [2.67 TST-F01-103 Batched ADC journal snapshots and drift rejection](#267-tst-f01-103-batched-adc-journal-snapshots-and-drift-rejection)
+    - [2.67.1 ORA-F01-103 Expected result](#2671-ora-f01-103-expected-result)
+  - [2.68 TST-F01-104 V3 phase rework preserves V2 and is one-shot](#268-tst-f01-104-v3-phase-rework-preserves-v2-and-is-one-shot)
+    - [2.68.1 ORA-F01-104 Expected result](#2681-ora-f01-104-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -277,6 +281,10 @@
 - [ORA-F01-099](#ora-f01-099) — 2.65.1 ORA-F01-099 Expected result
 - [TST-F01-102](#tst-f01-102) — 2.66 TST-F01-102 Verification-phase post-rework label validation
 - [ORA-F01-102](#ora-f01-102) — 2.66.1 ORA-F01-102 Expected result
+- [TST-F01-103](#tst-f01-103) — 2.67 TST-F01-103 Batched ADC journal snapshots and drift rejection
+- [ORA-F01-103](#ora-f01-103) — 2.67.1 ORA-F01-103 Expected result
+- [TST-F01-104](#tst-f01-104) — 2.68 TST-F01-104 V3 phase rework preserves V2 and is one-shot
+- [ORA-F01-104](#ora-f01-104) — 2.68.1 ORA-F01-104 Expected result
 <!-- heading-map:end -->
 
 
@@ -998,3 +1006,23 @@ The exact `rev-list --reverse` commit sequence equals the current marker's compl
 #### 2.66.1 ORA-F01-102 Expected result
 
 The validator accepts `phase:verification` as a normal valid lifecycle state without an Issue-specific exception. Existing valid states remain accepted; unknown or duplicate labels fail closed before any write.
+
+<a id="tst-f01-103"></a>
+### 2.67 TST-F01-103 Batched ADC journal snapshots and drift rejection
+
+**Setup and action:** Mock one-generation and many-generation approved ADC ranges. Count complete paginated Issue-comment sweeps and selected ADC direct reads. Require two complete list sweeps for either range size and exactly two direct reads per selected ADC. Compare each exact ADC identity, body bytes, SHA-256, byte length, approved state, and predecessor against both list snapshots. Between snapshots, independently insert, delete, edit, duplicate, reorder, or malform a pointer/ADC entry and require the range reader to fail before returning verified rows.
+
+<a id="ora-f01-103"></a>
+#### 2.67.1 ORA-F01-103 Expected result
+
+Snapshot count remains exactly two as the selected range grows, while direct-read count is exactly two per selected ADC. Only identical complete snapshots and direct/list/direct ADC fingerprints pass. Any journal drift or malformed entry fails closed.
+
+<a id="tst-f01-104"></a>
+### 2.68 TST-F01-104 V3 phase rework preserves V2 and is one-shot
+
+**Setup and action:** Seed an exact V2 Intent/Applied pair and record its complete bodies and digests. Accept one ordered V3 Intent/Applied successor without changing either V2 body. Exercise one successful V3 application, exact retry, duplicate and out-of-order records, missing/partial pairs, changed V2 bytes, stale ADC/HEAD/epoch/PR, and wrong before/after labels. Count Intent/Applied POSTs and label PUTs; require one pair and at most one label PUT on success, a zero-write NOOP for a complete retry, and no retry for ambiguous or partial state.
+
+<a id="ora-f01-104"></a>
+#### 2.68.1 ORA-F01-104 Expected result
+
+The old V2 pair remains byte-identical. One exact V3 generation may apply once and is fully read back; exact retry performs zero writes. Stale, conflicting, partial, duplicated, or reordered state fails closed without a second POST or label PUT. Executable cases are in `tests/test_phase_rework.py`.

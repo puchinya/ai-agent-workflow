@@ -632,6 +632,24 @@ ISSUE71_WINDOWS_FIXTURE_READER_MARKER_SHA256 = (
 ISSUE71_WINDOWS_FIXTURE_READER_MARKER_FIELDS = ISSUE71_WINDOWS_PROFILE_READER_MARKER_FIELDS
 ISSUE71_CURRENT_COMBINED_SCHEMA = "PASES_ISSUE_PHASE_AND_USER_REVIEW_V2"
 ISSUE71_CURRENT_COMBINED_MARKER_FIELDS = ISSUE71_WINDOWS_FIXTURE_READER_MARKER_FIELDS
+ISSUE71_PHASE_AND_USER_REVIEW_V3_SCHEMA = "PASES_ISSUE_PHASE_AND_USER_REVIEW_V3"
+ISSUE71_PHASE_AND_USER_REVIEW_V3_FIELDS = frozenset({
+    "active_authorization_digests", "active_epoch_id", "active_epoch_sha256",
+    "active_phase_generation_comment_id", "active_phase_generation_sha256",
+    "applied_body_sha256", "applied_comment_id", "approved_history",
+    "batch_reader_authorization", "branch_ref", "current_document_snapshot_authorization",
+    "current_issue_body_sha256", "followup_path_allowlist", "frozen_base_ref",
+    "frozen_base_sha40", "historical_document_reissue_authorization",
+    "history_predecessor_boundary", "intent_body_sha256", "intent_comment_id",
+    "issue71_user_review_authorization", "issue_id", "issue_number", "labels_at_start",
+    "max_followup_commits", "owner_id", "phase_receipt_reconciliation",
+    "phase_rework_generation_authorization", "post_followup_document_authorization",
+    "pr_base_ref", "pr_base_sha40", "pr_body_sha256", "pr_number",
+    "predecessor_adc_byte_length", "predecessor_adc_comment_id", "predecessor_adc_sha256",
+    "repository", "repository_id", "schema", "starting_head_sha40",
+})
+ISSUE71_REWORK_INTENT_V3_SCHEMA = "PASES_ISSUE_VERIFICATION_REWORK_INTENT_V3"
+ISSUE71_REWORK_APPLIED_V3_SCHEMA = "PASES_ISSUE_VERIFICATION_REWORK_APPLIED_V3"
 ISSUE71_CURRENT_DOCUMENT_REISSUE_PATH_ALLOWLIST = (
     "dist/antigravity/runtime/p_ases/phase_evidence.py",
     "dist/antigravity/runtime/p_ases/phase_rework.py",
@@ -929,6 +947,8 @@ COMMON_FIELDS = frozenset({
 })
 INTENT_FIELDS = COMMON_FIELDS | {"schema", "created_at"}
 APPLIED_FIELDS = COMMON_FIELDS | {"schema", "intent_comment_id", "intent_body_sha256", "applied_at"}
+ISSUE71_REWORK_INTENT_V3_FIELDS = INTENT_FIELDS | {"generation_number"}
+ISSUE71_REWORK_APPLIED_V3_FIELDS = APPLIED_FIELDS | {"generation_number"}
 
 
 class PhaseReworkError(ValueError):
@@ -971,6 +991,8 @@ class _Live:
     reader_continuation_authorization_sha256: str | None = None
     execution_receipt_reader_continuation_authorization: dict[str, Any] | None = None
     execution_receipt_reader_continuation_authorization_sha256: str | None = None
+    phase_rework_generation_authorization: dict[str, Any] | None = None
+    phase_rework_generation_authorization_sha256: str | None = None
 
 
 def _canonical(value: Any) -> str:
@@ -1513,7 +1535,8 @@ def _has_issue71_current_combined_marker(verified: VerifiedADC) -> bool:
         content = verified.contract.content.decode("utf-8", errors="strict")
     except (AttributeError, UnicodeError):
         return False
-    return f"<!-- {ISSUE71_CURRENT_COMBINED_SCHEMA}\n" in content
+    return (f"<!-- {ISSUE71_CURRENT_COMBINED_SCHEMA}\n" in content
+            or f"<!-- {ISSUE71_PHASE_AND_USER_REVIEW_V3_SCHEMA}\n" in content)
 
 
 def _validate_historical_commit_segments(
@@ -1585,6 +1608,9 @@ def parse_issue71_phase_and_user_review_authorization(
         text = contract.content.decode("utf-8", errors="strict")
     except UnicodeError as exc:
         raise PhaseReworkError("current Issue #71 combined ADC is not valid UTF-8") from exc
+
+    if f"<!-- {ISSUE71_PHASE_AND_USER_REVIEW_V3_SCHEMA}\n" in text:
+        return _parse_issue71_phase_and_user_review_v3_authorization(verified, text)
 
     schema = ISSUE71_CURRENT_COMBINED_SCHEMA
     start_marker = f"<!-- {schema}\n"
@@ -1847,12 +1873,389 @@ def parse_issue71_phase_and_user_review_authorization(
     return value
 
 
+def _parse_issue71_phase_and_user_review_v3_authorization(
+    verified: VerifiedADC, text: str,
+) -> dict[str, Any]:
+    """Validate the approved V3 marker and every duplicated authorization binding."""
+    schema = ISSUE71_PHASE_AND_USER_REVIEW_V3_SCHEMA
+    start_marker = f"<!-- {schema}\n"
+    if text.count(start_marker) != 1:
+        raise PhaseReworkError("current Issue #71 V3 ADC must contain one authorization marker")
+    start = text.index(start_marker)
+    close = text.find("\n-->", start + len(start_marker))
+    if close < 0 or text[close + len("\n-->"):].strip():
+        raise PhaseReworkError("current Issue #71 V3 marker is incomplete or not terminal")
+    raw = text[start + len(start_marker):close]
+    try:
+        value = json.loads(raw, object_pairs_hook=_pairs)
+    except (json.JSONDecodeError, UnicodeError) as exc:
+        raise PhaseReworkError("current Issue #71 V3 marker JSON is malformed") from exc
+    if (not isinstance(value, dict) or set(value) != ISSUE71_PHASE_AND_USER_REVIEW_V3_FIELDS
+            or value.get("schema") != schema or _canonical(value) != raw):
+        raise PhaseReworkError("current Issue #71 V3 marker fields or canonical JSON are invalid")
+
+    history = value.get("approved_history")
+    history_rows: list[dict[str, Any]] = []
+    seen_ids: set[int] = set()
+    if not isinstance(history, list) or not history:
+        raise PhaseReworkError("current Issue #71 V3 marker has no approved ADC history")
+    for item in history:
+        if (not isinstance(item, dict)
+                or set(item) != {"byte_length", "comment_id", "sha256", "state"}
+                or type(item.get("comment_id")) is not int or item["comment_id"] < 1
+                or type(item.get("byte_length")) is not int or item["byte_length"] < 1
+                or not isinstance(item.get("sha256"), str)
+                or not SHA256.fullmatch(item["sha256"])
+                or item.get("state") != "approved"
+                or item["comment_id"] in seen_ids):
+            raise PhaseReworkError("current Issue #71 V3 ADC history is malformed or duplicated")
+        seen_ids.add(item["comment_id"])
+        history_rows.append(item)
+    if [row["comment_id"] for row in history_rows] != sorted(seen_ids):
+        raise PhaseReworkError("current Issue #71 V3 ADC history is not in forward order")
+    predecessor = history_rows[-1]
+    if (value.get("predecessor_adc_comment_id") != predecessor["comment_id"]
+            or value.get("predecessor_adc_sha256") != predecessor["sha256"]
+            or value.get("predecessor_adc_byte_length") != predecessor["byte_length"]
+            or _adc_predecessor_header(text, "current Issue #71 V3 ADC")
+            != (predecessor["comment_id"], predecessor["sha256"])):
+        raise PhaseReworkError("current Issue #71 V3 predecessor differs from approved history")
+
+    boundary = {
+        "comment_id": ISSUE71_COMBINED_ADC_HISTORY_BOUNDARY[0],
+        "sha256": ISSUE71_COMBINED_ADC_HISTORY_BOUNDARY[1],
+    }
+    if value.get("history_predecessor_boundary") != boundary:
+        raise PhaseReworkError("current Issue #71 V3 history boundary differs from its fixed predecessor")
+    starting_head = value.get("starting_head_sha40")
+    allowlist = value.get("followup_path_allowlist")
+    if (starting_head != "a6f76b3639fd713ab3701d0c6e98691f6a306abc"
+            or not isinstance(allowlist, list) or not allowlist
+            or allowlist != sorted(set(allowlist))
+            or any(not isinstance(path, str) or not path or path.startswith("/")
+                   or "\\" in path or any(part in {"", ".", ".."} for part in path.split("/"))
+                   for path in allowlist)
+            or value.get("max_followup_commits") != 1):
+        raise PhaseReworkError("current Issue #71 V3 start HEAD or follow-up allowlist is invalid")
+
+    generation = value.get("phase_rework_generation_authorization")
+    generation_fields = {
+        "active_epoch_id", "active_epoch_sha256", "branch_ref", "current_issue_body_sha256",
+        "existing_user_review_session", "followup_path_allowlist", "from_phase", "issue_id",
+        "issue_number", "labels_after", "labels_before", "max_applications",
+        "max_bootstrap_commits", "max_followup_commits", "new_applied_schema",
+        "new_generation_number", "new_intent_schema", "owner_id", "pr_base_ref",
+        "pr_base_sha40", "pr_number", "predecessor_adc_comment_id", "predecessor_adc_sha256",
+        "preserve_existing_rework_records_byte_for_byte", "preserve_prior_v2_applied_body_sha256",
+        "preserve_prior_v2_applied_comment_id", "preserve_prior_v2_intent_body_sha256",
+        "preserve_prior_v2_intent_comment_id", "prior_phase_generation_comment_id",
+        "prior_phase_generation_sha256", "repository", "repository_id",
+        "require_current_adc_forward_chain",
+        "require_fresh_exact_subject_verification_acceptance_self_audit_independent_review_readiness",
+        "schema", "starting_head_sha40", "to_phase",
+    }
+    expected_generation = {
+        "active_epoch_id": ACTIVE_EPOCH_ID,
+        "active_epoch_sha256": ACTIVE_EPOCH_SHA256,
+        "branch_ref": BRANCH_REF,
+        "current_issue_body_sha256": ISSUE_BODY_SHA256,
+        "existing_user_review_session": "absent",
+        "followup_path_allowlist": allowlist,
+        "from_phase": "verification",
+        "issue_id": ISSUE_ID,
+        "issue_number": ISSUE_NUMBER,
+        "labels_after": LABELS_AFTER,
+        "labels_before": LABELS_BEFORE,
+        "max_applications": 1,
+        "max_bootstrap_commits": 1,
+        "max_followup_commits": 1,
+        "new_applied_schema": ISSUE71_REWORK_APPLIED_V3_SCHEMA,
+        "new_generation_number": 2,
+        "new_intent_schema": ISSUE71_REWORK_INTENT_V3_SCHEMA,
+        "owner_id": OWNER_ID,
+        "pr_base_ref": PR_BASE_REF,
+        "pr_base_sha40": PR_BASE_SHA40,
+        "pr_number": PR_NUMBER,
+        "predecessor_adc_comment_id": predecessor["comment_id"],
+        "predecessor_adc_sha256": predecessor["sha256"],
+        "preserve_existing_rework_records_byte_for_byte": True,
+        "preserve_prior_v2_applied_body_sha256": "b8648cfd2c9c1479791554179069bfc3b57ab5c7d26ccf255184087dcf388b18",
+        "preserve_prior_v2_applied_comment_id": 6889965335,
+        "preserve_prior_v2_intent_body_sha256": "ad2b75b99d4d0aa11d2cf021605eae9ecd9386a436f8032033a4cf87e5bd5be5",
+        "preserve_prior_v2_intent_comment_id": 6888474848,
+        "prior_phase_generation_comment_id": 6889965335,
+        "prior_phase_generation_sha256": "b8648cfd2c9c1479791554179069bfc3b57ab5c7d26ccf255184087dcf388b18",
+        "repository": REPOSITORY,
+        "repository_id": REPOSITORY_ID,
+        "require_current_adc_forward_chain": True,
+        "require_fresh_exact_subject_verification_acceptance_self_audit_independent_review_readiness": True,
+        "schema": "PASES_ISSUE71_PHASE_REWORK_GENERATION_V3",
+        "starting_head_sha40": starting_head,
+        "to_phase": "requirements",
+    }
+    if (not isinstance(generation, dict) or set(generation) != generation_fields
+            or generation != expected_generation):
+        raise PhaseReworkError("current Issue #71 V3 phase-rework authorization differs")
+
+    batch = value.get("batch_reader_authorization")
+    batch_fields = {
+        "history_start_comment_id", "history_start_sha256", "issue_number",
+        "max_complete_issue_comment_snapshots_per_range", "per_generation_direct_comment_reads",
+        "predecessor_adc_comment_id", "predecessor_adc_sha256", "repository",
+        "repository_id", "schema", "snapshot_requirements",
+    }
+    expected_batch = {
+        "history_start_comment_id": boundary["comment_id"],
+        "history_start_sha256": boundary["sha256"],
+        "issue_number": ISSUE_NUMBER,
+        "max_complete_issue_comment_snapshots_per_range": 2,
+        "per_generation_direct_comment_reads": 2,
+        "predecessor_adc_comment_id": predecessor["comment_id"],
+        "predecessor_adc_sha256": predecessor["sha256"],
+        "repository": REPOSITORY,
+        "repository_id": REPOSITORY_ID,
+        "schema": "PASES_ADC_FORWARD_HISTORY_BATCH_READ_V1",
+        "snapshot_requirements": [
+            "Validate the complete ordered approved pointer journal from the initial complete paginated snapshot.",
+            "Direct-read each selected ADC body before and after; require exact repository/Issue identity, bytes, SHA-256, length, approved state, and predecessor adjacency.",
+            "Read the complete paginated comment journal once after the range and require all pointer records and selected ADC list entries to match the initial snapshot.",
+            "Reject missing, duplicate, edited, reordered, malformed, or drifted pointer or ADC records before returning verified generations.",
+            "The complete paginated comment-list sweep count is independent of selected ADC range length.",
+        ],
+    }
+    if not isinstance(batch, dict) or set(batch) != batch_fields or batch != expected_batch:
+        raise PhaseReworkError("current Issue #71 V3 batch-reader authorization differs")
+
+    snapshot = value.get("current_document_snapshot_authorization")
+    snapshot_fields = {
+        "branch_ref", "current_source_document_digests", "issue_number",
+        "repository_id", "schema", "source_commit_policy",
+    }
+    expected_document_paths = ["docs/design/workflow-design.md", "docs/specs/workflow-spec.md"]
+    document_rows = snapshot.get("current_source_document_digests") if isinstance(snapshot, dict) else None
+    if (not isinstance(snapshot, dict) or set(snapshot) != snapshot_fields
+            or snapshot.get("schema") != "PASES_ISSUE71_CURRENT_DOCUMENT_SNAPSHOT_V1"
+            or snapshot.get("branch_ref") != BRANCH_REF or snapshot.get("issue_number") != ISSUE_NUMBER
+            or snapshot.get("repository_id") != REPOSITORY_ID
+            or snapshot.get("source_commit_policy") != "exact_current_pushed_head"
+            or not isinstance(document_rows, list) or len(document_rows) != 2
+            or [row.get("path") if isinstance(row, dict) else None for row in document_rows]
+               != expected_document_paths
+            or any(set(row) != {"path", "sha256"} or not isinstance(row.get("sha256"), str)
+                   or not SHA256.fullmatch(row["sha256"]) for row in document_rows)):
+        raise PhaseReworkError("current Issue #71 V3 document snapshot authorization is malformed")
+
+    historical_documents = value.get("historical_document_reissue_authorization")
+    if historical_documents != ISSUE71_HISTORICAL_DOCUMENT_REISSUE_AUTHORIZATION:
+        raise PhaseReworkError("current Issue #71 V3 historical document authorization differs")
+    post_documents = value.get("post_followup_document_authorization")
+    expected_post_documents = {
+        "branch_ref": BRANCH_REF,
+        "followup_path_allowlist": allowlist,
+        "historical_receipt_policy": "preserve_original_receipt_ids_and_validate_document_bytes_at_each_recorded_historical_commit",
+        "issue_number": ISSUE_NUMBER,
+        "reissued_phase_document_policy": "bind_exact_current_committed_specification_design_and_test_oracle_bytes_at_followup_head",
+        "repository_id": REPOSITORY_ID,
+        "schema": "PASES_ISSUE71_POST_FOLLOWUP_DOCUMENT_SNAPSHOT_V1",
+        "source_commit_policy": "exact_direct_child_followup_commit",
+        "starting_head_sha40": starting_head,
+    }
+    if not isinstance(post_documents, dict) or post_documents != expected_post_documents:
+        raise PhaseReworkError("current Issue #71 V3 post-follow-up document authorization differs")
+
+    phase = value.get("phase_receipt_reconciliation")
+    phase_fields = ISSUE71_PHASE_RECEIPT_AUTH_FIELDS | {"post_followup_document_policy"}
+    segments = phase.get("historical_commit_segments") if isinstance(phase, dict) else None
+    _validate_historical_commit_segments(
+        segments, history_rows, APPROVED_HISTORY_READER_AUTHORIZATION["starting_head_sha40"], starting_head,
+    )
+    expected_phase = {
+        "schema": ISSUE71_PHASE_RECEIPT_AUTH_SCHEMA,
+        "repository": REPOSITORY,
+        "repository_id": REPOSITORY_ID,
+        "issue_number": ISSUE_NUMBER,
+        "issue_id": ISSUE_ID,
+        "owner_id": OWNER_ID,
+        "issue_body_sha256": ISSUE_BODY_SHA256,
+        "labels_at_start": ["enhancement", "kind:single", "phase:design"],
+        "branch_ref": BRANCH_REF,
+        "frozen_base_ref": BASE_REF,
+        "frozen_base_sha40": BASE_SHA40,
+        "pr_number": PR_NUMBER,
+        "pr_base_ref": PR_BASE_REF,
+        "pr_base_sha40": PR_BASE_SHA40,
+        "pr_body_sha256": PR_BODY_SHA256,
+        "predecessor_adc_comment_id": 6943309043,
+        "predecessor_adc_sha256": "a886858fe635c4b74c7208524f00ad94f8091a44e89f266fce00ffb7413c8a11",
+        "active_epoch_id": ACTIVE_EPOCH_ID,
+        "active_epoch_sha256": ACTIVE_EPOCH_SHA256,
+        "active_phase_generation_comment_id": 6889965335,
+        "active_phase_generation_sha256": "b8648cfd2c9c1479791554179069bfc3b57ab5c7d26ccf255184087dcf388b18",
+        "intent_comment_id": 6888474848,
+        "intent_body_sha256": "ad2b75b99d4d0aa11d2cf021605eae9ecd9386a436f8032033a4cf87e5bd5be5",
+        "applied_comment_id": 6889965335,
+        "applied_body_sha256": "b8648cfd2c9c1479791554179069bfc3b57ab5c7d26ccf255184087dcf388b18",
+        "historical_receipt_adc_comment_id": 6891926625,
+        "historical_receipt_adc_sha256": "64c8d8d3ceb06f5e04d6c9eb780c0bb3a0607dc61440e136b00bcdf63cf941a8",
+        "historical_receipt_commit_sha40": "b31cca21da15e18d0e1665827621700f7d774d0a",
+        "historical_receipts": [
+            {"body_sha256": "67402fbb84567844ef7399868d8aa09538526fe41b101cd00d362c60019cc5b9",
+             "comment_id": 6892886558, "commit_sha40": "b31cca21da15e18d0e1665827621700f7d774d0a",
+             "from_phase": "requirements", "phase_generation_comment_id": 6889965335,
+             "phase_generation_sha256": "b8648cfd2c9c1479791554179069bfc3b57ab5c7d26ccf255184087dcf388b18",
+             "to_phase": "specification"},
+            {"body_sha256": "ee9fba19f51b06f9ceae63e16bdac5ea54ac0f5b0bae72eef6eba397e64334ef",
+             "comment_id": 6892997518, "commit_sha40": "b31cca21da15e18d0e1665827621700f7d774d0a",
+             "from_phase": "specification", "phase_generation_comment_id": 6889965335,
+             "phase_generation_sha256": "b8648cfd2c9c1479791554179069bfc3b57ab5c7d26ccf255184087dcf388b18",
+             "to_phase": "design"},
+        ],
+        "reissue_edges": [["requirements", "specification"], ["specification", "design"]],
+        "permitted_current_adc_edges": [["requirements", "specification"],
+                                         ["specification", "design"], ["design", "ready"]],
+        "permitted_label_transitions": [["verification", "requirements"],
+                                        ["requirements", "specification"],
+                                        ["specification", "design"], ["design", "ready"],
+                                        ["ready", "execution"], ["execution", "verification"],
+                                        ["verification", "user-review"]],
+        "post_followup_document_policy": "bind_exact_current_committed_documents_at_exact_followup_head",
+        "max_followup_commits": 1,
+        "starting_head_sha40": starting_head,
+        "followup_path_allowlist": allowlist,
+        "historical_commit_segments": segments,
+    }
+    if not isinstance(phase, dict) or set(phase) != phase_fields or phase != expected_phase:
+        mismatches = [key for key in expected_phase
+                      if not isinstance(phase, dict) or phase.get(key) != expected_phase[key]]
+        raise PhaseReworkError(
+            "current Issue #71 V3 phase-receipt authorization differs: " + ", ".join(mismatches)
+        )
+
+    user_review = value.get("issue71_user_review_authorization")
+    expected_user_review = {
+        "schema": ISSUE71_USER_REVIEW_AUTH_SCHEMA,
+        "repository_id": REPOSITORY_ID,
+        "owner_id": OWNER_ID,
+        "issue_number": ISSUE_NUMBER,
+        "pr_number": PR_NUMBER,
+        "decision_carrier_issue_number": ISSUE_NUMBER,
+        "decision_schema": "PASES_USER_REVIEW_DECISION_V3",
+        "review_mode": "solo_owner",
+        "project_profile_sha256": "396379272080348b5b7b2a78faac09ab28dcdb001106a238c5e62945eaf8f820",
+        "subject_fields": ["adc_sha256", "feedback_sha256", "pr_head_sha40",
+                           "readiness_sha256", "review_session_sha256"],
+        "max_decisions_per_session": 1,
+        "direct_chat_confirmation_required": True,
+        "issue63_access": "none",
+    }
+    fixed_authorizations = {
+        "continuation": CONTINUATION_AUTHORIZATION,
+        "execution_receipt_reader_continuation": EXECUTION_RECEIPT_READER_CONTINUATION_AUTHORIZATION,
+        "reader_continuation": READER_CONTINUATION_AUTHORIZATION,
+        "recovery": RECOVERY_AUTHORIZATION,
+        "rework": AUTHORIZATION,
+        "timestamp_recovery": TIMESTAMP_RECOVERY_AUTHORIZATION,
+    }
+    digests = {name: hashlib.sha256(_canonical(item).encode("utf-8")).hexdigest()
+               for name, item in fixed_authorizations.items()}
+    digest_auths = {
+        "batch_reader": batch,
+        "current_document_snapshot": snapshot,
+        "historical_document_reissue": historical_documents,
+        "issue71_user_review": user_review,
+        "phase_receipt_reconciliation": phase,
+        "phase_rework_generation": generation,
+        "post_followup_documents": post_documents,
+    }
+    digests.update({name: hashlib.sha256(_canonical(item).encode("utf-8")).hexdigest()
+                    for name, item in digest_auths.items()})
+    if (not isinstance(user_review, dict) or set(user_review) != ISSUE71_USER_REVIEW_AUTH_FIELDS
+            or user_review != expected_user_review
+            or value.get("active_authorization_digests") != digests):
+        declared_digests = value.get("active_authorization_digests")
+        digest_mismatches = [key for key in digests
+                             if not isinstance(declared_digests, dict)
+                             or declared_digests.get(key) != digests[key]]
+        raise PhaseReworkError(
+            "current Issue #71 V3 digest map or User Review authorization differs: "
+            + ", ".join(digest_mismatches)
+        )
+
+    expected_top = {
+        "active_authorization_digests": digests,
+        "active_epoch_id": ACTIVE_EPOCH_ID,
+        "active_epoch_sha256": ACTIVE_EPOCH_SHA256,
+        "active_phase_generation_comment_id": 6889965335,
+        "active_phase_generation_sha256": "b8648cfd2c9c1479791554179069bfc3b57ab5c7d26ccf255184087dcf388b18",
+        "applied_body_sha256": "b8648cfd2c9c1479791554179069bfc3b57ab5c7d26ccf255184087dcf388b18",
+        "applied_comment_id": 6889965335,
+        "approved_history": history_rows,
+        "batch_reader_authorization": batch,
+        "branch_ref": BRANCH_REF,
+        "current_document_snapshot_authorization": snapshot,
+        "current_issue_body_sha256": ISSUE_BODY_SHA256,
+        "followup_path_allowlist": allowlist,
+        "frozen_base_ref": BASE_REF,
+        "frozen_base_sha40": BASE_SHA40,
+        "historical_document_reissue_authorization": historical_documents,
+        "history_predecessor_boundary": boundary,
+        "intent_body_sha256": "ad2b75b99d4d0aa11d2cf021605eae9ecd9386a436f8032033a4cf87e5bd5be5",
+        "intent_comment_id": 6888474848,
+        "issue71_user_review_authorization": expected_user_review,
+        "issue_id": ISSUE_ID,
+        "issue_number": ISSUE_NUMBER,
+        "labels_at_start": ["enhancement", "kind:single", "phase:design"],
+        "max_followup_commits": 1,
+        "owner_id": OWNER_ID,
+        "phase_receipt_reconciliation": expected_phase,
+        "phase_rework_generation_authorization": expected_generation,
+        "post_followup_document_authorization": expected_post_documents,
+        "pr_base_ref": PR_BASE_REF,
+        "pr_base_sha40": PR_BASE_SHA40,
+        "pr_body_sha256": PR_BODY_SHA256,
+        "pr_number": PR_NUMBER,
+        "predecessor_adc_byte_length": predecessor["byte_length"],
+        "predecessor_adc_comment_id": predecessor["comment_id"],
+        "predecessor_adc_sha256": predecessor["sha256"],
+        "repository": REPOSITORY,
+        "repository_id": REPOSITORY_ID,
+        "schema": schema,
+        "starting_head_sha40": starting_head,
+    }
+    if value != expected_top:
+        mismatches = [key for key in expected_top if value.get(key) != expected_top[key]]
+        raise PhaseReworkError("current Issue #71 V3 top-level bindings differ: " + ", ".join(mismatches))
+
+    try:
+        from .phase_evidence import _artifact_impacts
+        impacts, reasons = _artifact_impacts(verified)
+    except (ImportError, ValueError) as exc:
+        raise PhaseReworkError(f"current Issue #71 V3 Artifact impact is invalid: {exc}") from exc
+    if (reasons or impacts.get("specification") != ("docs/specs/workflow-spec.md",)
+            or impacts.get("design") != ("docs/design/workflow-design.md",)
+            or not impacts.get("test-oracle")):
+        raise PhaseReworkError("current Issue #71 V3 Artifact impact does not use the approved path grammar")
+    return value
+
+
 def verify_issue71_phase_and_user_review_adc_chain(
     github: GitHub, verified: VerifiedADC,
 ) -> tuple[dict[str, Any], tuple[VerifiedADC, ...]]:
     """Verify the exact approved history declared by the current combined marker."""
     authorization = parse_issue71_phase_and_user_review_authorization(verified)
-    boundary = ISSUE71_COMBINED_ADC_HISTORY_BOUNDARY
+    boundary_value = authorization.get("history_predecessor_boundary")
+    if boundary_value is None:
+        boundary_value = {
+            "comment_id": ISSUE71_COMBINED_ADC_HISTORY_BOUNDARY[0],
+            "sha256": ISSUE71_COMBINED_ADC_HISTORY_BOUNDARY[1],
+        }
+    if (not isinstance(boundary_value, dict)
+            or set(boundary_value) != {"comment_id", "sha256"}
+            or type(boundary_value.get("comment_id")) is not int
+            or not isinstance(boundary_value.get("sha256"), str)
+            or not SHA256.fullmatch(boundary_value["sha256"])):
+        raise PhaseReworkError("combined ADC history boundary is malformed")
+    boundary = (boundary_value["comment_id"], boundary_value["sha256"])
     try:
         chain = verify_adc_forward_generations(
             github, ISSUE_NUMBER,
@@ -2667,6 +3070,20 @@ def _live(github: GitHub, root: Path, *, phase: str | None = None,
             execution_reader_authorization, execution_reader_sha = (
             _authorization_context(github, current)
         )
+        combined_authorization = (
+            parse_issue71_phase_and_user_review_authorization(current)
+            if current_combined else None
+        )
+        generation_authorization = (
+            combined_authorization.get("phase_rework_generation_authorization")
+            if isinstance(combined_authorization, dict)
+            and combined_authorization.get("schema") == ISSUE71_PHASE_AND_USER_REVIEW_V3_SCHEMA
+            else None
+        )
+        generation_authorization_sha256 = (
+            hashlib.sha256(_canonical(generation_authorization).encode("utf-8")).hexdigest()
+            if isinstance(generation_authorization, dict) else None
+        )
         actor = github.authenticated_user()
         metadata = github.repository_metadata()
         if (not isinstance(actor, dict) or actor.get("id") != OWNER_ID or actor.get("type") != "User"
@@ -2718,7 +3135,6 @@ def _live(github: GitHub, root: Path, *, phase: str | None = None,
         if remote_head != head:
             raise PhaseReworkError("local bootstrap HEAD differs from the remote PR branch HEAD")
         if current_combined:
-            combined_authorization, _chain = verify_issue71_phase_and_user_review_adc_chain(github, current)
             lineage_head = combined_authorization["starting_head_sha40"]
             phase_authorization = combined_authorization["phase_receipt_reconciliation"]
             _verify_issue71_commit_lineage(
@@ -2741,7 +3157,8 @@ def _live(github: GitHub, root: Path, *, phase: str | None = None,
                      timestamp_recovery_authorization, timestamp_recovery_sha,
                      continuation_authorization, continuation_sha,
                      reader_authorization, reader_sha,
-                     execution_reader_authorization, execution_reader_sha)
+                     execution_reader_authorization, execution_reader_sha,
+                     generation_authorization, generation_authorization_sha256)
         _validate_reader_continuation_subject(live)
         _validate_execution_receipt_reader_continuation_subject(live)
         return live
@@ -2796,7 +3213,16 @@ def _parse_record(row: Any, schema: str) -> PhaseReworkRecord:
         payload = json.loads(raw, object_pairs_hook=_pairs)
     except (json.JSONDecodeError, UnicodeError) as exc:
         raise PhaseReworkError("phase rework journal JSON is malformed") from exc
-    expected_fields = INTENT_FIELDS if schema == INTENT_SCHEMA else APPLIED_FIELDS
+    if schema == INTENT_SCHEMA:
+        expected_fields = INTENT_FIELDS
+    elif schema == APPLIED_SCHEMA:
+        expected_fields = APPLIED_FIELDS
+    elif schema == ISSUE71_REWORK_INTENT_V3_SCHEMA:
+        expected_fields = ISSUE71_REWORK_INTENT_V3_FIELDS
+    elif schema == ISSUE71_REWORK_APPLIED_V3_SCHEMA:
+        expected_fields = ISSUE71_REWORK_APPLIED_V3_FIELDS
+    else:
+        raise PhaseReworkError("phase rework journal uses an unsupported generation schema")
     if (not isinstance(payload, dict) or set(payload) != expected_fields
             or payload.get("schema") != schema or _canonical(payload) != raw):
         raise PhaseReworkError("phase rework journal fields or canonical JSON are invalid")
@@ -2815,7 +3241,10 @@ def _read_history(github: GitHub) -> tuple[PhaseReworkRecord, ...]:
             candidate = body.lstrip()
             if not _is_rework_candidate(body):
                 continue
-            schema = next((value for value in (INTENT_SCHEMA, APPLIED_SCHEMA)
+            schema = next((value for value in (
+                               INTENT_SCHEMA, APPLIED_SCHEMA,
+                               ISSUE71_REWORK_INTENT_V3_SCHEMA, ISSUE71_REWORK_APPLIED_V3_SCHEMA,
+                           )
                            if candidate.startswith(f"<!-- {value}\n")), None)
             if schema is None or body != candidate:
                 raise PhaseReworkError("malformed reserved Issue #71 phase rework marker")
@@ -2973,6 +3402,11 @@ def _validate_applied(applied: PhaseReworkRecord, intent: PhaseReworkRecord,
 def _active_rework_records(history: tuple[PhaseReworkRecord, ...],
                            current_adc: VerifiedADC) -> tuple[PhaseReworkRecord | None,
                                                               PhaseReworkRecord | None]:
+    if _has_issue71_current_combined_marker(current_adc):
+        authorization = parse_issue71_phase_and_user_review_authorization(current_adc)
+        generation = authorization.get("phase_rework_generation_authorization")
+        if isinstance(generation, dict):
+            return _active_v3_rework_records(history, current_adc, generation)
     if len(history) > 2:
         raise PhaseReworkError("Issue #71 phase rework has duplicate or unrelated records")
     intents = [row for row in history if row.schema == INTENT_SCHEMA]
@@ -2993,6 +3427,53 @@ def _active_rework_records(history: tuple[PhaseReworkRecord, ...],
     return (intents[0] if intents else None, applied[0] if applied else None)
 
 
+def _v3_rework_records(
+    history: tuple[PhaseReworkRecord, ...], generation: Mapping[str, Any],
+) -> tuple[PhaseReworkRecord | None, PhaseReworkRecord | None]:
+    """Validate immutable V2 history and return the optional single V3 pair."""
+    comment_ids = [row.comment_id for row in history]
+    if comment_ids != sorted(set(comment_ids)):
+        raise PhaseReworkError("Issue #71 phase-rework history is duplicated or out of order")
+    v2_intents = [row for row in history if row.schema == INTENT_SCHEMA]
+    v2_applied = [row for row in history if row.schema == APPLIED_SCHEMA]
+    v3_intents = [row for row in history if row.schema == ISSUE71_REWORK_INTENT_V3_SCHEMA]
+    v3_applied = [row for row in history if row.schema == ISSUE71_REWORK_APPLIED_V3_SCHEMA]
+    if (len(v2_intents) != 1 or len(v2_applied) != 1
+            or v2_intents[0].comment_id != generation["preserve_prior_v2_intent_comment_id"]
+            or v2_intents[0].body_sha256 != generation["preserve_prior_v2_intent_body_sha256"]
+            or v2_applied[0].comment_id != generation["preserve_prior_v2_applied_comment_id"]
+            or v2_applied[0].body_sha256 != generation["preserve_prior_v2_applied_body_sha256"]
+            or v2_applied[0].comment_id <= v2_intents[0].comment_id):
+        raise PhaseReworkError("existing V2 Intent/Applied bytes differ from the immutable V3 preservation tuple")
+    if (len(v3_intents) > 1 or len(v3_applied) > 1
+            or (v3_applied and not v3_intents)):
+        raise PhaseReworkError("V3 phase-rework Intent/Applied is duplicated or incomplete")
+    if v3_intents and v3_intents[0].comment_id <= v2_applied[0].comment_id:
+        raise PhaseReworkError("V3 phase-rework Intent does not follow the preserved V2 generation")
+    if v3_applied and v3_applied[0].comment_id <= v3_intents[0].comment_id:
+        raise PhaseReworkError("V3 phase-rework Applied is not append-only")
+    if len(history) != 2 + len(v3_intents) + len(v3_applied):
+        raise PhaseReworkError("Issue #71 phase-rework history contains an unrelated generation")
+    return (v3_intents[0] if v3_intents else None,
+            v3_applied[0] if v3_applied else None)
+
+
+def _active_v3_rework_records(
+    history: tuple[PhaseReworkRecord, ...], current_adc: VerifiedADC,
+    generation: Mapping[str, Any],
+) -> tuple[PhaseReworkRecord | None, PhaseReworkRecord | None]:
+    v3_intent, v3_applied = _v3_rework_records(history, generation)
+    if current_adc.pointer.comment_id < generation["predecessor_adc_comment_id"]:
+        raise PhaseReworkError("current ADC predates the authorized V3 phase-rework generation")
+    if v3_intent is not None or v3_applied is not None:
+        return v3_intent, v3_applied
+    # Keep the already completed V2 record as the active phase generation until
+    # the authorized V3 pair has been applied.
+    v2_intent = next(row for row in history if row.schema == INTENT_SCHEMA)
+    v2_applied = next(row for row in history if row.schema == APPLIED_SCHEMA)
+    return v2_intent, v2_applied
+
+
 def _validate_recorded_readiness(root: Path, intent: PhaseReworkRecord) -> None:
     payload = intent.payload
     subject_sha = _sha(payload.get("readiness_subject_sha256"), "Readiness subject SHA-256")
@@ -3010,6 +3491,177 @@ def _validate_recorded_readiness(root: Path, intent: PhaseReworkRecord) -> None:
             or readiness.subject.pr_number != PR_NUMBER
             or readiness.subject.pr_head_sha40 != payload.get("bootstrap_head_sha40")):
         raise PhaseReworkError("Intent-bound Readiness is not the exact fresh bootstrap PASS")
+
+
+def _v3_intent_payload(live: _Live, readiness: ReadinessResult) -> dict[str, Any]:
+    generation = live.phase_rework_generation_authorization
+    if not isinstance(generation, dict):
+        raise PhaseReworkError("current ADC has no V3 phase-rework authorization")
+    if not isinstance(readiness, ReadinessResult):
+        raise PhaseReworkError("V3 phase rework requires typed fresh Readiness")
+    _validate_readiness(readiness, live)
+    return {
+        "schema": ISSUE71_REWORK_INTENT_V3_SCHEMA,
+        "generation_number": generation["new_generation_number"],
+        "repository": REPOSITORY,
+        "repository_id": REPOSITORY_ID,
+        "issue_number": ISSUE_NUMBER,
+        "issue_id": ISSUE_ID,
+        "adc_comment_id": live.current_adc.pointer.comment_id,
+        "adc_sha256": live.current_adc.contract.sha256,
+        "authorization_sha256": live.phase_rework_generation_authorization_sha256,
+        "predecessor_adc_comment_id": generation["predecessor_adc_comment_id"],
+        "predecessor_adc_sha256": generation["predecessor_adc_sha256"],
+        "epoch_origin_adc_comment_id": EPOCH_ORIGIN_ADC_COMMENT_ID,
+        "epoch_origin_adc_sha256": EPOCH_ORIGIN_ADC_SHA256,
+        "active_epoch_id": generation["active_epoch_id"],
+        "active_epoch_sha256": generation["active_epoch_sha256"],
+        "active_phase_generation_comment_id": generation["prior_phase_generation_comment_id"],
+        "active_phase_generation_sha256": generation["prior_phase_generation_sha256"],
+        "baseline_head_sha40": generation["starting_head_sha40"],
+        "bootstrap_head_sha40": live.head_sha40,
+        "branch_ref": generation["branch_ref"],
+        "pr_number": generation["pr_number"],
+        "pr_base_ref": generation["pr_base_ref"],
+        "pr_base_sha40": generation["pr_base_sha40"],
+        "pr_head_sha40": live.head_sha40,
+        "readiness_sha256": readiness.sha256,
+        "readiness_subject_sha256": readiness.subject.sha256,
+        "issue_body_sha256": generation["current_issue_body_sha256"],
+        "labels_before": generation["labels_before"],
+        "labels_after": generation["labels_after"],
+        "from_phase": generation["from_phase"],
+        "to_phase": generation["to_phase"],
+        "max_applications": generation["max_applications"],
+        "owner_id": generation["owner_id"],
+        "executor_user_id": live.executor_user_id,
+        "created_at": _timestamp(),
+    }
+
+
+def _validate_v3_intent(
+    intent: PhaseReworkRecord, live: _Live, *,
+    readiness: ReadinessResult | None = None, allow_bootstrap_descendant: bool = False,
+) -> None:
+    generation = live.phase_rework_generation_authorization
+    payload = intent.payload
+    if not isinstance(generation, dict):
+        raise PhaseReworkError("V3 phase-rework authorization is unavailable")
+    if (intent.schema != ISSUE71_REWORK_INTENT_V3_SCHEMA
+            or set(payload) != ISSUE71_REWORK_INTENT_V3_FIELDS
+            or payload.get("schema") != ISSUE71_REWORK_INTENT_V3_SCHEMA
+            or payload.get("generation_number") != generation["new_generation_number"]):
+        raise PhaseReworkError("V3 phase-rework Intent schema or generation is invalid")
+    expected = {
+        "schema": ISSUE71_REWORK_INTENT_V3_SCHEMA,
+        "generation_number": generation["new_generation_number"],
+        "repository": REPOSITORY,
+        "repository_id": REPOSITORY_ID,
+        "issue_number": ISSUE_NUMBER,
+        "issue_id": ISSUE_ID,
+        "adc_comment_id": live.current_adc.pointer.comment_id,
+        "adc_sha256": live.current_adc.contract.sha256,
+        "authorization_sha256": live.phase_rework_generation_authorization_sha256,
+        "predecessor_adc_comment_id": generation["predecessor_adc_comment_id"],
+        "predecessor_adc_sha256": generation["predecessor_adc_sha256"],
+        "epoch_origin_adc_comment_id": EPOCH_ORIGIN_ADC_COMMENT_ID,
+        "epoch_origin_adc_sha256": EPOCH_ORIGIN_ADC_SHA256,
+        "active_epoch_id": generation["active_epoch_id"],
+        "active_epoch_sha256": generation["active_epoch_sha256"],
+        "active_phase_generation_comment_id": generation["prior_phase_generation_comment_id"],
+        "active_phase_generation_sha256": generation["prior_phase_generation_sha256"],
+        "baseline_head_sha40": generation["starting_head_sha40"],
+        "bootstrap_head_sha40": payload.get("pr_head_sha40"),
+        "branch_ref": generation["branch_ref"],
+        "pr_number": generation["pr_number"],
+        "pr_base_ref": generation["pr_base_ref"],
+        "pr_base_sha40": generation["pr_base_sha40"],
+        "pr_head_sha40": payload.get("bootstrap_head_sha40"),
+        "readiness_sha256": payload.get("readiness_sha256"),
+        "readiness_subject_sha256": payload.get("readiness_subject_sha256"),
+        "issue_body_sha256": generation["current_issue_body_sha256"],
+        "labels_before": generation["labels_before"],
+        "labels_after": generation["labels_after"],
+        "from_phase": generation["from_phase"],
+        "to_phase": generation["to_phase"],
+        "max_applications": generation["max_applications"],
+        "owner_id": generation["owner_id"],
+        "executor_user_id": live.executor_user_id,
+        "created_at": payload.get("created_at"),
+    }
+    if payload != expected:
+        raise PhaseReworkError("V3 phase-rework Intent differs from the exact ADC and active subject")
+    if (intent.actor_id != live.executor_user_id or live.executor_user_id != OWNER_ID
+            or live.phase_rework_generation_authorization_sha256
+            != hashlib.sha256(_canonical(generation).encode("utf-8")).hexdigest()):
+        raise PhaseReworkError("V3 phase-rework Intent author or authorization digest is invalid")
+    bootstrap_head = payload.get("bootstrap_head_sha40")
+    if (not isinstance(bootstrap_head, str) or SHA40.fullmatch(bootstrap_head) is None
+            or payload.get("pr_head_sha40") != bootstrap_head):
+        raise PhaseReworkError("V3 phase-rework Intent HEAD is malformed")
+    if allow_bootstrap_descendant:
+        if (not is_ancestor(live.root, generation["starting_head_sha40"], bootstrap_head)
+                or not is_ancestor(live.root, bootstrap_head, live.head_sha40)):
+            raise PhaseReworkError("V3 Intent HEAD is not on the exact authorized follow-up ancestry")
+    elif bootstrap_head != live.head_sha40:
+        raise PhaseReworkError("V3 Intent does not bind the exact current follow-up HEAD")
+    _sha(payload.get("readiness_sha256"), "V3 Intent Readiness SHA-256")
+    _sha(payload.get("readiness_subject_sha256"), "V3 Intent Readiness subject SHA-256")
+    _strict_utc(payload.get("created_at"), "V3 Intent created_at")
+    if readiness is not None:
+        _validate_readiness(readiness, live)
+        if (readiness.sha256 != payload["readiness_sha256"]
+                or readiness.subject.sha256 != payload["readiness_subject_sha256"]):
+            raise PhaseReworkError("V3 Intent differs from the fresh exact-subject Readiness")
+
+
+def _validate_v3_applied(
+    applied: PhaseReworkRecord, intent: PhaseReworkRecord, live: _Live,
+    *, allow_bootstrap_descendant: bool = False,
+) -> None:
+    if (applied.schema != ISSUE71_REWORK_APPLIED_V3_SCHEMA
+            or set(applied.payload) != ISSUE71_REWORK_APPLIED_V3_FIELDS
+            or applied.comment_id <= intent.comment_id
+            or applied.actor_id != intent.actor_id
+            or applied.payload.get("generation_number") != intent.payload.get("generation_number")
+            or applied.payload.get("intent_comment_id") != intent.comment_id
+            or applied.payload.get("intent_body_sha256") != intent.body_sha256):
+        raise PhaseReworkError("V3 phase-rework Applied does not reference its exact Intent")
+    if _strict_utc(applied.payload.get("applied_at"), "V3 Applied applied_at") != _strict_utc(
+        applied.created_at, "V3 Applied comment created_at",
+    ):
+        raise PhaseReworkError("V3 Applied event timestamp differs from its immutable Issue comment")
+    expected = {key: value for key, value in intent.payload.items() if key != "created_at"}
+    expected.update({
+        "schema": ISSUE71_REWORK_APPLIED_V3_SCHEMA,
+        "intent_comment_id": intent.comment_id,
+        "intent_body_sha256": intent.body_sha256,
+        "applied_at": applied.payload.get("applied_at"),
+    })
+    if applied.payload != expected:
+        raise PhaseReworkError("V3 phase-rework Applied changed the exact Intent payload")
+    _validate_v3_intent(intent, live, allow_bootstrap_descendant=allow_bootstrap_descendant)
+
+
+def _validate_v3_recorded_readiness(root: Path, intent: PhaseReworkRecord) -> None:
+    payload = intent.payload
+    subject_sha = _sha(payload.get("readiness_subject_sha256"), "V3 Readiness subject SHA-256")
+    readiness_sha = _sha(payload.get("readiness_sha256"), "V3 Readiness SHA-256")
+    path = (Path(root).absolute() / ".p_ases" / "readiness" / str(ISSUE_NUMBER)
+            / subject_sha / f"{readiness_sha}.json")
+    try:
+        readiness = read_readiness(path)
+    except ValueError as exc:
+        raise PhaseReworkError(f"V3 Intent-bound Readiness is missing or invalid: {exc}") from exc
+    if (readiness.status != "PASS" or readiness.sha256 != readiness_sha
+            or readiness.subject.sha256 != subject_sha
+            or readiness.subject.repository.casefold() != REPOSITORY.casefold()
+            or readiness.subject.issue_number != ISSUE_NUMBER
+            or readiness.subject.pr_number != PR_NUMBER
+            or readiness.subject.adc_comment_id != intent.payload.get("adc_comment_id")
+            or readiness.subject.adc_sha256 != intent.payload.get("adc_sha256")
+            or readiness.subject.pr_head_sha40 != intent.payload.get("bootstrap_head_sha40")):
+        raise PhaseReworkError("V3 Intent-bound Readiness is not the exact current PASS")
 
 
 def _read_exact_attempt_marker(root: Path, operation: str,
@@ -3393,9 +4045,15 @@ def _record_body(schema: str, payload: Mapping[str, Any]) -> str:
 
 
 def _record_path(root: Path, operation: str) -> Path:
-    if operation not in {"intent", "labels", "applied"}:
+    paths = {
+        "intent": "phase-rework-v2", "labels": "phase-rework-v2", "applied": "phase-rework-v2",
+        "intent_v3": "phase-rework-v3", "labels_v3": "phase-rework-v3",
+        "applied_v3": "phase-rework-v3",
+    }
+    folder = paths.get(operation)
+    if folder is None:
         raise PhaseReworkError("phase rework local attempt operation is invalid")
-    return Path(root).resolve() / ".p_ases" / "state" / str(ISSUE_NUMBER) / "phase-rework-v2" / "attempts" / f"{operation}.json"
+    return Path(root).resolve() / ".p_ases" / "state" / str(ISSUE_NUMBER) / folder / "attempts" / f"{operation}.json"
 
 
 def _write_attempt_once(root: Path, operation: str, payload: Mapping[str, Any]) -> None:
@@ -3432,7 +4090,14 @@ def _post_record_once(github: GitHub, root: Path, schema: str,
         return matching[0]
     if any(record.schema == schema for record in records):
         raise PhaseReworkError(f"a conflicting {schema} record already exists")
-    operation = "intent" if schema == INTENT_SCHEMA else "applied"
+    operation = {
+        INTENT_SCHEMA: "intent",
+        APPLIED_SCHEMA: "applied",
+        ISSUE71_REWORK_INTENT_V3_SCHEMA: "intent_v3",
+        ISSUE71_REWORK_APPLIED_V3_SCHEMA: "applied_v3",
+    }.get(schema)
+    if operation is None:
+        raise PhaseReworkError("phase rework writer does not support this record schema")
     if before_write is not None:
         before_write()
     _write_attempt_once(root, operation, payload)
@@ -3589,6 +4254,20 @@ def active_phase_generation_for_epoch(github: GitHub, root: Path, current_adc: V
      execution_reader_authorization, execution_reader_sha) = (
         _authorization_context(github, current_adc)
     )
+    combined = (
+        parse_issue71_phase_and_user_review_authorization(current_adc)
+        if _has_issue71_current_combined_marker(current_adc) else None
+    )
+    generation = (
+        combined.get("phase_rework_generation_authorization")
+        if isinstance(combined, dict)
+        and combined.get("schema") == ISSUE71_PHASE_AND_USER_REVIEW_V3_SCHEMA
+        else None
+    )
+    generation_sha = (
+        hashlib.sha256(_canonical(generation).encode("utf-8")).hexdigest()
+        if isinstance(generation, dict) else None
+    )
     history = _read_history(github)
     intent, applied = _active_rework_records(history, current_adc)
     issue_labels = _label_names(issue)
@@ -3610,9 +4289,22 @@ def active_phase_generation_for_epoch(github: GitHub, root: Path, current_adc: V
                  authorization_sha, root, recovery_authorization, recovery_sha,
                  timestamp_recovery_authorization, timestamp_recovery_sha,
                  continuation_authorization, continuation_sha, reader_authorization, reader_sha,
-                 execution_reader_authorization, execution_reader_sha)
+                 execution_reader_authorization, execution_reader_sha,
+                 generation, generation_sha)
     _validate_reader_continuation_subject(live)
     _validate_execution_receipt_reader_continuation_subject(live)
+    if intent.schema == ISSUE71_REWORK_INTENT_V3_SCHEMA:
+        _validate_v3_intent(intent, live, allow_bootstrap_descendant=True)
+        if applied is None:
+            raise PhaseReworkError("V3 phase rework has an incomplete Intent; phase operations are blocked")
+        _validate_v3_applied(applied, intent, live, allow_bootstrap_descendant=True)
+        _validate_post_rework_labels(issue_labels)
+        bootstrap_head = intent.payload["bootstrap_head_sha40"]
+        if (not is_ancestor(root, bootstrap_head, current_head)
+                or current_branch(root) != BRANCH_REF):
+            raise PhaseReworkError("active V3 rework is not on the exact authorized branch ancestry")
+        _validate_v3_recorded_readiness(root, intent)
+        return applied.comment_id, applied.body_sha256
     if recovery_authorization is not None:
         _validate_recovery_intent(intent, live, root)
     _validate_intent(intent, live, allow_bootstrap_descendant=True)
@@ -3651,6 +4343,202 @@ def _write_applied(github: GitHub, root: Path, intent: PhaseReworkRecord,
     return applied
 
 
+def _verify_v3_subject(
+    github: GitHub, root: Path, live: _Live, *, expected_labels: Sequence[str],
+) -> None:
+    """Recheck the V3 Issue, ADC, owner, PR, branch, base, and local HEAD."""
+    try:
+        current = verify_adc(github, ISSUE_NUMBER)
+        _authorization_context(github, current)
+        actor = github.authenticated_user()
+        metadata = github.repository_metadata()
+        issue, labels = _issue(github)
+        branch = current_branch(root)
+        head = head_sha40(root)
+        pull = _pr(github, head)
+        remote_head = remote_branch_sha(root, BRANCH_REF)
+        remote_base = remote_branch_sha(root, BASE_REF)
+    except (ADCError, GitError, GitHubError, ValueError) as exc:
+        raise PhaseReworkError(f"V3 phase-rework subject readback failed: {exc}") from exc
+    if (current.pointer != live.current_adc.pointer
+            or current.contract.sha256 != live.current_adc.contract.sha256
+            or not isinstance(actor, dict) or actor.get("id") != OWNER_ID or actor.get("type") != "User"
+            or not isinstance(metadata, dict) or metadata.get("id") != REPOSITORY_ID
+            or metadata.get("full_name", "").casefold() != REPOSITORY.casefold()
+            or issue.get("repository_url") != live.issue.get("repository_url")
+            or issue.get("number") != ISSUE_NUMBER
+            or issue.get("body") != live.issue.get("body")
+            or issue.get("state") != "open"
+            or labels != tuple(sorted(expected_labels))
+            or branch != BRANCH_REF or head != live.head_sha40
+            or remote_head != head or remote_base != BASE_SHA40
+            or not worktree_clean(root)):
+        raise PhaseReworkError("V3 phase-rework exact subject or labels changed")
+    pull_base = pull.get("base") if isinstance(pull, dict) else None
+    pull_head = pull.get("head") if isinstance(pull, dict) else None
+    if (pull.get("number") != PR_NUMBER or pull.get("state") != "open"
+            or pull.get("draft") is not False or pull.get("merged_at") is not None
+            or pull.get("title") != PR_TITLE
+            or not isinstance(pull.get("body"), str)
+            or hashlib.sha256(pull["body"].encode("utf-8")).hexdigest() != PR_BODY_SHA256
+            or not isinstance(pull_base, dict) or pull_base.get("ref") != PR_BASE_REF
+            or pull_base.get("sha") != PR_BASE_SHA40
+            or not isinstance(pull_head, dict) or pull_head.get("ref") != BRANCH_REF
+            or pull_head.get("sha") != head):
+        raise PhaseReworkError("V3 phase-rework exact PR identity or refs changed")
+    if (live.phase_rework_generation_authorization is None
+            or live.phase_rework_generation_authorization_sha256
+            != hashlib.sha256(_canonical(live.phase_rework_generation_authorization)
+                              .encode("utf-8")).hexdigest()):
+        raise PhaseReworkError("V3 phase-rework authorization digest changed")
+
+
+def _v3_applied_payload(intent: PhaseReworkRecord) -> dict[str, Any]:
+    payload = {key: value for key, value in intent.payload.items() if key != "created_at"}
+    payload["schema"] = ISSUE71_REWORK_APPLIED_V3_SCHEMA
+    payload["intent_comment_id"] = intent.comment_id
+    payload["intent_body_sha256"] = intent.body_sha256
+    payload["applied_at"] = _timestamp()
+    return payload
+
+
+def _apply_v3_phase_rework(
+    github: GitHub, root: Path, live: _Live, history: tuple[PhaseReworkRecord, ...],
+    readiness_factory: Callable[[], ReadinessResult] | None,
+) -> dict[str, Any]:
+    generation = live.phase_rework_generation_authorization
+    if not isinstance(generation, dict):
+        raise PhaseReworkError("current approved ADC does not authorize a V3 phase rework")
+    intent, applied = _v3_rework_records(history, generation)
+    if intent is not None:
+        _validate_v3_intent(intent, live, allow_bootstrap_descendant=True)
+        _validate_v3_recorded_readiness(root, intent)
+        if applied is None:
+            raise PhaseReworkError("V3 phase-rework records are partial; retry writes are prohibited")
+        _validate_v3_applied(applied, intent, live, allow_bootstrap_descendant=True)
+        if live.labels != tuple(sorted(generation["labels_after"])):
+            raise PhaseReworkError("completed V3 phase rework has labels outside its exact after-state")
+        return {"status": "NOOP", "issue": ISSUE_NUMBER,
+                "intent_comment_id": intent.comment_id, "applied_comment_id": applied.comment_id,
+                "readiness_sha256": intent.payload["readiness_sha256"], "label_write_count": 0}
+
+    if live.labels != tuple(sorted(generation["labels_before"])):
+        raise PhaseReworkError("V3 rework is permitted only from its exact verification before-state")
+    _user_review_absent(root)
+    if readiness_factory is None:
+        raise PhaseReworkError("fresh exact-subject Readiness evidence is required for V3 rework")
+    readiness = readiness_factory()
+    _validate_readiness(readiness, live)
+    payload = _v3_intent_payload(live, readiness)
+    intent_attempt_sha = hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest()
+    if _read_exact_attempt_marker(root, "intent_v3", intent_attempt_sha):
+        raise PhaseReworkError("V3 Intent was previously attempted; read-only recovery only")
+    for operation, marker_payload in (
+        ("labels_v3", {"generation_number": generation["new_generation_number"]}),
+        ("applied_v3", {"generation_number": generation["new_generation_number"]}),
+    ):
+        marker_sha = hashlib.sha256(_canonical(marker_payload).encode("utf-8")).hexdigest()
+        if _read_exact_attempt_marker(root, operation, marker_sha):
+            raise PhaseReworkError(f"V3 {operation} was previously attempted; read-only recovery only")
+
+    def verify_intent_subject_before_write() -> None:
+        fresh_readiness = readiness_factory()
+        _validate_readiness(fresh_readiness, live)
+        if fresh_readiness != readiness:
+            raise PhaseReworkError("V3 Readiness changed immediately before the one-shot Intent")
+        _verify_v3_subject(
+            github, root, live, expected_labels=generation["labels_before"],
+        )
+        fresh_payload = _v3_intent_payload(live, fresh_readiness)
+        stable_payload = {key: value for key, value in payload.items() if key != "created_at"}
+        stable_fresh_payload = {key: value for key, value in fresh_payload.items() if key != "created_at"}
+        if stable_fresh_payload != stable_payload:
+            raise PhaseReworkError("V3 ADC, Issue, branch, PR, or Readiness changed before Intent")
+        _user_review_absent(root)
+        latest = _read_history(github)
+        _v3_rework_records(latest, generation)
+        if any(row.schema in {ISSUE71_REWORK_INTENT_V3_SCHEMA,
+                              ISSUE71_REWORK_APPLIED_V3_SCHEMA} for row in latest):
+            raise PhaseReworkError("V3 phase-rework journal changed before its first write")
+
+    intent = _post_record_once(
+        github, root, ISSUE71_REWORK_INTENT_V3_SCHEMA, payload,
+        before_write=verify_intent_subject_before_write,
+    )
+    if not _read_exact_attempt_marker(
+        root, "intent_v3", hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest(),
+    ):
+        raise PhaseReworkError("V3 Intent exact one-shot attempt marker is missing")
+    _validate_v3_intent(intent, live, readiness=readiness)
+    _validate_v3_recorded_readiness(root, intent)
+
+    label_payload = {
+        "schema": "PASES_ISSUE_PHASE_REWORK_LOCAL_ATTEMPT_V1",
+        "operation": "labels_v3",
+        "payload_sha256": hashlib.sha256(_canonical({
+            "generation_number": generation["new_generation_number"],
+            "intent_body_sha256": intent.body_sha256,
+            "intent_comment_id": intent.comment_id,
+            "labels_after": generation["labels_after"],
+            "labels_before": generation["labels_before"],
+        }).encode("utf-8")).hexdigest(),
+    }
+    label_attempt_sha = hashlib.sha256(_canonical(label_payload).encode("utf-8")).hexdigest()
+    if _read_exact_attempt_marker(root, "labels_v3", label_attempt_sha):
+        raise PhaseReworkError("V3 label write was previously attempted; retry is prohibited")
+    _verify_v3_subject(github, root, live, expected_labels=generation["labels_before"])
+    _validate_v3_intent(intent, live, readiness=readiness)
+    _write_attempt_once(root, "labels_v3", {
+        "generation_number": generation["new_generation_number"],
+        "intent_body_sha256": intent.body_sha256,
+        "intent_comment_id": intent.comment_id,
+        "labels_after": generation["labels_after"],
+        "labels_before": generation["labels_before"],
+    })
+    write_error: GitHubError | None = None
+    try:
+        github.replace_issue_labels(ISSUE_NUMBER, generation["labels_after"])
+    except GitHubError as exc:
+        write_error = exc
+    issue_after, labels_after = _issue(github)
+    if (labels_after != tuple(sorted(generation["labels_after"]))
+            or issue_after.get("body") != live.issue.get("body")
+            or issue_after.get("state") != "open"):
+        if labels_after == tuple(sorted(generation["labels_before"])) and write_error is not None:
+            raise PhaseReworkError("V3 label PUT failed; retry is prohibited") from write_error
+        raise PhaseReworkError("V3 label PUT did not produce its exact after-state")
+    _verify_v3_subject(github, root, live, expected_labels=generation["labels_after"])
+
+    applied_payload = _v3_applied_payload(intent)
+    applied_attempt_sha = hashlib.sha256(_canonical(applied_payload).encode("utf-8")).hexdigest()
+    if _read_exact_attempt_marker(root, "applied_v3", applied_attempt_sha):
+        raise PhaseReworkError("V3 Applied was previously attempted; retry is prohibited")
+
+    def verify_applied_subject_before_write() -> None:
+        _verify_v3_subject(github, root, live, expected_labels=generation["labels_after"])
+        _validate_v3_intent(intent, live)
+        _validate_v3_recorded_readiness(root, intent)
+        rows = _read_history(github)
+        current_intent, current_applied = _v3_rework_records(rows, generation)
+        if current_intent != intent or current_applied is not None:
+            raise PhaseReworkError("V3 phase-rework journal changed before Applied")
+
+    applied = _post_record_once(
+        github, root, ISSUE71_REWORK_APPLIED_V3_SCHEMA, applied_payload,
+        before_write=verify_applied_subject_before_write,
+    )
+    _validate_v3_applied(applied, intent, live, allow_bootstrap_descendant=True)
+    final_live = _live(github, root, phase="requirements", require_clean=True)
+    if (final_live.phase_rework_generation_authorization != generation
+            or final_live.head_sha40 != live.head_sha40
+            or final_live.current_adc.pointer != live.current_adc.pointer
+            or final_live.labels != tuple(sorted(generation["labels_after"]))):
+        raise PhaseReworkError("completed V3 rework failed its final exact-subject readback")
+    return {"status": "APPLIED", "issue": ISSUE_NUMBER,
+            "intent_comment_id": intent.comment_id, "applied_comment_id": applied.comment_id,
+            "readiness_sha256": intent.payload["readiness_sha256"], "label_write_count": 1}
+
+
 def apply_issue71_phase_rework(
     github: GitHub,
     root: Path,
@@ -3665,6 +4553,8 @@ def apply_issue71_phase_rework(
     root = Path(root).resolve()
     live = _live(github, root, require_clean=True)
     history = _read_history(github)
+    if live.phase_rework_generation_authorization is not None:
+        return _apply_v3_phase_rework(github, root, live, history, readiness_factory)
     intent, applied = _active_rework_records(history, live.current_adc)
     if live.recovery_authorization is not None:
         if intent is None:

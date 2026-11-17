@@ -133,6 +133,8 @@
   - [9.106 REQ-F01-166 Apply one strict history rule to every generation](#9106-req-f01-166-apply-one-strict-history-rule-to-every-generation)
   - [9.107 REQ-F01-167 Verify authorized historical commit segments generically](#9107-req-f01-167-verify-authorized-historical-commit-segments-generically)
   - [9.108 REQ-F01-170 Accept every valid post-rework phase label](#9108-req-f01-170-accept-every-valid-post-rework-phase-label)
+  - [9.109 REQ-F01-171 Batch approved ADC history snapshots without weakening validation](#9109-req-f01-171-batch-approved-adc-history-snapshots-without-weakening-validation)
+  - [9.110 REQ-F01-172 Preserve V2 and apply one exact V3 phase-rework generation](#9110-req-f01-172-preserve-v2-and-apply-one-exact-v3-phase-rework-generation)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -255,6 +257,8 @@
 - [REQ-F01-166](#req-f01-166) — 9.106 REQ-F01-166 Apply one strict history rule to every generation
 - [REQ-F01-167](#req-f01-167) — 9.107 REQ-F01-167 Verify authorized historical commit segments generically
 - [REQ-F01-170](#req-f01-170) — 9.108 REQ-F01-170 Accept every valid post-rework phase label
+- [REQ-F01-171](#req-f01-171) — 9.109 REQ-F01-171 Batch approved ADC history snapshots without weakening validation
+- [REQ-F01-172](#req-f01-172) — 9.110 REQ-F01-172 Preserve V2 and apply one exact V3 phase-rework generation
 <!-- heading-map:end -->
 
 
@@ -1076,3 +1080,13 @@ For Issue #71 phase continuation, the current approved ADC marker MUST carry a c
 ### 9.108 REQ-F01-170 Accept every valid post-rework phase label
 
 A completed Issue #71 phase-rework generation remains valid across every phase label in the ordinary single/child lifecycle, including `phase:verification`. The post-rework reader MUST accept exactly one recognized phase label with the required Issue kind and enhancement label, and MUST reject duplicate, unknown, or malformed phase labels. This readback is non-mutating and does not authorize a phase transition.
+
+<a id="req-f01-171"></a>
+### 9.109 REQ-F01-171 Batch approved ADC history snapshots without weakening validation
+
+For one selected approved-ADC forward range, the reader MUST fetch the complete paginated Issue-comment journal exactly twice: once before and once after validating the range, independent of range length. It MUST validate the complete ordered pointer journal from the initial snapshot and directly read each selected ADC body before and after. Both direct reads and both list snapshots MUST agree on repository and Issue identity, comment ID, exact body bytes, SHA-256, UTF-8 byte length, approved state, and immediate-predecessor adjacency. The final snapshot MUST match the initial pointer set and selected ADC entries. Inserted, deleted, duplicated, edited, reordered, malformed, missing, or drifted records fail closed before verified generations are returned. Historical ADC bodies remain opaque; current and historical pointer checks are not relaxed.
+
+<a id="req-f01-172"></a>
+### 9.110 REQ-F01-172 Preserve V2 and apply one exact V3 phase-rework generation
+
+Issue #71 MAY append one typed V3 phase-rework Intent/Applied pair linked to the exact current approved ADC chain, epoch, original Phase generation, Issue, PR, branch, frozen base, HEAD, labels, and fresh exact-subject Readiness. The existing V2 Intent/Applied bodies MUST remain byte-identical. The one-shot order is Intent, local attempt marker, one `verification → requirements` label update, Applied, and complete readback. The reader MUST reject stale or mismatched subjects, wrong order, duplicates, unknown records, partial pairs, conflicting local attempts, and labels outside the exact before/after sets. A complete exact retry is a zero-write NOOP; an ambiguous or partial write is read-only and MUST NOT be retried. No Issue #63 access or unrelated phase transition is authorized.
