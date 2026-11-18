@@ -834,7 +834,7 @@ class ADCPublicationTests(unittest.TestCase):
         )
         payload_c = self.payload.replace(b"REQ-01", b"REQ-03")
 
-        with self.assertRaisesRegex(ADCError, "concurrent publications from the same predecessor"):
+        with self.assertRaisesRegex(ADCError, "competing publications from one predecessor"):
             publish_adc(self.github, 1, payload_c, state="approved",
                         explicitly_approved=True, supersede=True)
 
@@ -916,7 +916,7 @@ class ADCPublicationTests(unittest.TestCase):
             "issue_url": "https://api.github.com/repos/octo/repo/issues/1",
             "author_association": "NONE",
         })
-        with self.assertRaisesRegex(ADCError, "malformed ADC pointer record"):
+        with self.assertRaisesRegex(ADCError, "current ADC pointer marker is malformed"):
             publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
 
     def test_publisher_identity_fields_are_not_required_or_authoritative(self):
