@@ -175,32 +175,27 @@ class ExecutionEpochTests(unittest.TestCase):
         }
         return f"<!-- {epoch.V1_INTENT_SCHEMA}\n{canonical(value)}\n-->"
 
-    def test_phase_reader_uses_only_the_epoch3_generation_for_issue_71(self):
-        active_epoch = SimpleNamespace(applied_comment_id=6881839877, applied_body_sha256="c" * 64)
+    def test_phase_reader_uses_the_current_epoch_generation_for_any_issue(self):
+        active = SimpleNamespace(comment_id=6881839877, sha256="c" * 64)
         verified = SimpleNamespace(pointer=SimpleNamespace(comment_id=6881591677),
                                    contract=SimpleNamespace(sha256=epoch3.CURRENT_ADC_SHA256))
-        with patch("p_ases.phase_epoch_rebaseline.read_active_epoch", return_value=active_epoch) as current_epoch:
-            with patch("p_ases.phase_restart.current_phase_generation",
-                       side_effect=AssertionError("V1 phase restart must not be read")):
-                self.assertEqual(
-                    phase_evidence._active_phase_generation_subject(
-                        SimpleNamespace(repo=epoch.REPOSITORY), self.root, 71, verified,
-                    ),
-                    (active_epoch.applied_comment_id, active_epoch.applied_body_sha256),
-                )
-        current_epoch.assert_called_once()
+        with patch("p_ases.phase_restart.current_phase_generation", return_value=active) as reader:
+            self.assertEqual(
+                phase_evidence._active_phase_generation_subject(
+                    SimpleNamespace(repo=epoch.REPOSITORY), self.root, 71, verified,
+                ), (active.comment_id, active.sha256),
+            )
+        reader.assert_called_once()
 
-    def test_phase_reader_blocks_issue_71_without_a_verified_epoch3_identity(self):
+    def test_phase_reader_rejects_invalid_current_epoch_without_fallback(self):
         verified = SimpleNamespace(pointer=SimpleNamespace(comment_id=6881591677),
                                    contract=SimpleNamespace(sha256=epoch3.CURRENT_ADC_SHA256))
-        with patch("p_ases.phase_epoch_rebaseline.read_active_epoch",
-                   side_effect=epoch3.PhaseEpochRebaselineError("missing Applied")):
-            with patch("p_ases.phase_restart.current_phase_generation",
-                       side_effect=AssertionError("must not fall back to V1")):
-                with self.assertRaises(phase_evidence.PhaseEvidenceError):
-                    phase_evidence._active_phase_generation_subject(
-                        SimpleNamespace(repo=epoch.REPOSITORY), self.root, 71, verified,
-                    )
+        with patch("p_ases.phase_restart.current_phase_generation",
+                   side_effect=phase_restart.PhaseRestartError("missing Applied")):
+            with self.assertRaisesRegex(phase_evidence.PhaseEvidenceError, "missing Applied"):
+                phase_evidence._active_phase_generation_subject(
+                    SimpleNamespace(repo=epoch.REPOSITORY), self.root, 71, verified,
+                )
 
     def test_documents_artifact_impact_maps_only_supported_phase_roots(self):
         text = (
