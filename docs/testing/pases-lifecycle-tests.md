@@ -67,7 +67,7 @@
     - [2.28.1 ORA-F01-018 Expected result](#2281-ora-f01-018-expected-result)
   - [2.29 TST-F01-031 Generic ADC-authorized Phase restart](#229-tst-f01-031-generic-adc-authorized-phase-restart)
     - [2.29.1 ORA-F01-031 Expected result](#2291-ora-f01-031-expected-result)
-  - [2.30 TST-F01-038 Missing Binding provenance and V2 identity](#230-tst-f01-038-missing-binding-provenance-and-v2-identity)
+  - [2.30 TST-F01-038 Missing Binding provenance and historical V2 migration](#230-tst-f01-038-missing-binding-provenance-and-historical-v2-migration)
     - [2.30.1 ORA-F01-038 Expected result](#2301-ora-f01-038-expected-result)
   - [2.31 TST-F01-039 Exact V2 authorization marker](#231-tst-f01-039-exact-v2-authorization-marker)
     - [2.31.1 ORA-F01-039 Expected result](#2311-ora-f01-039-expected-result)
@@ -221,7 +221,7 @@
 - [ORA-F01-018](#ora-f01-018) — 2.28.1 ORA-F01-018 Expected result
 - [TST-F01-031](#tst-f01-031) — 2.29 TST-F01-031 Generic ADC-authorized Phase restart
 - [ORA-F01-031](#ora-f01-031) — 2.29.1 ORA-F01-031 Expected result
-- [TST-F01-038](#tst-f01-038) — 2.30 TST-F01-038 Missing Binding provenance and V2 identity
+- [TST-F01-038](#tst-f01-038) — 2.30 TST-F01-038 Missing Binding provenance and historical V2 migration
 - [ORA-F01-038](#ora-f01-038) — 2.30.1 ORA-F01-038 Expected result
 - [TST-F01-039](#tst-f01-039) — 2.31 TST-F01-039 Exact V2 authorization marker
 - [ORA-F01-039](#ora-f01-039) — 2.31.1 ORA-F01-039 Expected result
@@ -666,9 +666,9 @@ Only the exact two approved edges accept V3. The first records `execution -> req
 Only a current approved ADC with one exact canonical typed authorization permits an eligible ordinary Issue's `execution -> requirements` restart. Valid execution appends one Intent/Applied pair, updates the complete label set at most once, and establishes the current ADC/Binding/Applied phase generation. Exact completed replay is read-only only for the exact recorded labels or a fully verified same-generation forward chain; each receipt must pass historical artifact allowlist, authorized skip reason, regular blob digest, and READY traceability checks, with an immutable carrier authored by the authenticated User. Replay hydrates relevant linked skipped specification/design targets from the receipt commit and loads test sources only from current requirement rows; missing/tampered targets block and unrelated missing sources are ignored. Rollback and unrelated label edits block. Malformed edited restart or Phase Decision marker candidates also block instead of disappearing from history. A later Phase Decision supersedes an older Applied record as the next restart's immediate predecessor; an incomplete Intent from any ADC generation blocks further Phase work. V1/V2 Phase Decision bodies are collected using their canonical serializers and direct/list/direct history checks. Predecessor bytes remain identical, old receipts cannot pass current-generation checks, and Issue #63 behavior is unchanged.
 
 <a id="tst-f01-038"></a>
-### 2.30 TST-F01-038 Missing Binding provenance and V2 identity
+### 2.30 TST-F01-038 Missing Binding provenance and historical V2 migration
 
-**Setup and action:** Build the exact Issue 71 subject with no ExecutionBinding file and only the pinned historical digest. Exercise V2 inspect before migration, after Applied, and after attachment tampering. Check that no V1 row is created and that all current identity output labels provenance UNVERIFIED.
+**Setup and action:** Build the exact Issue 71 subject with no ExecutionBinding file and only the pinned historical digest. Exercise the epoch-2 V2 predecessor migration inspect before and after its Applied record and after attachment tampering. Treat this as historical migration coverage; current identity after epoch-3 rebaseline must use the V3 epoch and label prior Binding provenance UNVERIFIED. Check that no V1 row is created.
 
 <a id="ora-f01-038"></a>
 #### 2.30.1 ORA-F01-038 Expected result
@@ -708,7 +708,7 @@ Every valid subject reaches only its authorized result with exact identity and r
 <a id="tst-f01-042"></a>
 ### 2.34 TST-F01-042 Current-epoch reader isolation
 
-**Setup and action:** Use an active V2 journal plus old Binding/Phase fixtures. Exercise phase evidence, PR ensure/history, readiness, verification, review, and delivery readers with current V2 receipts and a PRBinding V4/checkpoint V3, old V1 receipts, missing/wrong epoch digest, mixed adoption/binding fields, mismatched generation digest, missing/edited attachment, stale ADC, and wrong branch/base/HEAD. Confirm ordinary work base/branch/bind/recover cannot create or reconstruct the Issue #71 epoch.
+**Setup and action:** Use the epoch-2 V2 journal and its Phase receipts only as historical predecessor fixtures, together with old Binding/Phase fixtures. Verify that epoch-2-only evidence cannot satisfy the current epoch-3 selector. Exercise phase evidence, PR ensure/history, readiness, verification, review, and delivery readers with current epoch-3 receipts and a PRBinding V4/checkpoint V3, old V1 receipts, missing/wrong epoch digest, mixed adoption/binding fields, mismatched generation digest, missing/edited attachment, stale ADC, and wrong branch/base/HEAD. Confirm ordinary work base/branch/bind/recover cannot create or reconstruct the Issue #71 epoch.
 
 <a id="ora-f01-042"></a>
 #### 2.34.1 ORA-F01-042 Expected result

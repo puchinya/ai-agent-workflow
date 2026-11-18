@@ -10,9 +10,9 @@ For the exact #63/#64 exception, a missing original Binding is not repaired by `
 
 For a later approved ADC on that same adopted epoch, preserve the original epoch digest in every checkpoint. After the current generation's V2 Applied receipt, `work adoption-refresh 63` appends a current ADC/HEAD PRBinding V3 and a V2 checkpoint. Refresh preflight validates the whole ADC chain, owner/adoption records, attachment, clean forward branch, PR identity and contiguous histories. A retry after only the PRBinding exists writes only the absent checkpoint; an exact complete retry writes nothing. `work recover` is always read-only and cannot perform this refresh.
 
-## Issue #71 V2 execution epoch
+## Issue #71 current epoch-3 execution identity
 
-For `puchinya/ai-agent-workflow` Issue #71, use only the exact active `PASES_ISSUE_EXECUTION_EPOCH_V2` record and its verified attachment. `context show` must report `ACTIVE_EPOCH`. Never run ordinary `work base`, `work branch`, `work bind`, or `work recover` to create or reconstruct this identity. PR ensure records the epoch digest only in PRBinding V4 and WorkCheckpoint V3; readiness and delivery must verify that exact digest. Prior V1 Binding provenance remains `UNVERIFIED`.
+For `puchinya/ai-agent-workflow` Issue #71, use only the exact active `PASES_ISSUE_EXECUTION_EPOCH_V3` record and its verified attachment. `context show` must report `ACTIVE_EPOCH`. The epoch-2 V2 record and V1 Binding remain immutable predecessor history and cannot identify the current generation. Never run ordinary `work base`, `work branch`, `work bind`, or `work recover` to create or reconstruct this identity. PR ensure records the epoch digest only in PRBinding V4 and WorkCheckpoint V3; readiness and delivery must verify that exact digest. Prior V1 Binding provenance remains `UNVERIFIED`.
 
 ## Owner and inputs
 

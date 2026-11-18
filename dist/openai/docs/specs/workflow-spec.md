@@ -50,7 +50,7 @@
   - [9.23 REQ-F01-039 One-time epoch authorization](#923-req-f01-039-one-time-epoch-authorization)
   - [9.24 REQ-F01-040 Append-only epoch journal](#924-req-f01-040-append-only-epoch-journal)
   - [9.25 REQ-F01-041 One-shot epoch migration](#925-req-f01-041-one-shot-epoch-migration)
-  - [9.26 REQ-F01-042 V2 current-epoch evidence](#926-req-f01-042-v2-current-epoch-evidence)
+  - [9.26 REQ-F01-042 Epoch-2 predecessor migration evidence](#926-req-f01-042-epoch-2-predecessor-migration-evidence)
   - [9.27 REQ-F01-043 Agent-neutral local eligibility](#927-req-f01-043-agent-neutral-local-eligibility)
   - [9.28 REQ-F01-044 Isolated device authentication and complete Admin readback](#928-req-f01-044-isolated-device-authentication-and-complete-admin-readback)
   - [9.29 REQ-F01-045 Separated Ruleset and merge authority](#929-req-f01-045-separated-ruleset-and-merge-authority)
@@ -181,7 +181,7 @@
 - [REQ-F01-039](#req-f01-039) — 9.23 REQ-F01-039 One-time epoch authorization
 - [REQ-F01-040](#req-f01-040) — 9.24 REQ-F01-040 Append-only epoch journal
 - [REQ-F01-041](#req-f01-041) — 9.25 REQ-F01-041 One-shot epoch migration
-- [REQ-F01-042](#req-f01-042) — 9.26 REQ-F01-042 V2 current-epoch evidence
+- [REQ-F01-042](#req-f01-042) — 9.26 REQ-F01-042 Epoch-2 predecessor migration evidence
 - [REQ-F01-043](#req-f01-043) — 9.27 REQ-F01-043 Agent-neutral local eligibility
 - [REQ-F01-044](#req-f01-044) — 9.28 REQ-F01-044 Isolated device authentication and complete Admin readback
 - [REQ-F01-045](#req-f01-045) — 9.29 REQ-F01-045 Separated Ruleset and merge authority
@@ -679,9 +679,9 @@ Record a distinct canonical V2 Intent and matching Applied comment. Bind stable 
 After complete direct/list/direct readback, establish the dedicated branch and workspace at the exact authorized base, append one Intent, make at most one complete-label replacement from phase:ready to phase:requirements, verify the full Issue snapshot, and append one matching Applied record. An interruption, timeout, duplicate, or mismatch is read-only recovery; never resend an ambiguous label update or append a duplicate record.
 
 <a id="req-f01-042"></a>
-### 9.26 REQ-F01-042 V2 current-epoch evidence
+### 9.26 REQ-F01-042 Epoch-2 predecessor migration evidence
 
-A complete V2 Intent/Applied pair and verified workspace attachment establish the current execution epoch. Phase, readiness, verification, review, PR, and delivery readers for Issue #71 must bind to that epoch and accept only its current evidence. Earlier Phase receipts and V1 history remain immutable and readable as history but cannot yield current-epoch PASS. Missing, stale, duplicated, edited, or mismatched epoch state fails closed.
+A complete V2 Intent/Applied pair and verified workspace attachment established the current execution epoch during the original epoch-2 migration. Following the approved epoch-3 rebaseline, that V2 pair is immutable predecessor history; it cannot establish the current Issue #71 generation. Current Phase, readiness, verification, review, PR, and delivery readers bind to the active epoch-3 identity and accept only its current evidence. Earlier Phase receipts and V1 history remain immutable and readable as history but cannot yield current-epoch PASS. Missing, stale, duplicated, edited, or mismatched epoch state fails closed.
 
 The Issue #71 PR bridge stores the active digest in `PASES_PR_BINDING_V4.execution_epoch_sha256`; its work checkpoint stores it in `PASES_WORK_CHECKPOINT_V3.execution_epoch_sha256`. Neither schema may also carry an ExecutionBinding V1 or Issue #63 adoption identity. Ordinary V1 and adopted PRBinding/checkpoint bytes remain unchanged. `work base`, `work branch`, `work bind`, and `work recover` cannot create or reconstruct the Issue #71 epoch; the dedicated epoch reader is authoritative.
 

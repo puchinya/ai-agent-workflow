@@ -328,7 +328,7 @@ The migration advances through preflight, Intent, one complete-label replacement
 <a id="des-f01-042"></a>
 ### 5.16 DES-F01-042 Current evidence selection
 
-The Issue 71 selector verifies the complete V2 journal, current approved ADC, immutable attachment, Issue body/labels, branch and remote HEAD. Phase evidence uses Applied ID/body digest as the Phase generation. PRBinding V4 and WorkCheckpoint V3 carry only the active `execution_epoch_sha256`; readiness verifies that bridge against the current epoch. Generic Issues still use ExecutionBinding and generic Phase restart; Issue 63 retains its adopted-epoch selector. No selector falls back from an invalid Issue 71 epoch to V1.
+After the approved epoch-3 rebaseline, the Issue #71 active selector verifies the complete `PASES_ISSUE_EXECUTION_EPOCH_V3` journal, current approved ADC, immutable attachment, Issue body/labels, branch and remote HEAD. The epoch-2 V2 journal remains immutable predecessor history and cannot satisfy the current selector. Phase evidence uses the active epoch-3 Applied ID/body digest as the Phase generation. PRBinding V4 and WorkCheckpoint V3 carry only the active `execution_epoch_sha256`; readiness verifies that bridge against the current epoch. Generic Issues still use ExecutionBinding and generic Phase restart; Issue 63 retains its adopted-epoch selector. No selector falls back from an invalid Issue 71 epoch to V1 or epoch-2 history.
 
 <a id="des-f01-043"></a>
 ### 5.17 DES-F01-043 Shared local eligibility guard

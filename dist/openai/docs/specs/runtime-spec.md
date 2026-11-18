@@ -31,7 +31,7 @@
   - [9.2 REQ-F01-004 Setup request and verification](#92-req-f01-004-setup-request-and-verification)
   - [9.3 REQ-F01-006 Historical Activation pin](#93-req-f01-006-historical-activation-pin)
   - [9.4 Runtime Ruleset management](#94-runtime-ruleset-management)
-- [10 Issue #71 local Activation V2 execution epoch](#10-issue-71-local-activation-v2-execution-epoch)
+- [10 Issue #71 epoch-2 predecessor execution records](#10-issue-71-epoch-2-predecessor-execution-records)
 - [11 Issue #71 epoch-3 Phase generation and rebaseline](#11-issue-71-epoch-3-phase-generation-and-rebaseline)
 - [12 Issue #71 successor-ADC Phase rework](#12-issue-71-successor-adc-phase-rework)
 <!-- contents:end -->
@@ -385,11 +385,11 @@ Owner operations use exact-scope V3 chat confirmation only when the host provide
 For `final_delivery.review_mode: solo_owner`, `consumer-activation-setup` and `consumer-activation-verify` use V2 setup, approval, and Activation records. V2 binds exact committed profile bytes, trusted Required Checks, Ruleset identity, and effective policy digest. V1 payload bytes and their `merged_at` effective time remain unchanged. Existing Gate Selections resolve through the strict Activation history prefix ending at their pinned record; new selection and successor issuance validate the full history.
 
 <a id="issue-71-local-v2-epoch"></a>
-## 10 Issue #71 local Activation V2 execution epoch
+## 10 Issue #71 epoch-2 predecessor execution records
 
-The Issue 71 execution-epoch-restart inspect and apply commands are restricted to puchinya/ai-agent-workflow Issue 71 and the exact approved PASES_EXECUTION_EPOCH_AUTHORIZATION_V2 marker. Inspect is read-only. Apply verifies the current ADC, repository and owner identity, Issue body and complete labels, predecessor ADC and active Phase Applied, retired V1 Intent, exact base and dedicated branch, and local workspace before writing. It appends one V2 Intent, performs at most one complete-label replacement, verifies the Issue, appends one matching Applied, and creates the local V2 record and workspace attachment. An incomplete Intent or ambiguous write never retries; partial state remains blocked pending a separately approved successor ADC.
+This section describes the historical epoch-2 migration. After the approved epoch-3 rebaseline in section 11, the epoch-2 V2 records remain immutable predecessor lineage and do not identify the current execution or Phase generation.
 
-The V2 execution epoch is a distinct identity, not an ExecutionBinding V1 row. Its GitHub Intent/Applied pair is durable lineage, and the local attachment is accepted only when the exact pair, current ADC, branch, remote HEAD, and attachment digest match. Issue 71 Phase readers select the V2 Applied comment ID and exact body digest as their phase generation; PRBinding V4 and WorkCheckpoint V3 carry the active epoch digest, which Readiness and Delivery verify. Ordinary `work base/branch/bind/recover` cannot create or reconstruct this identity. Readers do not fall back to the retired V1 Intent, historical Binding, or predecessor READY receipts. Ordinary Issues continue to use ExecutionBinding V1, and Issue 63 continues to use its specialized adoption route.
+The original V2 execution epoch was a distinct identity, not an ExecutionBinding V1 row. Its GitHub Intent/Applied pair is durable historical lineage, and its local attachment was accepted only when the exact pair, ADC, branch, remote HEAD, and attachment digest matched. The initial epoch-2 Phase reader selected the V2 Applied comment ID and exact body digest. The current epoch-3 reader selects only the V3 active identity and Applied generation; PRBinding V4 and WorkCheckpoint V3 carry that active epoch digest for Readiness and Delivery. Ordinary `work base/branch/bind/recover` cannot create or reconstruct either Issue #71 identity. Ordinary Issues continue to use ExecutionBinding V1, and Issue 63 continues to use its specialized adoption route.
 
 The approved Artifact Impact Documents list is resolved by path root for Phase receipts: docs/specs paths are specification artifacts, docs/design paths are design artifacts, and docs/testing paths are test-oracle artifacts. docs/status paths remain status evidence and are not used as a Phase artifact role.
 
