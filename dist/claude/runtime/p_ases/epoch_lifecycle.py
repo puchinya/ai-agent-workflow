@@ -104,7 +104,8 @@ def _authorization(verified: VerifiedADC, repository: str, issue_number: int) ->
     if (not isinstance(before, list) or not isinstance(after, list)
             or any(not isinstance(x, str) for x in before + after)
             or before != sorted(set(before)) or after != sorted(set(after))
-            or not any(x.startswith("kind:") for x in before)
+            or sum(x.startswith("kind:") for x in before) != 1
+            or any(x.startswith("attention:") for x in before + after)
             or sorted(x for x in before if not x.startswith("phase:"))
                != sorted(x for x in after if not x.startswith("phase:"))
             or [x for x in before if x.startswith("phase:")] != [f"phase:{value['from_phase']}"]

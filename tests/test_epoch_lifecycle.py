@@ -156,6 +156,25 @@ class EpochLifecycleTests(unittest.TestCase):
             self.assertEqual((github.post_count, github.label_writes), (0, 0))
             self.assertFalse(module.epoch_paths(root, 128)[0].exists())
 
+    def test_multi_kind_or_attention_authorization_blocks_before_writes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, github = Path(temporary), FakeGitHub(128)
+            invalid_labels = (
+                (["kind:parent", "kind:single", "phase:ready"],
+                 ["kind:parent", "kind:single", "phase:requirements"]),
+                (["attention:blocked", "kind:single", "phase:ready"],
+                 ["attention:blocked", "kind:single", "phase:requirements"]),
+            )
+            for before, after in invalid_labels:
+                with self.subTest(before=before):
+                    auth = authorization(128)
+                    auth["labels_before"] = before
+                    auth["labels_after"] = after
+                    with self.assertRaisesRegex(
+                            module.EpochLifecycleError, "invalid exact label sets"):
+                        self._run(root, github, verified_adc(auth))
+            self.assertEqual((github.post_count, github.label_writes), (0, 0))
+
     def test_partial_label_failure_is_one_shot_and_never_retried(self):
         with tempfile.TemporaryDirectory() as temporary:
             root, github = Path(temporary), FakeGitHub(128)
