@@ -426,7 +426,7 @@ class ExecutionAdoptionTests(unittest.TestCase):
             with self.assertRaisesRegex(ExecutionError, "absolute"):
                 WorkspaceAttachment(**{**attachment.__dict__, "work_directory": "relative"}).validate()
 
-    def test_adopted_prbinding_v3_is_restricted_to_the_one_time_issue_and_pr(self):
+    def test_adopted_prbinding_v3_schema_is_issue_agnostic(self):
         binding = PRBinding(
             repository=REPOSITORY, issue_number=63, adc_comment_id=6248703643,
             adc_sha256="a" * 64, base_sha40="b" * 40,
@@ -434,10 +434,14 @@ class ExecutionAdoptionTests(unittest.TestCase):
             adoption_id="d" * 64,
         ).validate()
         self.assertEqual(binding.payload()["schema"], "PASES_PR_BINDING_V3")
-        with self.assertRaisesRegex(CheckpointError, "restricted"):
-            PRBinding(**{**binding.__dict__, "issue_number": 62}).validate()
-        with self.assertRaisesRegex(CheckpointError, "restricted"):
-            PRBinding(**{**binding.__dict__, "pr_number": 65}).validate()
+        other_subject = PRBinding(**{**binding.__dict__, "issue_number": 62,
+                                     "pr_number": 65, "repository": "another/repo"}).validate()
+        self.assertEqual(other_subject.payload()["schema"], "PASES_PR_BINDING_V3")
+        self.assertNotEqual(binding.sha256, other_subject.sha256)
+        with self.assertRaisesRegex(CheckpointError, "SHA-256"):
+            PRBinding(**{**binding.__dict__, "adoption_id": "invalid"}).validate()
+        with self.assertRaisesRegex(CheckpointError, "mutually exclusive"):
+            PRBinding(**{**binding.__dict__, "execution_epoch_sha256": "e" * 64}).validate()
 
     def test_plan_digest_binds_exact_scope_author_ci_and_deterministic_operation_id(self):
         plan = _adoption_plan()
