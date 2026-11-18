@@ -77,7 +77,7 @@ class ExecutionBinding:
 
 @dataclass(frozen=True)
 class AdoptedExecutionEpoch:
-    """Prospective Issue #63 epoch; deliberately not an ExecutionBinding V1.
+    """Adopted execution epoch; deliberately not an ExecutionBinding V1.
 
     The observed PR start and selected base are separate facts. This record
     never claims that the current PR head was the original execution start.
@@ -109,10 +109,11 @@ class AdoptedExecutionEpoch:
     def validate(self) -> "AdoptedExecutionEpoch":
         if self.schema != "PASES_EXECUTION_ADOPTION_V1":
             raise ExecutionError("adopted execution epoch schema is unsupported")
-        if (self.repository != "puchinya/ai-agent-workflow" or self.issue_number != 63
-                or self.pr_number != 64 or type(self.pr_author_user_id) is not int
-                or self.pr_author_user_id < 1):
-            raise ExecutionError("adopted execution epoch is restricted to repository #63 / PR #64")
+        if (not isinstance(self.repository, str) or not REPOSITORY.fullmatch(self.repository)
+                or type(self.issue_number) is not int or self.issue_number < 1
+                or type(self.pr_number) is not int or self.pr_number < 1
+                or type(self.pr_author_user_id) is not int or self.pr_author_user_id < 1):
+            raise ExecutionError("adopted execution epoch repository, Issue or PR identity is invalid")
         if type(self.adc_comment_id) is not int or self.adc_comment_id < 1:
             raise ExecutionError("adopted epoch ADC comment ID is invalid")
         if type(self.owner_decision_comment_id) is not int or self.owner_decision_comment_id < 1:
@@ -223,9 +224,11 @@ class WorkspaceAttachment:
     schema: str = "PASES_WORKSPACE_ATTACH_V1"
 
     def validate(self) -> "WorkspaceAttachment":
-        if (self.schema != "PASES_WORKSPACE_ATTACH_V1" or self.repository != "puchinya/ai-agent-workflow"
-                or self.issue_number != 63 or not SHA256.fullmatch(self.adoption_id)
-                or not SHA256.fullmatch(self.attachment_id)):
+        if (self.schema != "PASES_WORKSPACE_ATTACH_V1"
+                or not isinstance(self.repository, str) or not REPOSITORY.fullmatch(self.repository)
+                or type(self.issue_number) is not int or self.issue_number < 1
+                or not isinstance(self.adoption_id, str) or not SHA256.fullmatch(self.adoption_id)
+                or not isinstance(self.attachment_id, str) or not SHA256.fullmatch(self.attachment_id)):
             raise ExecutionError("workspace attachment identity is invalid")
         if not isinstance(self.work_directory, str) or not Path(self.work_directory).is_absolute():
             raise ExecutionError("workspace attachment path must be absolute and local")
@@ -290,10 +293,13 @@ ExecutionIdentity = ExecutionBinding | AdoptedExecutionEpoch | Issue71ExecutionE
 
 
 def is_issue71_execution_epoch(identity: Any) -> bool:
+    repository = getattr(identity, "repository", None)
+    issue_number = getattr(identity, "issue_number", None)
+    digest = getattr(identity, "sha256", None)
     return (getattr(identity, "schema", None) == "PASES_ISSUE_EXECUTION_EPOCH_V3"
-            and getattr(identity, "repository", None) == "puchinya/ai-agent-workflow"
-            and getattr(identity, "issue_number", None) == 71
-            and isinstance(getattr(identity, "sha256", None), str))
+            and isinstance(repository, str) and bool(REPOSITORY.fullmatch(repository))
+            and type(issue_number) is int and issue_number > 0
+            and isinstance(digest, str) and bool(SHA256.fullmatch(digest)))
 
 
 def execution_identity_base(identity: ExecutionIdentity) -> tuple[str, str]:
