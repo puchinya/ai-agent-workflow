@@ -4,6 +4,8 @@ import copy
 import hashlib
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -467,9 +469,27 @@ class ADCForwardGenerationBatchTests(unittest.TestCase):
         return github, pointers
 
     def test_one_successor_and_many_successors_use_exactly_two_full_snapshots(self):
-        for generation_count in (2, 9):
+        for generation_count in (2, 55):
             with self.subTest(generation_count=generation_count):
                 github, pointers = self._published_chain(generation_count)
+                active = 0
+                maximum_active = 0
+                lock = threading.Lock()
+                original_issue_comment = github.issue_comment
+
+                def tracked_issue_comment(number: int, comment_id: int):
+                    nonlocal active, maximum_active
+                    with lock:
+                        active += 1
+                        maximum_active = max(maximum_active, active)
+                    try:
+                        time.sleep(0.002)
+                        return original_issue_comment(number, comment_id)
+                    finally:
+                        with lock:
+                            active -= 1
+
+                github.issue_comment = tracked_issue_comment
                 rows = verify_adc_forward_generations(
                     github, 1,
                     prior_comment_id=pointers[0].comment_id,
@@ -480,6 +500,35 @@ class ADCForwardGenerationBatchTests(unittest.TestCase):
                 self.assertEqual(len(rows), generation_count)
                 self.assertEqual(github.issue_comments_calls, 2)
                 self.assertEqual(github.issue_comment_calls, 2 * generation_count)
+                self.assertGreater(maximum_active, 1)
+                self.assertLessEqual(maximum_active, 16)
+
+    def test_direct_read_failure_still_joins_both_complete_batches_and_returns_no_rows(self):
+        github, pointers = self._published_chain(3)
+        original_issue_comment = github.issue_comment
+        failed_once = False
+        attempts = 0
+
+        def fail_one_before_read(number: int, comment_id: int):
+            nonlocal attempts, failed_once
+            attempts += 1
+            if comment_id == pointers[1].comment_id and not failed_once:
+                failed_once = True
+                raise GitHubError("simulated direct-read failure")
+            return original_issue_comment(number, comment_id)
+
+        github.issue_comment = fail_one_before_read
+        with self.assertRaisesRegex(ADCError, "direct read failed"):
+            verify_adc_forward_generations(
+                github, 1,
+                prior_comment_id=pointers[0].comment_id,
+                prior_sha256=pointers[0].sha256,
+                current_comment_id=pointers[-1].comment_id,
+                current_sha256=pointers[-1].sha256,
+            )
+        self.assertEqual(github.issue_comments_calls, 2)
+        self.assertEqual(github.issue_comment_calls, 2 * len(pointers) - 1)
+        self.assertEqual(attempts, 2 * len(pointers))
 
     def test_pointer_and_adc_snapshot_drift_fails_closed(self):
         for mutation in ("insert", "delete", "duplicate", "reorder", "edit"):

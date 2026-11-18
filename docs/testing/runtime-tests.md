@@ -511,9 +511,9 @@ Only the exact current approved chain, distinct immediate predecessor and immuta
 <a id="tst-rt-032"></a>
 ### 2.32 TST-RT-032 Bounded and sanitized GitHub API child timeout
 
-**Setup and action:** Mock `subprocess.run` to capture the timeout and raise `TimeoutExpired` containing synthetic token and payload text. Verify the child receives exactly the configured finite timeout and that `GitHubError` names the HTTP method, validated endpoint, and timeout while excluding the synthetic secret, request body, authorization text, and raw stderr. Exercise a real short-lived helper process in a bounded subprocess test to confirm timeout handling reaps the child and returns promptly.
+**Setup and action:** Mock both `GitHub.request()` and `GitHub._graphql()` `subprocess.run` calls to capture the timeout and raise `TimeoutExpired` containing synthetic token, query, variables, payload, stdout, and stderr text. Verify both children receive exactly the configured finite timeout; REST errors name only the HTTP method, validated endpoint, and timeout, while GraphQL errors name the operation and timeout. Ensure messages and chained exception output exclude all synthetic private text. Assert neither path retries. Exercise a real short-lived helper process in a bounded subprocess test to confirm standard-library timeout handling terminates and reaps the child and returns promptly.
 
 <a id="ora-rt-032"></a>
 #### 2.32.1 ORA-RT-032 Expected result
 
-Every GitHub API child has the fixed 30-second bound. Timeout becomes a sanitized `GitHubError`; no credential, payload, or raw child diagnostic escapes, and no request is blindly retried.
+Every GitHub API child, including REST and GraphQL, has the fixed 30-second bound. Timeout becomes a sanitized `GitHubError`; no credential, payload, query, variables, stdout/stderr, timeout detail, or chained exception diagnostic escapes, and no request is blindly retried.

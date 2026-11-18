@@ -37,6 +37,26 @@ class GitHubPRAdapterTests(unittest.TestCase):
         self.assertNotIn("private payload marker", str(raised.exception))
         self.assertNotIn("TimeoutExpired", str(raised.exception))
 
+    def test_graphql_uses_the_finite_timeout_and_sanitizes_timeout_diagnostics(self):
+        github = GitHub("owner/repo")
+        query = "query PRIVATE_GRAPHQL_QUERY_MARKER { viewer { login } }"
+        variables = {"token": "private-variable-secret", "marker": "private-payload-marker"}
+        timeout = subprocess.TimeoutExpired(
+            ["gh", "api", "graphql"], 30, output="private-stdout-marker",
+            stderr="private-stderr-marker",
+        )
+        with patch("p_ases.github.subprocess.run", side_effect=timeout) as run:
+            with self.assertRaisesRegex(GitHubError, "GraphQL operation timed out after 30 seconds") as raised:
+                github._graphql(query, variables)
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_args.kwargs["timeout"], 30)
+        message = str(raised.exception)
+        for private in (
+                "PRIVATE_GRAPHQL_QUERY_MARKER", "private-variable-secret", "private-payload-marker",
+                "private-stdout-marker", "private-stderr-marker", "TimeoutExpired"):
+            self.assertNotIn(private, message)
+        self.assertIsNone(raised.exception.__cause__)
+
     def test_subprocess_run_terminates_and_reaps_a_timed_out_child(self):
         with tempfile.TemporaryDirectory() as temporary:
             pid_file = Path(temporary) / "child.pid"

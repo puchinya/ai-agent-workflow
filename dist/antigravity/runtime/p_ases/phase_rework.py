@@ -1379,11 +1379,38 @@ def _adc_predecessor_header(text: str, label: str) -> tuple[int, str]:
     return int(match.group(1)), match.group(2) or match.group(3)
 
 
-def _optional_historical_adc_predecessor_header(text: str, label: str) -> tuple[int, str] | None:
-    """Validate an optional body-level link on immutable historical ADCs."""
-    if not any(line.startswith("Predecessor ADC:") for line in text.splitlines()):
+def _optional_historical_adc_predecessor_header(
+    text: str, label: str, verified_body_byte_length: int,
+) -> tuple[int, str] | None:
+    """Validate an optional body-level link and exact byte annotation on immutable ADC history."""
+    lines = text.splitlines()
+    if not any(line.startswith("Predecessor ADC:") for line in lines):
         return None
-    return _adc_predecessor_header(text, label)
+    if (type(verified_body_byte_length) is not int or verified_body_byte_length < 1
+            or len(text.encode("utf-8")) != verified_body_byte_length):
+        raise PhaseReworkError(f"{label} verified body byte length is inconsistent")
+    section = re.search(r"(?m)^##[ \t]", text)
+    preamble = text if section is None else text[:section.start()]
+    headers = [line for line in lines if line.startswith("Predecessor ADC:")]
+    preamble_headers = [line for line in preamble.splitlines()
+                        if line.startswith("Predecessor ADC:")]
+    if len(headers) != 1 or len(preamble_headers) != 1:
+        raise PhaseReworkError(f"{label} must have exactly one predecessor header")
+    match = re.fullmatch(
+        r"Predecessor ADC: Issue #71 comment #([0-9]+), SHA-256 "
+        r"(?:([0-9a-f]{64})|`([0-9a-f]{64})`)"
+        r"(?: \(((?:[1-9][0-9]*|[1-9][0-9]{0,2}(?:,[0-9]{3})+)) bytes\))?"
+        r"( {0}| {2})",
+        headers[0],
+    )
+    if match is None:
+        raise PhaseReworkError(f"{label} predecessor header is malformed")
+    annotation = re.search(r" \(([^()]*) bytes\)(?: {0}| {2})$", headers[0])
+    if annotation is not None:
+        annotated = int(annotation.group(1).replace(",", ""))
+        if annotated != verified_body_byte_length:
+            raise PhaseReworkError(f"{label} predecessor byte annotation differs from verified body length")
+    return int(match.group(1)), match.group(2) or match.group(3)
 
 
 def parse_markdown_predecessor_reader_authorization(
@@ -2526,7 +2553,7 @@ def verify_issue71_phase_and_user_review_adc_chain(
         for row in chain[1:-1]:
             body = row.contract.content.decode("utf-8", errors="strict")
             declared = _optional_historical_adc_predecessor_header(
-                body, f"approved historical ADC #{row.pointer.comment_id}",
+                body, f"approved historical ADC #{row.pointer.comment_id}", row.contract.byte_length,
             )
             if declared is not None and declared != previous:
                 raise PhaseReworkError(
@@ -2621,7 +2648,7 @@ def verify_issue71_phase_and_user_review_adc_chain(
     for item in chain[1:-1]:
         body = item.contract.content.decode("utf-8", errors="strict")
         declared = _optional_historical_adc_predecessor_header(
-            body, f"approved ADC #{item.pointer.comment_id}",
+            body, f"approved ADC #{item.pointer.comment_id}", item.contract.byte_length,
         )
         if declared is not None and declared != previous:
             raise PhaseReworkError(

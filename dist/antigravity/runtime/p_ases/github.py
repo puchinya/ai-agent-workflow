@@ -78,7 +78,7 @@ class GitHub:
         except subprocess.TimeoutExpired as exc:
             raise GitHubError(
                 f"GitHub API {verb} {endpoint} timed out after {GITHUB_API_TIMEOUT_SECONDS} seconds"
-            ) from exc
+            ) from None
         except OSError as exc:
             raise GitHubError(f"could not start GitHub API client: {exc}") from exc
         finally:
@@ -367,7 +367,12 @@ class GitHub:
                 ["gh", "api", "graphql", "--input", "-"], input=body, text=True,
                 encoding="utf-8", errors="replace", check=False,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self._child_environment(),
+                timeout=GITHUB_API_TIMEOUT_SECONDS,
             )
+        except subprocess.TimeoutExpired:
+            raise GitHubError(
+                f"GitHub GraphQL operation timed out after {GITHUB_API_TIMEOUT_SECONDS} seconds"
+            ) from None
         except OSError as exc:
             raise GitHubError(f"could not start GitHub GraphQL client: {exc}") from exc
         if result.returncode:

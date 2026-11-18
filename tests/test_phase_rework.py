@@ -2719,6 +2719,60 @@ class V3PhaseReworkTests(unittest.TestCase):
         v2_auth, _ = module.parse_timestamp_continuation_authorization(v2)
         self.assertEqual(v2_auth["schema"], module.TIMESTAMP_CONTINUATION_AUTH_SCHEMA_V2)
 
+    def test_historical_predecessor_header_accepts_only_exact_verified_byte_annotation(self):
+        body_length = 31_434
+        comment_id = 6973093433
+        digest = "37c3afbc0b66a2b6a9b6c2e0c2aecf0bc873f6128b32f4c427c790d0f9861303"
+        header = (
+            f"Predecessor ADC: Issue #71 comment #{comment_id}, SHA-256 {digest} "
+            "(31,434 bytes)"
+        )
+        prefix = (header + "\n").encode("utf-8")
+        text = (prefix + b"x" * (body_length - len(prefix))).decode("utf-8")
+        self.assertEqual(len(text.encode("utf-8")), body_length)
+        self.assertEqual(
+            module._optional_historical_adc_predecessor_header(
+                text, "historical ADC", body_length,
+            ),
+            (comment_id, digest),
+        )
+
+        for invalid_header, expected_message in (
+                (header.replace("31,434", "31,435"), "differs from verified body length"),
+                (header.replace("31,434", "31,43"), "predecessor header is malformed"),
+                (header.replace("(31,434 bytes)", "(31,434 octets)"),
+                 "predecessor header is malformed"),
+                (header.replace("(31,434 bytes)", "(031434 bytes)"),
+                 "predecessor header is malformed")):
+            with self.subTest(invalid_header=invalid_header):
+                invalid_prefix = (invalid_header + "\n").encode("utf-8")
+                invalid = (invalid_prefix + b"x" * (body_length - len(invalid_prefix))).decode("utf-8")
+                with self.assertRaisesRegex(module.PhaseReworkError, expected_message):
+                    module._optional_historical_adc_predecessor_header(
+                        invalid, "historical ADC", body_length,
+                    )
+
+        with self.assertRaisesRegex(module.PhaseReworkError, "byte length is inconsistent"):
+            module._optional_historical_adc_predecessor_header(text, "historical ADC", body_length + 1)
+
+    def test_historical_predecessor_header_keeps_legacy_forms_and_current_header_strict(self):
+        comment_id = 12345
+        digest = "a" * 64
+        legacy = f"Predecessor ADC: Issue #71 comment #{comment_id}, SHA-256 `{digest}`  \n"
+        self.assertEqual(
+            module._optional_historical_adc_predecessor_header(
+                legacy, "historical ADC", len(legacy.encode("utf-8")),
+            ),
+            (comment_id, digest),
+        )
+        headerless = "Historical ADC has no visible predecessor header.\n"
+        self.assertIsNone(module._optional_historical_adc_predecessor_header(
+            headerless, "historical ADC", len(headerless.encode("utf-8")),
+        ))
+        annotated = f"Predecessor ADC: Issue #71 comment #{comment_id}, SHA-256 {digest} (49 bytes)\n"
+        with self.assertRaisesRegex(module.PhaseReworkError, "predecessor header is malformed"):
+            module._adc_predecessor_header(annotated, "current ADC")
+
     def test_v2_timestamp_marker_rejects_checklist_count_and_path_drift(self):
         mismatch = self._current_timestamp_adc(
             module.TIMESTAMP_CONTINUATION_AUTH_SCHEMA_V2, checklist_count=2, actual_checklist_count=1,

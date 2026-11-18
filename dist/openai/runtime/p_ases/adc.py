@@ -6,6 +6,7 @@ import hashlib
 import os
 import re
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
@@ -21,6 +22,7 @@ class ADCError(ValueError):
 
 
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+ADC_DIRECT_READ_MAX_WORKERS = 16
 ISSUE_NUMBER = re.compile(r"^(?:#)?([1-9][0-9]*)$")
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 REQ_ID = re.compile(r"(?m)^ {0,3}[-*+]\s+(REQ-(?:[0-9]+|[A-Z][A-Z0-9]*-[0-9]{3})):\s*\S.*$")
@@ -1107,17 +1109,37 @@ def _verify_adc_forward_generations_uncached(
         if current_pointer not in targets:
             targets.append(current_pointer)
         initial_adc_rows = _adc_snapshot_rows(github, issue_number, initial_comments, targets)
-        direct_before: dict[int, dict[str, Any] | None] = {}
-        direct_before_error: GitHubError | None = None
-        for pointer in targets:
-            try:
-                direct_before[pointer.comment_id] = _check_comment(
+        def direct_read_batch(label: str) -> tuple[dict[int, dict[str, Any] | None], str | None]:
+            rows: dict[int, dict[str, Any] | None] = {}
+            failures: list[str] = []
+
+            def read(pointer: ADCPointer) -> dict[str, Any]:
+                return _check_comment(
                     github.issue_comment(issue_number, pointer.comment_id), github.repo,
                     issue_number, pointer.comment_id,
                 )
-            except GitHubError as exc:
-                direct_before_error = direct_before_error or exc
-                direct_before[pointer.comment_id] = None
+
+            if not targets:
+                return rows, None
+            with ThreadPoolExecutor(
+                    max_workers=min(ADC_DIRECT_READ_MAX_WORKERS, len(targets)),
+                    thread_name_prefix="pases-adc-read") as executor:
+                futures = [(pointer, executor.submit(read, pointer)) for pointer in targets]
+                for pointer, future in futures:
+                    try:
+                        rows[pointer.comment_id] = future.result()
+                    except Exception as exc:
+                        rows[pointer.comment_id] = None
+                        if not failures:
+                            if isinstance(exc, (ADCError, GitHubError)):
+                                failures.append(str(exc))
+                            else:
+                                failures.append(f"unexpected {type(exc).__name__}")
+            if failures:
+                return rows, f"{label}: {failures[0]}"
+            return rows, None
+
+        direct_before, direct_before_error = direct_read_batch("direct-before read failed")
 
         issue_after_snapshot = _check_issue(github.issue(issue_number), github.repo, issue_number)
         final_comments = github.issue_comments(issue_number)
@@ -1134,19 +1156,9 @@ def _verify_adc_forward_generations_uncached(
                 or final_operation != current_operation or final_record_id != current_record_id):
             raise ADCError("ADC pointer journal changed during the complete snapshot readback")
         final_adc_rows = _adc_snapshot_rows(github, issue_number, final_comments, targets)
+        direct_after, direct_after_error = direct_read_batch("direct-after read failed")
         if direct_before_error is not None:
             raise ADCError(f"ADC generation direct read failed during the snapshot window: {direct_before_error}")
-        direct_after: dict[int, dict[str, Any] | None] = {}
-        direct_after_error: GitHubError | None = None
-        for pointer in targets:
-            try:
-                direct_after[pointer.comment_id] = _check_comment(
-                    github.issue_comment(issue_number, pointer.comment_id), github.repo,
-                    issue_number, pointer.comment_id,
-                )
-            except GitHubError as exc:
-                direct_after_error = direct_after_error or exc
-                direct_after[pointer.comment_id] = None
         if direct_after_error is not None:
             raise ADCError(f"ADC generation final direct read failed: {direct_after_error}")
     except GitHubError as exc:

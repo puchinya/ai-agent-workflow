@@ -1008,12 +1008,12 @@ Only the exact current combined ADC and one direct child of its marker-authorize
 <a id="tst-f01-098"></a>
 ### 2.64 TST-F01-098 Generic historical ADC predecessor validation
 
-**Setup and action:** Construct an ordered approved pointer chain with exact body bytes, byte lengths, digests, states, and immediate predecessor links. Exercise multiple historical generations with no visible predecessor declaration and with a single exact declaration. Mutate a present declaration to the wrong ID or digest; add duplicate or malformed declarations; and independently mutate pointer order, state, byte length, digest, and adjacency. Verify that all historical mismatches fail before any phase-evidence write. Remove, duplicate, or alter the current ADC predecessor declaration and verify that the current generation always fails closed. The executable cases are in tests/test_phase_rework.py.
+**Setup and action:** Construct an ordered approved pointer chain with exact body bytes, byte lengths, digests, states, and immediate predecessor links. Exercise multiple historical generations with no visible predecessor declaration, a suffix-free declaration, and a canonical `(N bytes)` suffix using both comma-grouped and ungrouped numbers. Accept the suffix only when N equals the verified historical UTF-8 body byte length. Mutate a present declaration to the wrong ID or digest; use a wrong byte length, malformed comma grouping, arbitrary suffix, duplicate/malformed declaration; and independently mutate pointer order, state, byte length, digest, and adjacency. Verify that all historical mismatches fail before any phase-evidence write. Remove, duplicate, or annotate the current ADC predecessor declaration and verify that the current generation always fails closed. The executable cases are in tests/test_phase_rework.py.
 
 <a id="ora-f01-098"></a>
 #### 2.64.1 ORA-F01-098 Expected result
 
-Historical declarations may be absent, but exact approved pointer-chain identity and journal adjacency are mandatory for every generation. A present historical declaration must occur once and match the immediately preceding pointer. The current ADC declaration must occur exactly once and match its verified predecessor. All malformed or mismatched history blocks before phase-evidence writes; no historical ADC is rewritten and no comment-ID-specific exception is used.
+Historical declarations may be absent, but exact approved pointer-chain identity and journal adjacency are mandatory for every generation. A present historical declaration must occur once and match the immediately preceding pointer. Its optional canonical `(N bytes)` annotation must equal that immutable row's verified UTF-8 byte length. The current ADC declaration must occur exactly once, match its verified predecessor, and contain no byte annotation. All malformed or mismatched history blocks before phase-evidence writes; no historical ADC is rewritten and no comment-ID-specific exception is used.
 
 <a id="tst-f01-099"></a>
 ### 2.65 TST-F01-099 Exact approved historical commit segment map
@@ -1038,12 +1038,12 @@ The validator accepts `phase:verification` as a normal valid lifecycle state wit
 <a id="tst-f01-103"></a>
 ### 2.67 TST-F01-103 Batched ADC journal snapshots and drift rejection
 
-**Setup and action:** Mock one-generation and many-generation approved ADC ranges. Count complete paginated Issue-comment sweeps and selected ADC direct reads. Require two complete list sweeps for either range size and exactly two direct reads per selected ADC. Compare each exact ADC identity, body bytes, SHA-256, byte length, approved state, and predecessor against both list snapshots. Between snapshots, independently insert, delete, edit, duplicate, reorder, or malform a pointer/ADC entry and require the range reader to fail before returning verified rows.
+**Setup and action:** Mock small and 55-generation approved ADC ranges. Count complete paginated Issue-comment sweeps and selected ADC direct reads. Require two complete list sweeps for either range size and exactly two direct reads per selected ADC. Track overlap and prove each direct-read pass uses no more than 16 concurrent requests. Force a direct-read failure and require both bounded batches to join, the complete before/after snapshots to finish, and the range reader to return no partial rows. Compare each exact ADC identity, body bytes, SHA-256, byte length, approved state, and predecessor against both list snapshots. Between snapshots, independently insert, delete, edit, duplicate, reorder, or malform a pointer/ADC entry and require the range reader to fail before returning verified rows.
 
 <a id="ora-f01-103"></a>
 #### 2.67.1 ORA-F01-103 Expected result
 
-Snapshot count remains exactly two as the selected range grows, while direct-read count is exactly two per selected ADC. Only identical complete snapshots and direct/list/direct ADC fingerprints pass. Any journal drift or malformed entry fails closed.
+Snapshot count remains exactly two as the selected range grows, while direct-read count is exactly two per selected ADC and at most 16 requests overlap within each direct-read pass. A failed batch is fully joined and never returns a partial range. Only identical complete snapshots and direct/list/direct ADC fingerprints pass. Any journal drift or malformed entry fails closed.
 
 <a id="tst-f01-104"></a>
 ### 2.68 TST-F01-104 V3 phase rework preserves V2 and is one-shot
