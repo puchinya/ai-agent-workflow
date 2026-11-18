@@ -1679,6 +1679,241 @@ class BootstrapAndReadinessTests(unittest.TestCase):
 
 
 class OneShotWriteTests(unittest.TestCase):
+    def test_comment_post_invalidates_history_session_around_every_v2_v3_record(self):
+        schemas = (
+            module.INTENT_SCHEMA,
+            module.APPLIED_SCHEMA,
+            module.ISSUE71_REWORK_INTENT_V3_SCHEMA,
+            module.ISSUE71_REWORK_APPLIED_V3_SCHEMA,
+        )
+        for schema in schemas:
+            with self.subTest(schema=schema), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                events: list[str] = []
+                payload = {"schema": schema, "executor_user_id": module.OWNER_ID}
+                body = module._record_body(schema, payload)
+                record = SimpleNamespace(
+                    schema=schema, body=body, comment_id=201, actor_id=module.OWNER_ID,
+                )
+                history_reads = iter(((), (record,)))
+
+                class FakeGitHub:
+                    def create_issue_comment(self, _issue: int, _body: str) -> dict:
+                        events.append("post")
+                        return {"id": 201}
+
+                def read_history(_github):
+                    events.append("history")
+                    return next(history_reads)
+
+                with patch.object(module, "_read_history", side_effect=read_history), \
+                        patch.object(
+                            module, "refresh_adc_forward_generation_session",
+                            side_effect=lambda *_args: events.append("refresh"),
+                        ):
+                    result = module._post_record_once(
+                        FakeGitHub(), root, schema, payload,
+                        before_write=lambda: events.append("fresh-validation"),
+                    )
+
+                self.assertIs(result, record)
+                self.assertEqual(
+                    events,
+                    ["history", "refresh", "fresh-validation", "post", "refresh", "history"],
+                )
+
+    def test_comment_post_requires_fresh_validation_before_attempt_marker(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            payload = {"schema": module.INTENT_SCHEMA, "executor_user_id": module.OWNER_ID}
+
+            class FakeGitHub:
+                posts = 0
+
+                def create_issue_comment(self, _issue: int, _body: str) -> dict:
+                    self.posts += 1
+                    return {"id": 202}
+
+            github = FakeGitHub()
+            with patch.object(module, "_read_history", return_value=()), \
+                    self.assertRaisesRegex(module.PhaseReworkError, "requires fresh subject validation"):
+                module._post_record_once(github, root, module.INTENT_SCHEMA, payload)
+
+            self.assertEqual(github.posts, 0)
+            self.assertFalse(module._record_path(root, "intent").exists())
+
+    def test_changed_approved_history_at_comment_boundary_blocks_before_write(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            payload = {"schema": module.INTENT_SCHEMA, "executor_user_id": module.OWNER_ID}
+            approved_history = {"sha256": "approved-before-preflight"}
+            events: list[str] = []
+
+            class FakeGitHub:
+                posts = 0
+
+                def create_issue_comment(self, _issue: int, _body: str) -> dict:
+                    self.posts += 1
+                    return {"id": 204}
+
+            github = FakeGitHub()
+
+            def read_phase_history(_github):
+                events.append("phase-history-preflight")
+                approved_history["sha256"] = "approved-history-changed-at-boundary"
+                return ()
+
+            def verify_current_history():
+                events.append("current-adc-history-validation")
+                if approved_history["sha256"] != "approved-before-preflight":
+                    raise module.PhaseReworkError("approved ADC history changed before write")
+
+            with patch.object(module, "_read_history", side_effect=read_phase_history), \
+                    patch.object(module, "refresh_adc_forward_generation_session",
+                                 side_effect=lambda *_args: events.append("invalidate")):
+                with self.assertRaisesRegex(module.PhaseReworkError, "approved ADC history changed"):
+                    module._post_record_once(
+                        github, root, module.INTENT_SCHEMA, payload,
+                        before_write=verify_current_history,
+                    )
+
+            self.assertEqual(
+                events,
+                ["phase-history-preflight", "invalidate", "current-adc-history-validation", "invalidate"],
+            )
+            self.assertEqual(github.posts, 0)
+            self.assertFalse(module._record_path(root, "intent").exists())
+
+    def test_v2_applied_route_supplies_fresh_subject_validation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            intent, _result = intent_record(root)
+            current = live_subject(root, labels=tuple(sorted(module.LABELS_AFTER)))
+            current = module._Live(**{**current.__dict__, "issue": {"body": "fixed", "state": "open"}})
+            payload = module._applied_payload(intent)
+            body = module._record_body(module.APPLIED_SCHEMA, payload)
+            record = SimpleNamespace(
+                schema=module.APPLIED_SCHEMA, body=body, comment_id=203,
+                actor_id=module.OWNER_ID,
+            )
+            history_reads = iter(((), (record,)))
+            events: list[str] = []
+
+            class FakeGitHub:
+                def create_issue_comment(self, _issue: int, _body: str) -> dict:
+                    events.append("post")
+                    return {"id": 203}
+
+            def read_history(_github):
+                events.append("history")
+                return next(history_reads)
+
+            def read_live(*_args, **_kwargs):
+                events.append("live-validation")
+                return current
+
+            with patch.object(module, "_check_labels_after"), \
+                    patch.object(module, "_live", side_effect=read_live), \
+                    patch.object(module, "_validate_intent"), \
+                    patch.object(module, "_validate_label_attempt", return_value=True), \
+                    patch.object(module, "_validate_recorded_readiness"), \
+                    patch.object(module, "_user_review_absent"), \
+                    patch.object(module, "_read_history", side_effect=read_history), \
+                    patch.object(module, "_validate_applied"), \
+                    patch.object(module, "refresh_adc_forward_generation_session",
+                                 side_effect=lambda *_args: events.append("refresh")):
+                module._write_applied(FakeGitHub(), root, intent, current)
+
+            post_index = events.index("post")
+            self.assertEqual(events[post_index - 2:post_index], ["refresh", "live-validation"])
+            self.assertEqual(events[post_index + 1:post_index + 4],
+                             ["refresh", "history", "refresh"])
+            self.assertEqual(events[post_index + 4], "live-validation")
+
+    def test_label_put_boundary_invalidates_before_validation_and_after_all_outcomes(self):
+        for apply_then_lose_response in (False, True):
+            with self.subTest(apply_then_lose_response=apply_then_lose_response):
+                events: list[str] = []
+
+                class FakeGitHub:
+                    def replace_issue_labels(self, _issue: int, _labels: list[str]) -> None:
+                        events.append("put")
+                        if apply_then_lose_response:
+                            raise GitHubError("lost response after applying request")
+                        raise GitHubError("failed before applying request")
+
+                with patch.object(
+                    module, "refresh_adc_forward_generation_session",
+                    side_effect=lambda *_args: events.append("refresh"),
+                ):
+                    error = module._replace_issue_labels_at_boundary(
+                        FakeGitHub(), module.LABELS_AFTER,
+                        before_write=lambda: events.append("fresh-validation"),
+                    )
+
+                self.assertIsInstance(error, GitHubError)
+                self.assertEqual(events, ["refresh", "fresh-validation", "put", "refresh"])
+
+    def test_changed_approved_history_at_label_boundary_blocks_put(self):
+        events: list[str] = []
+
+        class FakeGitHub:
+            writes = 0
+
+            def replace_issue_labels(self, _issue: int, _labels: list[str]) -> None:
+                self.writes += 1
+
+        def reject_changed_history():
+            events.append("current-adc-history-validation")
+            raise module.PhaseReworkError("approved ADC history changed before label PUT")
+
+        github = FakeGitHub()
+        with patch.object(module, "refresh_adc_forward_generation_session",
+                          side_effect=lambda *_args: events.append("invalidate")):
+            with self.assertRaisesRegex(module.PhaseReworkError, "approved ADC history changed"):
+                module._replace_issue_labels_at_boundary(
+                    github, module.LABELS_AFTER, before_write=reject_changed_history,
+                )
+
+        self.assertEqual(events, ["invalidate", "current-adc-history-validation", "invalidate"])
+        self.assertEqual(github.writes, 0)
+
+    def test_v2_label_route_refreshes_before_prewrite_validation_and_issue_readback(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            intent, _result = intent_record(root)
+            issue_before = {"body": "fixed", "state": "open"}
+            labels_before = tuple(sorted(module.LABELS_BEFORE))
+            current = module._Live(**{
+                **live_subject(root, labels=labels_before).__dict__, "issue": issue_before,
+            })
+            events: list[str] = []
+
+            class FakeGitHub:
+                def replace_issue_labels(self, _number: int, _labels: list[str]) -> None:
+                    events.append("put")
+
+            def read_live(*_args, **_kwargs):
+                events.append("live-validation")
+                return current
+
+            def read_issue(_github):
+                events.append("issue-readback")
+                return {"body": "fixed", "state": "open"}, tuple(sorted(module.LABELS_AFTER))
+
+            with patch.object(module, "refresh_adc_forward_generation_session",
+                              side_effect=lambda *_args: events.append("refresh")), \
+                    patch.object(module, "_live", side_effect=read_live), \
+                    patch.object(module, "_validate_intent"), \
+                    patch.object(module, "_validate_recorded_readiness"), \
+                    patch.object(module, "_user_review_absent"), \
+                    patch.object(module, "_issue", side_effect=read_issue):
+                module._replace_labels_once(FakeGitHub(), root, intent)
+
+            put_index = events.index("put")
+            self.assertEqual(events[put_index - 2:put_index], ["refresh", "live-validation"])
+            self.assertEqual(events[put_index + 1:], ["refresh", "refresh", "issue-readback"])
+
     def test_intent_prewrite_live_head_drift_blocks_before_marker_or_post(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -2127,7 +2362,7 @@ class PendingRecoveryTests(unittest.TestCase):
             module._record_body(module.APPLIED_SCHEMA, applied_payload),
             module.OWNER_ID, applied_payload["applied_at"],
         )
-        live_reads = [live, live] if not after_labels else [live]
+        live_reads = [live, live, live] if not after_labels else [live]
         with patch.object(module, "_live", side_effect=live_reads), \
                 patch.object(module, "_read_history", return_value=(intent,)), \
                 patch.object(module, "_issue", return_value=issue_after), \
@@ -2823,6 +3058,7 @@ class V3PhaseReworkTests(unittest.TestCase):
             after = self._live(root, generation, after=True)
             result = readiness(root)
             history = [v2_intent, v2_applied]
+            events: list[str] = []
 
             class FakeGitHub:
                 repo = module.REPOSITORY
@@ -2830,6 +3066,7 @@ class V3PhaseReworkTests(unittest.TestCase):
 
                 def replace_issue_labels(self, _number: int, _labels: list[str]) -> None:
                     self.label_writes += 1
+                    events.append("put")
 
             github = FakeGitHub()
             next_comment_id = 103
@@ -2850,6 +3087,17 @@ class V3PhaseReworkTests(unittest.TestCase):
                 posts.append(schema)
                 return record
 
+            def verify_v3_subject(_github, _root, _live, *, expected_labels):
+                events.append(
+                    "verify-before" if tuple(expected_labels) == tuple(generation["labels_before"])
+                    else "verify-after"
+                )
+
+            def read_issue(_github):
+                events.append("issue-readback")
+                return ({"body": before.issue.get("body"), "state": "open"},
+                        tuple(sorted(generation["labels_after"])))
+
             with patch.object(module, "_live", side_effect=[before, after]), \
                     patch.object(module, "_read_history", side_effect=lambda _github: tuple(history)), \
                     patch.object(module, "_user_review_absent"), \
@@ -2857,11 +3105,10 @@ class V3PhaseReworkTests(unittest.TestCase):
                     patch.object(module, "_validate_v3_intent"), \
                     patch.object(module, "_validate_v3_recorded_readiness"), \
                     patch.object(module, "_validate_v3_applied"), \
-                    patch.object(module, "_verify_v3_subject"), \
-                    patch.object(module, "_issue", return_value=(
-                        {"body": before.issue.get("body"), "state": "open"},
-                        tuple(sorted(generation["labels_after"])),
-                    )), \
+                    patch.object(module, "_verify_v3_subject", side_effect=verify_v3_subject), \
+                    patch.object(module, "_issue", side_effect=read_issue), \
+                    patch.object(module, "refresh_adc_forward_generation_session",
+                                 side_effect=lambda *_args: events.append("refresh")), \
                     patch.object(module, "_post_record_once", side_effect=post_once):
                 applied_result = module.apply_issue71_phase_rework(
                     github, root, 71, readiness_factory=lambda: result,
@@ -2871,6 +3118,13 @@ class V3PhaseReworkTests(unittest.TestCase):
             self.assertEqual(github.label_writes, 1)
             self.assertEqual(posts, [module.ISSUE71_REWORK_INTENT_V3_SCHEMA,
                                      module.ISSUE71_REWORK_APPLIED_V3_SCHEMA])
+            put_index = events.index("put")
+            self.assertEqual(events[put_index - 2:put_index], ["refresh", "verify-before"])
+            self.assertEqual(
+                events[put_index + 1:put_index + 5],
+                ["refresh", "refresh", "issue-readback", "refresh"],
+            )
+            self.assertEqual(events[put_index + 5], "verify-after")
 
             with patch.object(module, "_live", return_value=after), \
                     patch.object(module, "_read_history", return_value=tuple(history)), \

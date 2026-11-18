@@ -13,7 +13,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .adc import (
     ADCError, VerifiedADC, verify_adc, verify_adc_forward_generations,
-    verify_adc_generation,
+    verify_adc_generation, refresh_adc_forward_generation_session,
 )
 from .checkpoint import PRBinding, WorkCheckpoint, checkpoint_path, write_checkpoint, write_pr_binding
 from .delivery import ReadinessResult, read_readiness, readiness_path
@@ -4550,8 +4550,14 @@ def _post_record_once(github: GitHub, root: Path, schema: str,
     }.get(schema)
     if operation is None:
         raise PhaseReworkError("phase rework writer does not support this record schema")
-    if before_write is not None:
+    if before_write is None:
+        raise PhaseReworkError("phase rework comment write requires fresh subject validation")
+    refresh_adc_forward_generation_session(github, ISSUE_NUMBER)
+    try:
         before_write()
+    except BaseException:
+        refresh_adc_forward_generation_session(github, ISSUE_NUMBER)
+        raise
     _write_attempt_once(root, operation, payload)
     write_error: GitHubError | None = None
     created_id = None
@@ -4560,6 +4566,8 @@ def _post_record_once(github: GitHub, root: Path, schema: str,
         created_id = created.get("id") if isinstance(created, dict) else None
     except GitHubError as exc:
         write_error = exc
+    finally:
+        refresh_adc_forward_generation_session(github, ISSUE_NUMBER)
     try:
         after = _read_history(github)
     except PhaseReworkError as exc:
@@ -4585,7 +4593,30 @@ def _validate_label_attempt(root: Path, intent: PhaseReworkRecord) -> bool:
     return path.exists()
 
 
+def _replace_issue_labels_at_boundary(
+    github: GitHub, labels: Sequence[str], *, before_write: Callable[[], None],
+) -> GitHubError | None:
+    """Invalidate immutable-history reuse around a fully validated label PUT."""
+    if not callable(before_write):
+        raise PhaseReworkError("phase rework label write requires fresh subject validation")
+    refresh_adc_forward_generation_session(github, ISSUE_NUMBER)
+    try:
+        before_write()
+    except BaseException:
+        refresh_adc_forward_generation_session(github, ISSUE_NUMBER)
+        raise
+    write_error: GitHubError | None = None
+    try:
+        github.replace_issue_labels(ISSUE_NUMBER, list(labels))
+    except GitHubError as exc:
+        write_error = exc
+    finally:
+        refresh_adc_forward_generation_session(github, ISSUE_NUMBER)
+    return write_error
+
+
 def _replace_labels_once(github: GitHub, root: Path, intent: PhaseReworkRecord) -> None:
+    refresh_adc_forward_generation_session(github, ISSUE_NUMBER)
     live = _live(github, root, phase="verification")
     recovery = live.recovery_authorization is not None
     if recovery:
@@ -4609,12 +4640,28 @@ def _replace_labels_once(github: GitHub, root: Path, intent: PhaseReworkRecord) 
         raise PhaseReworkError("Issue labels match neither the exact before nor after state")
     if label_marker_exists:
         raise PhaseReworkError("label PUT was previously attempted; read-only recovery only")
-    _write_attempt_once(root, "labels", label_payload)
-    write_error: GitHubError | None = None
-    try:
-        github.replace_issue_labels(ISSUE_NUMBER, LABELS_AFTER)
-    except GitHubError as exc:
-        write_error = exc
+
+    def validate_before_label_write() -> None:
+        current = _live(github, root, phase="verification")
+        if recovery:
+            _validate_recovery_intent(intent, current, root)
+            current_payload = _recovery_label_attempt_payload(intent)
+            current_attempt_exists = _read_exact_attempt_marker(
+                root, "labels", hashlib.sha256(_canonical(current_payload).encode()).hexdigest(),
+            )
+        else:
+            _validate_intent(intent, current)
+            _validate_recorded_readiness(root, intent)
+            current_attempt_exists = _validate_label_attempt(root, intent)
+        _user_review_absent(root)
+        if current_attempt_exists:
+            raise PhaseReworkError("label PUT was previously attempted; read-only recovery only")
+        _write_attempt_once(root, "labels", label_payload)
+
+    write_error = _replace_issue_labels_at_boundary(
+        github, LABELS_AFTER, before_write=validate_before_label_write,
+    )
+    refresh_adc_forward_generation_session(github, ISSUE_NUMBER)
     after, after_labels = _issue(github)
     if after_labels != tuple(sorted(LABELS_AFTER)):
         if after_labels == tuple(sorted(LABELS_BEFORE)) and write_error is not None:
@@ -4676,6 +4723,7 @@ def _applied_payload(intent: PhaseReworkRecord) -> dict[str, Any]:
 
 
 def _check_labels_after(github: GitHub) -> None:
+    refresh_adc_forward_generation_session(github, ISSUE_NUMBER)
     issue, labels = _issue(github, expected_labels=tuple(sorted(LABELS_AFTER)))
     if issue.get("state") != "open":
         raise PhaseReworkError("Issue #71 closed during the authorized phase transition")
@@ -4791,10 +4839,32 @@ def _write_applied(github: GitHub, root: Path, intent: PhaseReworkRecord,
         _validate_intent(intent, fresh)
         if _validate_label_attempt(root, intent) is False:
             raise PhaseReworkError("Applied cannot be written without the one-shot label attempt record")
-    applied = _post_record_once(github, root, APPLIED_SCHEMA, _applied_payload(intent))
+
+    def validate_applied_subject_before_write() -> None:
+        current = _live(github, root, phase="requirements", require_clean=False)
+        if current.recovery_authorization is not None:
+            _validate_recovery_intent(intent, current, root)
+            label_payload = _recovery_label_attempt_payload(intent)
+            if not _read_exact_attempt_marker(
+                root, "labels", hashlib.sha256(_canonical(label_payload).encode()).hexdigest(),
+            ):
+                raise PhaseReworkError("Applied cannot be written without the exact one-shot label attempt record")
+        else:
+            _validate_intent(intent, current)
+            if _validate_label_attempt(root, intent) is False:
+                raise PhaseReworkError("Applied cannot be written without the one-shot label attempt record")
+            _validate_recorded_readiness(root, intent)
+        _user_review_absent(root)
+
+    applied = _post_record_once(
+        github, root, APPLIED_SCHEMA, _applied_payload(intent),
+        before_write=validate_applied_subject_before_write,
+    )
+    refresh_adc_forward_generation_session(github, ISSUE_NUMBER)
+    final_live = _live(github, root, phase="requirements", require_clean=False)
     _validate_applied(
-        applied, intent, fresh,
-        allow_bootstrap_descendant=fresh.recovery_authorization is not None,
+        applied, intent, final_live,
+        allow_bootstrap_descendant=final_live.recovery_authorization is not None,
     )
     return applied
 
@@ -4942,20 +5012,22 @@ def _apply_v3_phase_rework(
     label_attempt_sha = hashlib.sha256(_canonical(label_payload).encode("utf-8")).hexdigest()
     if _read_exact_attempt_marker(root, "labels_v3", label_attempt_sha):
         raise PhaseReworkError("V3 label write was previously attempted; retry is prohibited")
-    _verify_v3_subject(github, root, live, expected_labels=generation["labels_before"])
-    _validate_v3_intent(intent, live, readiness=readiness)
-    _write_attempt_once(root, "labels_v3", {
-        "generation_number": generation["new_generation_number"],
-        "intent_body_sha256": intent.body_sha256,
-        "intent_comment_id": intent.comment_id,
-        "labels_after": generation["labels_after"],
-        "labels_before": generation["labels_before"],
-    })
-    write_error: GitHubError | None = None
-    try:
-        github.replace_issue_labels(ISSUE_NUMBER, generation["labels_after"])
-    except GitHubError as exc:
-        write_error = exc
+    def verify_v3_label_subject_before_write() -> None:
+        _verify_v3_subject(github, root, live, expected_labels=generation["labels_before"])
+        _validate_v3_intent(intent, live, readiness=readiness)
+        _write_attempt_once(root, "labels_v3", {
+            "generation_number": generation["new_generation_number"],
+            "intent_body_sha256": intent.body_sha256,
+            "intent_comment_id": intent.comment_id,
+            "labels_after": generation["labels_after"],
+            "labels_before": generation["labels_before"],
+        })
+
+    write_error = _replace_issue_labels_at_boundary(
+        github, generation["labels_after"],
+        before_write=verify_v3_label_subject_before_write,
+    )
+    refresh_adc_forward_generation_session(github, ISSUE_NUMBER)
     issue_after, labels_after = _issue(github)
     if (labels_after != tuple(sorted(generation["labels_after"]))
             or issue_after.get("body") != live.issue.get("body")
@@ -4963,6 +5035,7 @@ def _apply_v3_phase_rework(
         if labels_after == tuple(sorted(generation["labels_before"])) and write_error is not None:
             raise PhaseReworkError("V3 label PUT failed; retry is prohibited") from write_error
         raise PhaseReworkError("V3 label PUT did not produce its exact after-state")
+    refresh_adc_forward_generation_session(github, ISSUE_NUMBER)
     _verify_v3_subject(github, root, live, expected_labels=generation["labels_after"])
 
     applied_payload = _v3_applied_payload(intent)
@@ -4984,6 +5057,7 @@ def _apply_v3_phase_rework(
         before_write=verify_applied_subject_before_write,
     )
     _validate_v3_applied(applied, intent, live, allow_bootstrap_descendant=True)
+    refresh_adc_forward_generation_session(github, ISSUE_NUMBER)
     final_live = _live(github, root, phase="requirements", require_clean=True)
     if (final_live.phase_rework_generation_authorization != generation
             or final_live.head_sha40 != live.head_sha40

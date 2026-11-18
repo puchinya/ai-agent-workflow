@@ -157,6 +157,8 @@
     - [2.73.1 ORA-F01-109 Expected result](#2731-ora-f01-109-expected-result)
   - [2.74 TST-F01-110 Command-local ADC history-session reuse](#274-tst-f01-110-command-local-adc-history-session-reuse)
     - [2.74.1 ORA-F01-110 Expected result](#2741-ora-f01-110-expected-result)
+  - [2.75 TST-F01-111 Phase-rework history-session write boundaries](#275-tst-f01-111-phase-rework-history-session-write-boundaries)
+    - [2.75.1 ORA-F01-111 Expected result](#2751-ora-f01-111-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -309,6 +311,8 @@
 - [ORA-F01-109](#ora-f01-109) — 2.73.1 ORA-F01-109 Expected result
 - [TST-F01-110](#tst-f01-110) — 2.74 TST-F01-110 Command-local ADC history-session reuse
 - [ORA-F01-110](#ora-f01-110) — 2.74.1 ORA-F01-110 Expected result
+- [TST-F01-111](#tst-f01-111) — 2.75 TST-F01-111 Phase-rework history-session write boundaries
+- [ORA-F01-111](#ora-f01-111) — 2.75.1 ORA-F01-111 Expected result
 <!-- heading-map:end -->
 
 
@@ -1110,3 +1114,13 @@ Only a current marker whose exact pointer, versioned schema, history links, and 
 #### 2.74.1 ORA-F01-110 Expected result
 
 One command reuses only a covering, fully verified immutable range for the same client, repository, Issue, exact identities, and approval state. A miss or invalidation performs full validation; wrong identity or stale pointer fails closed. Mutable subject evidence never comes from the session, and no required before/after readback is skipped.
+
+<a id="tst-f01-111"></a>
+### 2.75 TST-F01-111 Phase-rework history-session write boundaries
+
+**Setup and action:** Seed a command-local ADC history session with a verified range, then exercise the production Issue #71 V2 and V3 Intent/Applied comment POST and label PUT paths. Record event order for session invalidation, complete ADC-chain and mutable-subject validation, one-shot attempt-marker creation, mutation, and readback. Cover successful responses, failures before application, lost responses after application, and a pointer/body change after an earlier cached read. Require the current chain and Issue/labels/PR/branch/HEAD/journal to be freshly validated before each allowed write; invalidate after every write outcome before direct/list/direct comment-history readback, label readback, and final live-subject readback. Verify stale history blocks before the next mutation, missing pre-write validation blocks before the attempt marker, no ambiguous write is retried, and existing record bytes remain unchanged.
+
+<a id="ora-f01-111"></a>
+#### 2.75.1 ORA-F01-111 Expected result
+
+Every V2/V3 Intent and Applied POST and every V2/V3 label PUT follows invalidation → complete current-subject validation → one-shot write → invalidation → exact readback. A changed or unverified ADC history fails closed before mutation; failed or ambiguous writes are read back without retry. The executable boundary and route regressions are in `tests/test_phase_rework.py`.
