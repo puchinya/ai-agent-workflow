@@ -497,11 +497,7 @@ Issue #71 solo_owner identity uses a dedicated GET-only client and the current a
 <a id="63-539-des-f01-099-approved-historical-commit-segment-map"></a>
 ### 6.2 6.3 5.39 DES-F01-099 Approved historical commit segment map
 
-The current Issue #71 phase authorization carries `historical_commit_segments`, separate from the current ADC's one-commit follow-up allowlist. The map starts at the pinned approved-history reader boundary and ends at the current marker's start HEAD. Each segment identifies an approved-history row by comment ID and SHA, its direct parent and commit SHA, and an exact sorted path list. Parsing validates the complete shape, approved-history order, contiguous endpoints, unique commit IDs, and safe path syntax before live Git checks.
-
-The live verifier enumerates the entire boundary-to-start range once and requires exact equality with the marker's commit sequence. It checks each commit's sole parent and requires `changed_paths_between(parent, commit)` to equal the segment path list. This validates all historical segments uniformly while leaving historical ADC bodies opaque. The separate current marker follow-up validator continues to enforce exactly one direct child and its own allowlist. Neither check changes the frozen base, phase journal, or Issue labels.
-
-After fresh exact-HEAD gates and read-only Applied NOOP, the normal phase commands reconcile only already-completed receipts, publish/read back the current ready receipt, and advance through supported transitions. User Review starts once after Verification and Readiness PASS, reads back the full feedback snapshot, and remains pending without an owner decision.
+The current approved ADC or operation marker supplies the start HEAD, exact parent rule, commit-count bound and changed-path allowlist. Validate only this current Git boundary and the live remote PR HEAD; do not replay approved-history commit segments or use historical ADC pointers as authorization. Subsequent Phase receipts, Independent Review and User Review remain separate current-subject gates. A complete Applied record returns read-only NOOP.
 
 <a id="des-f01-100"></a>
 <a id="64-540-des-f01-100-verification-phase-post-rework-label-validation"></a>
@@ -514,22 +510,22 @@ The active phase-rework reader uses the same recognized phase vocabulary as the 
 <a id="63-62-538-des-f01-098-generic-historical-adc-predecessor-validation"></a>
 ### 6.4 6.3 6.2 5.38 DES-F01-098 Generic historical ADC predecessor validation
 
-The verified approved pointer journal and current marker's exact ordered history are authoritative for every historical ADC generation. Validate each historical pointer's comment ID, approved state, exact body SHA-256 and UTF-8 byte length, order, and adjacency before phase-evidence writes. A historical body-level predecessor declaration is supplemental: absence is permitted; one well-formed declaration is accepted only when it names the immediately preceding verified pointer. Duplicate, malformed, or conflicting declarations fail closed. Apply this rule uniformly without comment-ID dispatch or rewriting history. The current ADC remains stricter: exactly one canonical visible predecessor declaration must match its predecessor tuple and the final approved-history entry.
+`adc.verify_adc` resolves the newest current approved pointer using `GitHub.issue_comment_pages_newest` and reads its directly addressed ADC content. It validates exact Issue/repository identity, pointer state, SHA and UTF-8 byte length, with competing newest-pointer detection. Older pointer histories are retained but not scanned in normal current readers. The active lifecycle resolves typed authorization by marker/schema and observed Issue/PR/epoch fields, not by fixed Issue numbers.
 
 <a id="des-f01-101"></a>
 ### 6.5 DES-F01-101 Batch the selected ADC journal range
 
-`adc.py` owns forward-range validation. One range read consists of a complete initial paginated Issue-comment snapshot, direct reads of each selected ADC body before and after validation, and one complete final snapshot. Every pointer in the initial journal is validated in order; selected ADC fingerprints must agree across both direct reads and both snapshots. The final pointer journal and selected entries must equal the initial snapshot. Snapshot count is constant at two for one or many generations; direct reads remain two per selected ADC. No cache or historical-marker parsing may skip an identity, predecessor, state, length, digest, or drift check.
+The current-only reader performs bounded newest-pointer discovery and direct retrieval of exactly the named current ADC comment. The old two-full-snapshot, per-historical-body batch validator is not called by active lifecycle routes. Mutable subjects are re-read before and after writes; stale or competing current pointers, malformed bodies, draft state and changed direct evidence fail closed. Intent/Applied journal duplication checks are independent of ADC history.
 
 <a id="des-f01-102"></a>
 ### 6.6 DES-F01-102 Append one V3 rework generation
 
-`phase_rework.py` retains the completed V2 Intent/Applied pair as immutable history and recognizes at most one ordered V3 successor pair. The V3 payload binds the current approved ADC authorization, epoch, original Phase generation, repository/Issue, branch, base, PR, bootstrap HEAD, exact label sets, and fresh Readiness. First application records the Intent, durably records one-shot attempts, updates labels once, appends Applied, and reads the full subject back. A complete pair is a zero-write retry; partial, ambiguous, duplicate, out-of-order, or stale state blocks without another POST or label PUT. The new generation becomes active only after complete readback.
+`phase_rework_lifecycle.py` consumes typed `PASES_PHASE_REWORK_AUTH_V1` from the current approved ADC. It checks the active epoch through `current_epoch.py`, current Issue/PR/HEAD and fresh PASS Readiness, then writes Intent, one-shot local attempt, at most one Phase label PUT, Applied and direct readback. Ambiguity prevents replay. A complete exact V3 pair is zero-write NOOP. Old V2/V3 bodies remain immutable but are not searched as ADC authority. Any blocked attention, duplicate kind or stale subject blocks.
 
 <a id="des-f01-103"></a>
 ### 6.7 DES-F01-103 Resolve continuation labels from the current Phase graph
 
-The phase-rework reader validates the live ADC and its complete approved history before deriving lifecycle labels. A shared continuation-label helper uses the current marker's ordered `phase_edges` and accepts only those source and destination states, together with the required Issue-kind and enhancement labels. Both inherited continuation readers use this same graph-derived set and retain exact branch, PR title, and PR body digest checks. Unknown phases and subject drift stop before writes; the reader never updates labels.
+The ordinary Phase vocabulary and exact typed current ADC authorization determine valid Phase transitions for all Issues. Exactly one recognized kind and one Phase label are required, and any `attention:*` label blocks a new mutation. Historic continuation marker graphs and old ADC chains do not introduce additional allowed edges. PR/branch/HEAD and direct receipts are checked at every write boundary.
 
 <a id="des-f01-104"></a>
 ### 6.8 DES-F01-104 Validate event and publication timestamps uniformly
@@ -539,7 +535,7 @@ The phase-rework timestamp policy maps V2 and V3 Intent to their embedded `creat
 <a id="des-f01-105"></a>
 ### 6.9 DES-F01-105 Resolve the immutable V3 origin independently
 
-The timestamp-continuation reader stores the current ADC's immediate predecessor separately from the immutable `phase_rework_origin` identity. It validates the full approved forward chain, locates the origin by the origin record's own ID/SHA, then verifies its approved state, exact byte length, original marker digest, generation authorization digest, and V2/V3 record links. A complete exact pair and exact after-label state returns NOOP without comments or label writes. Origin identity mismatch or absence blocks before mutation.
+The immutable epoch origin is canonical local execution-epoch and workspace-attachment data joined to a directly addressed origin Applied carrier, with its immutable Intent and active Phase Applied/Intent links. `current_epoch.read_current_epoch` checks exact schema, repository/Issue, hashes, frozen branch/base and live HEAD. It does not enumerate an old approved ADC forward chain to find the origin. A complete current generation reconciles as read-only NOOP; partial or conflicted records never authorize blind retry.
 
 <a id="des-f01-106"></a>
 ### 6.10 DES-F01-106 Bind one marker-derived continuation commit
@@ -549,12 +545,12 @@ The current marker pins its start HEAD, current PR subject, and sorted path allo
 <a id="des-f01-107"></a>
 ### 6.11 DES-F01-107 Parse generic current continuation markers
 
-The reader first verifies the live ADC pointer and exact UTF-8 body, then selects a versioned parser from the marker schema. The parser derives the current predecessor, history boundary, starting HEAD, sorted path allowlist, and follow-up parent from that body; it does not dispatch on a comment ID or digest. Historical bodies stay opaque and are verified by immutable approved-history identities. V2 validates canonical JSON, exact marker fields, sorted safe paths, approved-history order, immutable V3 origin links, and equality between the declared and actual Reviewer checklist counts. V1 remains readable under its versioned historical rules.
+A current typed marker is parsed by schema and verified against the latest approved ADC, current predecessor declaration, exact repository/Issue/epoch, start HEAD, sorted path list and any explicit checklist count. Historical marker versions remain unchanged but are not read to authorize a live operation. Unknown, stale, duplicate or non-canonical current markers and malformed path constraints block before mutation.
 
 <a id="des-f01-108"></a>
 ### 6.12 DES-F01-108 Reuse command-local ADC history safely
 
-An outer lifecycle command owns a context-local session bound to one GitHub client object, normalized repository, and Issue. It stores only fully verified immutable ADC ranges with their endpoint identities and approval state. Nested readers may select a covering subrange only when both exact endpoints and the requested range match. A miss runs the full direct/list/direct validator. Mutable Issue, labels, PR, branches, HEAD, receipts, and journals are always read live. The owner clears stored ranges before every comment or label mutation and before final live readback; nested calls cannot extend session lifetime across commands or mismatched clients.
+The outer command may reuse its one exact verified current ADC for nested readers on the same client, repository and Issue. There is no command-local historical approved-range cache on the current path and no full-history fallback on cache misses. Mutable labels, Issue/PR, branch/HEAD, direct operation journals and feedback are read live at their required boundaries. A pointer change or mutation invalidates the current proof.
 
 <a id="des-f01-109"></a>
 ### 6.13 DES-F01-109 Bound GitHub API child processes
