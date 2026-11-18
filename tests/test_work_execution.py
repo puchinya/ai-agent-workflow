@@ -102,7 +102,10 @@ class WorkExecutionTests(unittest.TestCase):
                 work_directory=str(work.resolve()),
                 branch_ref="pases/issue-71-local-activation-v2-phase-rebaseline-epoch-3", initial_head_sha=base,
             ).validate()
-            with self.assertRaisesRegex(WorkError, "epoch PR ensure"):
+            epoch_file = work / ".p_ases" / "state" / "71" / "execution-epoch.json"
+            epoch_file.parent.mkdir(parents=True, exist_ok=True)
+            epoch_file.write_text("{}")
+            with self.assertRaisesRegex(WorkError, "existing adopted or epoch execution identity"):
                 ensure_pull_request(
                     work, None, repository="puchinya/ai-agent-workflow", issue_number=71,
                     binding=ordinary, branch_ref=ordinary.branch_ref, base_ref="main",
