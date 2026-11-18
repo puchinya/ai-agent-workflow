@@ -166,7 +166,7 @@ def _attempt(root: Path, issue_number: int, name: str, digest: str, *,
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError as exc:
-        raise EpochLifecycleError("epoch reset operation was already attempted; read-only reconciliation required") from exc
+        raise EpochLifecycleError(f"{namespace} operation was already attempted; read-only reconciliation required") from exc
     with os.fdopen(fd, "wb") as stream:
         stream.write((digest + "\n").encode("ascii"))
         stream.flush()
@@ -258,6 +258,14 @@ def reset_execution_epoch(github: GitHub, root: Path, issue_number: int) -> dict
             "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         }
         _live(github, root, issue_number, verified, auth, auth["labels_before"])
+        # This is a one-shot writer. A missing local journal is never permission
+        # to duplicate an already published remote Intent or Applied record.
+        existing = github.issue_comments(issue_number)
+        if any(isinstance(row, dict) and isinstance(row.get("body"), str)
+               and row["body"].startswith((
+                   f"<!-- {INTENT_SCHEMA}\\n", f"<!-- {APPLIED_SCHEMA}\\n",
+               )) for row in existing):
+            raise EpochLifecycleError("remote epoch reset journal already exists; read-only reconciliation required")
         intent_id, intent_sha = _post(
             github, root, issue_number, "intent", INTENT_SCHEMA, intent, owner_id,
         )
