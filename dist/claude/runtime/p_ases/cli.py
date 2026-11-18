@@ -3397,7 +3397,7 @@ def _solo_owner_identity(github: ReadOnlyGitHub, repository: str, issue_number: 
                 or not isinstance(head_repo, dict) or head_repo.get("id") != metadata.get("id")
                 or not isinstance(base_repo, dict) or base_repo.get("id") != metadata.get("id")):
             raise CLIError("solo_owner requires the exact current open same-repository PR")
-        if parse_issue_association(pr.get("body"), issue_number) not in {"close", "deferred_close"}:
+        if parse_issue_association(pr.get("body"), issue_number) not in {"auto_close", "deferred_close"}:
             raise CLIError("solo_owner PR does not explicitly associate its Issue")
     verifier = github.authenticated_user()
     verifier_id = verifier.get("id") if isinstance(verifier, dict) else None
