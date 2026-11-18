@@ -2659,19 +2659,22 @@ def _owner_authorization_plan_command(args: argparse.Namespace, repository: str,
         if path.is_symlink() or not path.is_file():
             raise OwnerAuthorizationError("ADC successor source must be a regular file")
         raw = path.read_bytes()
-        adc = parse_adc(raw, repository, 63)
+        target_adc_issue = getattr(args, "target_issue", None)
+        if type(target_adc_issue) is not int or target_adc_issue < 1:
+            raise OwnerAuthorizationError("ADC_SUPERSEDE requires --target-issue")
+        adc = parse_adc(raw, repository, target_adc_issue)
         subject_sha256 = hashlib.sha256(raw).hexdigest()
-        if adc.issue_number != 63:
-            raise OwnerAuthorizationError("ADC successor source is not for Issue #63")
+        if adc.issue_number != target_adc_issue:
+            raise OwnerAuthorizationError("ADC successor source is not for the requested Issue")
         try:
-            predecessor = verify_adc(github, 63).pointer
+            predecessor = verify_adc(github, target_adc_issue).pointer
         except ADCError as exc:
             raise OwnerAuthorizationError("ADC_SUPERSEDE requires the current approved predecessor") from exc
         if predecessor.state != "approved":
             raise OwnerAuthorizationError("ADC_SUPERSEDE requires the current approved predecessor")
         try:
             validate_approval_ready_adc(
-                raw, repository, 63, current_pointer=predecessor, check_current_pointer=True,
+                raw, repository, target_adc_issue, current_pointer=predecessor, check_current_pointer=True,
             )
         except ADCError as exc:
             raise OwnerAuthorizationError(f"ADC_SUPERSEDE candidate is not approval-ready: {exc}") from exc
@@ -2739,7 +2742,8 @@ def _owner_authorization_plan_command(args: argparse.Namespace, repository: str,
         raise OwnerAuthorizationError("unsupported owner authorization operation")
     plan = create_authorization_plan(
         github, root, operation=operation, subject_sha256=subject_sha256,
-        issue_number=(plan_issue if operation == "USER_REVIEW" else 63),
+        issue_number=(plan_issue if operation == "USER_REVIEW" else
+                      target_adc_issue if operation == "ADC_SUPERSEDE" else 63),
         target_issue_number=target_issue,
         pr_number=pr_number, pr_head_sha40=pr_head, details=details,
     )
@@ -2758,11 +2762,11 @@ def _validate_owner_authorization_source(args: argparse.Namespace, plan: dict[st
         if path is None or path.is_symlink() or not path.is_file():
             raise OwnerAuthorizationError("ADC_SUPERSEDE commit requires the same regular --subject-file")
         raw = path.read_bytes()
-        parsed = parse_adc(raw, repository, 63)
-        if parsed.issue_number != 63 or hashlib.sha256(raw).hexdigest() != plan["subject_sha256"]:
+        parsed = parse_adc(raw, repository, plan["issue_number"])
+        if parsed.issue_number != plan["issue_number"] or hashlib.sha256(raw).hexdigest() != plan["subject_sha256"]:
             raise OwnerAuthorizationError("ADC source bytes differ from the exact authorization plan")
         try:
-            predecessor = verify_adc(github, 63).pointer
+            predecessor = verify_adc(github, plan["issue_number"]).pointer
         except ADCError as exc:
             raise OwnerAuthorizationError("current approved ADC predecessor is unavailable") from exc
         expected_predecessor = plan["details"]
@@ -2773,7 +2777,7 @@ def _validate_owner_authorization_source(args: argparse.Namespace, plan: dict[st
             raise OwnerAuthorizationError("current approved ADC predecessor changed after plan creation")
         try:
             validate_approval_ready_adc(
-                raw, repository, 63, current_pointer=predecessor, check_current_pointer=True,
+                raw, repository, plan["issue_number"], current_pointer=predecessor, check_current_pointer=True,
             )
         except ADCError as exc:
             raise OwnerAuthorizationError(f"ADC_SUPERSEDE candidate is not approval-ready: {exc}") from exc
@@ -2884,14 +2888,14 @@ def _publish_owner_approved_adc(args: argparse.Namespace, repository: str, githu
     if args.subject_file is None or args.subject_file.is_symlink() or not args.subject_file.is_file():
         raise OwnerAuthorizationError("ADC_SUPERSEDE commit requires the same regular --subject-file")
     if repository.casefold() != "puchinya/ai-agent-workflow":
-        raise OwnerAuthorizationError("ADC_SUPERSEDE dispatch is fixed to the approved Issue #63 repository")
+        raise OwnerAuthorizationError("ADC_SUPERSEDE dispatch requires the configured repository")
     data = args.subject_file.read_bytes()
-    contract = parse_adc(data, repository, 63)
+    contract = parse_adc(data, repository, plan["issue_number"])
     if contract.sha256 != plan["subject_sha256"]:
         raise OwnerAuthorizationError("successor ADC bytes changed after owner authorization")
     try:
         verified_decision = read_verified_owner_decision(
-            github, issue_number=63, owner_id=_ISSUE63_OWNER_ID,
+            github, issue_number=plan["issue_number"], owner_id=_ISSUE63_OWNER_ID,
             operation="ADC_SUPERSEDE", subject_sha256=contract.sha256,
             expected_plan_sha256=plan["plan_sha256"], repository_id=_ISSUE63_REPOSITORY_ID,
             expected_approval_scope_sha256=plan["approval_scope_sha256"],
@@ -2904,7 +2908,7 @@ def _publish_owner_approved_adc(args: argparse.Namespace, repository: str, githu
             or verified_decision.decision.evidence_channel != "chat_confirmed_gh_v1"):
         raise OwnerAuthorizationError("ADC publication requires this exact chat-confirmed V3 decision")
     try:
-        current = verify_adc(github, 63)
+        current = verify_adc(github, plan["issue_number"])
         if current.pointer.state != "approved":
             raise ADCError("ADC supersession requires the exact current approved predecessor")
         predecessor = plan["details"]
@@ -2914,13 +2918,13 @@ def _publish_owner_approved_adc(args: argparse.Namespace, repository: str, githu
                 or current.pointer.state != predecessor.get("predecessor_state")):
             raise ADCError("current approved predecessor differs from the scope approved in chat")
         validate_approval_ready_adc(
-            data, repository, 63, current_pointer=current.pointer, check_current_pointer=True,
+            data, repository, plan["issue_number"], current_pointer=current.pointer, check_current_pointer=True,
         )
         pointer = publish_adc(
-            github, 63, data, state="approved", explicitly_approved=True,
+            github, plan["issue_number"], data, state="approved", explicitly_approved=True,
             supersede=True, expected_current=current.pointer,
         )
-        published = verify_adc(github, 63)
+        published = verify_adc(github, plan["issue_number"])
         if (published.pointer != pointer or published.pointer.sha256 != contract.sha256
                 or published.pointer.state != "approved" or published.contract.content != data):
             raise ADCError("approved successor ADC did not pass exact pointer and byte readback")

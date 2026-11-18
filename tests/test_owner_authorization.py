@@ -227,7 +227,7 @@ class OwnerAuthorizationTests(unittest.TestCase):
     def test_adc_plan_preview_rejects_draft_candidate_before_plan_creation(self):
         args = SimpleNamespace(
             operation="ADC_SUPERSEDE", subject_file=ROOT / "docs/contracts/issue-63-successor-adc-draft.md",
-            ruleset_plan=None, pr=None, head=None, target_issue=None, output=ROOT / "plan.json",
+            ruleset_plan=None, pr=None, head=None, target_issue=63, output=ROOT / "plan.json",
         )
         predecessor = SimpleNamespace(pointer=SimpleNamespace(
             state="approved", comment_id=6244160653,
@@ -641,7 +641,7 @@ class OwnerAuthorizationTests(unittest.TestCase):
                 decision=SimpleNamespace(schema="PASES_OWNER_DECISION_V3",
                                          evidence_channel="chat_confirmed_gh_v1"),
             )
-            plan = {"subject_sha256": contract.sha256, "plan_sha256": "a" * 64,
+            plan = {"issue_number": 63, "subject_sha256": contract.sha256, "plan_sha256": "a" * 64,
                     "approval_scope_sha256": "d" * 64,
                     "details": {"predecessor_comment_id": 12, "predecessor_sha256": "b" * 64,
                                 "predecessor_byte_length": 1200, "predecessor_state": "approved"}}
