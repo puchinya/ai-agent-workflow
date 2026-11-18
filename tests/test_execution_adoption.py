@@ -256,38 +256,26 @@ class ExecutionAdoptionTests(unittest.TestCase):
             }
         return root, github, epoch, old_binding, current_adc, current_head, verified
 
-    def test_current_approved_successor_waits_for_its_own_v2_applied(self):
+    def test_current_approved_successor_requires_current_applied_without_adc_history(self):
         epoch = _epoch()
-        origin = SimpleNamespace(pointer=SimpleNamespace(comment_id=6248703643, sha256=epoch.adc_sha256))
-        successor_pointer = SimpleNamespace(comment_id=70000, sha256="9" * 64)
         current = SimpleNamespace(pointer=SimpleNamespace(
-            comment_id=successor_pointer.comment_id, sha256=successor_pointer.sha256, state="approved",
+            comment_id=70000, sha256="9" * 64, state="approved",
         ))
-        successor = SimpleNamespace(pointer=current.pointer)
         with patch("p_ases.execution_adoption.verify_adc", return_value=current), \
-                patch("p_ases.execution_adoption.verify_adc_forward_generations",
-                      return_value=(origin, successor)), \
-                patch("p_ases.execution_adoption._approved_generations", return_value=(origin, successor)), \
-                patch("p_ases.execution_adoption._read_history", return_value=()), \
-                patch("p_ases.execution_adoption._validate_generation_history",
-                      return_value=(None, None, {})):
+                patch("p_ases.execution_adoption._current_rebaseline_applied", return_value=False) as applied:
             with self.assertRaisesRegex(ExecutionAdoptionError, "ADC_REFRESH_PENDING_PHASE_REBASELINE"):
                 _verify_adopted_effective_adc(
                     FakeGitHub(), epoch, expected_adc_comment_id=70000, expected_adc_sha256="9" * 64,
                 )
-        applied_pair = (SimpleNamespace(comment_id=70001), SimpleNamespace(comment_id=70002))
+            applied.assert_called_once()
         with patch("p_ases.execution_adoption.verify_adc", return_value=current), \
-                patch("p_ases.execution_adoption.verify_adc_forward_generations",
-                      return_value=(origin, successor)), \
-                patch("p_ases.execution_adoption._approved_generations", return_value=(origin, successor)), \
-                patch("p_ases.execution_adoption._read_history", return_value=()), \
-                patch("p_ases.execution_adoption._validate_generation_history",
-                      return_value=(None, None, {1: applied_pair})):
+                patch("p_ases.execution_adoption._current_rebaseline_applied", return_value=True) as applied:
             effective, refreshed = _verify_adopted_effective_adc(
                 FakeGitHub(), epoch, expected_adc_comment_id=70000, expected_adc_sha256="9" * 64,
             )
-        self.assertIs(effective, current)
-        self.assertTrue(refreshed)
+            self.assertIs(effective, current)
+            self.assertTrue(refreshed)
+            applied.assert_called_once()
 
     def test_adoption_refresh_appends_one_v3_binding_and_checkpoint_then_noops(self):
         with tempfile.TemporaryDirectory() as temporary:
