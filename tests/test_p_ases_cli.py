@@ -894,7 +894,7 @@ class PasesCLITests(unittest.TestCase):
                 patch("p_ases.cli.read_verified_owner_decision", return_value=decision) as read_decision, \
                 patch("p_ases.cli.verify_adc", return_value=SimpleNamespace(pointer=predecessor)), \
                 patch("p_ases.cli.publish_adc", return_value=pointer) as publish, \
-                patch("p_ases.cli.rebaseline_issue_phase", side_effect=AssertionError(
+                patch("p_ases.cli.restart_issue_phase", side_effect=AssertionError(
                     "phase mutation must be explicit")) as rebaseline, \
                 contextlib.redirect_stdout(output):
             status = main([

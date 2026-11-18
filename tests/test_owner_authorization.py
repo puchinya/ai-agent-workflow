@@ -652,7 +652,7 @@ class OwnerAuthorizationTests(unittest.TestCase):
                     patch("p_ases.cli.read_verified_owner_decision", return_value=verified_decision), \
                     patch("p_ases.cli.verify_adc", side_effect=[previous, published]), \
                     patch("p_ases.cli.publish_adc", return_value=published_pointer) as publish, \
-                    patch("p_ases.cli.rebaseline_issue_phase", side_effect=AssertionError(
+                    patch("p_ases.cli.restart_issue_phase", side_effect=AssertionError(
                         "ADC publication must not advance a Phase")) as rebaseline:
                 result = _publish_owner_approved_adc(args, REPOSITORY, FakeGitHub(), plan, decision)
             self.assertEqual(result["status"], "PUBLISHED")
