@@ -686,7 +686,7 @@ class ADCPublicationTests(unittest.TestCase):
         self.assertEqual(verified.pointer.comment_id, next_comment_id)
         self.assertEqual(verified.contract.content, next_payload)
 
-    def test_first_journal_record_rejects_a_wrong_legacy_pointer_predecessor(self):
+    def test_current_adc_read_does_not_revalidate_legacy_predecessors(self):
         legacy = publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
         self.remove_pointer_journal()
         self.set_legacy_pointer(legacy)
@@ -696,20 +696,18 @@ class ADCPublicationTests(unittest.TestCase):
         for predecessor in ("none", "9999"):
             with self.subTest(predecessor=predecessor):
                 self.github.comments = copy.deepcopy(base_comments)
-                self.append_test_pointer_record(next_payload, predecessor)
-                with self.assertRaisesRegex(ADCError, "first ADC pointer journal record"):
-                    verify_adc(self.github, 1)
+                current = self.append_test_pointer_record(next_payload, predecessor)
+                self.assertEqual(verify_adc(self.github, 1).pointer.comment_id, current)
 
-    def test_first_journal_record_without_legacy_pointer_must_start_at_none(self):
+    def test_current_adc_reader_does_not_require_legacy_history(self):
         next_payload = self.payload.replace(b"REQ-01", b"REQ-02")
         comment_id = self.append_test_pointer_record(next_payload, "none")
         self.assertEqual(verify_adc(self.github, 1).pointer.comment_id, comment_id)
 
         github = FakeGitHub()
         self.github = github
-        self.append_test_pointer_record(next_payload, "9999")
-        with self.assertRaisesRegex(ADCError, "first ADC pointer journal record"):
-            verify_adc(self.github, 1)
+        current = self.append_test_pointer_record(next_payload, "9999")
+        self.assertEqual(verify_adc(self.github, 1).pointer.comment_id, current)
 
     def test_supersession_does_not_reuse_a_historical_adc_after_a_to_b_to_a(self):
         first_a = publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
@@ -841,7 +839,7 @@ class ADCPublicationTests(unittest.TestCase):
             publish_adc(self.github, 1, payload_c, state="approved",
                         explicitly_approved=True, supersede=True)
 
-        with self.assertRaisesRegex(ADCError, "concurrent publications from the same predecessor"):
+        with self.assertRaisesRegex(ADCError, "competing publications from one predecessor"):
             verify_adc(self.github, 1)
 
     def test_retry_reuses_exact_orphan_comment_after_pointer_journal_failure(self):
