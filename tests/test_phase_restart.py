@@ -966,7 +966,7 @@ class PhaseRestartTests(unittest.TestCase):
         self.assertEqual(self.github.label_writes, 0)
         self.assertEqual(len(self.github.comments), 1)
 
-    def test_wrong_phase_kind_missing_binding_and_issue63_fail_closed(self):
+    def test_wrong_phase_kind_missing_binding_and_mismatched_issue_fail_closed(self):
         self.github.issue_row["labels"] = [{"name": "kind:single"}, {"name": "phase:requirements"}]
         with self.assertRaisesRegex(PhaseRestartError, "phase:execution"):
             self.run_restart()
@@ -980,7 +980,7 @@ class PhaseRestartTests(unittest.TestCase):
             self.run_restart()
         self.assertEqual(self.github.label_writes, 0)
         with patch("p_ases.phase_restart.verify_adc", return_value=self.verified):
-            with self.assertRaisesRegex(PhaseRestartError, "Issue #63"):
+            with self.assertRaisesRegex(PhaseRestartError, "exact open non-PR Issue"):
                 restart_issue_phase(self.github, self.root, 63)
         self.assertEqual(self.github.label_writes, 0)
 
