@@ -399,18 +399,14 @@ def validate_approval_ready_adc(
             raise ADCError("approved ADC predecessor declaration is malformed")
         declared = (int(match.group(1)), int(match.group(2)), match.group(3))
 
-    if check_current_pointer:
-        is_issue63 = contract.repository == "puchinya/ai-agent-workflow" and issue_number == 63
-        if is_issue63 and current_pointer is not None and current_pointer.state != "approved":
-            raise ADCError("approved ADC successor requires a current approved predecessor")
-        if is_issue63 and current_pointer is not None and declared is None:
-            raise ADCError("Issue #63 approved successor must name its current predecessor ADC")
-        if is_issue63 and declared is not None:
-            if current_pointer is None:
-                raise ADCError("approved ADC declares a predecessor but the current pointer is absent")
-            if (declared[0] != issue_number or declared[1] != current_pointer.comment_id
-                    or declared[2] != current_pointer.sha256):
-                raise ADCError("approved ADC predecessor does not match the current approved pointer")
+    if check_current_pointer and declared is not None:
+        # Current contracts may name their immediate predecessor, but no
+        # historical ADC declaration or Issue-specific policy is required.
+        if current_pointer is None:
+            raise ADCError("approved ADC declares a predecessor but the current pointer is absent")
+        if (declared[0] != issue_number or declared[1] != current_pointer.comment_id
+                or declared[2] != current_pointer.sha256):
+            raise ADCError("approved ADC predecessor does not match the current approved pointer")
     return contract
 
 
