@@ -1067,7 +1067,7 @@ class OwnerAuthorizationTests(unittest.TestCase):
                         pr_head_sha40=PLAN_HEAD,
                         details={**details, "verifier_user_id": 9999},
                     )
-            self.assertEqual(reads, [issue_number])
+            self.assertEqual(reads, [issue_number, issue_number])
 
     def test_issue71_v3_confirmation_publishes_only_to_issue71(self):
         plan = issue71_user_review_plan()
