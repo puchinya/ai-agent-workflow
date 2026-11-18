@@ -111,8 +111,6 @@ def _readback_pull(github: GitHub, pull: dict[str, object], *, repository: str,
             or not isinstance(head_name, str) or head_name.lower() != repository.lower()):
         raise WorkError("existing PR is closed, draft, forked, or mismatched in Issue/base/head/HEAD")
     association_mode = _validate_pr_body(row.get("body"), issue_number)
-    if issue_number == 63 and number != 64:
-        raise WorkError("Issue #63 deferred delivery is bound only to existing PR #64")
     if association_mode != expected_association_mode:
         raise WorkError("existing PR Issue association mode differs from the requested delivery mode")
     return row
@@ -122,13 +120,14 @@ def ensure_pull_request(repository_root: Path, github: GitHub, *, repository: st
                         issue_number: int, binding: ExecutionBinding,
                         branch_ref: str, base_ref: str, title: str, body: str) -> PREnsureResult:
     """Reuse one exact eligible PR or create once, then read it back before binding."""
-    if issue_number == 71 and repository.casefold() == "puchinya/ai-agent-workflow":
-        raise WorkError("Issue #71 requires epoch PR ensure; ordinary ExecutionBinding cannot create its PR")
     root = Path(repository_root).resolve()
+    state = root / ".p_ases" / "state" / str(issue_number)
+    for name in ("execution-epoch.json", "execution-adoption.json", "workspace-attachment.json"):
+        existing = state / name
+        if existing.exists() or existing.is_symlink():
+            raise WorkError("ordinary PR ensure cannot replace an existing adopted or epoch execution identity")
     branch_ref, base_ref = validate_ref(branch_ref), validate_ref(base_ref)
     requested_association_mode = _validate_pr_body(body, issue_number)
-    if issue_number == 63 and requested_association_mode != "deferred_close":
-        raise WorkError("Issue #63 deferred delivery requires the standalone Refs #63 association")
     binding.validate()
     if (binding.repository != repository or binding.issue_number != issue_number
             or binding.base_ref != base_ref or binding.branch_ref != branch_ref
@@ -206,8 +205,6 @@ def ensure_pull_request(repository_root: Path, github: GitHub, *, repository: st
         raise WorkError(f"PR search failed: {exc}") from exc
     if len(candidates) > 1:
         raise WorkError("multiple PRs match the exact head/base refs; refusing ambiguous reuse")
-    if issue_number == 63 and (not candidates or candidates[0].get("number") != 64):
-        raise WorkError("Issue #63 delivery must reuse existing PR #64; refusing to create or select another PR")
     reused = bool(candidates)
     if candidates:
         pull = _readback_pull(github, candidates[0], repository=repository,
