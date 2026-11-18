@@ -89,7 +89,8 @@ def _authorization(content: bytes, repository: str, issue_number: int) -> tuple[
             or [x for x in after if x.startswith("phase:")] != ["phase:requirements"]
             or [x for x in before if not x.startswith("phase:")]
                != [x for x in after if not x.startswith("phase:")]
-            or sum(x.startswith("kind:") for x in before) != 1):
+            or sum(x.startswith("kind:") for x in before) != 1
+            or any(x.startswith("attention:") for x in before + after)):
         raise PhaseReworkLifecycleError("Phase rework authorization has invalid exact labels")
     return auth, _sha(_json(auth))
 

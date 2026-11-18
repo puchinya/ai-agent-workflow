@@ -186,6 +186,21 @@ class GenericPhaseReworkTests(unittest.TestCase):
                 self._run(root, github, verified(auth()), changes)
             self.assertEqual((github.post_count, github.label_writes), (0, 0))
 
+    def test_blocked_attention_authorization_cannot_restart_phase(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, github = Path(temporary), FakeGitHub()
+            authorization = auth()
+            authorization["labels_before"] = [
+                "attention:blocked", "kind:single", "phase:verification",
+            ]
+            authorization["labels_after"] = [
+                "attention:blocked", "kind:single", "phase:requirements",
+            ]
+            with self.assertRaisesRegex(
+                    phase.PhaseReworkLifecycleError, "invalid exact labels"):
+                self._run(root, github, verified(authorization))
+            self.assertEqual((github.post_count, github.label_writes), (0, 0))
+
     def test_ambiguous_label_update_never_retries(self):
         with tempfile.TemporaryDirectory() as temporary:
             root, github = Path(temporary), FakeGitHub()
