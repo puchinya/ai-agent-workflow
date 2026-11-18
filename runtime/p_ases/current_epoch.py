@@ -28,7 +28,7 @@ SHA40 = re.compile(r"[0-9a-f]{40}\Z")
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 ORIGIN_SCHEMA = "PASES_ISSUE_EXECUTION_EPOCH_V3"
-ATTACHMENT_SCHEMA = "PASES_ISSUE_EXECUTION_EPOCH_ATTACH_V3"
+ATTACHMENT_SCHEMA = "PASES_EXECUTION_EPOCH_ATTACHMENT_V3"
 ORIGIN_APPLIED = "PASES_ISSUE_PHASE_EPOCH_REBASE_APPLIED_V1"
 REWORK_APPLIED = "PASES_ISSUE_VERIFICATION_REWORK_APPLIED_V3"
 
@@ -144,7 +144,8 @@ def _carrier(github: GitHub, issue_number: int, comment_id: int, expected_schema
     if (row.get("id") != comment_id
             or row.get("issue_url") != f"https://api.github.com/repos/{github.repo}/issues/{issue_number}"
             or row.get("created_at") != row.get("updated_at")
-            or (row.get("user") or {}).get("id") != owner_id):
+            or not isinstance(row.get("user"), dict)
+            or row["user"].get("id") != owner_id):
         raise CurrentEpochError("execution epoch applied carrier identity, author, or timestamps changed")
     digest = _sha(body.encode("utf-8"))
     if expected_sha is not None and digest != expected_sha:
