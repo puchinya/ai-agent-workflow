@@ -1571,6 +1571,14 @@ def _publish_phase_evidence(github: GitHub, root: Path, issue_number: int,
             latest_decision, latest_issue, latest_adc, latest_branch, latest_sha = _collect_payload(
                 github, root, issue_number, source, target, skips,
             )
+            live_issue = github.issue(issue_number)
+            if (not isinstance(live_issue, dict)
+                    or live_issue.get("number") != issue_number
+                    or live_issue.get("state") != "open"
+                    or live_issue.get("body") != issue.get("body")
+                    or live_issue.get("labels") != issue.get("labels")
+                    or live_issue.get("repository_url") != issue.get("repository_url")):
+                raise PhaseEvidenceError("Issue changed between Phase preflight and publication")
             if (latest_decision.body() != body or latest_issue.get("number") != issue_number
                     or latest_issue.get("state") != "open"
                     or latest_issue.get("labels") != issue.get("labels")
