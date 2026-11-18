@@ -101,7 +101,10 @@ class EpochLifecycleTests(unittest.TestCase):
     @staticmethod
     def _run(root, github, adc):
         def active(_github, _root, issue, _verified=None):
-            origin = json.loads(module.epoch_paths(root, issue)[0].read_bytes())
+            origin_path, attachment_path = module.epoch_paths(root, issue)
+            if not attachment_path.is_file():
+                raise module.CurrentEpochError("missing epoch attachment")
+            origin = json.loads(origin_path.read_bytes())
             return SimpleNamespace(epoch_id=origin["epoch_id"],
                                    applied_comment_id=origin["applied_comment_id"])
         with patch.object(module, "verify_adc", return_value=adc), \
