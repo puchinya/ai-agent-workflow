@@ -1008,22 +1008,22 @@ Only the exact current combined ADC and one direct child of its marker-authorize
 <a id="tst-f01-098"></a>
 ### 2.64 TST-F01-098 Generic historical ADC predecessor validation
 
-**Setup and action:** Construct an ordered approved pointer chain with exact body bytes, byte lengths, digests, states, and immediate predecessor links. Exercise multiple historical generations with no visible predecessor declaration, a suffix-free declaration, and a canonical `(N bytes)` suffix using both comma-grouped and ungrouped numbers. Accept the suffix only when N equals the verified UTF-8 body byte length of the ADC referenced by the header's predecessor ID/SHA, even when that length differs from the historical row containing the header. Independently verify the containing row's own body length against its pointer. Mutate a present declaration to the wrong ID or digest; use a wrong predecessor byte length, malformed comma grouping, arbitrary suffix, duplicate/malformed declaration; and independently mutate pointer order, state, byte length, digest, and adjacency. Verify that all historical mismatches fail before any phase-evidence write. Remove, duplicate, or annotate the current ADC predecessor declaration and verify that the current generation always fails closed. The executable cases are in tests/test_phase_rework.py.
+**Setup and action:** Create a current approved ADC pointer naming a current comment with exact Issue identity, UTF-8 byte length and SHA-256. Insert many older and unrelated ADC comments. Exercise `verify_adc` with a changed current body, conflicting newest pointer, malformed pointer, draft pointer, wrong repository or Issue and stale current state. Fail when any older ADC direct read or forward-chain verifier is called. Run generic epoch reset for two different Issue IDs. Executable tests: `tests/test_adc_intake.py`, `tests/test_current_epoch.py`, `tests/test_epoch_lifecycle.py`.
 
 <a id="ora-f01-098"></a>
 #### 2.64.1 ORA-F01-098 Expected result
 
-Historical declarations may be absent, but exact approved pointer-chain identity and journal adjacency are mandatory for every generation. A present historical declaration must occur once and match the immediately preceding pointer. Its optional canonical `(N bytes)` annotation must equal that referenced predecessor's verified UTF-8 body byte length; the containing historical row's body length is checked independently. The current ADC declaration must occur exactly once, match its verified predecessor, and contain no byte annotation. All malformed or mismatched history blocks before phase-evidence writes; no historical ADC is rewritten and no comment-ID-specific exception is used.
+Only the newest approved current ADC's directly named comment is validated. Current body/pointer/subject drift is rejected without historical reads. Immutable old comments are preserved, not revalidated. The same authorization rules apply without Issue-number exceptions.
 
 <a id="tst-f01-099"></a>
 ### 2.65 TST-F01-099 Exact approved historical commit segment map
 
-**Setup and action:** Build a current marker whose ordered segment map binds each ADC comment ID/SHA to one parent/commit pair and exact sorted path list. Accept a contiguous map that enumerates the full Git range from the pinned reader boundary to the current start HEAD. Independently remove a segment, add an unlisted commit, reorder rows, reuse or change an ADC pointer, break a parent link, change the final endpoint, introduce a merge parent, and add, remove, reorder, or duplicate a path. Require every mutation to fail before any Issue write. Historical ADC body markers remain opaque. The executable parser and Git-boundary regressions are in tests/test_phase_rework.py.
+**Setup and action:** Bind the current authorized operation to its base, branch, start HEAD, exact parent and changed-path allowlist. Verify a valid direct child; then introduce a merge parent, extra descendant, stale remote HEAD or unlisted path. Add arbitrary historical ADC/commit segments and verify they do not influence the current decision. Use `tests/test_epoch_lifecycle.py` and current-head CLI tests.
 
 <a id="ora-f01-099"></a>
 #### 2.65.1 ORA-F01-099 Expected result
 
-The exact `rev-list --reverse` commit sequence equals the current marker's complete segment map. Every approved pointer is in history order, every commit is one direct child of the prior endpoint, and every actual changed-path list exactly equals the sorted allowlist in its segment. Missing, extra, reordered, duplicated, merged, mis-parented, unapproved, mis-digested, or path-drifted segments fail closed before GitHub writes.
+Only current approved marker constraints and live Git identity authorize the operation. Any stale or unexpected current commit boundary blocks before writes. Historical commit segment maps are not traversed or treated as authority.
 
 <a id="tst-f01-102"></a>
 ### 2.66 TST-F01-102 Verification-phase post-rework label validation
@@ -1038,22 +1038,22 @@ The validator accepts `phase:verification` as a normal valid lifecycle state wit
 <a id="tst-f01-103"></a>
 ### 2.67 TST-F01-103 Batched ADC journal snapshots and drift rejection
 
-**Setup and action:** Mock small and 55-generation approved ADC ranges. Count complete paginated Issue-comment sweeps and selected ADC direct reads. Require two complete list sweeps for either range size and exactly two direct reads per selected ADC. Track overlap and prove each direct-read pass uses no more than 16 concurrent requests. Force a direct-read failure and require both bounded batches to join, the complete before/after snapshots to finish, and the range reader to return no partial rows. Compare each exact ADC identity, body bytes, SHA-256, byte length, approved state, and predecessor against both list snapshots. Between snapshots, independently insert, delete, edit, duplicate, reorder, or malform a pointer/ADC entry and require the range reader to fail before returning verified rows.
+**Setup and action:** Exercise current-only ADC verification against synthetic short and million-comment Issue histories while holding the latest pointer and current ADC constant. Assert no growth in historical ADC body reads. Inject conflicting current pointers, wrong digest or draft state and require fail-closed results without a complete-history fallback. Verify separately that one-shot remote operation-journal duplication checks remain active.
 
 <a id="ora-f01-103"></a>
 #### 2.67.1 ORA-F01-103 Expected result
 
-Snapshot count remains exactly two as the selected range grows, while direct-read count is exactly two per selected ADC and at most 16 requests overlap within each direct-read pass. A failed batch is fully joined and never returns a partial range. Only identical complete snapshots and direct/list/direct ADC fingerprints pass. Any journal drift or malformed entry fails closed.
+Current ADC reads are independent of superseded ADC-generation count. Changed current identity or draft state blocks. This does not remove the separate anti-replay checks for an operation's own Intent/Applied journal.
 
 <a id="tst-f01-104"></a>
 ### 2.68 TST-F01-104 V3 phase rework preserves V2 and is one-shot
 
-**Setup and action:** Seed an exact V2 Intent/Applied pair and record its complete bodies and digests. Accept one ordered V3 Intent/Applied successor without changing either V2 body. Exercise one successful V3 application, exact retry, duplicate and out-of-order records, missing/partial pairs, changed V2 bytes, stale ADC/HEAD/epoch/PR, and wrong before/after labels. Count Intent/Applied POSTs and label PUTs; require one pair and at most one label PUT on success, a zero-write NOOP for a complete retry, and no retry for ambiguous or partial state.
+**Setup and action:** Supply the same current typed Phase rework authorization for a non-special Issue. Verify one V3 Intent/Applied and at most one labels PUT, exact direct readback and zero-write retry. Reject stale current ADC, epoch, HEAD, PR or Readiness; block any attention label, duplicate kind, missing evidence or ambiguous PUT without a retry. Preserve any old V2 data untouched. Executable tests: `tests/test_phase_rework_lifecycle.py`.
 
 <a id="ora-f01-104"></a>
 #### 2.68.1 ORA-F01-104 Expected result
 
-The old V2 pair remains byte-identical. One exact V3 generation may apply once and is fully read back; exact retry performs zero writes. Stale, conflicting, partial, duplicated, or reordered state fails closed without a second POST or label PUT. Executable cases are in `tests/test_phase_rework.py`.
+An issue-neutral current V3 operation writes once and a complete retry is NOOP. Older V1/V2 bodies remain immutable but do not authorize the current operation. Ambiguous, partial or invalid state never causes a duplicate POST or PUT.
 
 <a id="tst-f01-105"></a>
 ### 2.69 TST-F01-105 Uniform V2 and V3 event/publication window
@@ -1078,12 +1078,12 @@ Both readers accept exactly the phase states declared by the verified current AD
 <a id="tst-f01-107"></a>
 ### 2.71 TST-F01-107 Immutable V3 origin ancestry and NOOP reconciliation
 
-**Setup and action:** Build an approved forward chain where the immediate predecessor ADC differs from the immutable V3 origin ADC. Accept the exact origin ID/SHA/byte length and original marker/generation digests, then mutate or omit the origin, change its approval state, alter either V2/V3 body, change timestamps or labels, and break the generation link. Exercise the complete existing V3 pair with its exact after-label state and assert NOOP with zero comment and label writes. The executable origin lookup and reader regressions are in `tests/test_phase_rework.py`.
+**Setup and action:** Seed canonical local V3 origin and workspace attachment plus directly addressed immutable origin Applied and current Phase Applied/Intent records. Change each referenced ID, digest, author, Issue, branch or base independently. Provide an unrelated historical ADC chain that must not be touched. A complete matching phase pair is NOOP. Executable tests: `tests/test_current_epoch.py`, `tests/test_phase_rework_lifecycle.py`.
 
 <a id="ora-f01-107"></a>
 #### 2.71.1 ORA-F01-107 Expected result
 
-The reader locates the immutable origin from its own authorization identity inside the complete approved forward chain, independently of the current predecessor. Only a complete exact V2/V3 journal and matching subject return NOOP. Missing, duplicated, unapproved, changed, or unlinked data blocks before writes.
+Only canonical origin/attachment and directly bound Applied/Intent evidence establish the active epoch. A mismatch blocks without old ADC reconstruction; complete exact state returns zero-write NOOP.
 
 <a id="tst-f01-108"></a>
 ### 2.72 TST-F01-108 Marker-derived direct-child continuation boundary
@@ -1098,29 +1098,30 @@ The follow-up parent equals the marker start and the Git range contains at most 
 <a id="tst-f01-109"></a>
 ### 2.73 TST-F01-109 Versioned generic continuation-marker reader
 
-**Setup and action:** Use synthetic, pointer-bound V1 and V2 current markers with distinct predecessors, history boundaries, start HEADs, and sorted path allowlists. Verify exact pointer/body digest and complete approved-history links. Reject unknown schema, duplicate or noncanonical JSON fields, wrong predecessor, changed boundary, unsorted/unsafe/duplicate paths, incorrect V2 checklist count, and any stale current pointer. Confirm historical V1 generations are checked as exact immutable bytes without parsing their marker bodies or using comment-specific exceptions. Exercise direct-child validation from the marker-declared start and allowlist.
+**Setup and action:** Verify current typed marker parsing using different repository/Issue/epoch/PR subjects, HEADs and allowlists. Reject unknown schema, non-canonical JSON, duplicate fields, stale pointers and path drift. Assert historical marker bodies are not fetched and no Issue-number dispatch chooses the implementation. Executable tests: `tests/test_phase_rework_lifecycle.py` and `tests/test_epoch_lifecycle.py`.
 
 <a id="ora-f01-109"></a>
 #### 2.73.1 ORA-F01-109 Expected result
 
-Only a current marker whose exact pointer, versioned schema, history links, and marker-derived Git boundary all agree passes. V2 checklist drift and malformed marker fields fail closed; historical generations are validated by approved ID, SHA, byte length, and predecessor link alone.
+The exact current approved ADC marker, parsed by schema, is the only current authorization. Older markers remain historical bytes. Unknown, stale, ambiguous or mismatched current marker content blocks with zero writes.
 
 <a id="tst-f01-110"></a>
 ### 2.74 TST-F01-110 Command-local ADC history-session reuse
 
-**Setup and action:** Within one Issue #71 command, invoke nested active-epoch, phase-rework, PRBinding-history, and phase-evidence readers against the same verified ADC range. Count full pointer-journal sweeps and selected body reads. Vary client identity, normalized repository, Issue, predecessor/current ID or SHA, approval state, requested coverage, and pointer between calls. Clear the session before simulated label/comment writes and final readback; invoke `advance`, `phase-evidence`, and `read_active_epoch` both directly and when nested. Verify mutable Issue, labels, PR, branch, HEAD, receipts, and journals are fetched afresh.
+**Setup and action:** Invoke nested active epoch, Phase evidence, PRBinding and owner readers against one exact current approved ADC. Vary client, repository, Issue, current pointer and mutable PR/HEAD state. Assert no old ADC range lookup or cache fill, while current mutable subjects are re-read at the write boundaries. A changed pointer must invalidate the current authority.
 
 <a id="ora-f01-110"></a>
 #### 2.74.1 ORA-F01-110 Expected result
 
-One command reuses only a covering, fully verified immutable range for the same client, repository, Issue, exact identities, and approval state. A miss or invalidation performs full validation; wrong identity or stale pointer fails closed. Mutable subject evidence never comes from the session, and no required before/after readback is skipped.
+Current ADC sharing requires the exact same client, Issue, repository and pointer. A cache miss must not invoke a historical forward-range validator. Current mutable subjects and operation-specific journals are always checked independently.
 
 <a id="tst-f01-111"></a>
 ### 2.75 TST-F01-111 Phase-rework history-session write boundaries
 
-**Setup and action:** Seed a command-local ADC history session with a verified range, then exercise the production Issue #71 V2 and V3 Intent/Applied comment POST and label PUT paths. Record event order for session invalidation, complete ADC-chain and mutable-subject validation, one-shot attempt-marker creation, mutation, and readback. Cover successful responses, failures before application, lost responses after application, and a pointer/body change after an earlier cached read. Require the current chain and Issue/labels/PR/branch/HEAD/journal to be freshly validated before each allowed write; invalidate after every write outcome before direct/list/direct comment-history readback, label readback, and final live-subject readback. Verify stale history blocks before the next mutation, missing pre-write validation blocks before the attempt marker, no ambiguous write is retried, and existing record bytes remain unchanged.
+**Setup and action:** Execute generic epoch reset and Phase rework with a current approved marker, direct readback, one-shot Intent/labels/Applied attempt ordering and current mutable-subject checks. Force pointer drift, ambiguous POST/PUT, missing directly referenced Applied or partial local state. Count mutations and block all duplicate attempts. Fail if an older ADC verification helper is invoked. Executable tests: `tests/test_epoch_lifecycle.py`, `tests/test_phase_rework_lifecycle.py`.
 
 <a id="ora-f01-111"></a>
 #### 2.75.1 ORA-F01-111 Expected result
 
-Every V2/V3 Intent and Applied POST and every V2/V3 label PUT follows invalidation → complete current-subject validation → one-shot write → invalidation → exact readback. A changed or unverified ADC history fails closed before mutation; failed or ambiguous writes are read back without retry. The executable boundary and route regressions are in `tests/test_phase_rework.py`.
+A state-changing operation requires current ADC/subject validation at its write boundary and direct immutable operation record readback. Stale, ambiguous, incomplete or conflicting evidence fails without another write. Historic ADC bodies are not verified as a prerequisite.
+
