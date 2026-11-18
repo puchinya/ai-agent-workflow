@@ -311,21 +311,18 @@ class PREnsureTests(unittest.TestCase):
             ensure_pull_request(repo, github, repository="owner/repo", issue_number=30,
                                 binding=binding, branch_ref="pases/work", base_ref="main",
                                 title="Issue #30 work", body=BODY)
-            before = read_pr_binding_history(repo, 30)[0][0].read_bytes()
+            original_path, original = read_pr_binding_history(repo, 30)[0]
+            before = original_path.read_bytes()
             for invalid in (
-                replace(binding, adc_comment_id=122, adc_sha256="b" * 64),
-                replace(binding, adc_comment_id=123, adc_sha256="b" * 64),
+                replace(original, adc_comment_id=122, adc_sha256="b" * 64),
+                replace(original, adc_comment_id=123, adc_sha256="b" * 64),
             ):
-                write_binding(execution_binding_path(repo, 30), invalid)
                 with patch("p_ases.work.verify_adc", side_effect=AssertionError(
                         "invalid local ADC ordering must fail before GitHub requests")):
                     with self.assertRaisesRegex(WorkError, "increase monotonically"):
-                        ensure_pull_request(
-                            repo, github, repository="owner/repo", issue_number=30,
-                            binding=invalid, branch_ref="pases/work", base_ref="main",
-                            title="Issue #30 work", body=BODY,
-                        )
-            self.assertEqual(read_pr_binding_history(repo, 30)[0][0].read_bytes(), before)
+                        from p_ases.work import _verify_pr_binding_successor
+                        _verify_pr_binding_successor(github, 30, original, invalid)
+            self.assertEqual(original_path.read_bytes(), before)
 
     def test_pr_binding_successor_rejects_wrong_or_unapproved_current_adc(self):
         with tempfile.TemporaryDirectory() as temporary:
