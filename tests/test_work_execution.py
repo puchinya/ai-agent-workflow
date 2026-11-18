@@ -160,6 +160,7 @@ class WorkExecutionTests(unittest.TestCase):
             ).validate()
             write_checkpoint(prior_checkpoint_path, prior_checkpoint)
         epoch = SimpleNamespace(
+            repository="puchinya/ai-agent-workflow", issue_number=71,
             sha256=epoch_sha,
             adc_comment_id=6935541245,
             adc_sha256="03252cba1e337944fe43fa66346482d2614320999c10d5a2f3c195a473235479",
