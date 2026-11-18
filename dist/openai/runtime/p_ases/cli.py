@@ -113,7 +113,10 @@ from .phase_evidence import (
 )
 from .phase_restart import PhaseRestartError, restart_issue_phase
 from .phase_epoch_rebaseline import (
-    PhaseEpochRebaselineError, apply_phase_epoch_rebaseline, epoch_paths, read_active_epoch,
+    PhaseEpochRebaselineError, apply_phase_epoch_rebaseline,
+)
+from .current_epoch import (
+    CurrentEpochError, epoch_paths as current_epoch_paths, read_current_epoch,
 )
 from .phase_rework import PhaseReworkError, apply_issue71_phase_rework
 from .oracle_trace import (
@@ -1017,31 +1020,24 @@ def _context_show(issue_number: int, repository: str, root: Path, github: GitHub
         return 2
 
     binding_path = execution_binding_path(root, issue_number)
-    if issue_number == 71 and repository.casefold() == "puchinya/ai-agent-workflow":
+    epoch_file, attachment_file = current_epoch_paths(root, issue_number)
+    if (epoch_file.exists() or epoch_file.is_symlink()
+            or attachment_file.exists() or attachment_file.is_symlink()):
         try:
-            epoch = read_active_epoch(github, root, verified)
-        except (PhaseEpochRebaselineError, GitHubError, GitError, OSError, ValueError) as exc:
-            _json({"status": "BINDING_PROVENANCE_MISSING", "issue": 71, "repository": repository,
-                   "issue_state": "open", "adc_status": "APPROVED",
-                   "adc_comment_id": verified.pointer.comment_id, "adc_sha256": verified.pointer.sha256,
-                   "binding_status": "BLOCKED_BINDING_PROVENANCE_MISSING",
-                   "historical_binding_provenance": "UNVERIFIED", "reason": str(exc)})
+            epoch = read_current_epoch(github, root, issue_number, verified)
+        except (CurrentEpochError, GitHubError, GitError, OSError, ValueError) as exc:
+            _json({"status": "EPOCH_INVALID", "issue": issue_number, "repository": repository,
+                   "binding_status": "INVALID", "reason": str(exc)})
             return 2
-        if (epoch.adc_comment_id != verified.pointer.comment_id
-                or epoch.adc_sha256 != verified.pointer.sha256):
-            _json({"status": "EPOCH_STALE", "issue": 71, "repository": repository,
-                   "binding_status": "INVALID", "reason": "active epoch differs from the current ADC"})
-            return 2
-        _json({"status": "ACTIVE_EPOCH", "issue": 71, "repository": repository,
+        _json({"status": "ACTIVE_EPOCH", "issue": issue_number, "repository": repository,
                "issue_state": "open", "adc_status": "APPROVED",
                "adc_comment_id": epoch.adc_comment_id, "adc_sha256": epoch.adc_sha256,
-               "binding_status": "ACTIVE_EPOCH_3_EXECUTION_EPOCH",
+               "binding_status": "ACTIVE_EXECUTION_EPOCH",
                "execution_identity_sha256": epoch.sha256, "epoch_id": epoch.epoch_id,
-               "historical_binding_provenance": "UNVERIFIED",
+               "historical_binding_provenance": epoch.historical_binding_provenance,
                "frozen_context": {"base_ref": epoch.base_ref, "base_sha": epoch.base_sha40,
                                   "branch_ref": epoch.branch_ref,
-                                  "workspace_attachment": str(root / ".p_ases" / "state" / "71"
-                                                               / "execution-epoch-attachment.json")}})
+                                  "workspace_attachment": str(attachment_file)}})
         return 0
     if path_has_symlink(binding_path):
         _json({"status": "BINDING_INVALID", "issue": issue_number, "repository": repository,
@@ -1133,8 +1129,17 @@ def _approved_issue_adc(github: GitHub, issue_number: int, repository: str) -> t
 
 def _read_execution_identity(github: GitHub, root: Path, repository: str,
                              issue_number: int, verified_adc: Any) -> ExecutionIdentity:
-    """Read the immutable Issue identity without converting between generations."""
-    if (issue_number == 63 and repository.casefold() == "puchinya/ai-agent-workflow"):
+    """Select a validated execution identity from persisted state, not Issue numbers."""
+    epoch_file, attachment_file = current_epoch_paths(root, issue_number)
+    if (epoch_file.exists() or epoch_file.is_symlink()
+            or attachment_file.exists() or attachment_file.is_symlink()):
+        try:
+            return read_current_epoch(github, root, issue_number, verified_adc)
+        except (CurrentEpochError, GitHubError, OSError, ValueError) as exc:
+            raise CLIError(f"current execution epoch readback failed: {exc}") from exc
+    adoption_file, adoption_attachment = adoption_path(root, issue_number), adoption_attachment_path(root, issue_number)
+    if (adoption_file.exists() or adoption_file.is_symlink()
+            or adoption_attachment.exists() or adoption_attachment.is_symlink()):
         try:
             return read_execution_identity(
                 github, root, adc_comment_id=verified_adc.pointer.comment_id,
@@ -1142,15 +1147,6 @@ def _read_execution_identity(github: GitHub, root: Path, repository: str,
             )
         except ExecutionAdoptionError as exc:
             raise CLIError(str(exc)) from exc
-    if issue_number == 71 and repository.casefold() == "puchinya/ai-agent-workflow":
-        try:
-            identity = read_active_epoch(github, root, verified_adc)
-            if (identity.adc_comment_id != verified_adc.pointer.comment_id
-                    or identity.adc_sha256 != verified_adc.pointer.sha256):
-                raise PhaseEpochRebaselineError("active Issue #71 epoch differs from the current approved ADC")
-            return identity
-        except (PhaseEpochRebaselineError, GitHubError, OSError, ValueError) as exc:
-            raise CLIError(f"active Issue #71 execution epoch readback failed: {exc}") from exc
     try:
         return read_binding(execution_binding_path(root, issue_number))
     except ExecutionError as exc:
@@ -1158,11 +1154,14 @@ def _read_execution_identity(github: GitHub, root: Path, repository: str,
 
 
 def _identity_evidence_paths(root: Path, issue_number: int, identity: ExecutionIdentity) -> tuple[Path, ...]:
-    """Return only the files that back the already-validated active identity."""
-    if issue_number == 71 and is_issue71_execution_epoch(identity):
+    """Cite exactly the currently validated identity files, regardless of Issue ID."""
+    if is_issue71_execution_epoch(identity):
         identity.validate()
-        paths = epoch_paths(root)
-    elif issue_number == 63 and isinstance(identity, AdoptedExecutionEpoch):
+        paths = current_epoch_paths(root, issue_number)
+        retired_binding = execution_binding_path(root, issue_number)
+        if retired_binding.exists() or retired_binding.is_symlink():
+            raise CLIError("active epoch must not coexist with an ordinary V1 ExecutionBinding")
+    elif isinstance(identity, AdoptedExecutionEpoch):
         identity.validate()
         paths = (adoption_path(root, issue_number), adoption_attachment_path(root, issue_number))
     elif isinstance(identity, ExecutionBinding):
@@ -1170,10 +1169,8 @@ def _identity_evidence_paths(root: Path, issue_number: int, identity: ExecutionI
         paths = (execution_binding_path(root, issue_number),)
     else:
         raise CLIError("Readiness cannot cite an unsupported execution identity")
-    if issue_number == 71:
-        retired_binding = execution_binding_path(root, issue_number)
-        if retired_binding.exists() or retired_binding.is_symlink():
-            raise CLIError("Issue #71 epoch-3 identity must not have a reconstructed V1 Binding")
+    if identity.issue_number != issue_number:
+        raise CLIError("execution identity evidence belongs to a different Issue")
     for path in paths:
         if path_has_symlink(path) or not path.is_file():
             raise CLIError("validated execution identity evidence file is missing or unsafe")
@@ -1232,11 +1229,11 @@ def _work_command(args: argparse.Namespace, repository: str, root: Path, github:
             args.issue != 63 or repository.casefold() != "puchinya/ai-agent-workflow"):
         raise CLIError("adoption refresh is restricted to puchinya/ai-agent-workflow Issue #63")
     _issue, verified = _approved_issue_adc(github, args.issue, repository)
-    if args.issue == 71 and repository.casefold() == "puchinya/ai-agent-workflow":
-        raise CLIError(
-            "Issue #71 uses its approved epoch-3 execution identity; ordinary work base/branch/bind/recover "
-            "cannot create, reconstruct, or replace that identity"
-        )
+    epoch_file, epoch_attachment = current_epoch_paths(root, args.issue)
+    if ((epoch_file.exists() or epoch_file.is_symlink()
+            or epoch_attachment.exists() or epoch_attachment.is_symlink())
+            and args.verb in {"base", "branch", "bind", "recover"}):
+        raise CLIError("ordinary work commands cannot replace an existing execution epoch")
     if args.verb == "adoption-refresh":
         result = refresh_adopted_pr_binding(
             github, root, expected_adc_comment_id=verified.pointer.comment_id,
@@ -1480,9 +1477,6 @@ def _advance_issue_with_adc_session(
     return 0
 
 def _pr_ensure(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
-    if args.issue == 71 and repository.casefold() == "puchinya/ai-agent-workflow":
-        with adc_forward_generation_session(github, args.issue):
-            return _pr_ensure_with_history_session(args, repository, root, github)
     return _pr_ensure_with_history_session(args, repository, root, github)
 
 
@@ -1491,11 +1485,13 @@ def _pr_ensure_with_history_session(
 ) -> int:
     _issue, verified = _approved_issue_adc(github, args.issue, repository)
     binding_path = execution_binding_path(root, args.issue)
-    if args.issue == 71 and repository.casefold() == "puchinya/ai-agent-workflow":
+    epoch_file, epoch_attachment = current_epoch_paths(root, args.issue)
+    if (epoch_file.exists() or epoch_file.is_symlink()
+            or epoch_attachment.exists() or epoch_attachment.is_symlink()):
         try:
-            epoch = read_active_epoch(github, root, verified)
-        except (PhaseEpochRebaselineError, GitHubError, OSError, ValueError) as exc:
-            raise CLIError(f"Issue #71 active epoch-3 readback failed: {exc}") from exc
+            epoch = read_current_epoch(github, root, args.issue, verified)
+        except (CurrentEpochError, GitHubError, OSError, ValueError) as exc:
+            raise CLIError(f"active execution epoch readback failed: {exc}") from exc
         if (epoch.adc_comment_id != verified.pointer.comment_id
                 or epoch.adc_sha256 != verified.pointer.sha256):
             raise CLIError("Issue #71 active epoch-3 identity differs from the current approved ADC")
@@ -1504,7 +1500,7 @@ def _pr_ensure_with_history_session(
             root, github, repository=repository, issue_number=args.issue, execution_epoch=epoch,
             branch_ref=args.branch_ref, base_ref=args.base_ref, title=args.title, body=body,
         )
-        binding_history_path = pr_binding_path(root, 71, github=github)
+        binding_history_path = pr_binding_path(root, args.issue, github=github)
         refresh_adc_forward_generation_session(github, args.issue)
         current = verify_adc(github, args.issue)
         if current.pointer != verified.pointer:
@@ -1514,7 +1510,7 @@ def _pr_ensure_with_history_session(
                 or remote_branch_sha(root, args.branch_ref) != result.binding.pr_head_sha40):
             raise CLIError("Issue #71 worktree or remote branch changed during final PR readback")
         pull = result.pull_request
-        _json({"status": "PR_READY", "repository": repository, "issue": 71,
+        _json({"status": "PR_READY", "repository": repository, "issue": args.issue,
                "pr": pull.get("number"), "url": pull.get("html_url"), "state": pull.get("state"),
                "draft": pull.get("draft"), "base_ref": args.base_ref,
                "base_sha40": pull.get("base", {}).get("sha"), "frozen_base_sha40": epoch.base_sha40,
@@ -1522,7 +1518,7 @@ def _pr_ensure_with_history_session(
                "execution_epoch_sha256": epoch.sha256, "pr_binding_sha256": result.binding.sha256,
                "checkpoint_path": str(result.checkpoint_path), "checkpoint_sha256": result.checkpoint_sha256,
                "reused": result.reused, "reasons": [],
-               "evidence_refs": [*(str(path) for path in epoch_paths(root)),
+               "evidence_refs": [*(str(path) for path in current_epoch_paths(root, args.issue)),
                                  str(binding_history_path), str(result.checkpoint_path)]})
         return 0
     if (args.issue == 63 and repository.casefold() == "puchinya/ai-agent-workflow"
