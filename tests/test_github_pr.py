@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
+from unittest.mock import patch
 
 ROOT = __import__("pathlib").Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
@@ -22,6 +27,32 @@ class FakeGitHub(GitHub):
 
 
 class GitHubPRAdapterTests(unittest.TestCase):
+    def test_api_transport_uses_a_finite_timeout_and_sanitizes_timeout_errors(self):
+        github = GitHub("owner/repo")
+        with patch("p_ases.github.subprocess.run",
+                   side_effect=subprocess.TimeoutExpired(["gh", "api"], 30)) as run:
+            with self.assertRaisesRegex(GitHubError, "POST repos/owner/repo/issues timed out after 30 seconds") as raised:
+                github.request("POST", "repos/owner/repo/issues", {"body": "private payload marker"})
+        self.assertEqual(run.call_args.kwargs["timeout"], 30)
+        self.assertNotIn("private payload marker", str(raised.exception))
+        self.assertNotIn("TimeoutExpired", str(raised.exception))
+
+    def test_subprocess_run_terminates_and_reaps_a_timed_out_child(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            pid_file = Path(temporary) / "child.pid"
+            code = (
+                "import os,pathlib,sys,time; "
+                "pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(30)"
+            )
+            with self.assertRaises(subprocess.TimeoutExpired):
+                subprocess.run(
+                    [sys.executable, "-c", code, str(pid_file)],
+                    check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=0.5,
+                )
+            child_pid = int(pid_file.read_text())
+            with self.assertRaises(OSError):
+                os.kill(child_pid, 0)
+
     def test_pr_search_paginates_exact_refs_and_closed_state(self):
         row = {"number": 42}
         github = FakeGitHub(([row],))

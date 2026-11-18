@@ -138,6 +138,10 @@
   - [9.111 REQ-F01-173 Apply one event/publication window to V2 and V3](#9111-req-f01-173-apply-one-eventpublication-window-to-v2-and-v3)
   - [9.112 REQ-F01-174 Validate the immutable V3 origin through approved history](#9112-req-f01-174-validate-the-immutable-v3-origin-through-approved-history)
   - [9.113 REQ-F01-175 Bound the successor commit and Phase continuation](#9113-req-f01-175-bound-the-successor-commit-and-phase-continuation)
+  - [9.114 REQ-F01-176 Reuse exact verified ADC ranges within one command](#9114-req-f01-176-reuse-exact-verified-adc-ranges-within-one-command)
+  - [9.115 REQ-F01-177 Bound GitHub API child execution](#9115-req-f01-177-bound-github-api-child-execution)
+  - [9.116 REQ-F01-178 Parse the current continuation marker by schema](#9116-req-f01-178-parse-the-current-continuation-marker-by-schema)
+  - [9.117 REQ-F01-179 Share history validation across nested lifecycle readers](#9117-req-f01-179-share-history-validation-across-nested-lifecycle-readers)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -265,6 +269,10 @@
 - [REQ-F01-173](#req-f01-173) — 9.111 REQ-F01-173 Apply one event/publication window to V2 and V3
 - [REQ-F01-174](#req-f01-174) — 9.112 REQ-F01-174 Validate the immutable V3 origin through approved history
 - [REQ-F01-175](#req-f01-175) — 9.113 REQ-F01-175 Bound the successor commit and Phase continuation
+- [REQ-F01-176](#req-f01-176) — 9.114 REQ-F01-176 Reuse exact verified ADC ranges within one command
+- [REQ-F01-177](#req-f01-177) — 9.115 REQ-F01-177 Bound GitHub API child execution
+- [REQ-F01-178](#req-f01-178) — 9.116 REQ-F01-178 Parse the current continuation marker by schema
+- [REQ-F01-179](#req-f01-179) — 9.117 REQ-F01-179 Share history validation across nested lifecycle readers
 <!-- heading-map:end -->
 
 
@@ -1111,3 +1119,23 @@ When the current Issue #71 ADC contains a phase-rework origin record, its reader
 ### 9.113 REQ-F01-175 Bound the successor commit and Phase continuation
 
 An approved Issue #71 continuation marker MUST bind the exact current start HEAD, a matching direct-child parent, a one-commit maximum, and an exact sorted path allowlist. The reader MUST derive valid continuation labels from the verified current ADC's ordered `phase_edges`, including each edge's source and destination; it MUST reject unlisted phases, duplicate or malformed labels, and subject drift before evidence writes. At the pushed child HEAD, bind exact PR evidence and reissue only completed predecessor Phase receipts from committed document bytes. Advance only along supported edges through execution and verification. Require exact-subject Verification, Acceptance, Self-Audit, Independent Review, and Readiness PASS in order. Self-Audit evaluates preceding evidence and later-gate definitions; its own PASS is the execution result, and future Readiness/User Review results are not Self-Audit predicates. Start at most one User Review session only after final Readiness PASS at phase:verification, read back its complete immutable feedback snapshot as PENDING, and make no decision.
+
+<a id="req-f01-176"></a>
+### 9.114 REQ-F01-176 Reuse exact verified ADC ranges within one command
+
+Within one P-ASES lifecycle command, validate the complete approved ADC chain using the existing pointer journal and direct/list/direct checks. Nested immutable-origin, active-epoch, phase-authorization, and Phase evidence readers MAY reuse the resulting `VerifiedADC` range only when the GitHub client instance, normalized repository, Issue, prior and current ADC identities, approval state, and requested range all match. The range MUST cover the exact requested endpoints. Mutable Issue, labels, PR, branch, HEAD, receipts, and journals MUST be read at every prescribed boundary. The runtime MUST invalidate the shared range before Issue label or comment writes and before final live readback; required pre-write and post-write checks remain mandatory.
+
+<a id="req-f01-177"></a>
+### 9.115 REQ-F01-177 Bound GitHub API child execution
+
+Every `gh api` child started by `runtime/p_ases/github.py` MUST have a finite 30-second timeout. Timeout handling MUST terminate and reap the child, raise a sanitized `GitHubError` that identifies the HTTP operation and timeout, and exclude credentials, authorization headers, request payloads, and raw stderr from errors or output. Existing status-code extraction, response validation, and no-blind-retry behavior remain in force.
+
+<a id="req-f01-178"></a>
+### 9.116 REQ-F01-178 Parse the current continuation marker by schema
+
+The current approved timestamp-continuation marker MUST be parsed only from its exact verified pointer and body. The reader MUST support historical/current V1 and current V2 markers through schema-versioned rules and derive predecessor, history boundary, starting HEAD, and sorted canonical path allowlist from the marker. Runtime constants MUST NOT pin a current ADC comment ID, SHA, byte length, marker digest, predecessor, starting HEAD, or path list. Exact approved-history and immutable V3 origin checks remain mandatory. V2 MUST declare a `reviewer_checklist_count` equal to the current checklist's actual item count; historical V1 bodies MUST remain byte-verified immutable history without per-comment parser exceptions.
+
+<a id="req-f01-179"></a>
+### 9.117 REQ-F01-179 Share history validation across nested lifecycle readers
+
+`issue advance`, `phase-evidence`, `read_active_epoch`, nested phase-rework authorization, and PRBinding successor-history reads MUST share one command-local ADC history session when they use the same GitHub client, normalized repository, Issue, exact prior/current identities, approval state, and covering range. A cache miss, changed pointer, wrong identity, insufficient range, non-approved row, or invalidated session MUST run full validation or fail closed. The cache MUST never contain mutable subject or journal evidence and MUST be cleared before each Issue/comment write and final current-state readback.

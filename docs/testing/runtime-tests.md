@@ -73,6 +73,8 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
     - [2.30.1 ORA-RT-030 Expected result](#2301-ora-rt-030-expected-result)
   - [2.31 TST-RT-031 Issue #71 timestamp continuation context read](#231-tst-rt-031-issue-71-timestamp-continuation-context-read)
     - [2.31.1 ORA-RT-031 Expected result](#2311-ora-rt-031-expected-result)
+  - [2.32 TST-RT-032 Bounded and sanitized GitHub API child timeout](#232-tst-rt-032-bounded-and-sanitized-github-api-child-timeout)
+    - [2.32.1 ORA-RT-032 Expected result](#2321-ora-rt-032-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -139,6 +141,8 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
 - [ORA-RT-030](#ora-rt-030) — 2.30.1 ORA-RT-030 Expected result
 - [TST-RT-031](#tst-rt-031) — 2.31 TST-RT-031 Issue #71 timestamp continuation context read
 - [ORA-RT-031](#ora-rt-031) — 2.31.1 ORA-RT-031 Expected result
+- [TST-RT-032](#tst-rt-032) — 2.32 TST-RT-032 Bounded and sanitized GitHub API child timeout
+- [ORA-RT-032](#ora-rt-032) — 2.32.1 ORA-RT-032 Expected result
 <!-- heading-map:end -->
 
 
@@ -503,3 +507,13 @@ Only a complete canonical marker for the verified current ADC and its exact orde
 #### 2.31.1 ORA-RT-031 Expected result
 
 Only the exact current approved chain, distinct immediate predecessor and immutable origin, marker-derived continuation boundary, authorized event/publication windows, current graph phase, and bound PR metadata pass. A mismatch reports a bounded blocked/stale state without GitHub writes. A valid current binding is read back without exposing local workspace paths.
+
+<a id="tst-rt-032"></a>
+### 2.32 TST-RT-032 Bounded and sanitized GitHub API child timeout
+
+**Setup and action:** Mock `subprocess.run` to capture the timeout and raise `TimeoutExpired` containing synthetic token and payload text. Verify the child receives exactly the configured finite timeout and that `GitHubError` names the HTTP method, validated endpoint, and timeout while excluding the synthetic secret, request body, authorization text, and raw stderr. Exercise a real short-lived helper process in a bounded subprocess test to confirm timeout handling reaps the child and returns promptly.
+
+<a id="ora-rt-032"></a>
+#### 2.32.1 ORA-RT-032 Expected result
+
+Every GitHub API child has the fixed 30-second bound. Timeout becomes a sanitized `GitHubError`; no credential, payload, or raw child diagnostic escapes, and no request is blindly retried.

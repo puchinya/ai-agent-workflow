@@ -2277,6 +2277,128 @@ class ActiveGenerationTests(unittest.TestCase):
 
 class V3PhaseReworkTests(unittest.TestCase):
     @staticmethod
+    def _current_timestamp_adc(schema: str, *, checklist_count: int = 1,
+                               actual_checklist_count: int = 1):
+        predecessor_id, current_id = 8123400001, 8123400002
+        predecessor_sha, head = "b" * 64, "c" * 40
+        allowlist = ["docs/specs/workflow-spec.md", "runtime/p_ases/phase_rework.py"]
+        phase_edges = [
+            ["requirements", "specification"], ["specification", "design"],
+            ["design", "ready"], ["ready", "execution"],
+            ["execution", "verification"], ["verification", "user-review"],
+        ]
+        marker = {
+            "approved_history": [{
+                "byte_length": 123, "comment_id": predecessor_id,
+                "sha256": predecessor_sha, "state": "approved",
+            }],
+            "branch_ref": module.BRANCH_REF,
+            "checkpoint_before_publication": {"path": ".p_ases/checkpoint.json", "sha256": "d" * 64},
+            "current_adc_predecessor": {
+                "byte_length": 123, "comment_id": predecessor_id, "sha256": predecessor_sha,
+            },
+            "current_head_sha40": head,
+            "current_issue": {
+                "body_sha256": module.ISSUE_BODY_SHA256, "id": module.ISSUE_ID,
+                "labels": ["enhancement", "kind:single", "phase:requirements"],
+                "number": module.ISSUE_NUMBER, "state": "open",
+            },
+            "current_pr": {
+                "base_ref": module.PR_BASE_REF, "base_sha40": module.PR_BASE_SHA40,
+                "body_sha256": module.PR_BODY_SHA256, "draft": False,
+                "head_sha40": head, "merged": False, "number": module.PR_NUMBER, "state": "open",
+            },
+            "followup_commit_authorization": {
+                "max_commits": 1, "parent_sha40": head, "path_allowlist": allowlist,
+                "require_direct_child": True, "require_push_to_existing_branch": True,
+            },
+            "history_boundary": {"comment_id": 8123399999, "sha256": "a" * 64},
+            "issue_number": module.ISSUE_NUMBER,
+            "max_same_head_binding_checkpoint_pairs": 1,
+            "no_admin_ruleset_activation_issue63_merge_release_tag_or_issue_close": True,
+            "owner_id": module.OWNER_ID,
+            "phase_edges": phase_edges,
+            "phase_reissue_policy": {
+                "bind_current_committed_document_bytes_at_exact_followup_head": True,
+                "documents": ["requirements", "specification", "design", "ready"],
+                "preserve_historical_receipts": True,
+            },
+            "phase_rework_origin": dict(module.TIMESTAMP_CONTINUATION_PHASE_REWORK_ORIGIN),
+            "pr_binding_before_publication": {"path": ".p_ases/pr-binding.json", "sha256": "e" * 64},
+            "repository": module.REPOSITORY,
+            "repository_id": module.REPOSITORY_ID,
+            "required_gates_after_followup_head": ["Verification", "Acceptance", "Self-Audit"],
+            "reviewer_checklist_count": checklist_count,
+            "schema": schema,
+            "timestamp_policy": {
+                "applied_event_field": "applied_at",
+                "applies_to": [module.INTENT_SCHEMA, module.APPLIED_SCHEMA,
+                               module.ISSUE71_REWORK_INTENT_V3_SCHEMA,
+                               module.ISSUE71_REWORK_APPLIED_V3_SCHEMA],
+                "intent_event_field": "created_at", "max_skew_seconds": 300,
+                "minimum_skew_seconds": 0,
+                "reason": "The event timestamp is created before the GitHub POST; created_at is the server publication time. Bounded latency is validated consistently for every supported Issue #71 phase-rework record.",
+                "rule": "Both timestamps must be strict UTC. comment created_at minus embedded event time must be in the inclusive range 0..300 seconds.",
+                "schema": "PASES_ISSUE_PHASE_EVENT_PUBLICATION_WINDOW_V1",
+            },
+            "user_review": {
+                "decision_allowed": False, "existing_session": "absent",
+                "feedback_snapshot": "complete and immutable", "max_sessions": 1,
+                "must_start_after_final_readiness_pass": True, "required_final_state": "PENDING",
+            },
+            "v2_record_immutability": True,
+            "v3_record_immutability": True,
+        }
+        checkboxes = "".join(f"- [ ] checklist item {index}\n"
+                              for index in range(actual_checklist_count))
+        start = f"<!-- {schema}\n"
+        body = (
+            "# Agent Development Contract\n\n"
+            f"Repository: {module.REPOSITORY}\nIssue: 71\n"
+            f"Predecessor ADC: Issue #71 comment #{predecessor_id}, SHA-256 {predecessor_sha}\n\n"
+            f"## Reviewer checklist\n{checkboxes}\n"
+            f"{start}{json.dumps(marker, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}\n-->"
+        ).encode("utf-8")
+        digest = hashlib.sha256(body).hexdigest()
+        return SimpleNamespace(
+            contract=SimpleNamespace(
+                content=body, repository=module.REPOSITORY,
+                sha256=digest, byte_length=len(body),
+            ),
+            pointer=SimpleNamespace(
+                comment_id=current_id, sha256=digest, byte_length=len(body), state="approved",
+            ),
+        )
+
+    def test_timestamp_marker_uses_dynamic_pointer_lineage_and_versioned_checklist_rules(self):
+        v1 = self._current_timestamp_adc(
+            module.TIMESTAMP_CONTINUATION_AUTH_SCHEMA, checklist_count=14, actual_checklist_count=1,
+        )
+        v1_auth, _ = module.parse_timestamp_continuation_authorization(v1)
+        self.assertEqual(v1_auth["current_adc_predecessor"]["comment_id"], 8123400001)
+
+        v2 = self._current_timestamp_adc(module.TIMESTAMP_CONTINUATION_AUTH_SCHEMA_V2)
+        v2_auth, _ = module.parse_timestamp_continuation_authorization(v2)
+        self.assertEqual(v2_auth["schema"], module.TIMESTAMP_CONTINUATION_AUTH_SCHEMA_V2)
+
+    def test_v2_timestamp_marker_rejects_checklist_count_and_path_drift(self):
+        mismatch = self._current_timestamp_adc(
+            module.TIMESTAMP_CONTINUATION_AUTH_SCHEMA_V2, checklist_count=2, actual_checklist_count=1,
+        )
+        with self.assertRaisesRegex(module.PhaseReworkError, "checklist count"):
+            module.parse_timestamp_continuation_authorization(mismatch)
+
+        bad_path = self._current_timestamp_adc(module.TIMESTAMP_CONTINUATION_AUTH_SCHEMA_V2)
+        body = bad_path.contract.content.decode("utf-8")
+        bad_path.contract.content = body.replace("docs/specs/workflow-spec.md", "../workflow-spec.md").encode("utf-8")
+        bad_path.contract.byte_length = len(bad_path.contract.content)
+        bad_path.contract.sha256 = hashlib.sha256(bad_path.contract.content).hexdigest()
+        bad_path.pointer.byte_length = bad_path.contract.byte_length
+        bad_path.pointer.sha256 = bad_path.contract.sha256
+        with self.assertRaisesRegex(module.PhaseReworkError, "allowlist"):
+            module.parse_timestamp_continuation_authorization(bad_path)
+
+    @staticmethod
     def _timestamp_policy() -> dict:
         return {
             "schema": "PASES_ISSUE_PHASE_EVENT_PUBLICATION_WINDOW_V1",
@@ -2363,6 +2485,8 @@ class V3PhaseReworkTests(unittest.TestCase):
                 module._validate_execution_receipt_reader_continuation_subject(live)
 
     def test_timestamp_continuation_origin_is_distinct_from_immediate_predecessor(self):
+        predecessor_id = 6969836772
+        predecessor_sha = "ac67852fac757d394333d834d5f211b21157549e7dca597ea417a5bb44c5b909"
         origin = SimpleNamespace(
             pointer=SimpleNamespace(
                 comment_id=module.TIMESTAMP_CONTINUATION_ORIGIN_ADC[0],
@@ -2373,11 +2497,11 @@ class V3PhaseReworkTests(unittest.TestCase):
         )
         predecessor = SimpleNamespace(
             pointer=SimpleNamespace(
-                comment_id=module.TIMESTAMP_CONTINUATION_PREDECESSOR[0],
-                sha256=module.TIMESTAMP_CONTINUATION_PREDECESSOR[1],
+                comment_id=predecessor_id,
+                sha256=predecessor_sha,
                 state="approved",
             ),
-            contract=SimpleNamespace(byte_length=module.TIMESTAMP_CONTINUATION_PREDECESSOR_BYTES),
+            contract=SimpleNamespace(byte_length=32651),
         )
         boundary = SimpleNamespace(
             pointer=SimpleNamespace(comment_id=1, sha256="a" * 64, state="approved"),
@@ -2423,9 +2547,9 @@ class V3PhaseReworkTests(unittest.TestCase):
             )
 
     def test_timestamp_continuation_commit_boundary_comes_from_current_marker(self):
-        start = module.TIMESTAMP_CONTINUATION_START_HEAD
+        start = "a" * 40
         commit = "d" * 40
-        allowlist = list(module.TIMESTAMP_CONTINUATION_FOLLOWUP_PATHS)
+        allowlist = ["docs/specs/workflow-spec.md", "runtime/p_ases/phase_rework.py"]
         authorization = {
             "current_head_sha40": start,
             "followup_commit_authorization": {
@@ -2451,7 +2575,7 @@ class V3PhaseReworkTests(unittest.TestCase):
         invalid_cases = (
             ("wrong marker parent", {**authorization,
              "followup_commit_authorization": {**authorization["followup_commit_authorization"],
-                                              "parent_sha40": "a" * 40}},
+                                              "parent_sha40": "b" * 40}},
              "parent or path allowlist"),
             ("wrong marker start", {**authorization, "current_head_sha40": "b" * 40},
              "parent or path allowlist"),
@@ -2674,8 +2798,10 @@ class V3PhaseReworkTests(unittest.TestCase):
                 module.OWNER_ID, "2026-11-18T10:04:55Z",
             )
             current_adc = SimpleNamespace(
-                pointer=SimpleNamespace(comment_id=module.TIMESTAMP_CONTINUATION_ADC_COMMENT_ID),
-                contract=SimpleNamespace(sha256=module.TIMESTAMP_CONTINUATION_ADC_SHA256),
+                pointer=SimpleNamespace(comment_id=6969836772),
+                contract=SimpleNamespace(
+                    sha256="ac67852fac757d394333d834d5f211b21157549e7dca597ea417a5bb44c5b909",
+                ),
             )
             current = replace(
                 live, current_adc=current_adc,

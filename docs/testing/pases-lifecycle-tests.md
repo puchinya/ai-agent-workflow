@@ -153,6 +153,10 @@
     - [2.71.1 ORA-F01-107 Expected result](#2711-ora-f01-107-expected-result)
   - [2.72 TST-F01-108 Marker-derived direct-child continuation boundary](#272-tst-f01-108-marker-derived-direct-child-continuation-boundary)
     - [2.72.1 ORA-F01-108 Expected result](#2721-ora-f01-108-expected-result)
+  - [2.73 TST-F01-109 Versioned generic continuation-marker reader](#273-tst-f01-109-versioned-generic-continuation-marker-reader)
+    - [2.73.1 ORA-F01-109 Expected result](#2731-ora-f01-109-expected-result)
+  - [2.74 TST-F01-110 Command-local ADC history-session reuse](#274-tst-f01-110-command-local-adc-history-session-reuse)
+    - [2.74.1 ORA-F01-110 Expected result](#2741-ora-f01-110-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -301,6 +305,10 @@
 - [ORA-F01-107](#ora-f01-107) — 2.71.1 ORA-F01-107 Expected result
 - [TST-F01-108](#tst-f01-108) — 2.72 TST-F01-108 Marker-derived direct-child continuation boundary
 - [ORA-F01-108](#ora-f01-108) — 2.72.1 ORA-F01-108 Expected result
+- [TST-F01-109](#tst-f01-109) — 2.73 TST-F01-109 Versioned generic continuation-marker reader
+- [ORA-F01-109](#ora-f01-109) — 2.73.1 ORA-F01-109 Expected result
+- [TST-F01-110](#tst-f01-110) — 2.74 TST-F01-110 Command-local ADC history-session reuse
+- [ORA-F01-110](#ora-f01-110) — 2.74.1 ORA-F01-110 Expected result
 <!-- heading-map:end -->
 
 
@@ -1082,3 +1090,23 @@ The reader locates the immutable origin from its own authorization identity insi
 #### 2.72.1 ORA-F01-108 Expected result
 
 The follow-up parent equals the marker start and the Git range contains at most one direct child. After push the child is exact, the PR remote HEAD matches, and every changed path is in the marker allowlist. Labels come only from the verified phase graph; receipt and gate ordering stops on the first missing or failed prerequisite.
+
+<a id="tst-f01-109"></a>
+### 2.73 TST-F01-109 Versioned generic continuation-marker reader
+
+**Setup and action:** Use synthetic, pointer-bound V1 and V2 current markers with distinct predecessors, history boundaries, start HEADs, and sorted path allowlists. Verify exact pointer/body digest and complete approved-history links. Reject unknown schema, duplicate or noncanonical JSON fields, wrong predecessor, changed boundary, unsorted/unsafe/duplicate paths, incorrect V2 checklist count, and any stale current pointer. Confirm historical V1 generations are checked as exact immutable bytes without parsing their marker bodies or using comment-specific exceptions. Exercise direct-child validation from the marker-declared start and allowlist.
+
+<a id="ora-f01-109"></a>
+#### 2.73.1 ORA-F01-109 Expected result
+
+Only a current marker whose exact pointer, versioned schema, history links, and marker-derived Git boundary all agree passes. V2 checklist drift and malformed marker fields fail closed; historical generations are validated by approved ID, SHA, byte length, and predecessor link alone.
+
+<a id="tst-f01-110"></a>
+### 2.74 TST-F01-110 Command-local ADC history-session reuse
+
+**Setup and action:** Within one Issue #71 command, invoke nested active-epoch, phase-rework, PRBinding-history, and phase-evidence readers against the same verified ADC range. Count full pointer-journal sweeps and selected body reads. Vary client identity, normalized repository, Issue, predecessor/current ID or SHA, approval state, requested coverage, and pointer between calls. Clear the session before simulated label/comment writes and final readback; invoke `advance`, `phase-evidence`, and `read_active_epoch` both directly and when nested. Verify mutable Issue, labels, PR, branch, HEAD, receipts, and journals are fetched afresh.
+
+<a id="ora-f01-110"></a>
+#### 2.74.1 ORA-F01-110 Expected result
+
+One command reuses only a covering, fully verified immutable range for the same client, repository, Issue, exact identities, and approval state. A miss or invalidation performs full validation; wrong identity or stale pointer fails closed. Mutable subject evidence never comes from the session, and no required before/after readback is skipped.

@@ -20,6 +20,9 @@ class GitHubError(RuntimeError):
         self.status_code = status_code
 
 
+GITHUB_API_TIMEOUT_SECONDS = 30
+
+
 def _positive_int(value: Any, label: str) -> int:
     if type(value) is not int or value < 1:
         raise GitHubError(f"{label} must be a positive integer")
@@ -70,8 +73,12 @@ class GitHub:
             result = subprocess.run(
                 argv, input=input_text, text=True, encoding="utf-8", errors="replace",
                 check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                env=child_env,
+                env=child_env, timeout=GITHUB_API_TIMEOUT_SECONDS,
             )
+        except subprocess.TimeoutExpired as exc:
+            raise GitHubError(
+                f"GitHub API {verb} {endpoint} timed out after {GITHUB_API_TIMEOUT_SECONDS} seconds"
+            ) from exc
         except OSError as exc:
             raise GitHubError(f"could not start GitHub API client: {exc}") from exc
         finally:

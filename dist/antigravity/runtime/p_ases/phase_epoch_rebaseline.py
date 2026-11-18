@@ -16,7 +16,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .adc import (
-    ADCError, VerifiedADC, verify_adc, verify_adc_forward_generations, verify_adc_generation,
+    ADCError, VerifiedADC, adc_forward_generation_session, verify_adc, verify_adc_forward_generations,
+    verify_adc_generation,
 )
 from .execution import ExecutionError, SHA40, SHA256
 from .github import GitHub, GitHubError
@@ -1159,6 +1160,13 @@ def read_epoch_origin(github: GitHub, root: Path, verified_adc: VerifiedADC | No
 
 
 def read_active_epoch(github: GitHub, root: Path, verified_adc: VerifiedADC | None = None
+                      ) -> Issue71ActiveExecutionEpoch:
+    """Join immutable epoch-origin identity to live state in a shared ADC session."""
+    with adc_forward_generation_session(github, ISSUE_NUMBER):
+        return _read_active_epoch_in_session(github, root, verified_adc)
+
+
+def _read_active_epoch_in_session(github: GitHub, root: Path, verified_adc: VerifiedADC | None = None
                       ) -> Issue71ActiveExecutionEpoch:
     """Join immutable epoch-origin identity to the live ADC and Phase generation."""
     epoch, current_adc, _origin_adc, issue = read_epoch_origin(github, root, verified_adc)

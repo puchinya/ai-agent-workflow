@@ -60,6 +60,9 @@
   - [6.8 DES-F01-104 Validate event and publication timestamps uniformly](#68-des-f01-104-validate-event-and-publication-timestamps-uniformly)
   - [6.9 DES-F01-105 Resolve the immutable V3 origin independently](#69-des-f01-105-resolve-the-immutable-v3-origin-independently)
   - [6.10 DES-F01-106 Bind one marker-derived continuation commit](#610-des-f01-106-bind-one-marker-derived-continuation-commit)
+  - [6.11 DES-F01-107 Parse generic current continuation markers](#611-des-f01-107-parse-generic-current-continuation-markers)
+  - [6.12 DES-F01-108 Reuse command-local ADC history safely](#612-des-f01-108-reuse-command-local-adc-history-safely)
+  - [6.13 DES-F01-109 Bound GitHub API child processes](#613-des-f01-109-bound-github-api-child-processes)
 - [7 DES-WF-004 Failure handling](#7-des-wf-004-failure-handling)
 - [8 DES-WF-005 Authorization boundary and PR handoff](#8-des-wf-005-authorization-boundary-and-pr-handoff)
 - [9 Alternatives considered](#9-alternatives-considered)
@@ -118,6 +121,9 @@
 - [DES-F01-104](#des-f01-104) — 6.8 DES-F01-104 Validate event and publication timestamps uniformly
 - [DES-F01-105](#des-f01-105) — 6.9 DES-F01-105 Resolve the immutable V3 origin independently
 - [DES-F01-106](#des-f01-106) — 6.10 DES-F01-106 Bind one marker-derived continuation commit
+- [DES-F01-107](#des-f01-107) — 6.11 DES-F01-107 Parse generic current continuation markers
+- [DES-F01-108](#des-f01-108) — 6.12 DES-F01-108 Reuse command-local ADC history safely
+- [DES-F01-109](#des-f01-109) — 6.13 DES-F01-109 Bound GitHub API child processes
 - [DES-WF-004](#des-wf-004) — 7 DES-WF-004 Failure handling
 - [DES-WF-005](#des-wf-005) — 8 DES-WF-005 Authorization boundary and PR handoff
 - [DES-WF-006](#des-wf-006) — 11 DES-WF-006 Human review and final delivery
@@ -539,6 +545,21 @@ The timestamp-continuation reader stores the current ADC's immediate predecessor
 ### 6.10 DES-F01-106 Bind one marker-derived continuation commit
 
 The current marker pins its start HEAD, current PR subject, and sorted path allowlist. Its follow-up parent must equal that start. Git verifies no descendant before implementation, then exactly one direct child with the exact parent, the pushed remote HEAD, and changed paths contained by the allowlist. Continuation readers derive accepted labels from the verified current ADC's phase_edges. At the child HEAD, receipt reissue binds committed documents and preserves historical receipts; supported edges proceed through execution and verification. Verification, Acceptance, two-stage Self-Audit, Independent Review, and Readiness are exact-subject gates. User Review begins once after Readiness PASS and remains PENDING.
+
+<a id="des-f01-107"></a>
+### 6.11 DES-F01-107 Parse generic current continuation markers
+
+The reader first verifies the live ADC pointer and exact UTF-8 body, then selects a versioned parser from the marker schema. The parser derives the current predecessor, history boundary, starting HEAD, sorted path allowlist, and follow-up parent from that body; it does not dispatch on a comment ID or digest. Historical bodies stay opaque and are verified by immutable approved-history identities. V2 validates canonical JSON, exact marker fields, sorted safe paths, approved-history order, immutable V3 origin links, and equality between the declared and actual Reviewer checklist counts. V1 remains readable under its versioned historical rules.
+
+<a id="des-f01-108"></a>
+### 6.12 DES-F01-108 Reuse command-local ADC history safely
+
+An outer lifecycle command owns a context-local session bound to one GitHub client object, normalized repository, and Issue. It stores only fully verified immutable ADC ranges with their endpoint identities and approval state. Nested readers may select a covering subrange only when both exact endpoints and the requested range match. A miss runs the full direct/list/direct validator. Mutable Issue, labels, PR, branches, HEAD, receipts, and journals are always read live. The owner clears stored ranges before every comment or label mutation and before final live readback; nested calls cannot extend session lifetime across commands or mismatched clients.
+
+<a id="des-f01-109"></a>
+### 6.13 DES-F01-109 Bound GitHub API child processes
+
+`GitHub.request` supplies a finite timeout to every `gh api` subprocess. `subprocess.run` handles child termination and reaping on timeout; the adapter converts `TimeoutExpired` to a `GitHubError` containing only the HTTP method, validated endpoint, and configured timeout. It omits raw stderr, input payloads, and authentication environment data. The existing response parser and status handling run only after a completed child response.
 
 <a id="des-wf-004"></a>
 <a id="des-wf-004-failure-handling"></a>

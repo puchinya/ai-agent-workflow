@@ -108,6 +108,7 @@ class VerifiedADC:
 class _ADCForwardGenerationScope:
     github: GitHub
     issue_number: int
+    repository: str
     prior_comment_id: int
     prior_sha256: str
     current_comment_id: int
@@ -119,6 +120,7 @@ class _ADCForwardGenerationScope:
 class _ADCForwardGenerationSession:
     github: GitHub
     issue_number: int
+    repository: str
     # Each tuple was read back against the live Issue and pointer journal. The
     # boolean is true only when its final generation was also proven current.
     ranges: list[tuple[tuple[VerifiedADC, ...], bool]]
@@ -1201,7 +1203,8 @@ def adc_forward_generation_scope(
             or not isinstance(current_sha256, str) or not SHA256.fullmatch(current_sha256)):
         raise ADCError("ADC successor scope is malformed, stale or backward")
     scope = _ADCForwardGenerationScope(
-        github, issue_number, prior_comment_id, prior_sha256, current_comment_id, current_sha256,
+        github, issue_number, github.repo.casefold(), prior_comment_id, prior_sha256,
+        current_comment_id, current_sha256,
     )
     token: Token[_ADCForwardGenerationScope | None] = _ADC_FORWARD_GENERATION_SCOPE.set(scope)
     try:
@@ -1218,7 +1221,14 @@ def adc_forward_generation_session(github: Any, issue_number: int) -> Iterator[N
         return
     if type(issue_number) is not int or issue_number < 1:
         raise ADCError("ADC successor session Issue is malformed")
-    session = _ADCForwardGenerationSession(github, issue_number, [])
+    repository = github.repo.casefold()
+    existing = _ADC_FORWARD_GENERATION_SESSION.get()
+    if (existing is not None and existing.github is github
+            and existing.issue_number == issue_number and existing.repository == repository):
+        # Nested lifecycle readers share the outer command's immutable range.
+        yield
+        return
+    session = _ADCForwardGenerationSession(github, issue_number, repository, [])
     token: Token[_ADCForwardGenerationSession | None] = _ADC_FORWARD_GENERATION_SESSION.set(session)
     try:
         yield
@@ -1230,7 +1240,8 @@ def refresh_adc_forward_generation_session(github: Any, issue_number: int) -> No
     """Discard request-local history before a command's final live readback."""
     session = _ADC_FORWARD_GENERATION_SESSION.get()
     if (session is not None and session.github is github
-            and session.issue_number == issue_number):
+            and session.issue_number == issue_number
+            and session.repository == github.repo.casefold()):
         session.ranges.clear()
 
 
@@ -1261,11 +1272,13 @@ def _cached_session_range(
     current_sha256: str,
     require_current: bool,
 ) -> tuple[VerifiedADC, ...] | None:
+    if session.repository != session.github.repo.casefold():
+        return None
     for generations, current_verified in reversed(session.ranges):
-        if require_current and (not current_verified
-                                or not generations
-                                or generations[-1].pointer.comment_id != current_comment_id
-                                or generations[-1].pointer.sha256 != current_sha256):
+        if (not generations or any(row.pointer.state != "approved" for row in generations)
+                or (require_current and (not current_verified
+                                         or generations[-1].pointer.comment_id != current_comment_id
+                                         or generations[-1].pointer.sha256 != current_sha256))):
             continue
         try:
             return _select_verified_adc_range(
@@ -1297,9 +1310,11 @@ def verify_adc_forward_generations(
     scope = _ADC_FORWARD_GENERATION_SCOPE.get()
     session = _ADC_FORWARD_GENERATION_SESSION.get()
     if (session is not None
-            and (session.github is not github or session.issue_number != issue_number)):
+            and (session.github is not github or session.issue_number != issue_number
+                 or session.repository != github.repo.casefold())):
         session = None
     if (scope is not None and scope.github is github and scope.issue_number == issue_number
+            and scope.repository == github.repo.casefold()
             and allow_historical_target):
         if scope.verified is None:
             scope.verified = (_cached_session_range(

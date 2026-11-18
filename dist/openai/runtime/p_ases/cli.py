@@ -1358,7 +1358,137 @@ def _work_command(args: argparse.Namespace, repository: str, root: Path, github:
     return _work_json(result, args.issue, repository)
 
 
+def _advance_issue_with_adc_session(
+    args: argparse.Namespace, repository: str, github: GitHub,
+) -> int:
+    issue = github.issue(args.issue)
+    if issue.get("state") != "open" or issue.get("pull_request") is not None:
+        raise CLIError("Issue advance requires an open Issue, not a pull request")
+    label_rows = issue.get("labels")
+    if not isinstance(label_rows, list) or any(not isinstance(item, dict) for item in label_rows):
+        raise CLIError("Issue label readback is invalid")
+    labels = [item.get("name") for item in label_rows]
+    if any(not isinstance(label, str) for label in labels):
+        raise CLIError("Issue label readback contains an invalid name")
+    phase = parse_phase_labels(labels)
+    attention = parse_attention_labels(labels)
+    skip_reasons = _phase_skip_reasons(args.skip_phase)
+    kind = IssueKind(args.kind)
+    bootstrap = (repository.casefold() == BOOTSTRAP_REPOSITORY.casefold()
+                 and args.issue in PHASE_EVIDENCE_BOOTSTRAP_ISSUES)
+    kind_labels = [label.removeprefix("kind:") for label in labels if label.startswith("kind:")]
+    if not bootstrap and (len(kind_labels) != 1 or kind_labels[0] != kind.value):
+        raise CLIError("--kind must match the Issue's unique verified kind:* label")
+    if bootstrap and kind_labels and (len(kind_labels) != 1 or kind_labels[0] != kind.value):
+        raise CLIError("Bootstrap Issue kind label conflicts with --kind")
+    target = Phase(args.target)
+    evidence_required = (not bootstrap and kind in {IssueKind.SINGLE, IssueKind.CHILD}
+                         and target in {Phase.SPECIFICATION, Phase.DESIGN, Phase.READY})
+    ordinary_issue = (not bootstrap and kind in {IssueKind.SINGLE, IssueKind.CHILD})
+    root: Path | None = None
+    approved_adc = None
+    ordinary_context = None
+    if ordinary_issue:
+        if args.root is None:
+            raise CLIError("ordinary Issue phase transitions require --root for Activation and ADC verification")
+        root = _repo_root(str(args.root)).resolve()
+        ordinary_context = verify_ordinary_issue_context(
+            github, root, args.issue, kind,
+            require_binding=target in {Phase.EXECUTION, Phase.VERIFICATION},
+        )
+        approved_adc = ordinary_context.verified_adc
+        if target is Phase.EXECUTION:
+            verify_ready_preparation(
+                github, root, args.issue, kind, verified_context=ordinary_context,
+            )
+    if evidence_required:
+        if args.phase_evidence_comment_id is None:
+            raise CLIError("specification, design, and ready transitions require --phase-evidence-comment-id")
+        verify_phase_evidence(github, root, args.issue, args.phase_evidence_comment_id,
+                              phase, target, skip_reasons)
+    graph_validated = False
+    if kind is IssueKind.PARENT and phase is Phase.REQUIREMENTS and target is Phase.READY:
+        validate_native_issue_graph(github, args.issue)
+        graph_validated = True
+    next_state = advance(PhaseState(args.issue, kind, phase, attention), target,
+                         skip_reasons=skip_reasons, issue_graph_validated=graph_validated)
+    kept = [label for label in labels if not label.startswith(("phase:", "attention:"))]
+    kept.append(f"phase:{next_state.phase.value}")
+    kept.extend(f"attention:{item.value}" for item in sorted(next_state.attention, key=lambda x: x.value))
+    if ordinary_issue and root is not None:
+        latest_context = verify_ordinary_issue_context(
+            github, root, args.issue, kind,
+            require_binding=target in {Phase.EXECUTION, Phase.VERIFICATION},
+        )
+        latest_adc = latest_context.verified_adc
+        if (approved_adc is None or latest_adc.pointer != approved_adc.pointer
+                or latest_adc.contract.sha256 != approved_adc.contract.sha256):
+            raise CLIError("approved ADC pointer or generation changed before the phase label write")
+        if target is Phase.EXECUTION:
+            verify_ready_preparation(
+                github, root, args.issue, kind, verified_context=latest_context,
+            )
+    if evidence_required and root is not None:
+        verify_phase_evidence(github, root, args.issue, args.phase_evidence_comment_id,
+                              phase, target, skip_reasons)
+    latest = github.issue(args.issue)
+    if (latest.get("number") != args.issue or latest.get("state") != "open"
+            or latest.get("pull_request") is not None or latest.get("labels") != label_rows
+            or latest.get("body") != issue.get("body")
+            or latest.get("repository_url") != issue.get("repository_url")):
+        raise CLIError("Issue state changed before the phase label write")
+    write_error: GitHubError | None = None
+    refresh_adc_forward_generation_session(github, args.issue)
+    try:
+        github.replace_issue_labels(args.issue, kept)
+    except GitHubError as exc:
+        # The same complete readback is required after both a normal response
+        # and a lost/failed response; the exception alone cannot establish whether
+        # GitHub applied the PUT.
+        write_error = exc
+    refresh_adc_forward_generation_session(github, args.issue)
+    try:
+        final_issue = github.issue(args.issue)
+        _validate_issue_advance_readback(
+            final_issue, original_issue=issue, repository=repository,
+            issue_number=args.issue, expected_labels=kept, kind=kind,
+            target=next_state.phase, attention=next_state.attention,
+            ordinary=ordinary_issue,
+        )
+        if ordinary_issue and root is not None:
+            final_context = verify_ordinary_issue_context(
+                github, root, args.issue, kind,
+                require_binding=target in {Phase.EXECUTION, Phase.VERIFICATION},
+            )
+            final_adc = final_context.verified_adc
+            _validate_issue_advance_readback(
+                final_context.issue, original_issue=issue, repository=repository,
+                issue_number=args.issue, expected_labels=kept, kind=kind,
+                target=next_state.phase, attention=next_state.attention,
+                ordinary=True,
+            )
+            if (approved_adc is None or final_adc.pointer != approved_adc.pointer
+                    or final_adc.contract.sha256 != approved_adc.contract.sha256):
+                raise CLIError("approved ADC pointer or generation changed after the phase label write")
+    except (ADCError, GitHubError, PhaseEvidenceError, CLIError, OSError, UnicodeError, ValueError) as exc:
+        raise CLIError(
+            f"BLOCKED after phase label write: {exc}; the label PUT may already have applied; "
+            "no automatic rollback or retry was attempted"
+        ) from (write_error or exc)
+    _json({"status": "ADVANCED", "issue": args.issue, "from": phase.value,
+           "to": next_state.phase.value, "attention": sorted(x.value for x in next_state.attention)})
+    return 0
+
 def _pr_ensure(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
+    if args.issue == 71 and repository.casefold() == "puchinya/ai-agent-workflow":
+        with adc_forward_generation_session(github, args.issue):
+            return _pr_ensure_with_history_session(args, repository, root, github)
+    return _pr_ensure_with_history_session(args, repository, root, github)
+
+
+def _pr_ensure_with_history_session(
+    args: argparse.Namespace, repository: str, root: Path, github: GitHub,
+) -> int:
     _issue, verified = _approved_issue_adc(github, args.issue, repository)
     binding_path = execution_binding_path(root, args.issue)
     if args.issue == 71 and repository.casefold() == "puchinya/ai-agent-workflow":
@@ -1374,6 +1504,8 @@ def _pr_ensure(args: argparse.Namespace, repository: str, root: Path, github: Gi
             root, github, repository=repository, issue_number=args.issue, execution_epoch=epoch,
             branch_ref=args.branch_ref, base_ref=args.base_ref, title=args.title, body=body,
         )
+        binding_history_path = pr_binding_path(root, 71, github=github)
+        refresh_adc_forward_generation_session(github, args.issue)
         current = verify_adc(github, args.issue)
         if current.pointer != verified.pointer:
             raise CLIError("ADC pointer changed during Issue #71 PR ensure; no newer epoch binding was written")
@@ -1391,7 +1523,7 @@ def _pr_ensure(args: argparse.Namespace, repository: str, root: Path, github: Gi
                "checkpoint_path": str(result.checkpoint_path), "checkpoint_sha256": result.checkpoint_sha256,
                "reused": result.reused, "reasons": [],
                "evidence_refs": [*(str(path) for path in epoch_paths(root)),
-                                 str(pr_binding_path(root, 71, github=github)), str(result.checkpoint_path)]})
+                                 str(binding_history_path), str(result.checkpoint_path)]})
         return 0
     if (args.issue == 63 and repository.casefold() == "puchinya/ai-agent-workflow"
             and not binding_path.exists()
@@ -5544,10 +5676,19 @@ def main(argv: list[str] | None = None) -> int:
                 return result
 
             try:
-                result = apply_issue71_phase_rework(
-                    github, root, args.issue,
-                    readiness_factory=readiness_factory if all(path is not None for path in input_paths) else None,
-                )
+                if args.issue == 71 and repository.casefold() == "puchinya/ai-agent-workflow":
+                    with adc_forward_generation_session(github, args.issue):
+                        result = apply_issue71_phase_rework(
+                            github, root, args.issue,
+                            readiness_factory=(readiness_factory
+                                               if all(path is not None for path in input_paths) else None),
+                        )
+                else:
+                    result = apply_issue71_phase_rework(
+                        github, root, args.issue,
+                        readiness_factory=(readiness_factory
+                                           if all(path is not None for path in input_paths) else None),
+                    )
                 _json(result)
                 return 0
             except (PhaseReworkError, CLIError, ADCError, GitError, GitHubError, OSError, ValueError) as exc:
@@ -5587,121 +5728,10 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.verb == "advance":
             github = GitHub(repository)
-            issue = github.issue(args.issue)
-            if issue.get("state") != "open" or issue.get("pull_request") is not None:
-                raise CLIError("Issue advance requires an open Issue, not a pull request")
-            label_rows = issue.get("labels")
-            if not isinstance(label_rows, list) or any(not isinstance(item, dict) for item in label_rows):
-                raise CLIError("Issue label readback is invalid")
-            labels = [item.get("name") for item in label_rows]
-            if any(not isinstance(label, str) for label in labels):
-                raise CLIError("Issue label readback contains an invalid name")
-            phase = parse_phase_labels(labels)
-            attention = parse_attention_labels(labels)
-            skip_reasons = _phase_skip_reasons(args.skip_phase)
-            kind = IssueKind(args.kind)
-            bootstrap = (repository.casefold() == BOOTSTRAP_REPOSITORY.casefold()
-                         and args.issue in PHASE_EVIDENCE_BOOTSTRAP_ISSUES)
-            kind_labels = [label.removeprefix("kind:") for label in labels if label.startswith("kind:")]
-            if not bootstrap and (len(kind_labels) != 1 or kind_labels[0] != kind.value):
-                raise CLIError("--kind must match the Issue's unique verified kind:* label")
-            if bootstrap and kind_labels and (len(kind_labels) != 1 or kind_labels[0] != kind.value):
-                raise CLIError("Bootstrap Issue kind label conflicts with --kind")
-            target = Phase(args.target)
-            evidence_required = (not bootstrap and kind in {IssueKind.SINGLE, IssueKind.CHILD}
-                                 and target in {Phase.SPECIFICATION, Phase.DESIGN, Phase.READY})
-            ordinary_issue = (not bootstrap and kind in {IssueKind.SINGLE, IssueKind.CHILD})
-            root: Path | None = None
-            approved_adc = None
-            ordinary_context = None
-            if ordinary_issue:
-                if args.root is None:
-                    raise CLIError("ordinary Issue phase transitions require --root for Activation and ADC verification")
-                root = _repo_root(str(args.root)).resolve()
-                ordinary_context = verify_ordinary_issue_context(
-                    github, root, args.issue, kind,
-                    require_binding=target in {Phase.EXECUTION, Phase.VERIFICATION},
-                )
-                approved_adc = ordinary_context.verified_adc
-                if target is Phase.EXECUTION:
-                    verify_ready_preparation(
-                        github, root, args.issue, kind, verified_context=ordinary_context,
-                    )
-            if evidence_required:
-                if args.phase_evidence_comment_id is None:
-                    raise CLIError("specification, design, and ready transitions require --phase-evidence-comment-id")
-                verify_phase_evidence(github, root, args.issue, args.phase_evidence_comment_id,
-                                      phase, target, skip_reasons)
-            graph_validated = False
-            if kind is IssueKind.PARENT and phase is Phase.REQUIREMENTS and target is Phase.READY:
-                validate_native_issue_graph(github, args.issue)
-                graph_validated = True
-            next_state = advance(PhaseState(args.issue, kind, phase, attention), target,
-                                 skip_reasons=skip_reasons, issue_graph_validated=graph_validated)
-            kept = [label for label in labels if not label.startswith(("phase:", "attention:"))]
-            kept.append(f"phase:{next_state.phase.value}")
-            kept.extend(f"attention:{item.value}" for item in sorted(next_state.attention, key=lambda x: x.value))
-            if ordinary_issue and root is not None:
-                latest_context = verify_ordinary_issue_context(
-                    github, root, args.issue, kind,
-                    require_binding=target in {Phase.EXECUTION, Phase.VERIFICATION},
-                )
-                latest_adc = latest_context.verified_adc
-                if (approved_adc is None or latest_adc.pointer != approved_adc.pointer
-                        or latest_adc.contract.sha256 != approved_adc.contract.sha256):
-                    raise CLIError("approved ADC pointer or generation changed before the phase label write")
-                if target is Phase.EXECUTION:
-                    verify_ready_preparation(
-                        github, root, args.issue, kind, verified_context=latest_context,
-                    )
-            if evidence_required and root is not None:
-                verify_phase_evidence(github, root, args.issue, args.phase_evidence_comment_id,
-                                      phase, target, skip_reasons)
-            latest = github.issue(args.issue)
-            if (latest.get("number") != args.issue or latest.get("state") != "open"
-                    or latest.get("pull_request") is not None or latest.get("labels") != label_rows
-                    or latest.get("body") != issue.get("body")
-                    or latest.get("repository_url") != issue.get("repository_url")):
-                raise CLIError("Issue state changed before the phase label write")
-            write_error: GitHubError | None = None
-            try:
-                github.replace_issue_labels(args.issue, kept)
-            except GitHubError as exc:
-                # The same complete readback is required after both a normal response
-                # and a lost/failed response; the exception alone cannot establish whether
-                # GitHub applied the PUT.
-                write_error = exc
-            try:
-                final_issue = github.issue(args.issue)
-                _validate_issue_advance_readback(
-                    final_issue, original_issue=issue, repository=repository,
-                    issue_number=args.issue, expected_labels=kept, kind=kind,
-                    target=next_state.phase, attention=next_state.attention,
-                    ordinary=ordinary_issue,
-                )
-                if ordinary_issue and root is not None:
-                    final_context = verify_ordinary_issue_context(
-                        github, root, args.issue, kind,
-                        require_binding=target in {Phase.EXECUTION, Phase.VERIFICATION},
-                    )
-                    final_adc = final_context.verified_adc
-                    _validate_issue_advance_readback(
-                        final_context.issue, original_issue=issue, repository=repository,
-                        issue_number=args.issue, expected_labels=kept, kind=kind,
-                        target=next_state.phase, attention=next_state.attention,
-                        ordinary=True,
-                    )
-                    if (approved_adc is None or final_adc.pointer != approved_adc.pointer
-                            or final_adc.contract.sha256 != approved_adc.contract.sha256):
-                        raise CLIError("approved ADC pointer or generation changed after the phase label write")
-            except (ADCError, GitHubError, PhaseEvidenceError, CLIError, OSError, UnicodeError, ValueError) as exc:
-                raise CLIError(
-                    f"BLOCKED after phase label write: {exc}; the label PUT may already have applied; "
-                    "no automatic rollback or retry was attempted"
-                ) from (write_error or exc)
-            _json({"status": "ADVANCED", "issue": args.issue, "from": phase.value,
-                   "to": next_state.phase.value, "attention": sorted(x.value for x in next_state.attention)})
-            return 0
+            if args.issue == 71 and repository.casefold() == "puchinya/ai-agent-workflow":
+                with adc_forward_generation_session(github, args.issue):
+                    return _advance_issue_with_adc_session(args, repository, github)
+            return _advance_issue_with_adc_session(args, repository, github)
 
         if args.verb == "integration-check":
             root = _runtime_root(args)

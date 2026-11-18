@@ -196,7 +196,7 @@ class PhaseEvidenceContinuationTests(unittest.TestCase):
         github.create_issue_comment.assert_not_called()
         github.replace_issue_labels.assert_not_called()
 
-    def test_design_ready_adc_session_closes_before_predecessor_write_boundary(self):
+    def test_design_ready_adc_session_is_invalidated_before_predecessor_write_boundary(self):
         github = SimpleNamespace(
             repo=REPOSITORY,
             create_issue_comment=Mock(),
@@ -230,12 +230,17 @@ class PhaseEvidenceContinuationTests(unittest.TestCase):
             return prepared
 
         def stop_before_write(*_args):
-            self.assertFalse(active)
+            self.assertTrue(active)
+            self.assertEqual(events[-1], "session-invalidated")
             events.append("predecessor-write-boundary")
             raise module.PhaseEvidenceError("stopped before any GitHub write")
 
+        def invalidate(_client, _issue_number):
+            events.append("session-invalidated")
+
         with tempfile.TemporaryDirectory() as temporary, \
                 patch.object(module, "adc_forward_generation_session", session), \
+                patch.object(module, "refresh_adc_forward_generation_session", side_effect=invalidate), \
                 patch.object(module, "_issue71_reconciled_predecessors", side_effect=reconcile), \
                 patch.object(module, "_publish_prepared_predecessor", side_effect=stop_before_write):
             with self.assertRaisesRegex(module.PhaseEvidenceError, "stopped before"):
@@ -244,11 +249,51 @@ class PhaseEvidenceContinuationTests(unittest.TestCase):
                 )
 
         self.assertEqual(events, [
-            "session-open", "read-only-reconciliation", "session-close",
-            "predecessor-write-boundary",
+            "session-open", "read-only-reconciliation", "session-invalidated",
+            "predecessor-write-boundary", "session-close",
         ])
         github.create_issue_comment.assert_not_called()
         github.replace_issue_labels.assert_not_called()
+
+    def test_phase_evidence_verification_uses_the_command_local_adc_session(self):
+        github = SimpleNamespace(repo=REPOSITORY)
+        active = False
+        events = []
+
+        @contextmanager
+        def session(client, issue_number):
+            nonlocal active
+            self.assertIs(client, github)
+            self.assertEqual(issue_number, 71)
+            self.assertFalse(active)
+            active = True
+            events.append("session-open")
+            try:
+                yield
+            finally:
+                active = False
+                events.append("session-close")
+
+        def collect(*_args, **_kwargs):
+            self.assertTrue(active)
+            events.append("collect")
+            return decision(), {}, SimpleNamespace(), "branch", HEAD
+
+        def readback(_client, _issue, _comment, _body):
+            self.assertTrue(active)
+            events.append("readback")
+            return decision()
+
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(module, "adc_forward_generation_session", session), \
+                patch.object(module, "_collect_payload", side_effect=collect), \
+                patch.object(module, "_readback", side_effect=readback):
+            result = module.verify_phase_evidence(
+                github, Path(temporary), 71, 99, Phase.REQUIREMENTS, Phase.SPECIFICATION,
+            )
+
+        self.assertEqual(result.body(), decision().body())
+        self.assertEqual(events, ["session-open", "collect", "readback", "session-close"])
 
     def test_predecessor_receipt_write_rechecks_exact_live_subject_and_pr_author(self):
         issue_body = "approved Issue body"
@@ -256,7 +301,7 @@ class PhaseEvidenceContinuationTests(unittest.TestCase):
         phase_authorization = {
             "branch_ref": "pases/issue-71-local-activation-v2-phase-rebaseline-epoch-3",
             "issue_body_sha256": hashlib.sha256(issue_body.encode("utf-8")).hexdigest(),
-            "labels_at_start": ["enhancement", "kind:single", "phase:design"],
+            "labels_at_start": ["enhancement", "kind:single", "phase:requirements"],
         }
 
         def live_subject(*, labels=None, head=HEAD, author_id=3744776,
@@ -267,7 +312,7 @@ class PhaseEvidenceContinuationTests(unittest.TestCase):
                     contract=SimpleNamespace(sha256=rework.ISSUE71_WINDOWS_PROFILE_READER_ADC_SHA256),
                 ),
                 issue={"body": issue_body},
-                labels=tuple(labels or ("enhancement", "kind:single", "phase:design")),
+                labels=tuple(labels or ("enhancement", "kind:single", "phase:requirements")),
                 branch_ref=phase_authorization["branch_ref"],
                 head_sha40=head,
                 pr={
@@ -305,10 +350,13 @@ class PhaseEvidenceContinuationTests(unittest.TestCase):
                         patch.object(
                             rework,
                             "verify_issue71_phase_and_user_review_adc_chain",
-                            return_value=({"phase_receipt_reconciliation": phase_authorization}, []),
+                            return_value=({
+                                "phase_receipt_reconciliation": phase_authorization,
+                                "phase_edges": [["requirements", "specification"]],
+                            }, []),
                         ), \
                         patch.object(rework, "PR_BODY_SHA256", hashlib.sha256(pr_body.encode("utf-8")).hexdigest()):
-                    with self.assertRaisesRegex(module.PhaseEvidenceError, "changed before predecessor receipt publication"):
+                    with self.assertRaisesRegex(module.PhaseEvidenceError, "changed"):
                         module._publish_prepared_predecessor(
                             github, Path(temporary), 71, receipt, receipt.body(),
                         )

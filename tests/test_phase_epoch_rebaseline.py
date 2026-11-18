@@ -86,6 +86,36 @@ class EpochAuthorizationTests(unittest.TestCase):
             module._read_rebaseline_history(fake_github)
 
 
+class EpochSessionTests(unittest.TestCase):
+    def test_read_active_epoch_runs_nested_read_in_generation_session(self):
+        events = []
+
+        class Session:
+            def __enter__(self):
+                events.append("enter")
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                events.append("exit")
+
+        github = object()
+        root = Path(".")
+        expected = object()
+
+        def read_in_session(*args):
+            events.append("read")
+            self.assertEqual(events, ["enter", "read"])
+            return expected
+
+        with patch.object(module, "adc_forward_generation_session", return_value=Session()) as session_factory, \
+                patch.object(module, "_read_active_epoch_in_session", side_effect=read_in_session) as reader:
+            actual = module.read_active_epoch(github, root)
+
+        self.assertIs(actual, expected)
+        session_factory.assert_called_once_with(github, module.ISSUE_NUMBER)
+        reader.assert_called_once_with(github, root, None)
+        self.assertEqual(events, ["enter", "read", "exit"])
+
+
 class EpochIdentityTests(unittest.TestCase):
     def test_identity_rejects_changed_historical_binding_provenance(self):
         identity = sample_epoch()

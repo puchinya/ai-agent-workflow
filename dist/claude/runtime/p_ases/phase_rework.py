@@ -633,24 +633,12 @@ ISSUE71_WINDOWS_FIXTURE_READER_MARKER_FIELDS = ISSUE71_WINDOWS_PROFILE_READER_MA
 ISSUE71_CURRENT_COMBINED_SCHEMA = "PASES_ISSUE_PHASE_AND_USER_REVIEW_V2"
 ISSUE71_CURRENT_COMBINED_MARKER_FIELDS = ISSUE71_WINDOWS_FIXTURE_READER_MARKER_FIELDS
 ISSUE71_PHASE_AND_USER_REVIEW_V3_SCHEMA = "PASES_ISSUE_PHASE_AND_USER_REVIEW_V3"
-TIMESTAMP_CONTINUATION_ADC_COMMENT_ID = 6968187591
-TIMESTAMP_CONTINUATION_ADC_SHA256 = "f56696d72e265a9f97b879b7506411a639e96904eabb42db8cec6e50e4211f18"
-TIMESTAMP_CONTINUATION_ADC_BYTES = 27965
 TIMESTAMP_CONTINUATION_AUTH_SCHEMA = "PASES_ISSUE71_PHASE_REWORK_TIMESTAMP_CONTINUATION_V1"
-TIMESTAMP_CONTINUATION_MARKER_BYTES = 11907
-TIMESTAMP_CONTINUATION_MARKER_SHA256 = "29a900913804bf741820109f1db168b9ae50391c4570acc6968c7fd3e43e6bdd"
-TIMESTAMP_CONTINUATION_PREDECESSOR = (
-    6966957737, "9bcfa163ea77ebc1dfe5c9cc10903b33191d6c2afc05f3223e28665198da16ad",
-)
-TIMESTAMP_CONTINUATION_PREDECESSOR_BYTES = 25759
+TIMESTAMP_CONTINUATION_AUTH_SCHEMA_V2 = "PASES_ISSUE71_PHASE_REWORK_TIMESTAMP_CONTINUATION_V2"
 TIMESTAMP_CONTINUATION_ORIGIN_ADC = (
     6963966853, "ea66f7e9504908391bec106fd1ce84ac1c2fd2b994880e9171aa34e8e3128cdf",
 )
 TIMESTAMP_CONTINUATION_ORIGIN_BYTES = 53083
-TIMESTAMP_CONTINUATION_START_HEAD = "b1293c8b5ad9947af45a7a58668d72ac8e822db0"
-TIMESTAMP_CONTINUATION_HISTORY_BOUNDARY = (
-    6886739124, "9c28ac5098565f74ffb5a74ece39a5a92c1264d793c2542b12e5d2efabc8c007",
-)
 TIMESTAMP_CONTINUATION_PHASE_REWORK_ORIGIN = {
     "adc_comment_id": 6963966853,
     "adc_sha256": "ea66f7e9504908391bec106fd1ce84ac1c2fd2b994880e9171aa34e8e3128cdf",
@@ -692,24 +680,6 @@ TIMESTAMP_CONTINUATION_PHASE_REWORK_ORIGIN = {
     "v3_exact_readback_sha256": "36d7c9f35b39506d8cf076196f2568d01f6ea5d306da88e2beafd8ebcdeb6aa6",
     "v3_final_readback_blocker_sha256": "dd976cc6afd71f7606ff92afee104af16ae6d7a9ea1d1a1b74779476b87eaa49",
 }
-TIMESTAMP_CONTINUATION_FOLLOWUP_PATHS = (
-    "dist/antigravity/docs/design/workflow-design.md",
-    "dist/antigravity/docs/specs/workflow-spec.md",
-    "dist/antigravity/runtime/p_ases/phase_rework.py",
-    "dist/claude/docs/design/workflow-design.md",
-    "dist/claude/docs/specs/workflow-spec.md",
-    "dist/claude/runtime/p_ases/phase_rework.py",
-    "dist/openai/docs/design/workflow-design.md",
-    "dist/openai/docs/specs/workflow-spec.md",
-    "dist/openai/runtime/p_ases/phase_rework.py",
-    "docs/design/workflow-design.md",
-    "docs/specs/workflow-spec.md",
-    "docs/testing/pases-lifecycle-tests.md",
-    "docs/testing/runtime-tests.md",
-    "docs/testing/traceability.md",
-    "runtime/p_ases/phase_rework.py",
-    "tests/test_phase_rework.py",
-)
 ISSUE71_PHASE_AND_USER_REVIEW_V3_FIELDS = frozenset({
     "active_authorization_digests", "active_epoch_id", "active_epoch_sha256",
     "active_phase_generation_comment_id", "active_phase_generation_sha256",
@@ -1624,39 +1594,43 @@ def _has_issue71_timestamp_continuation_marker(verified: VerifiedADC) -> bool:
         content = verified.contract.content.decode("utf-8", errors="strict")
     except (AttributeError, UnicodeError):
         return False
-    return f"<!-- {TIMESTAMP_CONTINUATION_AUTH_SCHEMA}\n" in content
+    return any(f"<!-- {schema}\n" in content
+               for schema in (TIMESTAMP_CONTINUATION_AUTH_SCHEMA,
+                              TIMESTAMP_CONTINUATION_AUTH_SCHEMA_V2))
 
 
 def parse_timestamp_continuation_authorization(
     verified: VerifiedADC,
 ) -> tuple[dict[str, Any], str]:
-    """Parse the exact approved timestamp continuation marker and its bounded scope."""
+    """Parse the exact current approved marker using its declared lineage and scope."""
     contract = verified.contract
     if (verified.pointer.state != "approved"
-            or verified.pointer.comment_id != TIMESTAMP_CONTINUATION_ADC_COMMENT_ID
-            or verified.pointer.sha256 != TIMESTAMP_CONTINUATION_ADC_SHA256
-            or contract.sha256 != TIMESTAMP_CONTINUATION_ADC_SHA256
-            or contract.byte_length != TIMESTAMP_CONTINUATION_ADC_BYTES
+            or verified.pointer.comment_id < 1
+            or verified.pointer.sha256 != contract.sha256
             or contract.byte_length != len(contract.content)
+            or hashlib.sha256(contract.content).hexdigest() != contract.sha256
             or contract.repository.casefold() != REPOSITORY.casefold()):
-        raise PhaseReworkError("current timestamp-continuation ADC differs from its exact approved bytes")
+        raise PhaseReworkError("current timestamp-continuation ADC differs from its approved bytes")
     text = contract.content.decode("utf-8", errors="strict")
-    start_marker = f"<!-- {TIMESTAMP_CONTINUATION_AUTH_SCHEMA}\n"
-    if text.count(start_marker) != 1:
-        raise PhaseReworkError("timestamp-continuation ADC must contain one authorization marker")
+    schemas = (TIMESTAMP_CONTINUATION_AUTH_SCHEMA, TIMESTAMP_CONTINUATION_AUTH_SCHEMA_V2)
+    markers = [(schema, f"<!-- {schema}\n") for schema in schemas
+               if text.count(f"<!-- {schema}\n") == 1]
+    total_markers = sum(text.count(f"<!-- {schema}\n") for schema in schemas)
+    if len(markers) != 1 or total_markers != 1:
+        raise PhaseReworkError("timestamp-continuation ADC must contain one supported authorization marker")
+    marker_schema, start_marker = markers[0]
     start = text.index(start_marker)
     close = text.find("\n-->", start + len(start_marker))
     if close < 0 or text[close + len("\n-->"):].strip():
         raise PhaseReworkError("timestamp-continuation marker is incomplete or not terminal")
     marker_bytes = text[start:close + len("\n-->")].encode("utf-8")
-    if (len(marker_bytes) != TIMESTAMP_CONTINUATION_MARKER_BYTES
-            or hashlib.sha256(marker_bytes).hexdigest() != TIMESTAMP_CONTINUATION_MARKER_SHA256):
-        raise PhaseReworkError("timestamp-continuation marker differs from the exact approved bytes")
     raw = text[start + len(start_marker):close]
     try:
         value = json.loads(raw, object_pairs_hook=_pairs)
     except (json.JSONDecodeError, UnicodeError) as exc:
         raise PhaseReworkError("timestamp-continuation marker JSON is malformed") from exc
+    if _canonical(value) != raw:
+        raise PhaseReworkError("timestamp-continuation marker JSON is not canonical")
     expected_fields = {
         "approved_history", "branch_ref", "checkpoint_before_publication",
         "current_adc_predecessor", "current_head_sha40", "current_issue", "current_pr",
@@ -1670,47 +1644,69 @@ def parse_timestamp_continuation_authorization(
     }
     if not isinstance(value, dict) or set(value) != expected_fields:
         raise PhaseReworkError("timestamp-continuation marker fields are incomplete or unknown")
-    if (value.get("schema") != TIMESTAMP_CONTINUATION_AUTH_SCHEMA
+    if (value.get("schema") != marker_schema
             or value.get("repository") != REPOSITORY
             or value.get("repository_id") != REPOSITORY_ID
             or value.get("owner_id") != OWNER_ID
             or value.get("issue_number") != ISSUE_NUMBER
             or value.get("branch_ref") != BRANCH_REF
-            or value.get("current_head_sha40") != TIMESTAMP_CONTINUATION_START_HEAD
-            or value.get("current_adc_predecessor") != {
-                "byte_length": TIMESTAMP_CONTINUATION_PREDECESSOR_BYTES,
-                "comment_id": TIMESTAMP_CONTINUATION_PREDECESSOR[0],
-                "sha256": TIMESTAMP_CONTINUATION_PREDECESSOR[1],
-            }
-            or value.get("history_boundary") != {
-                "comment_id": TIMESTAMP_CONTINUATION_HISTORY_BOUNDARY[0],
-                "sha256": TIMESTAMP_CONTINUATION_HISTORY_BOUNDARY[1],
-            }
+            or type(value.get("reviewer_checklist_count")) is not int
+            or not 1 <= value["reviewer_checklist_count"] <= 100
             or value.get("max_same_head_binding_checkpoint_pairs") != 1
             or value.get("no_admin_ruleset_activation_issue63_merge_release_tag_or_issue_close") is not True
             or value.get("v2_record_immutability") is not True
-            or value.get("v3_record_immutability") is not True
-            or value.get("reviewer_checklist_count") != 12):
+            or value.get("v3_record_immutability") is not True):
         raise PhaseReworkError("timestamp-continuation marker does not match the approved Issue #71 subject")
+    if marker_schema == TIMESTAMP_CONTINUATION_AUTH_SCHEMA_V2:
+        checklist_start = text.find("## Reviewer checklist")
+        if checklist_start < 0:
+            raise PhaseReworkError("timestamp-continuation V2 ADC has no Reviewer checklist")
+        checklist_end = text.find("\n## ", checklist_start + len("## Reviewer checklist"))
+        if checklist_end < 0:
+            checklist_end = len(text)
+        checklist_text = text[checklist_start:checklist_end]
+        actual_checklist_count = len(re.findall(r"(?m)^- \[ \] ", checklist_text))
+        if value["reviewer_checklist_count"] != actual_checklist_count:
+            raise PhaseReworkError("timestamp-continuation V2 Reviewer checklist count differs from its marker")
+    head = value.get("current_head_sha40")
+    if not isinstance(head, str) or SHA40.fullmatch(head) is None:
+        raise PhaseReworkError("timestamp-continuation marker current HEAD is malformed")
     issue = value.get("current_issue")
     if (not isinstance(issue, dict) or set(issue) != {"body_sha256", "id", "labels", "number", "state"}
             or issue.get("body_sha256") != ISSUE_BODY_SHA256 or issue.get("id") != ISSUE_ID
             or issue.get("number") != ISSUE_NUMBER or issue.get("state") != "open"
-            or issue.get("labels") != ["enhancement", "kind:single", "phase:requirements"]):
-        raise PhaseReworkError("timestamp-continuation Issue identity or phase differs")
+            or not isinstance(issue.get("labels"), list)
+            or len(issue["labels"]) != len(set(issue["labels"]))
+            or "phase:requirements" not in issue["labels"]):
+        raise PhaseReworkError("timestamp-continuation Issue identity or starting phase differs")
     pull = value.get("current_pr")
     if (not isinstance(pull, dict)
             or set(pull) != {"base_ref", "base_sha40", "body_sha256", "draft", "head_sha40",
                              "merged", "number", "state"}
             or pull.get("base_ref") != PR_BASE_REF or pull.get("base_sha40") != PR_BASE_SHA40
             or pull.get("body_sha256") != PR_BODY_SHA256 or pull.get("draft") is not False
-            or pull.get("head_sha40") != value["current_head_sha40"]
-            or pull.get("merged") is not False or pull.get("number") != PR_NUMBER
-            or pull.get("state") != "open"):
-        raise PhaseReworkError("timestamp-continuation PR identity or refs differ")
+            or pull.get("head_sha40") != head or pull.get("merged") is not False
+            or pull.get("number") != PR_NUMBER or pull.get("state") != "open"):
+        raise PhaseReworkError("timestamp-continuation PR identity or starting refs differ")
+    boundary = value.get("history_boundary")
+    if (not isinstance(boundary, dict) or set(boundary) != {"comment_id", "sha256"}
+            or type(boundary.get("comment_id")) is not int or boundary["comment_id"] < 1
+            or not isinstance(boundary.get("sha256"), str)
+            or not SHA256.fullmatch(boundary["sha256"])
+            or boundary["comment_id"] >= verified.pointer.comment_id):
+        raise PhaseReworkError("timestamp-continuation history boundary is malformed")
     predecessor = _adc_predecessor_header(text, "timestamp-continuation ADC")
-    if predecessor != TIMESTAMP_CONTINUATION_PREDECESSOR:
-        raise PhaseReworkError("timestamp-continuation ADC predecessor differs from its approved pointer")
+    current_predecessor = value.get("current_adc_predecessor")
+    if (not isinstance(current_predecessor, dict)
+            or set(current_predecessor) != {"byte_length", "comment_id", "sha256"}
+            or type(current_predecessor.get("byte_length")) is not int
+            or current_predecessor["byte_length"] < 1
+            or type(current_predecessor.get("comment_id")) is not int
+            or current_predecessor["comment_id"] < 1
+            or not isinstance(current_predecessor.get("sha256"), str)
+            or not SHA256.fullmatch(current_predecessor["sha256"])
+            or predecessor != (current_predecessor["comment_id"], current_predecessor["sha256"])):
+        raise PhaseReworkError("timestamp-continuation ADC predecessor differs from its marker")
     history = value.get("approved_history")
     if not isinstance(history, list) or not history:
         raise PhaseReworkError("timestamp-continuation marker has no approved history")
@@ -1718,23 +1714,30 @@ def parse_timestamp_continuation_authorization(
     for row in history:
         if (not isinstance(row, dict) or set(row) != {"byte_length", "comment_id", "sha256", "state"}
                 or type(row.get("byte_length")) is not int or row["byte_length"] < 1
-                or type(row.get("comment_id")) is not int or row["comment_id"] < 1
+                or type(row.get("comment_id")) is not int or row["comment_id"] <= boundary["comment_id"]
                 or not isinstance(row.get("sha256"), str) or not SHA256.fullmatch(row["sha256"])
                 or row.get("state") != "approved"):
             raise PhaseReworkError("timestamp-continuation approved history contains an invalid row")
         ids.append(row["comment_id"])
-    if ids != sorted(set(ids)) or history[-1] != {
-            "byte_length": TIMESTAMP_CONTINUATION_PREDECESSOR_BYTES,
-            "comment_id": TIMESTAMP_CONTINUATION_PREDECESSOR[0],
-            "sha256": TIMESTAMP_CONTINUATION_PREDECESSOR[1], "state": "approved"}:
+    expected_predecessor_row = {
+        "byte_length": current_predecessor["byte_length"],
+        "comment_id": current_predecessor["comment_id"],
+        "sha256": current_predecessor["sha256"],
+        "state": "approved",
+    }
+    if ids != sorted(set(ids)) or history[-1] != expected_predecessor_row:
         raise PhaseReworkError("timestamp-continuation approved history order or predecessor differs")
     followup = value.get("followup_commit_authorization")
+    allowlist = followup.get("path_allowlist") if isinstance(followup, dict) else None
     if (not isinstance(followup, dict)
             or set(followup) != {"max_commits", "parent_sha40", "path_allowlist",
                                  "require_direct_child", "require_push_to_existing_branch"}
-            or followup.get("max_commits") != 1
-            or followup.get("parent_sha40") != value["current_head_sha40"]
-            or followup.get("path_allowlist") != list(TIMESTAMP_CONTINUATION_FOLLOWUP_PATHS)
+            or followup.get("max_commits") != 1 or followup.get("parent_sha40") != head
+            or not isinstance(allowlist, list) or not allowlist
+            or allowlist != sorted(set(allowlist))
+            or any(not isinstance(path, str) or not path or path.startswith("/")
+                   or "\\" in path or any(part in {"", ".", ".."} for part in path.split("/"))
+                   for path in allowlist)
             or followup.get("require_direct_child") is not True
             or followup.get("require_push_to_existing_branch") is not True):
         raise PhaseReworkError("timestamp-continuation commit boundary or exact allowlist differs")
@@ -1771,7 +1774,6 @@ def parse_timestamp_continuation_authorization(
             "must_start_after_final_readiness_pass": True, "required_final_state": "PENDING"}:
         raise PhaseReworkError("timestamp-continuation User Review gate differs")
     return value, hashlib.sha256(marker_bytes).hexdigest()
-
 
 def _validate_historical_commit_segments(
     segments: Any,
@@ -2658,10 +2660,14 @@ def _verify_timestamp_continuation_commit_set(
         raise PhaseReworkError("timestamp-continuation commit authorization is missing")
     start = followup.get("parent_sha40")
     allowlist = followup.get("path_allowlist")
-    if (start != authorization.get("current_head_sha40")
-            or start != TIMESTAMP_CONTINUATION_START_HEAD
-            or not isinstance(allowlist, list)
-            or tuple(allowlist) != TIMESTAMP_CONTINUATION_FOLLOWUP_PATHS
+    if (not isinstance(start, str) or start != authorization.get("current_head_sha40")
+            or SHA40.fullmatch(start) is None
+            or not isinstance(allowlist, list) or not allowlist
+            or allowlist != sorted(set(allowlist))
+            or any(not isinstance(path, str) or not path for path in allowlist)
+            or any(path.startswith("/") or "\\" in path
+                   or any(part in {"", ".", ".."} for part in path.split("/"))
+                   for path in allowlist)
             or not is_ancestor(root, start, head)):
         raise PhaseReworkError("timestamp-continuation parent or path allowlist is invalid")
     rows = run_git(root, "rev-list", "--reverse", f"{start}..{head}").splitlines()
@@ -2675,7 +2681,6 @@ def _verify_timestamp_continuation_commit_set(
     changed = changed_paths_between(root, start, rows[0])
     if not changed or any(path not in allowlist for path in changed):
         raise PhaseReworkError("timestamp-continuation commit exceeds its exact path allowlist")
-
 
 def _authorization_context(github: GitHub, current: VerifiedADC) -> tuple[Any, ...]:
     """Resolve the original rework authorization and its exact approved successors."""

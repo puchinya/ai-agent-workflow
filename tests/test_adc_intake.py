@@ -309,6 +309,49 @@ class ADCValidationTests(unittest.TestCase):
 
 
 class ADCForwardGenerationCacheTests(unittest.TestCase):
+    def test_nested_same_identity_sessions_reuse_the_outer_verified_range(self):
+        github = GitHub("octo/repo")
+        generations = tuple(
+            SimpleNamespace(pointer=ADCPointer(comment_id, digest, 100, "approved"))
+            for comment_id, digest in zip((2101, 2102, 2103), ("1" * 64, "2" * 64, "3" * 64))
+        )
+        with patch("p_ases.adc._verify_adc_forward_generations_uncached",
+                   return_value=generations) as verify:
+            with adc_forward_generation_session(github, 1):
+                with adc_forward_generation_session(github, 1):
+                    full = verify_adc_forward_generations(
+                        github, 1, prior_comment_id=2101, prior_sha256="1" * 64,
+                        current_comment_id=2103, current_sha256="3" * 64,
+                    )
+                    middle = verify_adc_forward_generations(
+                        github, 1, prior_comment_id=2101, prior_sha256="1" * 64,
+                        current_comment_id=2102, current_sha256="2" * 64,
+                        allow_historical_target=True,
+                    )
+                    self.assertEqual(len(full), 3)
+                    self.assertEqual([row.pointer.comment_id for row in middle], [2101, 2102])
+                    self.assertEqual(verify.call_count, 1)
+
+    def test_session_does_not_reuse_ranges_after_client_repository_identity_changes(self):
+        github = GitHub("octo/repo")
+        generations = tuple(
+            SimpleNamespace(pointer=ADCPointer(comment_id, digest, 100, "approved"))
+            for comment_id, digest in zip((2201, 2202), ("1" * 64, "2" * 64))
+        )
+        with patch("p_ases.adc._verify_adc_forward_generations_uncached",
+                   return_value=generations) as verify:
+            with adc_forward_generation_session(github, 1):
+                verify_adc_forward_generations(
+                    github, 1, prior_comment_id=2201, prior_sha256="1" * 64,
+                    current_comment_id=2202, current_sha256="2" * 64,
+                )
+                github.repo = "other/repo"
+                verify_adc_forward_generations(
+                    github, 1, prior_comment_id=2201, prior_sha256="1" * 64,
+                    current_comment_id=2202, current_sha256="2" * 64,
+                )
+                self.assertEqual(verify.call_count, 2)
+
     def test_read_session_reuses_validated_ranges_and_final_refresh_discards_them(self):
         github = GitHub("octo/repo")
         generations = tuple(
@@ -358,6 +401,53 @@ class ADCForwardGenerationCacheTests(unittest.TestCase):
                     github, 1, prior_comment_id=2001, prior_sha256="1" * 64,
                     current_comment_id=2002, current_sha256="2" * 64,
                 )
+                self.assertEqual(verify.call_count, 2)
+
+    def test_cache_misses_on_client_issue_or_range_identity_changes(self):
+        github = GitHub("octo/repo")
+        other_client = GitHub("octo/repo")
+        generations = tuple(
+            SimpleNamespace(pointer=ADCPointer(comment_id, digest, 100, "approved"))
+            for comment_id, digest in zip((2301, 2302, 2303), ("1" * 64, "2" * 64, "3" * 64))
+        )
+        with patch("p_ases.adc._verify_adc_forward_generations_uncached",
+                   return_value=generations) as verify:
+            with adc_forward_generation_session(github, 1):
+                verify_adc_forward_generations(
+                    github, 1, prior_comment_id=2301, prior_sha256="1" * 64,
+                    current_comment_id=2302, current_sha256="2" * 64,
+                )
+                verify_adc_forward_generations(
+                    other_client, 1, prior_comment_id=2301, prior_sha256="1" * 64,
+                    current_comment_id=2302, current_sha256="2" * 64,
+                )
+                verify_adc_forward_generations(
+                    github, 2, prior_comment_id=2301, prior_sha256="1" * 64,
+                    current_comment_id=2302, current_sha256="2" * 64,
+                )
+                verify_adc_forward_generations(
+                    github, 1, prior_comment_id=2301, prior_sha256="1" * 64,
+                    current_comment_id=2302, current_sha256="4" * 64,
+                )
+                self.assertEqual(verify.call_count, 4)
+
+    def test_unapproved_range_is_never_reused_from_a_session(self):
+        github = GitHub("octo/repo")
+        generations = tuple(
+            SimpleNamespace(pointer=ADCPointer(comment_id, digest, 100, state))
+            for comment_id, digest, state in (
+                (2401, "1" * 64, "approved"), (2402, "2" * 64, "draft"),
+            )
+        )
+        with patch("p_ases.adc._verify_adc_forward_generations_uncached",
+                   return_value=generations) as verify:
+            with adc_forward_generation_session(github, 1):
+                for _ in range(2):
+                    verify_adc_forward_generations(
+                        github, 1, prior_comment_id=2401, prior_sha256="1" * 64,
+                        current_comment_id=2402, current_sha256="2" * 64,
+                        allow_historical_target=True,
+                    )
                 self.assertEqual(verify.call_count, 2)
 
 
