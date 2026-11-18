@@ -23,7 +23,7 @@ from p_ases.delivery import (
 from p_ases.evidence_store import VerificationSubject
 from p_ases.execution import AdoptedExecutionEpoch, ExecutionBinding, binding_digest
 from p_ases.execution_adoption import adoption_path, attachment_path as adoption_attachment_path
-from p_ases.phase_epoch_rebaseline import Issue71ExecutionEpoch
+from p_ases.current_epoch import ActiveExecutionEpoch
 from p_ases.cli import CLIError, _identity_evidence_paths
 from p_ases.work import execution_binding_path
 from p_ases.verification import (
@@ -37,22 +37,29 @@ ADC_SHA = "c" * 64
 PLAN_SHA = "d" * 64
 
 
-def epoch3_identity() -> Issue71ExecutionEpoch:
-    return Issue71ExecutionEpoch(
-        repository="puchinya/ai-agent-workflow", issue_number=71,
-        issue_id=6135294757, adc_comment_id=6881591677,
-        adc_sha256="3c6b3ac28270357b57047dc5da0a2c1fbdbada269d55225ea33a656cd3076e17",
-        base_ref="main", base_sha40="07481c4b451a81750a6c2e1a6a18bdfd4e3459c2",
-        branch_ref="pases/issue-71-local-activation-v2-phase-rebaseline-epoch-3",
-        epoch_id="1" * 64, intent_comment_id=6881828764, intent_body_sha256="2" * 64,
-        applied_comment_id=6881839877, applied_body_sha256="3" * 64,
-        predecessor_epoch_id="7230f492e6af06283bb72cbcf2df474c960b1e5a3c0760be1f765c46114a99ef",
-        predecessor_epoch_sha256="257958f86debbe128eecc2f00c884c759d5ae4eb76eb402393d67d8e60590caf",
-        historical_binding_provenance="UNVERIFIED",
-        historical_binding_sha256="b828daa98c9cab2c5243019e71158231e43f8c06826c7c31e6ca48ea3f5ac868",
-        sha256="4" * 64,
+def epoch3_identity() -> ActiveExecutionEpoch:
+    """Fixture for a generic V3 epoch, retaining the historical issue number."""
+    origin = {
+        "schema": "PASES_ISSUE_EXECUTION_EPOCH_V3",
+        "repository": "puchinya/ai-agent-workflow",
+        "issue_number": 71,
+        "issue_id": 6135294757,
+        "adc_comment_id": 6881591677,
+        "adc_sha256": "3c6b3ac28270357b57047dc5da0a2c1fbdbada269d55225ea33a656cd3076e17",
+        "base_ref": "main",
+        "base_sha40": "07481c4b451a81750a6c2e1a6a18bdfd4e3459c2",
+        "branch_ref": "pases/issue-71-local-activation-v2-phase-rebaseline-epoch-3",
+        "epoch_id": "1" * 64,
+        "historical_binding_provenance": "UNVERIFIED",
+        "sha256": "4" * 64,
+    }
+    return ActiveExecutionEpoch(
+        origin=origin,
+        adc_comment_id=origin["adc_comment_id"],
+        adc_sha256=origin["adc_sha256"],
+        applied_comment_id=6881839877,
+        applied_body_sha256="3" * 64,
     ).validate()
-
 
 def setup(*, draft=False, fork=False, stale=False, unresolved=False):
     subject = VerificationSubject("octo/repo", 30, 55, 123, ADC_SHA, PLAN_SHA, "e" * 40)
