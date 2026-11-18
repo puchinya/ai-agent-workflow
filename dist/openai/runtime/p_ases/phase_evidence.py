@@ -1352,10 +1352,8 @@ def verify_ready_preparation(github: GitHub, root: Path, issue_number: int,
 
 def refresh_ready_phase_evidence(github: GitHub, root: Path, issue_number: int
                                 ) -> tuple[int, ReadyPhaseRefresh | PhaseDecision, str]:
-    if issue_number == 71 and github.repo.casefold() == "puchinya/ai-agent-workflow":
-        with adc_forward_generation_session(github, issue_number):
-            return _refresh_ready_phase_evidence(github, root, issue_number)
-    return _refresh_ready_phase_evidence(github, root, issue_number)
+    with adc_forward_generation_session(github, issue_number):
+        return _refresh_ready_phase_evidence(github, root, issue_number)
 
 
 def _refresh_ready_phase_evidence(github: GitHub, root: Path, issue_number: int
@@ -1534,309 +1532,20 @@ def _readback(github: GitHub, issue_number: int, comment_id: int, expected_body:
     return parsed
 
 
-def _issue71_reconciled_predecessors(
-    github: GitHub, root: Path, issue_number: int,
-) -> tuple[tuple[tuple[Phase, Phase], PhaseDecision, str], ...]:
-    """Preflight pinned historical receipts and exact current-generation replacements."""
-    if issue_number != 71 or github.repo.casefold() != "puchinya/ai-agent-workflow":
-        raise PhaseEvidenceError("predecessor reconciliation is restricted to Issue #71")
-    context = verify_ordinary_issue_context(github, root, issue_number, require_binding=True)
-    issue, current_adc, kind, branch_ref, current_sha, _binding = context
-    try:
-        from .phase_rework import verify_issue71_phase_and_user_review_adc_chain
-        authorization, adc_chain = verify_issue71_phase_and_user_review_adc_chain(github, current_adc)
-    except (ImportError, ValueError) as exc:
-        raise PhaseEvidenceError(f"combined Issue #71 ADC authorization is invalid: {exc}") from exc
-    phase_auth = authorization["phase_receipt_reconciliation"]
-    generation = _active_phase_generation_subject(github, root, issue_number, current_adc)
-    expected_generation = (
-        phase_auth["active_phase_generation_comment_id"],
-        phase_auth["active_phase_generation_sha256"],
-    )
-    if generation != expected_generation:
-        raise PhaseEvidenceError("active Issue #71 phase generation differs from the authorized reconciliation")
-    historical_adc_rows = [row for row in adc_chain
-                           if row.pointer.comment_id == phase_auth["historical_receipt_adc_comment_id"]
-                           and row.contract.sha256 == phase_auth["historical_receipt_adc_sha256"]]
-    if len(historical_adc_rows) != 1:
-        raise PhaseEvidenceError("pinned historical receipt ADC is absent or duplicated in approved history")
-    historical_adc = historical_adc_rows[0]
-    try:
-        comments = github.issue_comments(issue_number)
-    except GitHubError as exc:
-        raise PhaseEvidenceError(f"historical phase receipt listing failed: {exc}") from exc
-    listed_by_id = {row.get("id"): row for row in comments if isinstance(row, dict)}
-    historical_decisions: dict[tuple[Phase, Phase], PhaseDecision] = {}
-    for expected in phase_auth["historical_receipts"]:
-        comment_id = expected["comment_id"]
-        row = listed_by_id.get(comment_id)
-        if row is None or type(row.get("id")) is not int or not isinstance(row.get("body"), str):
-            raise PhaseEvidenceError(f"pinned historical phase receipt #{comment_id} is missing")
-        body = row["body"]
-        if hashlib.sha256(body.encode("utf-8")).hexdigest() != expected["body_sha256"]:
-            raise PhaseEvidenceError(f"pinned historical phase receipt #{comment_id} body SHA-256 changed")
-        decision = _readback(github, issue_number, comment_id, body)
-        payload = decision.payload
-        edge = (Phase(expected["from_phase"]), Phase(expected["to_phase"]))
-        if ((payload["from_phase"], payload["to_phase"]) != (edge[0].value, edge[1].value)
-                or payload["adc_comment_id"] != historical_adc.pointer.comment_id
-                or payload["adc_sha256"] != historical_adc.contract.sha256
-                or payload["phase_generation_comment_id"] != expected_generation[0]
-                or payload["phase_generation_sha256"] != expected_generation[1]
-                or payload["commit_sha40"] != phase_auth["historical_receipt_commit_sha40"]
-                or expected["commit_sha40"] != phase_auth["historical_receipt_commit_sha40"]):
-            raise PhaseEvidenceError(f"pinned historical phase receipt #{comment_id} subject changed")
-        try:
-            verify_historical_phase_decision(
-                github, root, issue_number, decision, verified_adc=historical_adc,
-                issue_kind=kind, branch_ref=branch_ref, current_sha40=current_sha,
-                phase_generation=expected_generation,
-            )
-        except (GitHubError, GitError, PhaseEvidenceError) as exc:
-            raise PhaseEvidenceError(f"historical phase receipt #{comment_id} failed source verification: {exc}") from exc
-        historical_decisions[edge] = decision
-    if set(historical_decisions) != {
-            (Phase.REQUIREMENTS, Phase.SPECIFICATION),
-            (Phase.SPECIFICATION, Phase.DESIGN),
-    }:
-        raise PhaseEvidenceError("historical phase receipt chain is incomplete or reordered")
-
-    first, _issue, _adc, _branch, _sha = _collect_payload(
-        github, root, issue_number, Phase.REQUIREMENTS, Phase.SPECIFICATION, {},
-        check_source_phase=False, verified_context=context,
-    )
-    second, _issue, _adc, _branch, _sha = _collect_payload(
-        github, root, issue_number, Phase.SPECIFICATION, Phase.DESIGN, {},
-        check_source_phase=False, verified_context=context,
-        predecessor_receipts={(Phase.REQUIREMENTS, Phase.SPECIFICATION): (1, first)},
-    )
-    document_authorization = authorization.get("current_document_snapshot_authorization")
-    if document_authorization is None:
-        document_authorization = authorization.get("historical_document_reissue_authorization")
-    if not isinstance(document_authorization, dict):
-        raise PhaseEvidenceError("current Issue #71 ADC lacks historical/current document authorization")
-    _validate_issue71_current_document_snapshot(
-        (first, second), document_authorization,
-    )
-    prepared = {
-        (Phase.REQUIREMENTS, Phase.SPECIFICATION): (1, first),
-        (Phase.SPECIFICATION, Phase.DESIGN): (2, second),
-    }
-    ready, _issue, _adc, _branch, _sha = _collect_payload(
-        github, root, issue_number, Phase.DESIGN, Phase.READY, {},
-        verified_context=context, predecessor_receipts=prepared,
-    )
-    replacements = (
-        ((Phase.REQUIREMENTS, Phase.SPECIFICATION), first, first.body()),
-        ((Phase.SPECIFICATION, Phase.DESIGN), second, second.body()),
-    )
-    for edge, decision, body in replacements:
-        existing: list[dict[str, Any]] = []
-        for row in comments:
-            text = row.get("body") if isinstance(row, dict) else None
-            if not isinstance(text, str) or not text.startswith(tuple(
-                    f"{sentinel}\n" for sentinel in PHASE_DECISION_SENTINELS)):
-                continue
-            candidate = PhaseDecision.from_body(text)
-            if _receipt_subject(candidate.payload) == _receipt_subject(decision.payload):
-                existing.append(row)
-        if len(existing) > 1:
-            raise PhaseEvidenceError("current-generation predecessor phase receipt is duplicated")
-        if existing:
-            row = existing[0]
-            if row.get("body") != body:
-                raise PhaseEvidenceError("current-generation predecessor phase receipt conflicts with the preflight body")
-            _readback(github, issue_number, row["id"], body)
-    return (*replacements, ((Phase.DESIGN, Phase.READY), ready, ready.body()))
-
-
-def _validate_issue71_current_document_snapshot(
-    decisions: tuple[PhaseDecision, ...], authorization: Mapping[str, Any],
-) -> None:
-    """Bind replacement Phase receipts to the exact current documents, independently of history."""
-    authorized_rows = authorization.get("current_source_document_digests")
-    if not isinstance(authorized_rows, list) or not authorized_rows:
-        raise PhaseEvidenceError("current Issue #71 document digest authorization is incomplete")
-    expected: dict[str, str] = {}
-    for row in authorized_rows:
-        if (not isinstance(row, dict) or set(row) != {"path", "sha256"}
-                or not isinstance(row.get("path"), str)
-                or not isinstance(row.get("sha256"), str)
-                or not SHA256.fullmatch(row["sha256"])
-                or row["path"] in expected):
-            raise PhaseEvidenceError("current Issue #71 document digest authorization is malformed")
-        expected[row["path"]] = row["sha256"]
-    actual: dict[str, str] = {}
-    for decision in decisions:
-        for row in decision.payload.get("documents", []):
-            if not isinstance(row, dict) or row.get("role") not in {"specification", "design"}:
-                continue
-            path, digest = row.get("path"), row.get("sha256")
-            if (not isinstance(path, str) or not isinstance(digest, str)
-                    or not SHA256.fullmatch(digest) or path not in expected):
-                raise PhaseEvidenceError("replacement Phase receipt includes an unauthorized current document")
-            if path in actual and actual[path] != digest:
-                raise PhaseEvidenceError("current source-document bytes differ between replacement receipts")
-            actual[path] = digest
-    if actual != expected:
-        raise PhaseEvidenceError("current source-document bytes differ from the approved reissue snapshot")
-
-
-def _verify_issue71_phase_receipt_subject(
-    github: GitHub, root: Path, decision: PhaseDecision,
-) -> None:
-    """Re-read the complete mutable Issue #71 subject around a receipt write."""
-    refresh_adc_forward_generation_session(github, 71)
-    try:
-        from .phase_rework import (
-            OWNER_ID,
-            PR_BODY_SHA256,
-            PR_TITLE,
-            _live,
-            verify_issue71_phase_and_user_review_adc_chain,
-        )
-
-        context = verify_ordinary_issue_context(github, root, 71, require_binding=True)
-        live = _live(github, root)
-        authorization, _chain = verify_issue71_phase_and_user_review_adc_chain(
-            github, live.current_adc,
-        )
-    except (GitHubError, ValueError) as exc:
-        raise PhaseEvidenceError(f"Issue #71 phase receipt subject readback failed: {exc}") from exc
-
-    phase_authorization = authorization.get("phase_receipt_reconciliation")
-    pull = live.pr
-    pull_author = pull.get("user") if isinstance(pull, dict) else None
-    pull_body = pull.get("body") if isinstance(pull, dict) else None
-    subject = decision.payload
-    live_issue_body = live.issue.get("body") if isinstance(live.issue, dict) else None
-    start_labels = phase_authorization.get("labels_at_start") if isinstance(phase_authorization, dict) else None
-    phase_edges = authorization.get("phase_edges") if isinstance(authorization, dict) else None
-    source, target = subject.get("from_phase"), subject.get("to_phase")
-    if (not isinstance(start_labels, list) or any(not isinstance(label, str) for label in start_labels)
-            or not isinstance(phase_edges, list)
-            or not any(isinstance(edge, list) and edge == [source, target] for edge in phase_edges)):
-        raise PhaseEvidenceError("Issue #71 phase receipt transition is not declared by the approved phase graph")
-    start_phase_labels = [label for label in start_labels if label.startswith("phase:")]
-    if len(start_phase_labels) != 1:
-        raise PhaseEvidenceError("Issue #71 authorization must contain exactly one starting phase label")
-    expected_labels = tuple(sorted(
-        [label for label in start_labels if not label.startswith("phase:")] + [f"phase:{source}"]
-    ))
-    if (not isinstance(phase_authorization, dict)
-            or context.commit_sha40 != live.head_sha40
-            or context.verified_adc.pointer != live.current_adc.pointer
-            or context.verified_adc.contract.sha256 != live.current_adc.contract.sha256
-            or subject.get("repository") != "puchinya/ai-agent-workflow"
-            or subject.get("issue_number") != 71
-            or subject.get("adc_comment_id") != live.current_adc.pointer.comment_id
-            or subject.get("adc_sha256") != live.current_adc.contract.sha256
-            or subject.get("branch_ref") != phase_authorization.get("branch_ref")
-            or live.branch_ref != phase_authorization.get("branch_ref")
-            or subject.get("commit_sha40") != live.head_sha40
-            or not isinstance(live_issue_body, str)
-            or hashlib.sha256(live_issue_body.encode("utf-8")).hexdigest()
-            != phase_authorization.get("issue_body_sha256")
-            or live.labels != expected_labels
-            or not isinstance(pull, dict) or pull.get("title") != PR_TITLE or not isinstance(pull_body, str)
-            or hashlib.sha256(pull_body.encode("utf-8")).hexdigest() != PR_BODY_SHA256
-            or not isinstance(pull_author, dict) or pull_author.get("type") != "User"
-            or pull_author.get("id") != OWNER_ID):
-        raise PhaseEvidenceError(
-            "Issue #71, PR #75, current ADC, phase labels, author, or branch HEAD changed"
-        )
-
-
-def _publish_prepared_predecessor(
-    github: GitHub, root: Path, issue_number: int, decision: PhaseDecision, body: str,
-) -> int:
-    try:
-        comments = github.issue_comments(issue_number)
-    except GitHubError as exc:
-        raise PhaseEvidenceError(f"predecessor phase receipt history read failed: {exc}") from exc
-    matches: list[dict[str, Any]] = []
-    for row in comments:
-        text = row.get("body") if isinstance(row, dict) else None
-        if not isinstance(text, str) or not text.startswith(tuple(
-                f"{sentinel}\n" for sentinel in PHASE_DECISION_SENTINELS)):
-            continue
-        candidate = PhaseDecision.from_body(text)
-        if _receipt_subject(candidate.payload) == _receipt_subject(decision.payload):
-            matches.append(row)
-    if len(matches) > 1:
-        raise PhaseEvidenceError("current-generation predecessor phase receipt is duplicated")
-    if matches:
-        row = matches[0]
-        if row.get("body") != body:
-            raise PhaseEvidenceError("current-generation predecessor phase receipt conflicts with the authorized body")
-        comment_id = row.get("id")
-    else:
-        refresh_adc_forward_generation_session(github, issue_number)
-        try:
-            _verify_issue71_phase_receipt_subject(github, root, decision)
-        except (GitHubError, ValueError) as exc:
-            raise PhaseEvidenceError(
-                f"approved Issue #71 predecessor receipt subject preflight failed: {exc}"
-            ) from exc
-
-        try:
-            created = github.create_issue_comment(issue_number, body)
-            comment_id = created.get("id") if isinstance(created, dict) else None
-        except GitHubError as exc:
-            refresh_adc_forward_generation_session(github, issue_number)
-            try:
-                uncertain = [row for row in github.issue_comments(issue_number)
-                             if isinstance(row, dict) and row.get("body") == body]
-            except GitHubError as read_exc:
-                raise PhaseEvidenceError(
-                    f"predecessor receipt write failed and exact readback is unavailable: {read_exc}"
-                ) from exc
-            if len(uncertain) != 1:
-                raise PhaseEvidenceError(f"predecessor phase receipt publication failed: {exc}") from exc
-            comment_id = uncertain[0].get("id")
-    if type(comment_id) is not int or comment_id < 1:
-        raise PhaseEvidenceError("predecessor phase receipt publication returned an invalid Comment ID")
-    refresh_adc_forward_generation_session(github, issue_number)
-    _readback(github, issue_number, comment_id, body)
-    if issue_number == 71 and github.repo.casefold() == "puchinya/ai-agent-workflow":
-        refresh_adc_forward_generation_session(github, issue_number)
-        _verify_issue71_phase_receipt_subject(github, root, decision)
-    return comment_id
-
-
 def publish_phase_evidence(github: GitHub, root: Path, issue_number: int,
                            source: Phase, target: Phase,
                            skip_reasons: Mapping[str, str] | None = None) -> tuple[int, PhaseDecision]:
-    if issue_number == 71 and github.repo.casefold() == "puchinya/ai-agent-workflow":
-        with adc_forward_generation_session(github, issue_number):
-            return _publish_phase_evidence(github, root, issue_number, source, target, skip_reasons)
-    return _publish_phase_evidence(github, root, issue_number, source, target, skip_reasons)
+    with adc_forward_generation_session(github, issue_number):
+        return _publish_phase_evidence(github, root, issue_number, source, target, skip_reasons)
 
 
 def _publish_phase_evidence(github: GitHub, root: Path, issue_number: int,
                             source: Phase, target: Phase,
                             skip_reasons: Mapping[str, str] | None = None) -> tuple[int, PhaseDecision]:
     skips = skip_reasons or {}
-    if (issue_number == 71 and source is Phase.DESIGN and target is Phase.READY
-            and github.repo.casefold() == "puchinya/ai-agent-workflow"):
-        # Share the verified range through read-only reconciliation; write
-        # helpers invalidate it before refreshing and publishing each receipt.
-        prepared = _issue71_reconciled_predecessors(github, root, issue_number)
-        decision = prepared[-1][1]
-        for edge, predecessor, predecessor_body in prepared[:-1]:
-            refresh_adc_forward_generation_session(github, issue_number)
-            _publish_prepared_predecessor(
-                github, root, issue_number, predecessor, predecessor_body,
-            )
-        checked, issue, verified, branch_ref, commit_sha = _collect_payload(
-            github, root, issue_number, source, target, skips,
-        )
-        if checked.body() != decision.body():
-            raise PhaseEvidenceError("ready Phase Decision changed after predecessor reconciliation")
-        decision = checked
-    else:
-        decision, issue, verified, branch_ref, commit_sha = _collect_payload(
-            github, root, issue_number, source, target, skips)
+    decision, issue, verified, branch_ref, commit_sha = _collect_payload(
+        github, root, issue_number, source, target, skips,
+    )
     body = decision.body()
     try:
         comments = github.issue_comments(issue_number)
@@ -1858,32 +1567,21 @@ def _publish_phase_evidence(github: GitHub, root: Path, issue_number: int,
         comment_id = row.get("id")
     else:
         try:
-            if issue_number == 71 and github.repo.casefold() == "puchinya/ai-agent-workflow":
-                refresh_adc_forward_generation_session(github, issue_number)
-                latest_decision, latest_issue, latest_adc, latest_branch, latest_sha = _collect_payload(
-                    github, root, issue_number, source, target, skips,
+            refresh_adc_forward_generation_session(github, issue_number)
+            latest_decision, latest_issue, latest_adc, latest_branch, latest_sha = _collect_payload(
+                github, root, issue_number, source, target, skips,
+            )
+            if (latest_decision.body() != body or latest_issue.get("number") != issue_number
+                    or latest_issue.get("state") != "open"
+                    or latest_issue.get("labels") != issue.get("labels")
+                    or latest_issue.get("body") != issue.get("body")
+                    or latest_issue.get("repository_url") != issue.get("repository_url")
+                    or latest_adc.pointer != verified.pointer
+                    or latest_adc.contract.sha256 != verified.contract.sha256
+                    or latest_branch != branch_ref or latest_sha != commit_sha):
+                raise PhaseEvidenceError(
+                    "Issue, PRBinding, ADC, branch, or HEAD changed before Phase evidence publication"
                 )
-                if (latest_decision.body() != body or latest_issue.get("number") != issue_number
-                        or latest_issue.get("state") != "open"
-                        or latest_issue.get("labels") != issue.get("labels")
-                        or latest_issue.get("body") != issue.get("body")
-                        or latest_issue.get("repository_url") != issue.get("repository_url")
-                        or latest_adc.pointer != verified.pointer
-                        or latest_adc.contract.sha256 != verified.contract.sha256
-                        or latest_branch != branch_ref or latest_sha != commit_sha):
-                    raise PhaseEvidenceError(
-                        "Issue, PRBinding, ADC, branch, or HEAD changed before phase evidence publication"
-                    )
-            else:
-                latest_issue = github.issue(issue_number)
-                latest_adc = verify_adc(github, issue_number)
-                latest_branch = github.branch(branch_ref)
-                latest_sha = (latest_branch.get("commit", {}).get("sha")
-                              if isinstance(latest_branch.get("commit"), dict) else None)
-                if (latest_issue.get("state") != "open" or latest_issue.get("labels") != issue.get("labels")
-                        or latest_adc.pointer.comment_id != verified.pointer.comment_id
-                        or latest_adc.contract.sha256 != verified.contract.sha256 or latest_sha != commit_sha):
-                    raise PhaseEvidenceError("Issue, approved ADC, or branch changed before phase evidence publication")
             created = github.create_issue_comment(issue_number, body)
             comment_id = created.get("id") if isinstance(created, dict) else None
         except GitHubError as exc:
@@ -1901,22 +1599,6 @@ def _publish_phase_evidence(github: GitHub, root: Path, issue_number: int,
         raise PhaseEvidenceError("phase evidence publication returned an invalid Comment ID")
     refresh_adc_forward_generation_session(github, issue_number)
     result = _readback(github, issue_number, comment_id, body)
-    if issue_number == 71 and github.repo.casefold() == "puchinya/ai-agent-workflow":
-        refresh_adc_forward_generation_session(github, issue_number)
-        after, after_issue, after_adc, after_branch, after_sha = _collect_payload(
-            github, root, issue_number, source, target, skips,
-        )
-        if (after.body() != body or after_issue.get("number") != issue_number
-                or after_issue.get("state") != "open"
-                or after_issue.get("labels") != issue.get("labels")
-                or after_issue.get("body") != issue.get("body")
-                or after_issue.get("repository_url") != issue.get("repository_url")
-                or after_adc.pointer != verified.pointer
-                or after_adc.contract.sha256 != verified.contract.sha256
-                or after_branch != branch_ref or after_sha != commit_sha):
-            raise PhaseEvidenceError(
-                "Issue, PRBinding, ADC, branch, or HEAD changed during phase evidence publication"
-            )
     return comment_id, result
 
 
