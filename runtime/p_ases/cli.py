@@ -5602,13 +5602,18 @@ def main(argv: list[str] | None = None) -> int:
             def readiness_factory():
                 if any(path is None for path in input_paths):
                     raise CLIError("first phase-rework application requires all five fresh evidence inputs")
+                current_binding = read_pr_binding(pr_binding_path(root, args.issue, github=github))
+                if (current_binding.repository.casefold() != repository.casefold()
+                        or current_binding.issue_number != args.issue
+                        or current_binding.pr_head_sha40 != head_sha40(root)):
+                    raise CLIError("phase rework Readiness requires the exact current PRBinding")
                 readiness_args = argparse.Namespace(
-                    issue=args.issue, pr=75, head=head_sha40(root), plan=args.plan,
+                    issue=args.issue, pr=current_binding.pr_number, head=head_sha40(root), plan=args.plan,
                     verification=args.verification, acceptance=args.acceptance,
                     self_audit=args.self_audit, independent_review=args.independent_review,
                 )
                 output = io.StringIO()
-                with adc_forward_generation_session(github, args.issue), contextlib.redirect_stdout(output):
+                with contextlib.redirect_stdout(output):
                     exit_code = _delivery_readiness(readiness_args, repository, root, github)
                 if exit_code != 0:
                     raise CLIError("fresh exact-subject Review Readiness did not PASS")
@@ -5624,19 +5629,11 @@ def main(argv: list[str] | None = None) -> int:
                 return result
 
             try:
-                if args.issue == 71 and repository.casefold() == "puchinya/ai-agent-workflow":
-                    with adc_forward_generation_session(github, args.issue):
-                        result = apply_issue71_phase_rework(
-                            github, root, args.issue,
-                            readiness_factory=(readiness_factory
-                                               if all(path is not None for path in input_paths) else None),
-                        )
-                else:
-                    result = apply_issue71_phase_rework(
-                        github, root, args.issue,
-                        readiness_factory=(readiness_factory
-                                           if all(path is not None for path in input_paths) else None),
-                    )
+                result = apply_issue71_phase_rework(
+                    github, root, args.issue,
+                    readiness_factory=(readiness_factory
+                                       if all(path is not None for path in input_paths) else None),
+                )
                 _json(result)
                 return 0
             except (PhaseReworkError, CLIError, ADCError, GitError, GitHubError, OSError, ValueError) as exc:
@@ -5676,9 +5673,6 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.verb == "advance":
             github = GitHub(repository)
-            if args.issue == 71 and repository.casefold() == "puchinya/ai-agent-workflow":
-                with adc_forward_generation_session(github, args.issue):
-                    return _advance_issue_with_adc_session(args, repository, github)
             return _advance_issue_with_adc_session(args, repository, github)
 
         if args.verb == "integration-check":
