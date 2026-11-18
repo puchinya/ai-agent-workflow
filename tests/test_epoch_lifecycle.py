@@ -207,6 +207,21 @@ class EpochLifecycleTests(unittest.TestCase):
                 self._run(root, github, verified_adc(authorization(128)))
             self.assertEqual((github.post_count, github.label_writes), (0, 0))
 
+    def test_issue_body_drift_during_remote_journal_scan_blocks_intent(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, github = Path(temporary), FakeGitHub(128)
+            original = github.issue_comments
+
+            def changed_history(number):
+                history = original(number)
+                github.issue_row["body"] = "Changed during remote journal scan"
+                return history
+
+            github.issue_comments = changed_history
+            with self.assertRaisesRegex(module.EpochLifecycleError, "Issue body changed before Intent"):
+                self._run(root, github, verified_adc(authorization(128)))
+            self.assertEqual((github.post_count, github.label_writes), (0, 0))
+
     def test_owner_and_issue_drift_block_before_writes(self):
         with tempfile.TemporaryDirectory() as temporary:
             root, github = Path(temporary), FakeGitHub(128)

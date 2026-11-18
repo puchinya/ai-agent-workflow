@@ -221,10 +221,6 @@ def apply_phase_rework(github: GitHub, root: Path, issue_number: int, *,
                                           adc=adc, auth=auth)
         # A different session cannot silently alter the subject after the first
         # evidence calculation, especially before the one-shot Intent POST.
-        before_intent, *_ = _live(github, root, issue_number, adc, auth, auth["labels_before"])
-        if before_intent.get("body") != initial_issue["body"]:
-            raise PhaseReworkLifecycleError("Phase rework Issue body changed before Intent")
-        _verify_pr(github, issue_number, auth)
         if any(isinstance(row, dict) and isinstance(row.get("body"), str)
                and row["body"].startswith((
                    f"<!-- {INTENT_SCHEMA}\n", f"<!-- {APPLIED_SCHEMA}\n",
@@ -235,6 +231,11 @@ def apply_phase_rework(github: GitHub, root: Path, issue_number: int, *,
         if _readiness(readiness_factory(), repository=github.repo,
                       issue_number=issue_number, adc=adc, auth=auth) != (ready_sha, subject_sha):
             raise PhaseReworkLifecycleError("fresh Readiness changed before Phase rework Intent")
+        # A fresh Issue/PR read follows the second Readiness calculation, not precedes it.
+        before_intent, *_ = _live(github, root, issue_number, adc, auth, auth["labels_before"])
+        if before_intent.get("body") != initial_issue["body"]:
+            raise PhaseReworkLifecycleError("Phase rework Issue body changed before Intent")
+        _verify_pr(github, issue_number, auth)
         intent = {
             **auth, "schema": INTENT_SCHEMA,
             "adc_comment_id": adc.pointer.comment_id,

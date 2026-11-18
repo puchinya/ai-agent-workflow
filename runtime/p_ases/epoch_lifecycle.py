@@ -258,9 +258,6 @@ def reset_execution_epoch(github: GitHub, root: Path, issue_number: int) -> dict
             "head_sha40": head, "issue_body_sha256": issue_sha,
             "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         }
-        before_intent, *_ = _live(github, root, issue_number, verified, auth, auth["labels_before"])
-        if before_intent.get("body") != issue["body"]:
-            raise EpochLifecycleError("epoch Issue body changed before Intent")
         # This is a one-shot writer. A missing local journal is never permission
         # to duplicate an already published remote Intent or Applied record.
         existing = github.issue_comments(issue_number)
@@ -269,6 +266,10 @@ def reset_execution_epoch(github: GitHub, root: Path, issue_number: int) -> dict
                    f"<!-- {INTENT_SCHEMA}\n", f"<!-- {APPLIED_SCHEMA}\n",
                )) for row in existing):
             raise EpochLifecycleError("remote epoch reset journal already exists; read-only reconciliation required")
+        # Place the mutable Issue readback after the journal scan, nearest the POST.
+        before_intent, *_ = _live(github, root, issue_number, verified, auth, auth["labels_before"])
+        if before_intent.get("body") != issue["body"]:
+            raise EpochLifecycleError("epoch Issue body changed before Intent")
         intent_id, intent_sha = _post(
             github, root, issue_number, "intent", INTENT_SCHEMA, intent, owner_id,
         )
