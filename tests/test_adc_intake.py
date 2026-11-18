@@ -777,6 +777,18 @@ class ADCPublicationTests(unittest.TestCase):
         self.assertEqual(verified.contract.content, self.payload)
         self.assertEqual(verified.pointer, pointer)
 
+    def test_current_adc_lookup_avoids_full_history_even_for_large_issues(self):
+        pointer = publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
+        marker_id = next(iter(self.pointer_record_ids()))
+        recent = copy.deepcopy(self.github.comments[marker_id])
+        self.github.issue_data["comments"] = 1000000
+        self.github.issue_comments_calls = 0
+        with patch.object(self.github, "issue_comment_pages_newest", create=True,
+                          return_value=iter(([recent],))) as newest:
+            self.assertEqual(verify_adc(self.github, 1).pointer, pointer)
+            newest.assert_called_once_with(1, 1000000)
+        self.assertEqual(self.github.issue_comments_calls, 0)
+
     def test_pointer_example_in_code_fence_does_not_count_as_the_live_pointer(self):
         self.github.issue_data["body"] += (
             "\n```md\n## Agent Development Contract\n"
