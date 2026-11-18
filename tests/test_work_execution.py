@@ -181,7 +181,7 @@ class WorkExecutionTests(unittest.TestCase):
         pull = {"number": 75, "title": "Issue #71", "body": "Closes #71"}
         patches = (
             patch("p_ases.current_epoch.read_current_epoch", return_value=epoch),
-            patch.object(work_module, "is_issue71_execution_epoch", return_value=True),
+            patch.object(work_module, "is_execution_epoch", return_value=True),
             patch.object(work_module, "worktree_clean", return_value=True),
             patch.object(work_module, "current_branch", return_value=branch),
             patch.object(work_module, "head_sha40", return_value=head),

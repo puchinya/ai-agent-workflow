@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from .checkpoint import validate_ref
 from .execution import (
     AdoptedExecutionEpoch, ExecutionBinding, ExecutionError, ExecutionIdentity,
-    execution_identity_digest, is_issue71_execution_epoch,
+    execution_identity_digest, is_execution_epoch,
 )
 
 
@@ -29,7 +29,7 @@ class WorkContext:
     execution_identity_sha256: str
 
     def validate(self) -> "WorkContext":
-        if not isinstance(self.execution_identity, (ExecutionBinding, AdoptedExecutionEpoch)) and not is_issue71_execution_epoch(self.execution_identity):
+        if not isinstance(self.execution_identity, (ExecutionBinding, AdoptedExecutionEpoch)) and not is_execution_epoch(self.execution_identity):
             raise WorkContextError("WorkContext must reference a typed ExecutionBinding or execution epoch")
         try:
             self.execution_identity.validate()

@@ -17,8 +17,8 @@ from .current_base import (
     read_current_base_advance, verify_current_base_advance,
 )
 from .context import WorkContext
-from .execution import (ExecutionBinding, ExecutionError, Issue71ExecutionEpochIdentity,
-                        binding_digest, is_issue71_execution_epoch, read_binding, write_binding)
+from .execution import (ExecutionBinding, ExecutionError, ExecutionEpochIdentity,
+                        binding_digest, is_execution_epoch, read_binding, write_binding)
 from .git import (
     GitError, branch_exists, create_branch, current_branch, fetch_remote_branch_exact,
     head_sha40, is_ancestor, remote_branch_sha, switch_branch, worktree_clean,
@@ -276,12 +276,12 @@ def ensure_pull_request(repository_root: Path, github: GitHub, *, repository: st
 
 
 def ensure_epoch_pull_request(repository_root: Path, github: GitHub, *, repository: str,
-                              issue_number: int, execution_epoch: Issue71ExecutionEpochIdentity,
+                              issue_number: int, execution_epoch: ExecutionEpochIdentity,
                               branch_ref: str, base_ref: str, title: str, body: str) -> PREnsureResult:
     """Create or resume a PR for an arbitrary validated execution epoch."""
     from .current_epoch import CurrentEpochError, read_current_epoch
     root = Path(repository_root).resolve()
-    if (not is_issue71_execution_epoch(execution_epoch)
+    if (not is_execution_epoch(execution_epoch)
             or execution_epoch.repository.casefold() != repository.casefold()
             or execution_epoch.issue_number != issue_number
             or github.repo.casefold() != repository.casefold()):

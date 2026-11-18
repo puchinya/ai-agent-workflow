@@ -273,8 +273,8 @@ class WorkspaceAttachment:
         return attachment
 
 
-class Issue71ExecutionEpochIdentity(Protocol):
-    """Structural identity for the isolated Issue #71 epoch schema."""
+class ExecutionEpochIdentity(Protocol):
+    """Structural identity for a validated execution epoch schema."""
 
     repository: str
     issue_number: int
@@ -289,10 +289,10 @@ class Issue71ExecutionEpochIdentity(Protocol):
     def validate(self) -> Any: ...
 
 
-ExecutionIdentity = ExecutionBinding | AdoptedExecutionEpoch | Issue71ExecutionEpochIdentity
+ExecutionIdentity = ExecutionBinding | AdoptedExecutionEpoch | ExecutionEpochIdentity
 
 
-def is_issue71_execution_epoch(identity: Any) -> bool:
+def is_execution_epoch(identity: Any) -> bool:
     repository = getattr(identity, "repository", None)
     issue_number = getattr(identity, "issue_number", None)
     digest = getattr(identity, "sha256", None)
@@ -308,7 +308,7 @@ def execution_identity_base(identity: ExecutionIdentity) -> tuple[str, str]:
     if isinstance(identity, AdoptedExecutionEpoch):
         identity.validate()
         return identity.selected_base_ref, identity.selected_base_sha40
-    if is_issue71_execution_epoch(identity):
+    if is_execution_epoch(identity):
         identity.validate()
         return identity.base_ref, identity.base_sha40
     raise ExecutionError("execution identity type is unsupported")
@@ -319,7 +319,7 @@ def execution_identity_context_id(identity: ExecutionIdentity) -> str:
         return f"execution-binding:{binding_digest(identity)}"
     if isinstance(identity, AdoptedExecutionEpoch):
         return f"execution-adoption:{identity.sha256}"
-    if is_issue71_execution_epoch(identity):
+    if is_execution_epoch(identity):
         identity.validate()
         return f"execution-epoch:{identity.sha256}"
     raise ExecutionError("execution identity type is unsupported")
@@ -335,7 +335,7 @@ def execution_identity_digest(identity: ExecutionIdentity) -> str:
         return binding_digest(identity)
     if isinstance(identity, AdoptedExecutionEpoch):
         return identity.sha256
-    if is_issue71_execution_epoch(identity):
+    if is_execution_epoch(identity):
         identity.validate()
         return identity.sha256
     raise ExecutionError("execution identity type is unsupported")

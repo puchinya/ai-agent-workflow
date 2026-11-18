@@ -47,7 +47,7 @@ from .github import GitHub, GitHubError, ReadOnlyGitHub
 from .execution import (
     AdoptedExecutionEpoch, ExecutionBinding, ExecutionError, ExecutionIdentity, binding_digest,
     execution_identity_base, execution_identity_context_id, execution_identity_digest,
-    is_issue71_execution_epoch, read_binding,
+    is_execution_epoch, read_binding,
 )
 from .execution_adoption import (
     ExecutionAdoptionError, adoption_path, attachment_path as adoption_attachment_path,
@@ -1155,7 +1155,7 @@ def _read_execution_identity(github: GitHub, root: Path, repository: str,
 
 def _identity_evidence_paths(root: Path, issue_number: int, identity: ExecutionIdentity) -> tuple[Path, ...]:
     """Cite exactly the currently validated identity files, regardless of Issue ID."""
-    if is_issue71_execution_epoch(identity):
+    if is_execution_epoch(identity):
         identity.validate()
         paths = current_epoch_paths(root, issue_number)
         retired_binding = execution_binding_path(root, issue_number)
@@ -1494,7 +1494,7 @@ def _pr_ensure_with_history_session(
             raise CLIError(f"active execution epoch readback failed: {exc}") from exc
         if (epoch.adc_comment_id != verified.pointer.comment_id
                 or epoch.adc_sha256 != verified.pointer.sha256):
-            raise CLIError("Issue #71 active epoch-3 identity differs from the current approved ADC")
+            raise CLIError("active execution epoch differs from the current approved ADC")
         body = _safe_file_bytes(args.body_file, "PR body file", root=root).decode("utf-8", errors="strict")
         result = ensure_epoch_pull_request(
             root, github, repository=repository, issue_number=args.issue, execution_epoch=epoch,
@@ -1504,11 +1504,11 @@ def _pr_ensure_with_history_session(
         refresh_adc_forward_generation_session(github, args.issue)
         current = verify_adc(github, args.issue)
         if current.pointer != verified.pointer:
-            raise CLIError("ADC pointer changed during Issue #71 PR ensure; no newer epoch binding was written")
+            raise CLIError("ADC pointer changed during epoch PR ensure; no newer binding was written")
         if (not worktree_clean(root) or current_branch(root) != args.branch_ref
                 or head_sha40(root) != result.binding.pr_head_sha40
                 or remote_branch_sha(root, args.branch_ref) != result.binding.pr_head_sha40):
-            raise CLIError("Issue #71 worktree or remote branch changed during final PR readback")
+            raise CLIError("worktree or remote branch changed during final epoch PR readback")
         pull = result.pull_request
         _json({"status": "PR_READY", "repository": repository, "issue": args.issue,
                "pr": pull.get("number"), "url": pull.get("html_url"), "state": pull.get("state"),
@@ -1765,8 +1765,6 @@ def _readback_readiness_pr(github: GitHub, repository: str, issue_number: int,
         association_mode = parse_issue_association(body, issue_number)
     except WorkError as exc:
         raise CLIError(f"PR Issue association is invalid: {exc}") from exc
-    if issue_number == 63 and (pr_number != 64 or association_mode != "deferred_close"):
-        raise CLIError("Issue #63 deferred delivery requires existing PR #64 with standalone Refs #63")
     if (not isinstance(base, dict) or not isinstance(head, dict)
             or not isinstance(base_repo, dict) or not isinstance(head_repo, dict)
             or not isinstance(base_repo.get("full_name"), str)
@@ -1791,12 +1789,12 @@ def _current_base_evidence_for_pr(root: Path, github: GitHub, repository: str,
     _base_ref, frozen_base_sha = execution_identity_base(execution_binding)
     base = raw_pr.get("base") if isinstance(raw_pr, dict) else None
     current_base = base.get("sha") if isinstance(base, dict) else None
-    if is_issue71_execution_epoch(execution_binding):
+    if is_execution_epoch(execution_binding):
         if (pr_binding.execution_epoch_sha256 != execution_binding.sha256
                 or pr_binding.base_sha40 != frozen_base_sha or current_base != frozen_base_sha
                 or pr_binding.current_base_sha40 is not None
                 or pr_binding.current_base_advance_sha256 is not None):
-            raise CLIError("Issue #71 PR is not anchored to the active epoch and its exact frozen base")
+            raise CLIError("PR is not anchored to its active execution epoch and exact frozen base")
         return None
     if (current_base == frozen_base_sha and pr_binding.current_base_sha40 is None
             and pr_binding.current_base_advance_sha256 is None):
@@ -2199,12 +2197,12 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
                     or pr_binding.adc_comment_id != (None if verified_adc is None else verified_adc.pointer.comment_id)
                     or pr_binding.adc_sha256 != (None if verified_adc is None else verified_adc.pointer.sha256)):
                 blockers.append("adopted epoch lacks a current-generation PRBinding bridge")
-        elif is_issue71_execution_epoch(binding):
+        elif is_execution_epoch(binding):
             if (pr_binding.execution_epoch_sha256 != binding.sha256
                     or pr_binding.adoption_id is not None
                     or pr_binding.adc_comment_id != (None if verified_adc is None else verified_adc.pointer.comment_id)
                     or pr_binding.adc_sha256 != (None if verified_adc is None else verified_adc.pointer.sha256)):
-                blockers.append("PRBinding does not bridge the active Issue #71 epoch-3 execution identity")
+                blockers.append("PRBinding does not bridge the active execution epoch identity")
         elif (pr_binding.execution_epoch_sha256 is not None
               or binding.adc_comment_id != (None if verified_adc is None else verified_adc.pointer.comment_id)
               or binding.adc_sha256 != (None if verified_adc is None else verified_adc.pointer.sha256)):

@@ -135,6 +135,32 @@ class WorkReadinessSchemaTests(unittest.TestCase):
             ).validate(), subject,
         ))
 
+    def test_deferred_close_pr_association_is_not_issue_specific(self):
+        for issue_number in (63, 129):
+            subject = VerificationSubject("octo/repo", issue_number, 55, 123, ADC_SHA,
+                                          PLAN_SHA, "e" * 40)
+            pr = PRReadback(
+                repository="octo/repo", issue_number=issue_number, pr_number=55,
+                state="open", draft=False, base_ref="main", base_sha40=BASE,
+                head_ref="pases/work", head_sha40=subject.pr_head_sha40,
+                head_repository="octo/repo", closing_issue_number=issue_number,
+                close_on_merge=True,
+            )
+            binding = ExecutionBinding(
+                "octo/repo", issue_number, 123, ADC_SHA, "main", BASE,
+                "pases/work", str(Path(tempfile.gettempdir()) / "pases"), BASE,
+            ).validate()
+            context = WorkContext(binding, subject.pr_head_sha40, "pases/work",
+                                  True, binding_digest(binding)).validate()
+            pr_binding = PRBinding("octo/repo", issue_number, 123, ADC_SHA, BASE,
+                                   "pases/work", 55, subject.pr_head_sha40).validate()
+            result = evaluate_readiness(
+                subject=subject, pr=pr, pr_binding=pr_binding, work_context=context,
+                verification=None, acceptance=None, self_audit=None, required_item_ids=(),
+                independent_review=None, required_checks_sha256=None,
+            )
+            self.assertFalse(any("Issue #63 requires" in reason for reason in result.reasons))
+
     def test_v1_binding_is_not_rejected_by_hardcoded_issue_number(self):
         repository = "puchinya/ai-agent-workflow"
         for issue_number in (71, 128):

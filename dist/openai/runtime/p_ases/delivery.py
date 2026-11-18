@@ -18,7 +18,7 @@ from .context import WorkContext, WorkContextError
 from .current_base import CurrentBaseAdvanceEvidence
 from .evidence_store import VerificationSubject
 from .execution import (AdoptedExecutionEpoch, ExecutionBinding, execution_identity_base,
-                        is_issue71_execution_epoch)
+                        is_execution_epoch)
 from .path_safety import path_has_symlink
 from .verification import VerificationResult, VERDICTS
 
@@ -43,7 +43,7 @@ def _identity_adc_matches_subject(identity: Any, pr_binding: Any, subject: Verif
             and pr_binding.adc_comment_id == subject.adc_comment_id
             and pr_binding.adc_sha256 == subject.adc_sha256
         )
-    if is_issue71_execution_epoch(identity):
+    if is_execution_epoch(identity):
         return (
             isinstance(pr_binding, PRBinding)
             and pr_binding.execution_epoch_sha256 == identity.sha256
@@ -431,8 +431,6 @@ def evaluate_readiness(
                     or pr.head_sha40 != subject.pr_head_sha40 or pr.head_repository != subject.repository
                     or pr.closing_issue_number != subject.issue_number):
                 reasons.append("GitHub PR readback is not the same open, non-draft, non-fork exact subject")
-            if subject.issue_number == 63 and pr.close_on_merge:
-                reasons.append("Issue #63 requires its deferred-close Refs association")
             digest_refs.add(hashlib.sha256(_canonical({
                 "close_on_merge": pr.close_on_merge,
                 "closing_issue_number": pr.closing_issue_number,
@@ -499,7 +497,7 @@ def evaluate_readiness(
                         and base_sha != pr_binding.base_sha40)
                     or (isinstance(identity, AdoptedExecutionEpoch)
                         and pr_binding.adoption_id != identity.adoption_id)
-                    or (is_issue71_execution_epoch(identity)
+                    or (is_execution_epoch(identity)
                         and pr_binding.execution_epoch_sha256 != identity.sha256)
                     or (isinstance(identity, ExecutionBinding) and pr_binding.adoption_id is not None)
                     or (isinstance(identity, ExecutionBinding) and pr_binding.execution_epoch_sha256 is not None)
