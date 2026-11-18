@@ -98,7 +98,7 @@ class PREnsureTests(unittest.TestCase):
         with self.assertRaises(WorkError):
             closing_issue_references("Closes puchinya/ai-agent-workflow#63", "not-a-repository")
 
-    def test_issue_63_pr_ensure_requires_refs_and_preserves_default_close_for_other_issues(self):
+    def test_pr_ensure_preserves_exact_requested_association_mode(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo, base, binding = self._bound_repo(root)
@@ -106,7 +106,7 @@ class PREnsureTests(unittest.TestCase):
             issue_63_binding = replace(binding, issue_number=63)
             github.pull = github._pull(body="Review implementation.\n\nRefs #63\n",
                                        head_ref="pases/work", base_ref="main", number=64)
-            with self.assertRaisesRegex(WorkError, "requires the standalone Refs #63"):
+            with self.assertRaisesRegex(WorkError, "association mode differs"):
                 ensure_pull_request(repo, github, repository="owner/repo", issue_number=63,
                                     binding=issue_63_binding, branch_ref="pases/work", base_ref="main",
                                     title="Issue #63 work", body="Closes #63\n")
@@ -115,24 +115,26 @@ class PREnsureTests(unittest.TestCase):
                                          title="Issue #63 work", body="Review implementation.\n\nRefs #63\n")
             self.assertEqual(result.pull_request["body"], "Review implementation.\n\nRefs #63\n")
 
-    def test_issue_63_never_creates_or_selects_a_pr_other_than_existing_64(self):
+    def test_unbound_issue_reuses_exact_pr_independently_of_issue_number(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo, base, binding = self._bound_repo(root)
             github = FakeGitHub(repo, base)
-            issue_63_binding = replace(binding, issue_number=63)
-            with self.assertRaisesRegex(WorkError, "reuse existing PR #64"):
-                ensure_pull_request(repo, github, repository="owner/repo", issue_number=63,
-                                    binding=issue_63_binding, branch_ref="pases/work", base_ref="main",
-                                    title="Issue #63 work", body="Review implementation.\n\nRefs #63\n")
-            self.assertEqual(github.create_count, 0)
-            github.pull = github._pull(body="Review implementation.\n\nRefs #63\n",
-                                       head_ref="pases/work", base_ref="main", number=73)
-            with self.assertRaisesRegex(WorkError, "existing PR #64"):
-                ensure_pull_request(repo, github, repository="owner/repo", issue_number=63,
-                                    binding=issue_63_binding, branch_ref="pases/work", base_ref="main",
-                                    title="Issue #63 work", body="Review implementation.\n\nRefs #63\n")
-            self.assertEqual(github.create_count, 0)
+            other_binding = replace(binding, issue_number=63)
+            created = ensure_pull_request(
+                repo, github, repository="owner/repo", issue_number=63,
+                binding=other_binding, branch_ref="pases/work", base_ref="main",
+                title="Issue work", body="Review implementation.\n\nRefs #63\n",
+            )
+            self.assertEqual(created.pull_request["number"], 73)
+            self.assertEqual(github.create_count, 1)
+            repeated = ensure_pull_request(
+                repo, github, repository="owner/repo", issue_number=63,
+                binding=other_binding, branch_ref="pases/work", base_ref="main",
+                title="Issue work", body="Review implementation.\n\nRefs #63\n",
+            )
+            self.assertTrue(repeated.reused)
+            self.assertEqual(github.create_count, 1)
 
     def _bound_repo(self, root: Path):
         repo, bare = root / "repo", root / "remote.git"
