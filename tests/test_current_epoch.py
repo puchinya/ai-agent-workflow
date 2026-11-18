@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases.current_epoch import (
-    ATTACHMENT_SCHEMA, ORIGIN_APPLIED, ORIGIN_SCHEMA, REWORK_APPLIED,
+    ATTACHMENT_SCHEMA, ORIGIN_APPLIED, ORIGIN_INTENT, ORIGIN_SCHEMA, REWORK_APPLIED, REWORK_INTENT,
     CurrentEpochError, epoch_paths, read_current_epoch,
 )
 
@@ -38,8 +38,9 @@ def carrier(schema, fields, number, comment_id, owner=77):
 class FakeGitHub:
     repo = "demo/project"
 
-    def __init__(self, origin, latest=None):
-        self.origin, self.latest = origin, latest
+    def __init__(self, origin, intent, latest=None, phase_intent=None):
+        self.origin, self.intent = origin, intent
+        self.latest, self.phase_intent = latest, phase_intent
         self.direct_calls = []
         self.pages = 0
 
@@ -60,7 +61,7 @@ class FakeGitHub:
 
     def issue_comment(self, number, comment_id):
         self.direct_calls.append(comment_id)
-        candidates = [self.origin, self.latest]
+        candidates = [self.origin, self.intent, self.latest, self.phase_intent]
         for item in candidates:
             if item is not None and item["id"] == comment_id:
                 return item
@@ -86,17 +87,24 @@ class CurrentEpochTests(unittest.TestCase):
             "adc_comment_id": 21, "adc_sha256": "a" * 64,
             "base_ref": "main", "base_sha40": "b" * 40,
             "branch_ref": "feature/issue-24", "epoch_id": "d" * 64,
-            "intent_comment_id": 40, "intent_body_sha256": "e" * 64,
+            "intent_comment_id": 40, "intent_body_sha256": "",
             "applied_comment_id": 41, "applied_body_sha256": "",
             "predecessor_epoch_id": "f" * 64,
             "predecessor_epoch_sha256": "1" * 64,
             "historical_binding_provenance": "UNVERIFIED",
             "historical_binding_sha256": "2" * 64,
         }
+        self.intent = carrier(ORIGIN_INTENT, {
+            "repository": "demo/project", "issue_number": self.issue,
+            "epoch_id": self.epoch["epoch_id"], "adc_comment_id": 21,
+            "adc_sha256": "a" * 64,
+        }, self.issue, 40)
+        self.epoch["intent_body_sha256"] = hashlib.sha256(self.intent["body"].encode()).hexdigest()
         self.origin = carrier(ORIGIN_APPLIED, {
             "repository": "demo/project", "issue_number": self.issue,
             "epoch_id": self.epoch["epoch_id"], "adc_comment_id": 21,
             "adc_sha256": "a" * 64,
+            "intent_comment_id": 40, "intent_body_sha256": self.epoch["intent_body_sha256"],
         }, self.issue, 41)
         self.epoch["applied_body_sha256"] = hashlib.sha256(self.origin["body"].encode()).hexdigest()
         self.epoch["sha256"] = hashlib.sha256(canonical(self.epoch).rstrip(b"\n")).hexdigest()
@@ -106,7 +114,7 @@ class CurrentEpochTests(unittest.TestCase):
             "base_ref": "main", "base_sha40": "b" * 40,
             "branch_ref": "feature/issue-24", "epoch_id": self.epoch["epoch_id"],
             "epoch_sha256": self.epoch["sha256"],
-            "intent_comment_id": 40, "intent_body_sha256": "e" * 64,
+            "intent_comment_id": 40, "intent_body_sha256": self.epoch["intent_body_sha256"],
             "applied_comment_id": 41,
             "applied_body_sha256": self.epoch["applied_body_sha256"],
             "work_directory": str(self.root.resolve()),
@@ -129,31 +137,70 @@ class CurrentEpochTests(unittest.TestCase):
             return read_current_epoch(github, self.root, self.issue, self.current_adc)
 
     def test_no_historical_adc_or_full_issue_history_lookup(self):
-        github = FakeGitHub(self.origin)
+        github = FakeGitHub(self.origin, self.intent)
         active = self.read(github)
         self.assertEqual(active.repository, "demo/project")
         self.assertEqual(active.issue_number, 24)
         self.assertEqual(active.adc_comment_id, 77)
         self.assertEqual(active.applied_comment_id, 41)
-        self.assertEqual(github.direct_calls, [41])
+        self.assertEqual(github.direct_calls, [41, 40])
         self.assertEqual(github.pages, 1)
 
     def test_newer_phase_applied_is_selected_without_prior_adc_reads(self):
+        phase_intent = carrier(REWORK_INTENT, {
+            "repository": "demo/project", "issue_number": 24,
+            "active_epoch_id": self.epoch["epoch_id"],
+            "active_epoch_sha256": self.epoch["sha256"],
+            "branch_ref": self.epoch["branch_ref"],
+            "adc_comment_id": 77, "adc_sha256": "8" * 64,
+        }, 24, 67)
+        phase_sha = hashlib.sha256(phase_intent["body"].encode()).hexdigest()
         latest = carrier(REWORK_APPLIED, {
             "repository": "demo/project", "issue_number": 24,
             "active_epoch_id": self.epoch["epoch_id"],
             "active_epoch_sha256": self.epoch["sha256"],
             "branch_ref": self.epoch["branch_ref"],
+            "adc_comment_id": 77, "adc_sha256": "8" * 64,
+            "intent_comment_id": 67, "intent_body_sha256": phase_sha,
         }, 24, 68)
-        github = FakeGitHub(self.origin, latest)
+        github = FakeGitHub(self.origin, self.intent, latest, phase_intent)
         active = self.read(github)
         self.assertEqual(active.applied_comment_id, 68)
         self.assertEqual(active.applied_body_sha256,
                          hashlib.sha256(latest["body"].encode()).hexdigest())
-        self.assertEqual(github.direct_calls, [41, 68])
+        self.assertEqual(github.direct_calls, [41, 40, 68, 67])
+
+    def test_modified_origin_intent_is_detected_by_direct_digest(self):
+        github = FakeGitHub(self.origin, self.intent)
+        github.intent["body"] += "modified"
+        with self.assertRaisesRegex(CurrentEpochError, "digest|schema"):
+            self.read(github)
+        self.assertEqual(github.direct_calls, [41, 40])
+        self.assertEqual(github.pages, 0)
+
+    def test_modified_current_phase_intent_is_detected(self):
+        phase_intent = carrier(REWORK_INTENT, {
+            "repository": "demo/project", "issue_number": self.issue,
+            "active_epoch_id": self.epoch["epoch_id"],
+            "active_epoch_sha256": self.epoch["sha256"],
+            "branch_ref": self.epoch["branch_ref"],
+            "adc_comment_id": 77, "adc_sha256": "8" * 64,
+        }, self.issue, 67)
+        latest = carrier(REWORK_APPLIED, {
+            "repository": "demo/project", "issue_number": self.issue,
+            "active_epoch_id": self.epoch["epoch_id"],
+            "active_epoch_sha256": self.epoch["sha256"],
+            "branch_ref": self.epoch["branch_ref"],
+            "adc_comment_id": 77, "adc_sha256": "8" * 64,
+            "intent_comment_id": 67, "intent_body_sha256": "f" * 64,
+        }, self.issue, 68)
+        github = FakeGitHub(self.origin, self.intent, latest, phase_intent)
+        with self.assertRaisesRegex(CurrentEpochError, "digest"):
+            self.read(github)
+        self.assertEqual(github.direct_calls, [41, 40, 68, 67])
 
     def test_tampered_origin_and_attachment_fail_closed(self):
-        github = FakeGitHub(self.origin)
+        github = FakeGitHub(self.origin, self.intent)
         self.attachment["epoch_sha256"] = "f" * 64
         self.save()
         with self.assertRaisesRegex(CurrentEpochError, "attachment"):
@@ -165,7 +212,7 @@ class CurrentEpochTests(unittest.TestCase):
             self.read(github)
 
     def test_wrong_issue_or_adc_state_is_rejected(self):
-        github = FakeGitHub(self.origin)
+        github = FakeGitHub(self.origin, self.intent)
         with patch("p_ases.current_epoch.current_branch", return_value="feature/issue-24"):
             with self.assertRaises(CurrentEpochError):
                 read_current_epoch(github, self.root, 25, self.current_adc)

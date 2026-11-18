@@ -29,7 +29,9 @@ SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 ORIGIN_SCHEMA = "PASES_ISSUE_EXECUTION_EPOCH_V3"
 ATTACHMENT_SCHEMA = "PASES_EXECUTION_EPOCH_ATTACHMENT_V3"
+ORIGIN_INTENT = "PASES_ISSUE_PHASE_EPOCH_REBASE_INTENT_V1"
 ORIGIN_APPLIED = "PASES_ISSUE_PHASE_EPOCH_REBASE_APPLIED_V1"
+REWORK_INTENT = "PASES_ISSUE_VERIFICATION_REWORK_INTENT_V3"
 REWORK_APPLIED = "PASES_ISSUE_VERIFICATION_REWORK_APPLIED_V3"
 
 
@@ -222,6 +224,19 @@ def read_current_epoch(github: GitHub, root: Path, issue_number: int,
             or origin.get("adc_comment_id") != epoch["adc_comment_id"]
             or origin.get("adc_sha256") != epoch["adc_sha256"]):
         raise CurrentEpochError("execution epoch origin Applied does not match the immutable origin")
+    if (origin.get("intent_comment_id") != epoch["intent_comment_id"]
+            or origin.get("intent_body_sha256") != epoch["intent_body_sha256"]):
+        raise CurrentEpochError("execution epoch origin Applied does not bind its exact Intent")
+    origin_intent, _intent_digest = _carrier(
+        github, issue_number, epoch["intent_comment_id"], ORIGIN_INTENT,
+        epoch["intent_body_sha256"], owner_id,
+    )
+    if (origin_intent.get("repository", "").casefold() != github.repo.casefold()
+            or origin_intent.get("issue_number") != issue_number
+            or origin_intent.get("epoch_id") != epoch["epoch_id"]
+            or origin_intent.get("adc_comment_id") != epoch["adc_comment_id"]
+            or origin_intent.get("adc_sha256") != epoch["adc_sha256"]):
+        raise CurrentEpochError("execution epoch origin Intent does not match its Applied")
     active_id = epoch["applied_comment_id"]
     active_sha = epoch["applied_body_sha256"]
     # Read the newest completed phase rework only. Earlier ADCs are not read.
@@ -244,6 +259,22 @@ def read_current_epoch(github: GitHub, root: Path, issue_number: int,
                 or data.get("active_epoch_sha256") != digest
                 or data.get("branch_ref") != epoch["branch_ref"]):
             raise CurrentEpochError("current Phase Applied does not bind the active epoch")
+        intent_id = data.get("intent_comment_id")
+        intent_sha = data.get("intent_body_sha256")
+        if (type(intent_id) is not int or intent_id < 1
+                or not isinstance(intent_sha, str) or SHA256.fullmatch(intent_sha) is None):
+            raise CurrentEpochError("current Phase Applied lacks an exact Intent reference")
+        active_intent, _phase_intent_digest = _carrier(
+            github, issue_number, intent_id, REWORK_INTENT, intent_sha, owner_id,
+        )
+        if (active_intent.get("repository", "").casefold() != github.repo.casefold()
+                or active_intent.get("issue_number") != issue_number
+                or active_intent.get("active_epoch_id") != epoch["epoch_id"]
+                or active_intent.get("active_epoch_sha256") != digest
+                or active_intent.get("branch_ref") != epoch["branch_ref"]
+                or active_intent.get("adc_comment_id") != data.get("adc_comment_id")
+                or active_intent.get("adc_sha256") != data.get("adc_sha256")):
+            raise CurrentEpochError("current Phase Intent does not match its Applied")
         active_id = identifier
         break
     return ActiveExecutionEpoch(
