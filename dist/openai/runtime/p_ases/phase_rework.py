@@ -3462,7 +3462,7 @@ def _user_review_absent(root: Path) -> None:
 
 def _live(github: GitHub, root: Path, *, phase: str | None = None,
           require_clean: bool = True) -> _Live:
-    from . import phase_epoch_rebaseline as epoch_module
+    from .current_epoch import CurrentEpochError, read_current_epoch
 
     try:
         current = verify_adc(github, ISSUE_NUMBER)
@@ -3500,17 +3500,22 @@ def _live(github: GitHub, root: Path, *, phase: str | None = None,
             expected = tuple(sorted(LABELS_BEFORE if phase == "verification" else LABELS_AFTER))
             if labels != expected:
                 raise PhaseReworkError("Issue #71 phase labels differ from the exact rework state")
-        epoch, verified_again, origin, issue_from_epoch = epoch_module.read_epoch_origin(
-            github, root, current,
-        )
+        # Use the generic current-epoch reader; its immutable origin is distinct
+        # from the current ADC and latest Phase generation.
+        try:
+            epoch = read_current_epoch(github, root, ISSUE_NUMBER, current)
+        except CurrentEpochError as exc:
+            raise PhaseReworkError(f"current epoch origin is invalid: {exc}") from exc
+        verified_again = verify_adc(github, ISSUE_NUMBER)
+        issue_from_epoch = github.issue(ISSUE_NUMBER)
         if (verified_again.pointer != current.pointer
                 or issue_from_epoch.get("body") != issue.get("body")
                 or issue_from_epoch.get("state") != issue.get("state")
                 or _label_names(issue_from_epoch) != labels
                 or issue_from_epoch.get("repository_url") != issue.get("repository_url")):
             raise PhaseReworkError("Issue or ADC identity changed during epoch-origin readback")
-        if (epoch.adc_comment_id != EPOCH_ORIGIN_ADC_COMMENT_ID
-                or epoch.adc_sha256 != EPOCH_ORIGIN_ADC_SHA256
+        if (epoch.origin["adc_comment_id"] != EPOCH_ORIGIN_ADC_COMMENT_ID
+                or epoch.origin["adc_sha256"] != EPOCH_ORIGIN_ADC_SHA256
                 or epoch.epoch_id != authorization["active_epoch_id"]
                 or epoch.sha256 != authorization["active_epoch_sha256"]
                 or epoch.applied_comment_id != authorization["active_phase_generation_comment_id"]

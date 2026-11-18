@@ -11,7 +11,6 @@ from unittest.mock import patch
 
 from p_ases import execution_epoch as epoch
 from p_ases import phase_evidence, phase_restart
-from p_ases import phase_epoch_rebaseline as epoch3
 
 
 def sha(raw: bytes) -> str:
@@ -178,7 +177,7 @@ class ExecutionEpochTests(unittest.TestCase):
     def test_phase_reader_uses_the_current_epoch_generation_for_any_issue(self):
         active = SimpleNamespace(comment_id=6881839877, sha256="c" * 64)
         verified = SimpleNamespace(pointer=SimpleNamespace(comment_id=6881591677),
-                                   contract=SimpleNamespace(sha256=epoch3.CURRENT_ADC_SHA256))
+                                   contract=SimpleNamespace(sha256="b" * 64))
         with patch("p_ases.phase_restart.current_phase_generation", return_value=active) as reader:
             self.assertEqual(
                 phase_evidence._active_phase_generation_subject(
@@ -189,7 +188,7 @@ class ExecutionEpochTests(unittest.TestCase):
 
     def test_phase_reader_rejects_invalid_current_epoch_without_fallback(self):
         verified = SimpleNamespace(pointer=SimpleNamespace(comment_id=6881591677),
-                                   contract=SimpleNamespace(sha256=epoch3.CURRENT_ADC_SHA256))
+                                   contract=SimpleNamespace(sha256="b" * 64))
         with patch("p_ases.phase_restart.current_phase_generation",
                    side_effect=phase_restart.PhaseRestartError("missing Applied")):
             with self.assertRaisesRegex(phase_evidence.PhaseEvidenceError, "missing Applied"):
