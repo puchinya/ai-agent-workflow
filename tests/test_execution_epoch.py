@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from p_ases import execution_epoch as epoch
-from p_ases import phase_evidence
+from p_ases import phase_evidence, phase_restart
 from p_ases import phase_epoch_rebaseline as epoch3
 
 
@@ -191,7 +191,7 @@ class ExecutionEpochTests(unittest.TestCase):
         verified = SimpleNamespace(pointer=SimpleNamespace(comment_id=6881591677),
                                    contract=SimpleNamespace(sha256=epoch3.CURRENT_ADC_SHA256))
         with patch("p_ases.phase_restart.current_phase_generation",
-                   side_effect=__import__("p_ases.phase_restart", fromlist=["PhaseRestartError"]).PhaseRestartError("missing Applied")):
+                   side_effect=phase_restart.PhaseRestartError("missing Applied")):
             with self.assertRaisesRegex(phase_evidence.PhaseEvidenceError, "missing Applied"):
                 phase_evidence._active_phase_generation_subject(
                     SimpleNamespace(repo=epoch.REPOSITORY), self.root, 71, verified,
