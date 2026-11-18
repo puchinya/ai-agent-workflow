@@ -407,13 +407,15 @@ class ExecutionAdoptionTests(unittest.TestCase):
         with self.assertRaisesRegex(ExecutionError, "unverified historical provenance"):
             AdoptedExecutionEpoch.from_bytes(raw)
 
-    def test_adopted_epoch_rejects_other_issue_pr_and_missing_pr_author(self):
-        with self.assertRaisesRegex(ExecutionError, "restricted"):
-            _epoch().__class__(**{**_epoch().__dict__, "issue_number": 62}).validate()
-        with self.assertRaisesRegex(ExecutionError, "restricted"):
-            _epoch().__class__(**{**_epoch().__dict__, "pr_number": 65}).validate()
-        with self.assertRaisesRegex(ExecutionError, "restricted"):
-            _epoch().__class__(**{**_epoch().__dict__, "pr_author_user_id": 0}).validate()
+    def test_adopted_epoch_is_generic_and_rejects_invalid_subject_fields(self):
+        epoch = _epoch()
+        other_subject = epoch.__class__(**{**epoch.__dict__, "issue_number": 62,
+                                            "pr_number": 65, "repository": "another/repo"}).validate()
+        self.assertNotEqual(epoch.sha256, other_subject.sha256)
+        for field, value in (("issue_number", 0), ("pr_number", 0),
+                             ("pr_author_user_id", 0), ("repository", "invalid")):
+            with self.subTest(field=field), self.assertRaisesRegex(ExecutionError, "identity is invalid"):
+                epoch.__class__(**{**epoch.__dict__, field: value}).validate()
 
     def test_workspace_attachment_is_local_and_strict(self):
         with tempfile.TemporaryDirectory() as temporary:
