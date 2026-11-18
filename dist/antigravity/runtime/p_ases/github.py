@@ -150,6 +150,24 @@ class GitHub:
         number = _positive_int(number, "Issue number")
         return self._paginate(f"{self.prefix}/issues/{number}/comments")
 
+    def issue_comment_pages_newest(self, number: int, total_comments: int):
+        """Read Issue comment pages newest-first without enumerating old ADC history.
+
+        The caller must use the comment count from the Issue snapshot and check
+        that it has not changed after selecting the current ADC pointer.
+        """
+        number = _positive_int(number, "Issue number")
+        if type(total_comments) is not int or total_comments < 0:
+            raise GitHubError("Issue comment count must be a non-negative integer")
+        last_page = max(1, (total_comments + 99) // 100)
+        for page in range(last_page, 0, -1):
+            result = self.request(
+                "GET", f"{self.prefix}/issues/{number}/comments?per_page=100&page={page}",
+            )
+            if not isinstance(result, list) or any(not isinstance(row, dict) for row in result):
+                raise GitHubError("Issue comment page is malformed")
+            yield result
+
     def repository_labels(self) -> list[dict[str, Any]]:
         """Read existing repository labels without creating or changing definitions."""
         return self._paginate(f"{self.prefix}/labels")
