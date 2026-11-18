@@ -39,10 +39,6 @@ from .owner_authorization import (
     create_authorization_plan,
 )
 from .path_safety import path_has_symlink
-from .phase_rebaseline import (
-    APPLIED_V2_SCHEMA, INTENT_V2_SCHEMA, PhaseRebaselineError,
-    _approved_generations, _read_history, _validate_generation_history,
-)
 from .profile import ProfileError, load_profile
 from .work import (
     WorkError, _checkpoint_files, execution_binding_path, latest_checkpoint, read_pr_binding_history,
@@ -52,6 +48,10 @@ from .work import (
 REPOSITORY = "puchinya/ai-agent-workflow"
 ISSUE_NUMBER = 63
 PR_NUMBER = 64
+INTENT_V2_SCHEMA = "PASES_PHASE_REBASE_INTENT_V2"
+APPLIED_V2_SCHEMA = "PASES_PHASE_REBASE_APPLIED_V2"
+INTENT_V3_SCHEMA = "PASES_PHASE_REBASE_INTENT_V3"
+APPLIED_V3_SCHEMA = "PASES_PHASE_REBASE_APPLIED_V3"
 PLAN_SCHEMA = "PASES_EXECUTION_ADOPTION_PLAN_V1"
 INTENT_SCHEMA = "PASES_EXECUTION_ADOPTION_INTENT_V1"
 APPLIED_SCHEMA = "PASES_EXECUTION_ADOPTION_APPLIED_V1"
@@ -119,28 +119,23 @@ def _read_issue_phase(issue: dict[str, Any]) -> tuple[list[str], str, str]:
 
 
 def _phase_receipt_snapshot(github: Any, adc_comment_id: int, adc_sha256: str) -> dict[str, Any]:
+    """Bind adoption to current applied Phase receipt without historical ADC scans."""
     try:
-        chain = _approved_generations(github)
-        records = _read_history(github)
-        _v1_intent, _v1_applied, v2_pairs = _validate_generation_history(records, chain)
-    except (PhaseRebaselineError, ADCError) as exc:
-        raise ExecutionAdoptionError(f"Phase V2 history is invalid: {exc}") from exc
-    if not chain or chain[-1].pointer.comment_id != adc_comment_id or chain[-1].pointer.sha256 != adc_sha256:
-        raise ExecutionAdoptionError("Phase V2 history is not bound to the current approved ADC")
-    generation_index = len(chain) - 1
-    pair = v2_pairs.get(generation_index)
-    if pair is None or pair[1] is None:
-        raise ExecutionAdoptionError("current ADC generation has no completed Phase V2 rebaseline")
-    intent, applied = pair
-    if (intent.schema != INTENT_V2_SCHEMA or applied.schema != APPLIED_V2_SCHEMA
-            or intent.payload.get("operation") != "adopt_existing_requirements"
-            or intent.payload.get("to_phase") != "requirements"
-            or applied.payload.get("intent_comment_id") != intent.comment_id):
-        raise ExecutionAdoptionError("current Phase V2 receipts do not represent the completed requirements adoption")
+        current = verify_adc(github, ISSUE_NUMBER)
+    except ADCError as exc:
+        raise ExecutionAdoptionError(f"current adopted Phase ADC is invalid: {exc}") from exc
+    if (current.pointer.state != "approved"
+            or current.pointer.comment_id != adc_comment_id
+            or current.pointer.sha256 != adc_sha256):
+        raise ExecutionAdoptionError("adopted Phase receipt requires the current approved ADC")
+    receipt = _current_rebaseline_receipt(github, ISSUE_NUMBER, current)
+    if receipt is None or receipt["payload"].get("operation") != "adopt_existing_requirements" or (
+            receipt["payload"].get("to_phase") != "requirements"):
+        raise ExecutionAdoptionError("current ADC has no matching requirements-adoption Phase receipt")
     return {
-        "phase_intent_comment_id": intent.comment_id,
-        "phase_applied_comment_id": applied.comment_id,
-        "phase_applied_payload_sha256": hashlib.sha256(_canonical(applied.payload)).hexdigest(),
+        "phase_intent_comment_id": receipt["intent_comment_id"],
+        "phase_applied_comment_id": receipt["applied_comment_id"],
+        "phase_applied_payload_sha256": hashlib.sha256(_canonical(receipt["payload"])).hexdigest(),
     }
 
 
@@ -1192,13 +1187,8 @@ def append_adopted_pr_binding(github: Any, root: Path, *,
     ) | {"status": "PR_BINDING_CURRENT" if previous == new_binding else "PR_BINDING_ADVANCED"}
 
 
-def _current_rebaseline_applied(github: Any, issue_number: int, current_adc: Any) -> bool:
-    """Check only the newest Phase Applied for the currently approved ADC.
-
-    This does not examine superseded ADCs, their predecessor declarations, or
-    their historical chain. A matching Applied and Intent are read directly by ID.
-    """
-    from .phase_rebaseline import APPLIED_V2_SCHEMA, APPLIED_V3_SCHEMA, INTENT_V2_SCHEMA, INTENT_V3_SCHEMA
+def _current_rebaseline_receipt(github: Any, issue_number: int, current_adc: Any) -> dict[str, Any] | None:
+    """Read the current generation's Applied/Intent by direct ID, not an ADC chain."""
     issue = github.issue(issue_number)
     count = issue.get("comments")
     if type(count) is int and count >= 0 and hasattr(github, "issue_comment_pages_newest"):
@@ -1261,8 +1251,16 @@ def _current_rebaseline_applied(github: Any, issue_number: int, current_adc: Any
                     or intent_payload.get("successor_adc_sha256") != current_adc.pointer.sha256
                     or hashlib.sha256(intent_json.encode("utf-8")).hexdigest() != intent_sha):
                 raise ExecutionAdoptionError("current Phase Intent payload does not match Applied")
-            return True
-    return False
+            return {
+                "intent_comment_id": intent_id,
+                "applied_comment_id": comment_id,
+                "payload": payload,
+            }
+    return None
+
+
+def _current_rebaseline_applied(github: Any, issue_number: int, current_adc: Any) -> bool:
+    return _current_rebaseline_receipt(github, issue_number, current_adc) is not None
 
 
 def _verify_adopted_effective_adc(github: Any, epoch: AdoptedExecutionEpoch, *,
