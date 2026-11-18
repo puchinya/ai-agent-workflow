@@ -63,6 +63,10 @@ class FakeGitHub:
         self.records[record_id] = record
         return record
 
+    def issue_comments(self, issue_number):
+        assert issue_number == self.issue_number
+        return copy.deepcopy(list(self.records.values()))
+
     def issue_comment(self, issue_number, comment_id):
         assert issue_number == self.issue_number
         return copy.deepcopy(self.records[comment_id])
