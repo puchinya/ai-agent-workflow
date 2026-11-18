@@ -438,7 +438,7 @@ class ExecutionAdoptionTests(unittest.TestCase):
                                      "pr_number": 65, "repository": "another/repo"}).validate()
         self.assertEqual(other_subject.payload()["schema"], "PASES_PR_BINDING_V3")
         self.assertNotEqual(binding.sha256, other_subject.sha256)
-        with self.assertRaisesRegex(CheckpointError, "SHA-256"):
+        with self.assertRaisesRegex(CheckpointError, "invalid digest"):
             PRBinding(**{**binding.__dict__, "adoption_id": "invalid"}).validate()
         with self.assertRaisesRegex(CheckpointError, "mutually exclusive"):
             PRBinding(**{**binding.__dict__, "execution_epoch_sha256": "e" * 64}).validate()
