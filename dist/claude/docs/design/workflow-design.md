@@ -58,6 +58,8 @@
   - [6.6 DES-F01-102 Append one V3 rework generation](#66-des-f01-102-append-one-v3-rework-generation)
   - [6.7 DES-F01-103 Resolve continuation labels from the current Phase graph](#67-des-f01-103-resolve-continuation-labels-from-the-current-phase-graph)
   - [6.8 DES-F01-104 Validate event and publication timestamps uniformly](#68-des-f01-104-validate-event-and-publication-timestamps-uniformly)
+  - [6.9 DES-F01-105 Resolve the immutable V3 origin independently](#69-des-f01-105-resolve-the-immutable-v3-origin-independently)
+  - [6.10 DES-F01-106 Bind one marker-derived continuation commit](#610-des-f01-106-bind-one-marker-derived-continuation-commit)
 - [7 DES-WF-004 Failure handling](#7-des-wf-004-failure-handling)
 - [8 DES-WF-005 Authorization boundary and PR handoff](#8-des-wf-005-authorization-boundary-and-pr-handoff)
 - [9 Alternatives considered](#9-alternatives-considered)
@@ -114,6 +116,8 @@
 - [DES-F01-102](#des-f01-102) — 6.6 DES-F01-102 Append one V3 rework generation
 - [DES-F01-103](#des-f01-103) — 6.7 DES-F01-103 Resolve continuation labels from the current Phase graph
 - [DES-F01-104](#des-f01-104) — 6.8 DES-F01-104 Validate event and publication timestamps uniformly
+- [DES-F01-105](#des-f01-105) — 6.9 DES-F01-105 Resolve the immutable V3 origin independently
+- [DES-F01-106](#des-f01-106) — 6.10 DES-F01-106 Bind one marker-derived continuation commit
 - [DES-WF-004](#des-wf-004) — 7 DES-WF-004 Failure handling
 - [DES-WF-005](#des-wf-005) — 8 DES-WF-005 Authorization boundary and PR handoff
 - [DES-WF-006](#des-wf-006) — 11 DES-WF-006 Human review and final delivery
@@ -525,6 +529,16 @@ The phase-rework reader validates the live ADC and its complete approved history
 ### 6.8 DES-F01-104 Validate event and publication timestamps uniformly
 
 The phase-rework timestamp policy maps V2 and V3 Intent to their embedded `created_at` event and Applied to `applied_at`, then compares each event with its GitHub comment's server `created_at`. Strict UTC parsing and the inclusive 0..300 second window are shared across all four schemas. Existing V2/V3 records remain immutable; complete records are reconciled as a read-only NOOP, with no second append or label write.
+
+<a id="des-f01-105"></a>
+### 6.9 DES-F01-105 Resolve the immutable V3 origin independently
+
+The timestamp-continuation reader stores the current ADC's immediate predecessor separately from the immutable `phase_rework_origin` identity. It validates the full approved forward chain, locates the origin by the origin record's own ID/SHA, then verifies its approved state, exact byte length, original marker digest, generation authorization digest, and V2/V3 record links. A complete exact pair and exact after-label state returns NOOP without comments or label writes. Origin identity mismatch or absence blocks before mutation.
+
+<a id="des-f01-106"></a>
+### 6.10 DES-F01-106 Bind one marker-derived continuation commit
+
+The current marker pins its start HEAD, current PR subject, and sorted path allowlist. Its follow-up parent must equal that start. Git verifies no descendant before implementation, then exactly one direct child with the exact parent, the pushed remote HEAD, and changed paths contained by the allowlist. Continuation readers derive accepted labels from the verified current ADC's phase_edges. At the child HEAD, receipt reissue binds committed documents and preserves historical receipts; supported edges proceed through execution and verification. Verification, Acceptance, two-stage Self-Audit, Independent Review, and Readiness are exact-subject gates. User Review begins once after Readiness PASS and remains PENDING.
 
 <a id="des-wf-004"></a>
 <a id="des-wf-004-failure-handling"></a>

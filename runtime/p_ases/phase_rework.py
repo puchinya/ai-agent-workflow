@@ -633,14 +633,21 @@ ISSUE71_WINDOWS_FIXTURE_READER_MARKER_FIELDS = ISSUE71_WINDOWS_PROFILE_READER_MA
 ISSUE71_CURRENT_COMBINED_SCHEMA = "PASES_ISSUE_PHASE_AND_USER_REVIEW_V2"
 ISSUE71_CURRENT_COMBINED_MARKER_FIELDS = ISSUE71_WINDOWS_FIXTURE_READER_MARKER_FIELDS
 ISSUE71_PHASE_AND_USER_REVIEW_V3_SCHEMA = "PASES_ISSUE_PHASE_AND_USER_REVIEW_V3"
-TIMESTAMP_CONTINUATION_ADC_COMMENT_ID = 6966957737
-TIMESTAMP_CONTINUATION_ADC_SHA256 = "9bcfa163ea77ebc1dfe5c9cc10903b33191d6c2afc05f3223e28665198da16ad"
-TIMESTAMP_CONTINUATION_ADC_BYTES = 25759
+TIMESTAMP_CONTINUATION_ADC_COMMENT_ID = 6968187591
+TIMESTAMP_CONTINUATION_ADC_SHA256 = "f56696d72e265a9f97b879b7506411a639e96904eabb42db8cec6e50e4211f18"
+TIMESTAMP_CONTINUATION_ADC_BYTES = 27965
 TIMESTAMP_CONTINUATION_AUTH_SCHEMA = "PASES_ISSUE71_PHASE_REWORK_TIMESTAMP_CONTINUATION_V1"
-TIMESTAMP_CONTINUATION_MARKER_BYTES = 11766
-TIMESTAMP_CONTINUATION_MARKER_SHA256 = "f88be893e4a9cb982cfa1d178cc67fe13602010f94eb4ee9feb8bf775a92e88b"
-TIMESTAMP_CONTINUATION_PREDECESSOR = (6963966853,
-                                      "ea66f7e9504908391bec106fd1ce84ac1c2fd2b994880e9171aa34e8e3128cdf")
+TIMESTAMP_CONTINUATION_MARKER_BYTES = 11907
+TIMESTAMP_CONTINUATION_MARKER_SHA256 = "29a900913804bf741820109f1db168b9ae50391c4570acc6968c7fd3e43e6bdd"
+TIMESTAMP_CONTINUATION_PREDECESSOR = (
+    6966957737, "9bcfa163ea77ebc1dfe5c9cc10903b33191d6c2afc05f3223e28665198da16ad",
+)
+TIMESTAMP_CONTINUATION_PREDECESSOR_BYTES = 25759
+TIMESTAMP_CONTINUATION_ORIGIN_ADC = (
+    6963966853, "ea66f7e9504908391bec106fd1ce84ac1c2fd2b994880e9171aa34e8e3128cdf",
+)
+TIMESTAMP_CONTINUATION_ORIGIN_BYTES = 53083
+TIMESTAMP_CONTINUATION_START_HEAD = "b1293c8b5ad9947af45a7a58668d72ac8e822db0"
 TIMESTAMP_CONTINUATION_HISTORY_BOUNDARY = (
     6886739124, "9c28ac5098565f74ffb5a74ece39a5a92c1264d793c2542b12e5d2efabc8c007",
 )
@@ -1669,9 +1676,9 @@ def parse_timestamp_continuation_authorization(
             or value.get("owner_id") != OWNER_ID
             or value.get("issue_number") != ISSUE_NUMBER
             or value.get("branch_ref") != BRANCH_REF
-            or value.get("current_head_sha40") != "3f5e8fc8c305d45c32617ca12ec08afd24394526"
+            or value.get("current_head_sha40") != TIMESTAMP_CONTINUATION_START_HEAD
             or value.get("current_adc_predecessor") != {
-                "byte_length": 53083,
+                "byte_length": TIMESTAMP_CONTINUATION_PREDECESSOR_BYTES,
                 "comment_id": TIMESTAMP_CONTINUATION_PREDECESSOR[0],
                 "sha256": TIMESTAMP_CONTINUATION_PREDECESSOR[1],
             }
@@ -1717,7 +1724,8 @@ def parse_timestamp_continuation_authorization(
             raise PhaseReworkError("timestamp-continuation approved history contains an invalid row")
         ids.append(row["comment_id"])
     if ids != sorted(set(ids)) or history[-1] != {
-            "byte_length": 53083, "comment_id": TIMESTAMP_CONTINUATION_PREDECESSOR[0],
+            "byte_length": TIMESTAMP_CONTINUATION_PREDECESSOR_BYTES,
+            "comment_id": TIMESTAMP_CONTINUATION_PREDECESSOR[0],
             "sha256": TIMESTAMP_CONTINUATION_PREDECESSOR[1], "state": "approved"}:
         raise PhaseReworkError("timestamp-continuation approved history order or predecessor differs")
     followup = value.get("followup_commit_authorization")
@@ -2464,6 +2472,25 @@ def _parse_issue71_phase_and_user_review_v3_authorization(
     return value
 
 
+def _verified_timestamp_continuation_origin(
+    chain: Sequence[VerifiedADC], origin_record: Mapping[str, Any],
+) -> VerifiedADC | None:
+    """Find the immutable V3 origin by its own identity, separate from the current predecessor."""
+    if (origin_record.get("adc_comment_id") != TIMESTAMP_CONTINUATION_ORIGIN_ADC[0]
+            or origin_record.get("adc_sha256") != TIMESTAMP_CONTINUATION_ORIGIN_ADC[1]):
+        raise PhaseReworkError("immutable V3 origin identity differs from its approved record")
+    matches = [row for row in chain
+               if row.pointer.comment_id == origin_record["adc_comment_id"]]
+    if len(matches) != 1:
+        return None
+    origin = matches[0]
+    if (origin.pointer.sha256 != origin_record["adc_sha256"]
+            or origin.pointer.state != "approved"
+            or origin.contract.byte_length != TIMESTAMP_CONTINUATION_ORIGIN_BYTES):
+        raise PhaseReworkError("immutable V3 origin differs from its exact approved bytes")
+    return origin
+
+
 def verify_issue71_phase_and_user_review_adc_chain(
     github: GitHub, verified: VerifiedADC,
 ) -> tuple[dict[str, Any], tuple[VerifiedADC, ...]]:
@@ -2507,10 +2534,9 @@ def verify_issue71_phase_and_user_review_adc_chain(
         current_text = verified.contract.content.decode("utf-8", errors="strict")
         if _adc_predecessor_header(current_text, "timestamp-continuation ADC") != previous:
             raise PhaseReworkError("timestamp-continuation predecessor differs from its approved history")
-        origin = next((row for row in chain
-                       if row.pointer.comment_id == TIMESTAMP_CONTINUATION_PREDECESSOR[0]), None)
-        if (origin is None or origin.pointer.sha256 != TIMESTAMP_CONTINUATION_PREDECESSOR[1]
-                or origin.contract.byte_length != 53083):
+        origin_record = authorization["phase_rework_origin"]
+        origin = _verified_timestamp_continuation_origin(chain, origin_record)
+        if origin is None:
             raise PhaseReworkError("immutable V3 origin ADC is absent from the verified forward chain")
         origin_authorization = parse_issue71_phase_and_user_review_authorization(origin)
         origin_generation = origin_authorization.get("phase_rework_generation_authorization")
@@ -2523,7 +2549,6 @@ def verify_issue71_phase_and_user_review_adc_chain(
         if origin_close < 0:
             raise PhaseReworkError("immutable V3 origin marker is incomplete")
         origin_marker = origin_content[origin_start:origin_close + len("\n-->")].encode("utf-8")
-        origin_record = authorization["phase_rework_origin"]
         if (len(origin_marker) != origin_record["predecessor_v3_marker_byte_length"]
                 or hashlib.sha256(origin_marker).hexdigest()
                 != origin_record["predecessor_v3_marker_sha256"]
@@ -2633,7 +2658,8 @@ def _verify_timestamp_continuation_commit_set(
         raise PhaseReworkError("timestamp-continuation commit authorization is missing")
     start = followup.get("parent_sha40")
     allowlist = followup.get("path_allowlist")
-    if (start != "3f5e8fc8c305d45c32617ca12ec08afd24394526"
+    if (start != authorization.get("current_head_sha40")
+            or start != TIMESTAMP_CONTINUATION_START_HEAD
             or not isinstance(allowlist, list)
             or tuple(allowlist) != TIMESTAMP_CONTINUATION_FOLLOWUP_PATHS
             or not is_ancestor(root, start, head)):
@@ -3499,9 +3525,9 @@ def _live(github: GitHub, root: Path, *, phase: str | None = None,
                      reader_authorization, reader_sha,
                      execution_reader_authorization, execution_reader_sha,
                      generation_authorization, generation_authorization_sha256,
-                     (TIMESTAMP_CONTINUATION_PREDECESSOR[0]
+                     (TIMESTAMP_CONTINUATION_ORIGIN_ADC[0]
                       if current_timestamp_continuation else None),
-                     (TIMESTAMP_CONTINUATION_PREDECESSOR[1]
+                     (TIMESTAMP_CONTINUATION_ORIGIN_ADC[1]
                       if current_timestamp_continuation else None),
                      (parse_timestamp_continuation_authorization(current)[0]["timestamp_policy"]
                       if current_timestamp_continuation else None))

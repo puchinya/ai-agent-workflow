@@ -2362,6 +2362,128 @@ class V3PhaseReworkTests(unittest.TestCase):
             with self.assertRaisesRegex(module.PhaseReworkError, "labels, branch, or PR metadata"):
                 module._validate_execution_receipt_reader_continuation_subject(live)
 
+    def test_timestamp_continuation_origin_is_distinct_from_immediate_predecessor(self):
+        origin = SimpleNamespace(
+            pointer=SimpleNamespace(
+                comment_id=module.TIMESTAMP_CONTINUATION_ORIGIN_ADC[0],
+                sha256=module.TIMESTAMP_CONTINUATION_ORIGIN_ADC[1],
+                state="approved",
+            ),
+            contract=SimpleNamespace(byte_length=module.TIMESTAMP_CONTINUATION_ORIGIN_BYTES),
+        )
+        predecessor = SimpleNamespace(
+            pointer=SimpleNamespace(
+                comment_id=module.TIMESTAMP_CONTINUATION_PREDECESSOR[0],
+                sha256=module.TIMESTAMP_CONTINUATION_PREDECESSOR[1],
+                state="approved",
+            ),
+            contract=SimpleNamespace(byte_length=module.TIMESTAMP_CONTINUATION_PREDECESSOR_BYTES),
+        )
+        boundary = SimpleNamespace(
+            pointer=SimpleNamespace(comment_id=1, sha256="a" * 64, state="approved"),
+            contract=SimpleNamespace(byte_length=1),
+        )
+        chain = (boundary, origin, predecessor)
+        record = dict(module.TIMESTAMP_CONTINUATION_PHASE_REWORK_ORIGIN)
+        self.assertIs(module._verified_timestamp_continuation_origin(chain, record), origin)
+        self.assertIsNone(module._verified_timestamp_continuation_origin((boundary, predecessor), record))
+
+        bad_record = dict(record, adc_sha256="b" * 64)
+        with self.assertRaisesRegex(module.PhaseReworkError, "origin identity"):
+            module._verified_timestamp_continuation_origin(chain, bad_record)
+        bad_origin = SimpleNamespace(
+            pointer=SimpleNamespace(
+                comment_id=module.TIMESTAMP_CONTINUATION_ORIGIN_ADC[0],
+                sha256="b" * 64,
+                state="approved",
+            ),
+            contract=origin.contract,
+        )
+        with self.assertRaisesRegex(module.PhaseReworkError, "exact approved bytes"):
+            module._verified_timestamp_continuation_origin((boundary, bad_origin, predecessor), record)
+        unapproved_origin = SimpleNamespace(
+            pointer=SimpleNamespace(
+                comment_id=module.TIMESTAMP_CONTINUATION_ORIGIN_ADC[0],
+                sha256=module.TIMESTAMP_CONTINUATION_ORIGIN_ADC[1],
+                state="draft",
+            ),
+            contract=origin.contract,
+        )
+        with self.assertRaisesRegex(module.PhaseReworkError, "exact approved bytes"):
+            module._verified_timestamp_continuation_origin(
+                (boundary, unapproved_origin, predecessor), record,
+            )
+        wrong_length_origin = SimpleNamespace(
+            pointer=origin.pointer,
+            contract=SimpleNamespace(byte_length=module.TIMESTAMP_CONTINUATION_ORIGIN_BYTES - 1),
+        )
+        with self.assertRaisesRegex(module.PhaseReworkError, "exact approved bytes"):
+            module._verified_timestamp_continuation_origin(
+                (boundary, wrong_length_origin, predecessor), record,
+            )
+
+    def test_timestamp_continuation_commit_boundary_comes_from_current_marker(self):
+        start = module.TIMESTAMP_CONTINUATION_START_HEAD
+        commit = "d" * 40
+        allowlist = list(module.TIMESTAMP_CONTINUATION_FOLLOWUP_PATHS)
+        authorization = {
+            "current_head_sha40": start,
+            "followup_commit_authorization": {
+                "max_commits": 1,
+                "parent_sha40": start,
+                "path_allowlist": allowlist,
+                "require_direct_child": True,
+                "require_push_to_existing_branch": True,
+            },
+        }
+        with patch.object(module, "is_ancestor", return_value=True), \
+                patch.object(module, "run_git", return_value=""), \
+                patch.object(module, "commit_parents_sha40") as parents:
+            module._verify_timestamp_continuation_commit_set(Path("/tmp/repo"), start, authorization)
+        parents.assert_not_called()
+
+        with patch.object(module, "is_ancestor", return_value=True), \
+                patch.object(module, "run_git", return_value=commit), \
+                patch.object(module, "commit_parents_sha40", return_value=(start,)), \
+                patch.object(module, "changed_paths_between", return_value=(allowlist[-1],)):
+            module._verify_timestamp_continuation_commit_set(Path("/tmp/repo"), commit, authorization)
+
+        invalid_cases = (
+            ("wrong marker parent", {**authorization,
+             "followup_commit_authorization": {**authorization["followup_commit_authorization"],
+                                              "parent_sha40": "a" * 40}},
+             "parent or path allowlist"),
+            ("wrong marker start", {**authorization, "current_head_sha40": "b" * 40},
+             "parent or path allowlist"),
+            ("reordered path list", {**authorization,
+             "followup_commit_authorization": {**authorization["followup_commit_authorization"],
+                                              "path_allowlist": list(reversed(allowlist))}},
+             "parent or path allowlist"),
+        )
+        for name, invalid, message in invalid_cases:
+            with self.subTest(name=name), self.assertRaisesRegex(module.PhaseReworkError, message):
+                module._verify_timestamp_continuation_commit_set(Path("/tmp/repo"), commit, invalid)
+
+        with patch.object(module, "is_ancestor", return_value=True), \
+                patch.object(module, "run_git", return_value=f"{commit}\n{'e' * 40}"), \
+                self.assertRaisesRegex(module.PhaseReworkError, "zero or one direct-child"):
+            module._verify_timestamp_continuation_commit_set(
+                Path("/tmp/repo"), "e" * 40, authorization,
+            )
+
+        with patch.object(module, "is_ancestor", return_value=True), \
+                patch.object(module, "run_git", return_value=commit), \
+                patch.object(module, "commit_parents_sha40", return_value=(start, "c" * 40)), \
+                self.assertRaisesRegex(module.PhaseReworkError, "direct-child"):
+            module._verify_timestamp_continuation_commit_set(Path("/tmp/repo"), commit, authorization)
+
+        with patch.object(module, "is_ancestor", return_value=True), \
+                patch.object(module, "run_git", return_value=commit), \
+                patch.object(module, "commit_parents_sha40", return_value=(start,)), \
+                patch.object(module, "changed_paths_between", return_value=("outside.py",)), \
+                self.assertRaisesRegex(module.PhaseReworkError, "commit exceeds its exact path allowlist"):
+            module._verify_timestamp_continuation_commit_set(Path("/tmp/repo"), commit, authorization)
+
     @staticmethod
     def _v2_pair() -> tuple[module.PhaseReworkRecord, module.PhaseReworkRecord]:
         intent_body = "immutable V2 Intent bytes"
@@ -2516,8 +2638,8 @@ class V3PhaseReworkTests(unittest.TestCase):
                 "repository_id": module.REPOSITORY_ID,
                 "issue_number": module.ISSUE_NUMBER,
                 "issue_id": module.ISSUE_ID,
-                "adc_comment_id": module.TIMESTAMP_CONTINUATION_PREDECESSOR[0],
-                "adc_sha256": module.TIMESTAMP_CONTINUATION_PREDECESSOR[1],
+                "adc_comment_id": module.TIMESTAMP_CONTINUATION_ORIGIN_ADC[0],
+                "adc_sha256": module.TIMESTAMP_CONTINUATION_ORIGIN_ADC[1],
                 "authorization_sha256": live.phase_rework_generation_authorization_sha256,
                 "predecessor_adc_comment_id": generation["predecessor_adc_comment_id"],
                 "predecessor_adc_sha256": generation["predecessor_adc_sha256"],
@@ -2557,8 +2679,8 @@ class V3PhaseReworkTests(unittest.TestCase):
             )
             current = replace(
                 live, current_adc=current_adc,
-                phase_rework_origin_adc_comment_id=module.TIMESTAMP_CONTINUATION_PREDECESSOR[0],
-                phase_rework_origin_adc_sha256=module.TIMESTAMP_CONTINUATION_PREDECESSOR[1],
+                phase_rework_origin_adc_comment_id=module.TIMESTAMP_CONTINUATION_ORIGIN_ADC[0],
+                phase_rework_origin_adc_sha256=module.TIMESTAMP_CONTINUATION_ORIGIN_ADC[1],
                 timestamp_policy=self._timestamp_policy(),
             )
             module._validate_v3_intent(intent, current)

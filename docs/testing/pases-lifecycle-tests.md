@@ -149,6 +149,10 @@
     - [2.69.1 ORA-F01-105 Expected result](#2691-ora-f01-105-expected-result)
   - [2.70 TST-F01-106 Continuation phase labels follow the approved graph](#270-tst-f01-106-continuation-phase-labels-follow-the-approved-graph)
     - [2.70.1 ORA-F01-106 Expected result](#2701-ora-f01-106-expected-result)
+  - [2.71 TST-F01-107 Immutable V3 origin ancestry and NOOP reconciliation](#271-tst-f01-107-immutable-v3-origin-ancestry-and-noop-reconciliation)
+    - [2.71.1 ORA-F01-107 Expected result](#2711-ora-f01-107-expected-result)
+  - [2.72 TST-F01-108 Marker-derived direct-child continuation boundary](#272-tst-f01-108-marker-derived-direct-child-continuation-boundary)
+    - [2.72.1 ORA-F01-108 Expected result](#2721-ora-f01-108-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -293,6 +297,10 @@
 - [ORA-F01-105](#ora-f01-105) — 2.69.1 ORA-F01-105 Expected result
 - [TST-F01-106](#tst-f01-106) — 2.70 TST-F01-106 Continuation phase labels follow the approved graph
 - [ORA-F01-106](#ora-f01-106) — 2.70.1 ORA-F01-106 Expected result
+- [TST-F01-107](#tst-f01-107) — 2.71 TST-F01-107 Immutable V3 origin ancestry and NOOP reconciliation
+- [ORA-F01-107](#ora-f01-107) — 2.71.1 ORA-F01-107 Expected result
+- [TST-F01-108](#tst-f01-108) — 2.72 TST-F01-108 Marker-derived direct-child continuation boundary
+- [ORA-F01-108](#ora-f01-108) — 2.72.1 ORA-F01-108 Expected result
 <!-- heading-map:end -->
 
 
@@ -1054,3 +1062,23 @@ All four schemas use the same strict 0..300 second window. Invalid timestamp pai
 #### 2.70.1 ORA-F01-106 Expected result
 
 Both readers accept exactly the phase states declared by the verified current ADC graph and reject all other labels or subject drift without writes. The starting `phase:requirements` state is accepted from the graph itself, not from a special-case label exception.
+
+<a id="tst-f01-107"></a>
+### 2.71 TST-F01-107 Immutable V3 origin ancestry and NOOP reconciliation
+
+**Setup and action:** Build an approved forward chain where the immediate predecessor ADC differs from the immutable V3 origin ADC. Accept the exact origin ID/SHA/byte length and original marker/generation digests, then mutate or omit the origin, change its approval state, alter either V2/V3 body, change timestamps or labels, and break the generation link. Exercise the complete existing V3 pair with its exact after-label state and assert NOOP with zero comment and label writes. The executable origin lookup and reader regressions are in `tests/test_phase_rework.py`.
+
+<a id="ora-f01-107"></a>
+#### 2.71.1 ORA-F01-107 Expected result
+
+The reader locates the immutable origin from its own authorization identity inside the complete approved forward chain, independently of the current predecessor. Only a complete exact V2/V3 journal and matching subject return NOOP. Missing, duplicated, unapproved, changed, or unlinked data blocks before writes.
+
+<a id="tst-f01-108"></a>
+### 2.72 TST-F01-108 Marker-derived direct-child continuation boundary
+
+**Setup and action:** Use the exact successor marker whose current start is the pushed PR HEAD. Accept zero descendants before implementation and one direct child with an allowlisted path. Independently alter the marker start, follow-up parent, exact path list, remote HEAD, parent count, commit count, changed path, phase edge, and supported label. Reject a merge parent, extra descendant, unlisted or reordered path list, and unsupported phase before any evidence write. Exercise fresh receipt and gate ordering after the exact child.
+
+<a id="ora-f01-108"></a>
+#### 2.72.1 ORA-F01-108 Expected result
+
+The follow-up parent equals the marker start and the Git range contains at most one direct child. After push the child is exact, the PR remote HEAD matches, and every changed path is in the marker allowlist. Labels come only from the verified phase graph; receipt and gate ordering stops on the first missing or failed prerequisite.

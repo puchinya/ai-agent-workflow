@@ -136,7 +136,8 @@
   - [9.109 REQ-F01-171 Batch approved ADC history snapshots without weakening validation](#9109-req-f01-171-batch-approved-adc-history-snapshots-without-weakening-validation)
   - [9.110 REQ-F01-172 Preserve V2 and apply one exact V3 phase-rework generation](#9110-req-f01-172-preserve-v2-and-apply-one-exact-v3-phase-rework-generation)
   - [9.111 REQ-F01-173 Apply one event/publication window to V2 and V3](#9111-req-f01-173-apply-one-eventpublication-window-to-v2-and-v3)
-  - [9.112 REQ-F01-174 Derive continuation labels from the approved Phase graph](#9112-req-f01-174-derive-continuation-labels-from-the-approved-phase-graph)
+  - [9.112 REQ-F01-174 Validate the immutable V3 origin through approved history](#9112-req-f01-174-validate-the-immutable-v3-origin-through-approved-history)
+  - [9.113 REQ-F01-175 Bound the successor commit and Phase continuation](#9113-req-f01-175-bound-the-successor-commit-and-phase-continuation)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -262,7 +263,8 @@
 - [REQ-F01-171](#req-f01-171) — 9.109 REQ-F01-171 Batch approved ADC history snapshots without weakening validation
 - [REQ-F01-172](#req-f01-172) — 9.110 REQ-F01-172 Preserve V2 and apply one exact V3 phase-rework generation
 - [REQ-F01-173](#req-f01-173) — 9.111 REQ-F01-173 Apply one event/publication window to V2 and V3
-- [REQ-F01-174](#req-f01-174) — 9.112 REQ-F01-174 Derive continuation labels from the approved Phase graph
+- [REQ-F01-174](#req-f01-174) — 9.112 REQ-F01-174 Validate the immutable V3 origin through approved history
+- [REQ-F01-175](#req-f01-175) — 9.113 REQ-F01-175 Bound the successor commit and Phase continuation
 <!-- heading-map:end -->
 
 
@@ -1101,6 +1103,11 @@ Issue #71 MAY append one typed V3 phase-rework Intent/Applied pair linked to the
 When the current approved Issue #71 ADC authorizes `PASES_ISSUE_PHASE_EVENT_PUBLICATION_WINDOW_V1`, validate all V2 and V3 phase-rework Intent and Applied records using their schema-specific event fields and the GitHub comment's server `created_at`. Both values MUST be canonical UTC timestamps ending in `Z`; comment publication time minus the embedded event time MUST be within the inclusive range 0..300 seconds. Preserve all existing record bytes and treat a complete pair as read-only reconciliation; do not rewrite records or issue another Intent, Applied, or label update.
 
 <a id="req-f01-174"></a>
-### 9.112 REQ-F01-174 Derive continuation labels from the approved Phase graph
+### 9.112 REQ-F01-174 Validate the immutable V3 origin through approved history
 
-For Issue #71 continuation readers, derive valid phase labels from the exact current approved ADC's ordered `phase_edges`, including each edge's source and destination. Require the exact Issue-kind and enhancement labels, exact branch and PR metadata, and one phase label from that graph. Reject an unlisted phase or any subject mismatch before evidence writes. Do not maintain issue-specific phase exceptions or mutate labels during readback.
+When the current Issue #71 ADC contains a phase-rework origin record, its reader MUST locate that exact ADC by the origin record's comment ID and SHA-256 in the complete approved forward chain. The immediate predecessor of the current ADC MUST remain a separate identity. Validate the origin's approved state, exact UTF-8 byte length and digest, original V3 authorization marker, generation authorization, and links to the immutable V2/V3 records. A complete exact V3 Intent/Applied pair with its authorized after-label state MUST reconcile as a read-only NOOP with zero comment or label writes. Missing, duplicated, changed, unapproved, or unlinked origin records fail closed before writes.
+
+<a id="req-f01-175"></a>
+### 9.113 REQ-F01-175 Bound the successor commit and Phase continuation
+
+An approved Issue #71 continuation marker MUST bind the exact current start HEAD, a matching direct-child parent, a one-commit maximum, and an exact sorted path allowlist. The reader MUST derive valid continuation labels from the verified current ADC's ordered `phase_edges`, including each edge's source and destination; it MUST reject unlisted phases, duplicate or malformed labels, and subject drift before evidence writes. At the pushed child HEAD, bind exact PR evidence and reissue only completed predecessor Phase receipts from committed document bytes. Advance only along supported edges through execution and verification. Require exact-subject Verification, Acceptance, Self-Audit, Independent Review, and Readiness PASS in order. Self-Audit evaluates preceding evidence and later-gate definitions; its own PASS is the execution result, and future Readiness/User Review results are not Self-Audit predicates. Start at most one User Review session only after final Readiness PASS at phase:verification, read back its complete immutable feedback snapshot as PENDING, and make no decision.

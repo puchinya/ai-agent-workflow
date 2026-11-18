@@ -497,9 +497,9 @@ Only a complete canonical marker for the verified current ADC and its exact orde
 <a id="tst-rt-031"></a>
 ### 2.31 TST-RT-031 Issue #71 timestamp continuation context read
 
-**Setup and action:** Run `context show` using the exact approved timestamp-continuation ADC, its complete approved history, immutable V3 origin authorization, existing V2/V3 journal, current Issue labels, and PR subject. Verify graph-derived acceptance of `phase:requirements` and each declared successor state through `phase:user-review`; vary ADC pointers, predecessor links, timestamp boundaries, labels, branch, PR title/body, and binding/checkpoint fingerprints. Assert context inspection is read-only and does not append comments or update labels.
+**Setup and action:** Run `context show` using the exact approved timestamp-continuation ADC #6968187591, its complete approved history, immediate predecessor #6966957737, immutable V3 origin #6963966853, existing V2/V3 journal, current Issue labels, and PR subject. Verify graph-derived acceptance of `phase:requirements` and each declared successor state through `phase:user-review`; vary ADC pointers, predecessor/origin identities, marker start/parent, timestamp boundaries, labels, branch, PR title/body, and binding/checkpoint fingerprints. Assert context inspection is read-only and does not append comments or update labels.
 
 <a id="ora-rt-031"></a>
 #### 2.31.1 ORA-RT-031 Expected result
 
-Only the exact current approved chain, immutable origin, authorized event/publication windows, current graph phase, and bound PR metadata pass. A mismatch reports a bounded blocked/stale state without GitHub writes. A valid current binding is read back without exposing local workspace paths.
+Only the exact current approved chain, distinct immediate predecessor and immutable origin, marker-derived continuation boundary, authorized event/publication windows, current graph phase, and bound PR metadata pass. A mismatch reports a bounded blocked/stale state without GitHub writes. A valid current binding is read back without exposing local workspace paths.
