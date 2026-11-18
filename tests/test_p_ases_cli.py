@@ -801,17 +801,21 @@ class PasesCLITests(unittest.TestCase):
         emit.assert_called_once_with(expected)
 
     def test_phase_rebaseline_compatibility_command_uses_generic_restart(self):
-        expected = {"status": "NOOP", "issue": 128, "writes_performed": 0}
         github = SimpleNamespace(repo="owner/repo")
-        with patch("p_ases.cli._repo_root", return_value=ROOT), \
-                patch("p_ases.cli.discover_repository", return_value=github.repo), \
-                patch("p_ases.cli.GitHub", return_value=github), \
-                patch("p_ases.cli.restart_issue_phase", return_value=expected) as restart, \
-                patch("p_ases.cli._json") as emit:
-            result = main(["issue", "phase-rebaseline", "128", "--repo", github.repo])
-        self.assertEqual(result, 0)
-        restart.assert_called_once_with(github, ROOT.resolve(), 128)
-        emit.assert_called_once_with(expected)
+        for issue_number in (63, 128):
+            expected = {"status": "NOOP", "issue": issue_number, "writes_performed": 0}
+            with self.subTest(issue=issue_number), \
+                    patch("p_ases.cli._repo_root", return_value=ROOT), \
+                    patch("p_ases.cli.discover_repository", return_value=github.repo), \
+                    patch("p_ases.cli.GitHub", return_value=github), \
+                    patch("p_ases.cli.restart_issue_phase", return_value=expected) as restart, \
+                    patch("p_ases.cli._json") as emit:
+                result = main([
+                    "issue", "phase-rebaseline", str(issue_number), "--repo", github.repo,
+                ])
+                self.assertEqual(result, 0)
+                restart.assert_called_once_with(github, ROOT.resolve(), issue_number)
+                emit.assert_called_once_with(expected)
 
     def test_generic_epoch_reset_cli_routes_without_issue_allowlist(self):
         expected = {"status": "NOOP", "issue": 128, "writes_performed": 0}
