@@ -211,7 +211,7 @@ def apply_phase_rework(github: GitHub, root: Path, issue_number: int, *,
                 or auth["branch_ref"] != epoch.branch_ref
                 or auth["base_sha40"] != epoch.base_sha40):
             raise PhaseReworkLifecycleError("Phase rework authorization differs from the active epoch")
-        _live(github, root, issue_number, adc, auth, auth["labels_before"])
+        initial_issue, *_ = _live(github, root, issue_number, adc, auth, auth["labels_before"])
         _verify_pr(github, issue_number, auth)
         _no_review_session(root, issue_number)
         if readiness_factory is None:
@@ -221,7 +221,9 @@ def apply_phase_rework(github: GitHub, root: Path, issue_number: int, *,
                                           adc=adc, auth=auth)
         # A different session cannot silently alter the subject after the first
         # evidence calculation, especially before the one-shot Intent POST.
-        _live(github, root, issue_number, adc, auth, auth["labels_before"])
+        before_intent, *_ = _live(github, root, issue_number, adc, auth, auth["labels_before"])
+        if before_intent.get("body") != initial_issue["body"]:
+            raise PhaseReworkLifecycleError("Phase rework Issue body changed before Intent")
         _verify_pr(github, issue_number, auth)
         if any(isinstance(row, dict) and isinstance(row.get("body"), str)
                and row["body"].startswith((
@@ -245,7 +247,9 @@ def apply_phase_rework(github: GitHub, root: Path, issue_number: int, *,
             github, root, issue_number, "intent", INTENT_SCHEMA, intent,
             auth["owner_id"], namespace="phase-rework",
         )
-        _live(github, root, issue_number, adc, auth, auth["labels_before"])
+        before_labels, *_ = _live(github, root, issue_number, adc, auth, auth["labels_before"])
+        if before_labels.get("body") != initial_issue["body"]:
+            raise PhaseReworkLifecycleError("Phase rework Issue body changed before label update")
         _verify_pr(github, issue_number, auth)
         _attempt(root, issue_number, "labels", _sha(_json({
             "intent_id": intent_id, "intent_sha256": intent_sha,
@@ -255,7 +259,9 @@ def apply_phase_rework(github: GitHub, root: Path, issue_number: int, *,
             github.replace_issue_labels(issue_number, auth["labels_after"])
         except GitHubError as exc:
             raise PhaseReworkLifecycleError("Phase rework label PUT is ambiguous; never retry") from exc
-        _live(github, root, issue_number, adc, auth, auth["labels_after"])
+        before_applied, *_ = _live(github, root, issue_number, adc, auth, auth["labels_after"])
+        if before_applied.get("body") != initial_issue["body"]:
+            raise PhaseReworkLifecycleError("Phase rework Issue body changed before Applied")
         _verify_pr(github, issue_number, auth)
         applied = {
             **{k: v for k, v in intent.items() if k != "created_at"},

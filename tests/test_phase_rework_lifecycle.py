@@ -214,6 +214,25 @@ class GenericPhaseReworkTests(unittest.TestCase):
                 self._run(root, github, adc)
             self.assertEqual((github.post_count, github.label_writes), (1, 1))
 
+    def test_issue_body_drift_before_intent_blocks_without_writes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, github = Path(temporary), FakeGitHub()
+            original_issue = github.issue
+            reads = 0
+
+            def changed_issue(number):
+                nonlocal reads
+                reads += 1
+                result = original_issue(number)
+                if reads >= 2:
+                    result["body"] = "Changed after first subject read"
+                return result
+
+            github.issue = changed_issue
+            with self.assertRaisesRegex(phase.PhaseReworkLifecycleError, "Issue body changed before Intent"):
+                self._run(root, github, verified(auth()))
+            self.assertEqual((github.post_count, github.label_writes), (0, 0))
+
     def test_issue_owner_or_pr_drift_blocks_prior_to_intent(self):
         with tempfile.TemporaryDirectory() as temporary:
             root, github = Path(temporary), FakeGitHub()

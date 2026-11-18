@@ -188,6 +188,25 @@ class EpochLifecycleTests(unittest.TestCase):
                 self._run(root, github, adc)
             self.assertEqual((github.post_count, github.label_writes), (1, 1))
 
+    def test_issue_body_drift_before_intent_blocks_without_writes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, github = Path(temporary), FakeGitHub(128)
+            original_issue = github.issue
+            reads = 0
+
+            def changed_issue(number):
+                nonlocal reads
+                reads += 1
+                result = original_issue(number)
+                if reads >= 2:
+                    result["body"] = "Changed after first subject read"
+                return result
+
+            github.issue = changed_issue
+            with self.assertRaisesRegex(module.EpochLifecycleError, "Issue body changed before Intent"):
+                self._run(root, github, verified_adc(authorization(128)))
+            self.assertEqual((github.post_count, github.label_writes), (0, 0))
+
     def test_owner_and_issue_drift_block_before_writes(self):
         with tempfile.TemporaryDirectory() as temporary:
             root, github = Path(temporary), FakeGitHub(128)
