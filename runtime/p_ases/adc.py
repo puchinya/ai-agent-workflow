@@ -857,16 +857,73 @@ def publish_adc(
         raise ADCError(str(exc)) from exc
 
 
+def _latest_current_adc_pointer(
+    github: GitHub, issue_number: int, issue: dict[str, Any],
+) -> tuple[ADCPointer | None, str | None, int | None]:
+    """Select the newest pointer, without validating superseded ADC generations.
+
+    Validate the selected marker's exact identity and at most one immediately
+    preceding marker to detect competing writes from the same predecessor.
+    This reader never dereferences an old ADC body or traverses the full chain.
+    """
+    count = issue.get("comments")
+    recent_reader = getattr(github, "issue_comment_pages_newest", None)
+    if callable(recent_reader) and type(count) is int and count >= 0:
+        pages = recent_reader(issue_number, count)
+    else:
+        # Test doubles and legacy transports supply a complete local snapshot.
+        pages = (github.issue_comments(issue_number),)
+
+    selected: list[tuple[int, str, str, ADCPointer]] = []
+    for page in pages:
+        for row in reversed(page):
+            body = row.get("body") if isinstance(row, dict) else None
+            if not isinstance(body, str) or not body.startswith(POINTER_RECORD_SENTINEL):
+                continue
+            record_id = row.get("id")
+            if type(record_id) is not int or record_id < 1:
+                raise ADCError("current ADC pointer record has no valid comment ID")
+            _check_comment(row, github.repo, issue_number, record_id)
+            match = _parse_pointer_record_body(body, github.repo, issue_number)
+            if match is None:
+                raise ADCError("current ADC pointer marker is malformed")
+            operation, predecessor, adc_id, digest, byte_length, state = match.groups()
+            pointer = ADCPointer(int(adc_id), digest, int(byte_length), state)
+            if (pointer.comment_id >= record_id or operation != _publication_operation_id(
+                    github.repo, issue_number, predecessor, digest, pointer.byte_length, state)):
+                raise ADCError("current ADC pointer marker identity or order is invalid")
+            selected.append((record_id, operation, predecessor, pointer))
+            if len(selected) == 2:
+                break
+        if len(selected) == 2:
+            break
+    if not selected:
+        return parse_pointer(issue.get("body") or ""), None, None
+
+    current = selected[0]
+    if len(selected) == 2:
+        previous = selected[1]
+        if (current[2] == previous[2]
+                and (current[1] != previous[1] or current[3] != previous[3])):
+            raise ADCError("current ADC pointer contains competing publications from one predecessor")
+    return current[3], current[1], current[0]
+
+
 def verify_adc(github: GitHub, issue_number: int) -> VerifiedADC:
     try:
         issue = _check_issue(github.issue(issue_number), github.repo, issue_number)
-        pointer, _operation_id, _record_id = _latest_pointer_record(
-            github, issue_number, issue_body=issue.get("body") or "",
+        pointer, _operation_id, _record_id = _latest_current_adc_pointer(
+            github, issue_number, issue,
         )
         if pointer is None:
             raise ADCError("Issue has no Agent Development Contract pointer")
         named = github.issue_comment(issue_number, pointer.comment_id)
         comment = _check_comment(named, github.repo, issue_number, pointer.comment_id)
+        issue_after = _check_issue(github.issue(issue_number), github.repo, issue_number)
+        if (issue.get("body") != issue_after.get("body")
+                or issue.get("state") != issue_after.get("state")
+                or issue.get("comments") != issue_after.get("comments")):
+            raise ADCError("Issue changed during current ADC readback")
     except GitHubError as exc:
         raise ADCError(str(exc)) from exc
     if not isinstance(comment.get("body"), str):
