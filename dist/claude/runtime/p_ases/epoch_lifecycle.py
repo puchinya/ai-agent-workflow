@@ -154,9 +154,12 @@ def _live(github: GitHub, root: Path, issue_number: int, adc: VerifiedADC,
         raise EpochLifecycleError(f"epoch reset live readback failed: {exc}") from exc
 
 
-def _attempt(root: Path, issue_number: int, name: str, digest: str) -> None:
+def _attempt(root: Path, issue_number: int, name: str, digest: str, *,
+             namespace: str = "epoch-reset") -> None:
+    if namespace not in {"epoch-reset", "phase-rework"}:
+        raise EpochLifecycleError("unsupported one-shot journal namespace")
     directory = root / ".p_ases" / "state" / str(issue_number)
-    path = directory / f"epoch-reset-{name}.attempt"
+    path = directory / f"{namespace}-{name}.attempt"
     if path_has_symlink(path, root=root):
         raise EpochLifecycleError("epoch reset attempt marker uses a symbolic link")
     directory.mkdir(parents=True, exist_ok=True)
@@ -171,9 +174,11 @@ def _attempt(root: Path, issue_number: int, name: str, digest: str) -> None:
 
 
 def _post(github: GitHub, root: Path, issue_number: int, label: str,
-          schema: str, payload: Mapping[str, Any], owner_id: int) -> tuple[int, str]:
+          schema: str, payload: Mapping[str, Any], owner_id: int, *,
+          namespace: str = "epoch-reset") -> tuple[int, str]:
     body = _record(schema, payload)
-    _attempt(root, issue_number, label, _sha(body.encode("utf-8")))
+    _attempt(root, issue_number, label, _sha(body.encode("utf-8")),
+             namespace=namespace)
     try:
         created = github.create_issue_comment(issue_number, body)
         comment_id = created.get("id") if isinstance(created, dict) else None
