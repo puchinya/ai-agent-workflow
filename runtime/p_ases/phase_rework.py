@@ -1381,14 +1381,17 @@ def _adc_predecessor_header(text: str, label: str) -> tuple[int, str]:
 
 def _optional_historical_adc_predecessor_header(
     text: str, label: str, verified_body_byte_length: int,
+    verified_predecessor_body_byte_length: int,
 ) -> tuple[int, str] | None:
-    """Validate an optional body-level link and exact byte annotation on immutable ADC history."""
+    """Validate a historical link and any annotation against its verified predecessor body."""
     lines = text.splitlines()
-    if not any(line.startswith("Predecessor ADC:") for line in lines):
-        return None
     if (type(verified_body_byte_length) is not int or verified_body_byte_length < 1
             or len(text.encode("utf-8")) != verified_body_byte_length):
         raise PhaseReworkError(f"{label} verified body byte length is inconsistent")
+    if type(verified_predecessor_body_byte_length) is not int or verified_predecessor_body_byte_length < 1:
+        raise PhaseReworkError(f"{label} verified predecessor body byte length is inconsistent")
+    if not any(line.startswith("Predecessor ADC:") for line in lines):
+        return None
     section = re.search(r"(?m)^##[ \t]", text)
     preamble = text if section is None else text[:section.start()]
     headers = [line for line in lines if line.startswith("Predecessor ADC:")]
@@ -1405,11 +1408,12 @@ def _optional_historical_adc_predecessor_header(
     )
     if match is None:
         raise PhaseReworkError(f"{label} predecessor header is malformed")
-    annotation = re.search(r" \(([^()]*) bytes\)(?: {0}| {2})$", headers[0])
-    if annotation is not None:
-        annotated = int(annotation.group(1).replace(",", ""))
-        if annotated != verified_body_byte_length:
-            raise PhaseReworkError(f"{label} predecessor byte annotation differs from verified body length")
+    annotation = match.group(4)
+    if (annotation is not None
+            and int(annotation.replace(",", "")) != verified_predecessor_body_byte_length):
+        raise PhaseReworkError(
+            f"{label} predecessor byte annotation differs from verified predecessor body length"
+        )
     return int(match.group(1)), match.group(2) or match.group(3)
 
 
@@ -2550,16 +2554,19 @@ def verify_issue71_phase_and_user_review_adc_chain(
                 "timestamp-continuation approved history is missing, reordered, changed, or not current"
             )
         previous = (boundary["comment_id"], boundary["sha256"])
+        previous_byte_length = chain[0].contract.byte_length
         for row in chain[1:-1]:
             body = row.contract.content.decode("utf-8", errors="strict")
             declared = _optional_historical_adc_predecessor_header(
-                body, f"approved historical ADC #{row.pointer.comment_id}", row.contract.byte_length,
+                body, f"approved historical ADC #{row.pointer.comment_id}",
+                row.contract.byte_length, previous_byte_length,
             )
             if declared is not None and declared != previous:
                 raise PhaseReworkError(
                     f"timestamp-continuation historical predecessor differs at #{row.pointer.comment_id}"
                 )
             previous = (row.pointer.comment_id, row.contract.sha256)
+            previous_byte_length = row.contract.byte_length
         current_text = verified.contract.content.decode("utf-8", errors="strict")
         if _adc_predecessor_header(current_text, "timestamp-continuation ADC") != previous:
             raise PhaseReworkError("timestamp-continuation predecessor differs from its approved history")
@@ -2645,16 +2652,19 @@ def verify_issue71_phase_and_user_review_adc_chain(
             "combined ADC approved history is incomplete, reordered, edited, or unapproved"
         )
     previous = boundary
+    previous_byte_length = chain[0].contract.byte_length
     for item in chain[1:-1]:
         body = item.contract.content.decode("utf-8", errors="strict")
         declared = _optional_historical_adc_predecessor_header(
-            body, f"approved ADC #{item.pointer.comment_id}", item.contract.byte_length,
+            body, f"approved ADC #{item.pointer.comment_id}",
+            item.contract.byte_length, previous_byte_length,
         )
         if declared is not None and declared != previous:
             raise PhaseReworkError(
                 f"approved historical ADC predecessor header differs at comment #{item.pointer.comment_id}"
             )
         previous = (item.pointer.comment_id, item.contract.sha256)
+        previous_byte_length = item.contract.byte_length
     current_body = chain[-1].contract.content.decode("utf-8", errors="strict")
     if _adc_predecessor_header(current_body, "current Issue #71 ADC") != previous:
         raise PhaseReworkError("current Issue #71 predecessor header differs from its exact approved chain")

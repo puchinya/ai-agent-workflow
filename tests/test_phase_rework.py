@@ -2627,13 +2627,13 @@ class V3PhaseReworkTests(unittest.TestCase):
         ]
         marker = {
             "approved_history": [{
-                "byte_length": 123, "comment_id": predecessor_id,
+                "byte_length": 256, "comment_id": predecessor_id,
                 "sha256": predecessor_sha, "state": "approved",
             }],
             "branch_ref": module.BRANCH_REF,
             "checkpoint_before_publication": {"path": ".p_ases/checkpoint.json", "sha256": "d" * 64},
             "current_adc_predecessor": {
-                "byte_length": 123, "comment_id": predecessor_id, "sha256": predecessor_sha,
+                "byte_length": 256, "comment_id": predecessor_id, "sha256": predecessor_sha,
             },
             "current_head_sha40": head,
             "current_issue": {
@@ -2720,7 +2720,8 @@ class V3PhaseReworkTests(unittest.TestCase):
         self.assertEqual(v2_auth["schema"], module.TIMESTAMP_CONTINUATION_AUTH_SCHEMA_V2)
 
     def test_historical_predecessor_header_accepts_only_exact_verified_byte_annotation(self):
-        body_length = 31_434
+        body_length = 32_240
+        predecessor_body_length = 31_434
         comment_id = 6973093433
         digest = "37c3afbc0b66a2b6a9b6c2e0c2aecf0bc873f6128b32f4c427c790d0f9861303"
         header = (
@@ -2732,13 +2733,13 @@ class V3PhaseReworkTests(unittest.TestCase):
         self.assertEqual(len(text.encode("utf-8")), body_length)
         self.assertEqual(
             module._optional_historical_adc_predecessor_header(
-                text, "historical ADC", body_length,
+                text, "historical ADC", body_length, predecessor_body_length,
             ),
             (comment_id, digest),
         )
 
         for invalid_header, expected_message in (
-                (header.replace("31,434", "31,435"), "differs from verified body length"),
+                (header.replace("31,434", "31,435"), "differs from verified predecessor body length"),
                 (header.replace("31,434", "31,43"), "predecessor header is malformed"),
                 (header.replace("(31,434 bytes)", "(31,434 octets)"),
                  "predecessor header is malformed"),
@@ -2749,11 +2750,28 @@ class V3PhaseReworkTests(unittest.TestCase):
                 invalid = (invalid_prefix + b"x" * (body_length - len(invalid_prefix))).decode("utf-8")
                 with self.assertRaisesRegex(module.PhaseReworkError, expected_message):
                     module._optional_historical_adc_predecessor_header(
-                        invalid, "historical ADC", body_length,
+                        invalid, "historical ADC", body_length, predecessor_body_length,
                     )
 
         with self.assertRaisesRegex(module.PhaseReworkError, "byte length is inconsistent"):
-            module._optional_historical_adc_predecessor_header(text, "historical ADC", body_length + 1)
+            module._optional_historical_adc_predecessor_header(
+                text, "historical ADC", body_length + 1, predecessor_body_length,
+            )
+        with self.assertRaisesRegex(
+                module.PhaseReworkError, "verified predecessor body byte length is inconsistent"):
+            module._optional_historical_adc_predecessor_header(
+                text, "historical ADC", body_length, 0,
+            )
+
+        ungrouped_header = header.replace("31,434", "31434")
+        ungrouped_prefix = (ungrouped_header + "\n").encode("utf-8")
+        ungrouped = (ungrouped_prefix + b"x" * (body_length - len(ungrouped_prefix))).decode("utf-8")
+        self.assertEqual(
+            module._optional_historical_adc_predecessor_header(
+                ungrouped, "historical ADC", body_length, predecessor_body_length,
+            ),
+            (comment_id, digest),
+        )
 
     def test_historical_predecessor_header_keeps_legacy_forms_and_current_header_strict(self):
         comment_id = 12345
@@ -2761,17 +2779,59 @@ class V3PhaseReworkTests(unittest.TestCase):
         legacy = f"Predecessor ADC: Issue #71 comment #{comment_id}, SHA-256 `{digest}`  \n"
         self.assertEqual(
             module._optional_historical_adc_predecessor_header(
-                legacy, "historical ADC", len(legacy.encode("utf-8")),
+                legacy, "historical ADC", len(legacy.encode("utf-8")), 123,
             ),
             (comment_id, digest),
         )
         headerless = "Historical ADC has no visible predecessor header.\n"
         self.assertIsNone(module._optional_historical_adc_predecessor_header(
-            headerless, "historical ADC", len(headerless.encode("utf-8")),
+            headerless, "historical ADC", len(headerless.encode("utf-8")), 123,
         ))
         annotated = f"Predecessor ADC: Issue #71 comment #{comment_id}, SHA-256 {digest} (49 bytes)\n"
         with self.assertRaisesRegex(module.PhaseReworkError, "predecessor header is malformed"):
             module._adc_predecessor_header(annotated, "current ADC")
+
+    def test_timestamp_history_reader_compares_annotation_with_predecessor_row_length(self):
+        verified = self._current_timestamp_adc(module.TIMESTAMP_CONTINUATION_AUTH_SCHEMA_V2)
+        authorization, _digest = module.parse_timestamp_continuation_authorization(verified)
+        boundary_id = authorization["history_boundary"]["comment_id"]
+        boundary_sha = authorization["history_boundary"]["sha256"]
+        history_item = authorization["approved_history"][0]
+        historical_id = history_item["comment_id"]
+        historical_sha = history_item["sha256"]
+        predecessor_header = (
+            f"Predecessor ADC: Issue #71 comment #{boundary_id}, SHA-256 {boundary_sha} "
+            "(512 bytes)\n"
+        ).encode("utf-8")
+        historical_body = predecessor_header + b"x" * (history_item["byte_length"] - len(predecessor_header))
+        boundary_body = b"b" * 512
+        boundary = SimpleNamespace(
+            pointer=SimpleNamespace(comment_id=boundary_id, sha256=boundary_sha, state="approved"),
+            contract=SimpleNamespace(
+                byte_length=len(boundary_body), content=boundary_body, sha256=boundary_sha,
+            ),
+        )
+        historical = SimpleNamespace(
+            pointer=SimpleNamespace(comment_id=historical_id, sha256=historical_sha, state="approved"),
+            contract=SimpleNamespace(
+                byte_length=len(historical_body), content=historical_body, sha256=historical_sha,
+            ),
+        )
+        current_predecessor = authorization["current_adc_predecessor"]
+        current = SimpleNamespace(
+            pointer=verified.pointer,
+            contract=SimpleNamespace(
+                sha256=verified.contract.sha256, content=verified.contract.content,
+                byte_length=verified.contract.byte_length, repository=module.REPOSITORY,
+            ),
+        )
+        chain = (boundary, historical, current)
+        with patch.object(module, "verify_adc_forward_generations", return_value=chain), \
+                patch.object(module, "_verified_timestamp_continuation_origin", return_value=None):
+            with self.assertRaisesRegex(module.PhaseReworkError, "immutable V3 origin ADC is absent"):
+                module.verify_issue71_phase_and_user_review_adc_chain(SimpleNamespace(), verified)
+
+        self.assertEqual(current_predecessor["comment_id"], historical_id)
 
     def test_v2_timestamp_marker_rejects_checklist_count_and_path_drift(self):
         mismatch = self._current_timestamp_adc(
