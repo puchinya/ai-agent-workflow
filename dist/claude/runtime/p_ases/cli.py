@@ -19,7 +19,7 @@ from typing import Any
 from .adc import (
     ADCError, adc_forward_generation_session, parse_adc, publish_adc,
     refresh_adc_forward_generation_session, restore_adc, validate_approval_ready_adc,
-    verify_adc, verify_adc_generation,
+    verify_adc,
 )
 from .admin_auth import AdminAuthError, temporary_admin_client
 from .local_execution import (
@@ -180,7 +180,6 @@ from .user_review import (
     write_parent_review_session, write_review_session,
 )
 from .owner_consent import OwnerDecisionError, read_verified_owner_decision
-from .phase_rebaseline import PhaseRebaselineError, rebaseline_issue_phase
 from .user_review_relay import (
     UserReviewDecisionHistory, UserReviewRelayApproval, UserReviewRelayError,
     has_user_review_decision_marker, verify_user_review_decision_history,
@@ -4744,7 +4743,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     issue_commands = issue.add_subparsers(dest="verb", required=True)
     phase_rebaseline = issue_commands.add_parser(
-        "phase-rebaseline", help="apply/recover the approved-ADC-backed Issue #63 phase bootstrap"
+        "phase-rebaseline", help="compatibility alias for generic current-ADC phase restart"
     )
     phase_rebaseline.add_argument("issue", type=_positive_number)
     phase_rebaseline.add_argument("--repo", help="repository owner/name; defaults to origin")
@@ -5558,21 +5557,8 @@ def main(argv: list[str] | None = None) -> int:
                    "byte_length": verified.pointer.byte_length})
             return 0
 
-        if args.verb == "phase-rebaseline":
-            github = GitHub(repository)
-            try:
-                result = rebaseline_issue_phase(github, args.issue)
-                _json(result)
-                return 0
-            except PhaseRebaselineError as exc:
-                if str(exc).startswith("BLOCKED_PERMISSION:"):
-                    _json({"status": "BLOCKED_PERMISSION", "issue": args.issue,
-                           "reasons": [str(exc)]})
-                    return 2
-                return _blocked_result((str(exc),))
-
-        if args.verb == "phase-restart":
-            root = _repo_root(str(args.root)).resolve()
+        if args.verb in {"phase-rebaseline", "phase-restart"}:
+            root = _runtime_root(args)
             try:
                 result = restart_issue_phase(GitHub(repository), root, args.issue)
                 _json(result)

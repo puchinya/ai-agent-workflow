@@ -800,6 +800,19 @@ class PasesCLITests(unittest.TestCase):
         make_github.assert_called_once_with(github.repo)
         emit.assert_called_once_with(expected)
 
+    def test_phase_rebaseline_compatibility_command_uses_generic_restart(self):
+        expected = {"status": "NOOP", "issue": 128, "writes_performed": 0}
+        github = SimpleNamespace(repo="owner/repo")
+        with patch("p_ases.cli._repo_root", return_value=ROOT), \
+                patch("p_ases.cli.discover_repository", return_value=github.repo), \
+                patch("p_ases.cli.GitHub", return_value=github), \
+                patch("p_ases.cli.restart_issue_phase", return_value=expected) as restart, \
+                patch("p_ases.cli._json") as emit:
+            result = main(["issue", "phase-rebaseline", "128", "--repo", github.repo])
+        self.assertEqual(result, 0)
+        restart.assert_called_once_with(github, ROOT.resolve(), 128)
+        emit.assert_called_once_with(expected)
+
     def test_generic_epoch_reset_cli_routes_without_issue_allowlist(self):
         expected = {"status": "NOOP", "issue": 128, "writes_performed": 0}
         github = SimpleNamespace(repo="owner/repo")
