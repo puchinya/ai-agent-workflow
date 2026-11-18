@@ -789,6 +789,29 @@ class ADCPublicationTests(unittest.TestCase):
             newest.assert_called_once_with(1, 1000000)
         self.assertEqual(self.github.issue_comments_calls, 0)
 
+    def test_current_adc_read_has_bounded_latency_independent_of_history_length(self):
+        """Measure CPU work at small/large reported history, and assert API read bounds."""
+        pointer = publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
+        pointer_id = next(iter(self.pointer_record_ids()))
+        current_marker = copy.deepcopy(self.github.comments[pointer_id])
+        samples: list[tuple[int, float]] = []
+        for comment_count in (100, 1_000_000):
+            self.github.issue_data["comments"] = comment_count
+            self.github.issue_comments_calls = 0
+            timings: list[float] = []
+            with patch.object(self.github, "issue_comment_pages_newest", create=True,
+                              return_value=iter(([current_marker],))) as newest:
+                started = time.perf_counter_ns()
+                self.assertEqual(verify_adc(self.github, 1).pointer, pointer)
+                timings.append((time.perf_counter_ns() - started) / 1_000_000)
+                newest.assert_called_once_with(1, comment_count)
+            self.assertEqual(self.github.issue_comments_calls, 0)
+            # The same latest-page fixture is deliberately used for both sizes:
+            # history length must not affect parsing work or historical API calls.
+            samples.append((comment_count, timings[0]))
+        print("ADC current-only synthetic latency (ms): "
+              + ", ".join(f"{count} comments={ms:.3f}" for count, ms in samples))
+
     def test_pointer_example_in_code_fence_does_not_count_as_the_live_pointer(self):
         self.github.issue_data["body"] += (
             "\n```md\n## Agent Development Contract\n"
