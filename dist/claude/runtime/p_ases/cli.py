@@ -3329,118 +3329,81 @@ def _verify_ruleset_noop(github: GitHub, plan: dict[str, Any]) -> dict[str, Any]
 def _solo_owner_identity(github: ReadOnlyGitHub, repository: str, issue_number: int,
                          pr_number: int, expected_head_sha40: str, *,
                          root: Path | None = None) -> tuple[int, int, int]:
-    """Read configured owner, fresh PR author and independent read-only principal."""
+    """Read current solo-owner identity from a generic Issue/PR subject."""
     if type(github) is not ReadOnlyGitHub:
         raise CLIError("User Review verifier must use the dedicated read-only GitHub client")
     try:
         github.verify_read_only_scope()
     except GitHubError as exc:
         raise CLIError("User Review read-only verifier route is not positively verified") from exc
-    if repository.casefold() != "puchinya/ai-agent-workflow" or issue_number not in {63, 71}:
-        raise CLIError("solo_owner identity is not configured for this repository and Issue")
-    if issue_number == 71:
-        if root is None:
-            raise CLIError("Issue #71 solo_owner identity requires the exact repository root")
-        root = Path(root)
-        try:
-            from .phase_rework import (
-                PR_BODY_SHA256,
-                PR_TITLE,
-                verify_issue71_phase_and_user_review_adc_chain,
-            )
-            current_adc = verify_adc(github, 71)
-            authorization, chain = verify_issue71_phase_and_user_review_adc_chain(github, current_adc)
-        except (ADCError, ValueError) as exc:
-            raise CLIError(f"Issue #71 current approved ADC authority is invalid: {exc}") from exc
-        if (not chain or chain[-1].pointer != current_adc.pointer
-                or chain[-1].contract.content != current_adc.contract.content):
-            raise CLIError("Issue #71 User Review authorization is not bound to the verified current ADC chain")
-        profile_path = root / ".agent" / "project.json"
-        if (root.is_symlink() or not root.is_dir() or profile_path.parent.is_symlink()
-                or profile_path.is_symlink()
-                or not profile_path.is_file()):
-            raise CLIError("Issue #71 project profile must be a regular file in the exact repository root")
-        try:
-            profile_sha256 = canonical_project_profile_sha256(profile_path.read_bytes())
-        except ProfileError as exc:
-            raise CLIError(f"Issue #71 project profile bytes are invalid: {exc}") from exc
-        user_review_auth = authorization["issue71_user_review_authorization"]
-        if (profile_sha256 != user_review_auth["project_profile_sha256"]
-                or load_profile(root).final_delivery_review_mode != "solo_owner"):
-            raise CLIError("Issue #71 current project profile differs from the approved solo_owner profile")
-        metadata = github.repository_metadata()
-        owner = metadata.get("owner") if isinstance(metadata, dict) else None
-        full_name = metadata.get("full_name") if isinstance(metadata, dict) else None
-        owner_login = owner.get("login") if isinstance(owner, dict) else None
-        if (not isinstance(metadata, dict) or metadata.get("id") != authorization["repository_id"]
-                or not isinstance(full_name, str) or full_name.casefold() != repository.casefold()
-                or not isinstance(owner, dict) or owner.get("type") != "User"
-                or owner.get("id") != authorization["owner_id"]
-                or not isinstance(owner_login, str) or owner_login.casefold() != "puchinya"):
-            raise CLIError("fresh repository metadata differs from the Issue #71 owner and repository IDs")
-        issue = github.issue(71)
-        issue_labels = [row.get("name") for row in issue.get("labels", []) if isinstance(row, dict)]
-        issue_body = issue.get("body")
-        if (issue.get("number") != 71 or issue.get("id") != 6135294757
-                or issue.get("state") != "open" or issue.get("pull_request") is not None
-                or issue.get("repository_url") != f"https://api.github.com/repos/{repository}"
-                or not isinstance(issue_body, str)
-                or hashlib.sha256(issue_body.encode("utf-8")).hexdigest()
-                != authorization["current_issue_body_sha256"]
-                or len(issue_labels) != len(set(issue_labels))
-                or tuple(sorted(issue_labels)) not in {
-                    tuple(sorted(("enhancement", "kind:single", "phase:verification"))),
-                    tuple(sorted(("enhancement", "kind:single", "phase:user-review"))),
-                }):
-            raise CLIError("fresh Issue #71 identity, body, state, or phase labels differ from the authorized subject")
-        pr = github.pull_request(pr_number)
-        head = pr.get("head") if isinstance(pr, dict) else None
-        base = pr.get("base") if isinstance(pr, dict) else None
-        author = pr.get("user") if isinstance(pr, dict) else None
-        head_repo = head.get("repo") if isinstance(head, dict) else None
-        base_repo = base.get("repo") if isinstance(base, dict) else None
-        pr_body = pr.get("body") if isinstance(pr, dict) else None
-        if (not isinstance(pr, dict) or pr.get("number") != user_review_auth["pr_number"]
-                or pr.get("state") != "open" or pr.get("draft") is not False
-                or pr.get("merged_at") is not None or pr.get("merged") is True
-                or pr.get("title") != PR_TITLE or not isinstance(pr_body, str)
-                or hashlib.sha256(pr_body.encode("utf-8")).hexdigest() != PR_BODY_SHA256
-                or not isinstance(head, dict) or head.get("sha") != expected_head_sha40
-                or head.get("ref") != authorization["branch_ref"]
-                or not isinstance(head_repo, dict) or head_repo.get("id") != authorization["repository_id"]
-                or not isinstance(base, dict) or base.get("ref") != authorization["frozen_base_ref"]
-                or base.get("sha") != authorization["frozen_base_sha40"]
-                or not isinstance(base_repo, dict) or base_repo.get("id") != authorization["repository_id"]
-                or not isinstance(author, dict) or author.get("type") != "User"
-                or author.get("id") != authorization["owner_id"]):
-            raise CLIError("fresh PR #75 author, state, HEAD, base, or repository differs from the approved subject")
-        verifier = github.authenticated_user()
-        verifier_id = verifier.get("id") if isinstance(verifier, dict) else None
-        if type(verifier_id) is not int or verifier_id < 1:
-            raise CLIError("read-only GitHub verifier principal is unavailable")
-        return authorization["owner_id"], author["id"], verifier_id
+    if (type(issue_number) is not int or issue_number < 1
+            or type(pr_number) is not int or pr_number < 1
+            or not isinstance(expected_head_sha40, str)
+            or re.fullmatch(r"[0-9a-f]{40}", expected_head_sha40) is None):
+        raise CLIError("solo_owner Issue, PR or HEAD identity is malformed")
     metadata = github.repository_metadata()
     owner = metadata.get("owner") if isinstance(metadata, dict) else None
-    full_name = metadata.get("full_name") if isinstance(metadata, dict) else None
-    owner_login = owner.get("login") if isinstance(owner, dict) else None
-    if (not isinstance(metadata, dict) or metadata.get("id") != _ISSUE63_REPOSITORY_ID
-            or not isinstance(full_name, str) or full_name.casefold() != repository.casefold()
+    name = metadata.get("full_name") if isinstance(metadata, dict) else None
+    owner_id = owner.get("id") if isinstance(owner, dict) else None
+    if (not isinstance(name, str) or name.casefold() != repository.casefold()
             or not isinstance(owner, dict) or owner.get("type") != "User"
-            or owner.get("id") != _ISSUE63_OWNER_ID or not isinstance(owner_login, str)
-            or owner_login.casefold() != "puchinya"):
-        raise CLIError("fresh repository metadata differs from the configured Issue #63 owner identity")
+            or type(owner_id) is not int or owner_id < 1):
+        raise CLIError("solo_owner requires verified user-owned repository metadata")
     pr = github.pull_request(pr_number)
     head = pr.get("head") if isinstance(pr, dict) else None
     author = pr.get("user") if isinstance(pr, dict) else None
     if (not isinstance(head, dict) or head.get("sha") != expected_head_sha40
             or not isinstance(author, dict) or author.get("type") != "User"
-            or author.get("id") != _ISSUE63_OWNER_ID):
-        raise CLIError("fresh PR author or HEAD differs from the configured solo_owner identity")
+            or author.get("id") != owner_id):
+        raise CLIError("solo_owner requires a current PR HEAD authored by its repository owner")
+    if root is not None:
+        root = Path(root)
+        profile_path = root / ".agent" / "project.json"
+        if (root.is_symlink() or not root.is_dir() or path_has_symlink(profile_path, root=root)
+                or not profile_path.is_file()):
+            raise CLIError("solo_owner project profile must be a regular file in the repository root")
+        try:
+            canonical_project_profile_sha256(profile_path.read_bytes())
+            profile = load_profile(root)
+        except (OSError, ProfileError) as exc:
+            raise CLIError(f"solo_owner project profile is invalid: {exc}") from exc
+        if profile.final_delivery_review_mode != "solo_owner":
+            raise CLIError("solo_owner project profile does not enable solo_owner")
+        try:
+            current_adc = verify_adc(github, issue_number)
+        except (ADCError, GitHubError) as exc:
+            raise CLIError(f"solo_owner current ADC readback failed: {exc}") from exc
+        if current_adc.pointer.state != "approved":
+            raise CLIError("solo_owner requires the current approved ADC")
+        issue = github.issue(issue_number)
+        labels = issue.get("labels") if isinstance(issue, dict) else None
+        names = [row.get("name") for row in labels] if isinstance(labels, list) else []
+        if (not isinstance(issue, dict) or issue.get("number") != issue_number
+                or issue.get("state") != "open" or issue.get("pull_request") is not None
+                or issue.get("repository_url") != f"https://api.github.com/repos/{repository}"
+                or not isinstance(labels, list) or not names
+                or any(not isinstance(item, str) for item in names)
+                or len(names) != len(set(names))
+                or len([item for item in names if item.startswith("kind:")]) != 1
+                or len([item for item in names if item.startswith("phase:")]) != 1
+                or not any(item in {"phase:verification", "phase:user-review"} for item in names)):
+            raise CLIError("solo_owner Issue identity or review phase is invalid")
+        base = pr.get("base") if isinstance(pr, dict) else None
+        head_repo = head.get("repo")
+        base_repo = base.get("repo") if isinstance(base, dict) else None
+        if (pr.get("number") != pr_number or pr.get("state") != "open"
+                or pr.get("draft") is not False or pr.get("merged_at") is not None
+                or pr.get("merged") is True or not isinstance(base, dict)
+                or not isinstance(head_repo, dict) or head_repo.get("id") != metadata.get("id")
+                or not isinstance(base_repo, dict) or base_repo.get("id") != metadata.get("id")):
+            raise CLIError("solo_owner requires the exact current open same-repository PR")
+        if parse_issue_association(pr.get("body"), issue_number) not in {"close", "deferred_close"}:
+            raise CLIError("solo_owner PR does not explicitly associate its Issue")
     verifier = github.authenticated_user()
-    verifier_id = verifier.get("id")
+    verifier_id = verifier.get("id") if isinstance(verifier, dict) else None
     if type(verifier_id) is not int or verifier_id < 1:
         raise CLIError("read-only GitHub verifier principal is unavailable")
-    return _ISSUE63_OWNER_ID, author["id"], verifier_id
+    return owner_id, author["id"], verifier_id
 
 
 def _read_user_review_relay_approval(
