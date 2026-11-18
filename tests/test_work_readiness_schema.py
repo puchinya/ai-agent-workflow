@@ -225,7 +225,7 @@ class WorkReadinessSchemaTests(unittest.TestCase):
             legacy_path = execution_binding_path(root, 71)
             legacy_path.parent.mkdir(parents=True, exist_ok=True)
             legacy_path.write_text("reconstructed binding", encoding="utf-8")
-            with self.assertRaisesRegex(CLIError, "must not have a reconstructed V1 Binding"):
+            with self.assertRaisesRegex(CLIError, "must not coexist with an ordinary V1 ExecutionBinding"):
                 _identity_evidence_paths(root, 71, epoch)
 
     def test_adopted_epoch_uses_current_prbinding_adc_without_mutating_origin(self):
