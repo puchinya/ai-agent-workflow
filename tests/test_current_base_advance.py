@@ -16,6 +16,8 @@ sys.path.insert(0, str(ROOT / "runtime"))
 from p_ases.work import bind_work
 from p_ases.git import commit_parents_sha40, head_sha40, run_git
 from p_ases.work import WorkError, ensure_pull_request, read_pr_binding_history
+from p_ases.checkpoint import PRBinding
+from p_ases.current_base import CurrentBaseError, _verify_target_pr
 
 
 ISSUE = 30
@@ -89,6 +91,26 @@ class FakeGitHub:
 
 
 class CurrentBaseAdvanceTests(unittest.TestCase):
+    def test_target_pr_validation_uses_binding_and_association_not_issue_allowlists(self):
+        base = "a" * 40
+        for issue, number, verb in ((63, 999, "Closes"), (128, 64, "Refs")):
+            binding = PRBinding(
+                REPOSITORY, issue, 123, "c" * 64, base, "pases/work",
+                number, "b" * 40,
+            ).validate()
+            pr = {
+                "number": number, "state": "open", "draft": False,
+                "body": f"Implementation.\\n\\n{verb} #{issue}\\n",
+                "base": {"ref": "main", "sha": base, "repo": {"full_name": REPOSITORY}},
+                "head": {"ref": "pases/work", "sha": "b" * 40,
+                         "repo": {"full_name": REPOSITORY}},
+            }
+            _verify_target_pr(REPOSITORY, issue, binding, pr, base, "main")
+            with self.assertRaises(CurrentBaseError):
+                _verify_target_pr(REPOSITORY, issue, binding,
+                                  {**pr, "body": f"Closes #{issue + 1}"},
+                                  base, "main")
+
     def _setup_repo(self, temporary: str):
         root = Path(temporary)
         repo, remote = root / "repo", root / "remote.git"
