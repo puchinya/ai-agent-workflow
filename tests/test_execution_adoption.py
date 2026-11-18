@@ -259,19 +259,19 @@ class ExecutionAdoptionTests(unittest.TestCase):
     def test_current_approved_successor_requires_current_applied_without_adc_history(self):
         epoch = _epoch()
         current = SimpleNamespace(pointer=SimpleNamespace(
-            comment_id=70000, sha256="9" * 64, state="approved",
+            comment_id=7000000000, sha256="9" * 64, state="approved",
         ))
         with patch("p_ases.execution_adoption.verify_adc", return_value=current), \
                 patch("p_ases.execution_adoption._current_rebaseline_applied", return_value=False) as applied:
             with self.assertRaisesRegex(ExecutionAdoptionError, "ADC_REFRESH_PENDING_PHASE_REBASELINE"):
                 _verify_adopted_effective_adc(
-                    FakeGitHub(), epoch, expected_adc_comment_id=70000, expected_adc_sha256="9" * 64,
+                    FakeGitHub(), epoch, expected_adc_comment_id=7000000000, expected_adc_sha256="9" * 64,
                 )
             applied.assert_called_once()
         with patch("p_ases.execution_adoption.verify_adc", return_value=current), \
                 patch("p_ases.execution_adoption._current_rebaseline_applied", return_value=True) as applied:
             effective, refreshed = _verify_adopted_effective_adc(
-                FakeGitHub(), epoch, expected_adc_comment_id=70000, expected_adc_sha256="9" * 64,
+                FakeGitHub(), epoch, expected_adc_comment_id=7000000000, expected_adc_sha256="9" * 64,
             )
             self.assertIs(effective, current)
             self.assertTrue(refreshed)
