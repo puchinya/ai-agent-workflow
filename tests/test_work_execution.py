@@ -182,7 +182,7 @@ class WorkExecutionTests(unittest.TestCase):
         github = FakeGitHub()
         pull = {"number": 75, "title": "Issue #71", "body": "Closes #71"}
         patches = (
-            patch.object(work_module, "read_active_epoch", return_value=epoch),
+            patch("p_ases.current_epoch.read_current_epoch", return_value=epoch),
             patch.object(work_module, "is_issue71_execution_epoch", return_value=True),
             patch.object(work_module, "worktree_clean", return_value=True),
             patch.object(work_module, "current_branch", return_value=branch),
