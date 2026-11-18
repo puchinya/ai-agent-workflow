@@ -191,7 +191,7 @@ class GenericPhaseReworkTests(unittest.TestCase):
                 self._run(root, github, adc)
             self.assertEqual((github.post_count, github.label_writes), (1, 1))
             github.fail_label = False
-            with self.assertRaises(epoch.EpochLifecycleError):
+            with self.assertRaisesRegex(phase.PhaseReworkLifecycleError, "already attempted"):
                 self._run(root, github, adc)
             self.assertEqual((github.post_count, github.label_writes), (1, 1))
 
