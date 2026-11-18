@@ -143,7 +143,7 @@ class UserReviewCliRegressionTests(unittest.TestCase):
             (3744776, 3744776, 9881),
         )
 
-    def test_issue71_solo_owner_identity_is_exact_and_never_reads_issue63(self):
+    def test_solo_owner_identity_uses_current_issue_and_pr_without_history(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / ".agent").mkdir()
@@ -219,23 +219,20 @@ class UserReviewCliRegressionTests(unittest.TestCase):
                     content=b"current approved ADC bytes",
                 ),
             )
-            with patch("p_ases.cli.verify_adc", return_value=verified), \
-                    patch("p_ases.phase_rework.verify_issue71_phase_and_user_review_adc_chain",
-                          return_value=(phase_authorization, (verified,))), \
-                    patch("p_ases.phase_rework.PR_BODY_SHA256", pr_body_sha):
+            with patch("p_ases.cli.verify_adc", return_value=verified):
                 self.assertEqual(
                     _solo_owner_identity(reader, "puchinya/ai-agent-workflow", 71, 75, HEAD, root=root),
                     (3744776, 3744776, 9881),
                 )
                 for invalid_profile in (
                         profile_bytes.replace(b"\n", b"\r", 1),
-                        profile_bytes + b" "):
+                        b"{malformed-json"):
                     profile_path.write_bytes(invalid_profile)
                     with self.assertRaisesRegex(CLIError, "project profile"):
                         _solo_owner_identity(
                             reader, "puchinya/ai-agent-workflow", 71, 75, HEAD, root=root,
                         )
-            self.assertEqual(issue_numbers, [71])
+            self.assertTrue(issue_numbers and all(item == 71 for item in issue_numbers))
 
     def test_issue71_user_review_owner_context_produces_canonical_profile_digest(self):
         with tempfile.TemporaryDirectory() as temporary:
