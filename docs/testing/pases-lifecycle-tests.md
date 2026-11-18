@@ -1124,4 +1124,3 @@ Current ADC sharing requires the exact same client, Issue, repository and pointe
 #### 2.75.1 ORA-F01-111 Expected result
 
 A state-changing operation requires current ADC/subject validation at its write boundary and direct immutable operation record readback. Stale, ambiguous, incomplete or conflicting evidence fails without another write. Historic ADC bodies are not verified as a prerequisite.
-

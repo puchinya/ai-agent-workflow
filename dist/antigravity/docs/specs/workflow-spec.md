@@ -1139,4 +1139,3 @@ The current approved ADC's marker is parsed by its declared schema, not by a har
 ### 9.117 REQ-F01-179 Share history validation across nested lifecycle readers
 
 Active issue advancement, Phase evidence, current epoch, phase rework, PRBinding, owner authorization and delivery paths MUST use current-only ADC validation. They MUST NOT call historical ADC generation or forward-chain verification as a fallback or require historical commit ancestry. Directly referenced operation Intent, Applied, receipt, feedback and one-shot journal evidence retain exact readback and anti-replay semantics. No old ADC or prior owner decision is silently promoted to a current approval.
-
