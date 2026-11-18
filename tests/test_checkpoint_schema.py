@@ -82,7 +82,7 @@ class CheckpointSchemaTests(unittest.TestCase):
             with self.assertRaises(CheckpointError):
                 write_checkpoint(path, self.checkpoint())
 
-    def test_issue71_prbinding_v4_and_checkpoint_v3_round_trip_exact_epoch_digest(self):
+    def test_generic_prbinding_v4_and_checkpoint_v3_round_trip_exact_epoch_digest(self):
         epoch_sha = "e" * 64
         binding = PRBinding(
             repository="puchinya/ai-agent-workflow", issue_number=71, adc_comment_id=6874553609,
@@ -107,8 +107,11 @@ class CheckpointSchemaTests(unittest.TestCase):
             self.assertEqual(read_checkpoint(checkpoint_file), checkpoint)
             self.assertIn(b'"schema":"PASES_PR_BINDING_V4"', pr_path.read_bytes())
             self.assertIn(b'"schema":"PASES_WORK_CHECKPOINT_V3"', checkpoint_file.read_bytes())
+        self.assertEqual(replace(binding, repository="another/project", issue_number=30,
+                                 pr_number=42).validate().issue_number, 30)
+        self.assertEqual(replace(self.binding(), adoption_id="f" * 64).validate().issue_number, 30)
         with self.assertRaises(CheckpointError):
-            replace(binding, issue_number=63).validate()
+            replace(binding, adoption_id="f" * 64).validate()
         with self.assertRaises(CheckpointError):
             replace(binding, current_base_sha40="d" * 40, current_base_advance_sha256="f" * 64).validate()
         with self.assertRaises(CheckpointError):
