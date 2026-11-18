@@ -189,9 +189,14 @@ class EpochIdentityTests(unittest.TestCase):
         verified = SimpleNamespace(pointer=SimpleNamespace(comment_id=6881591677),
                                    contract=SimpleNamespace(sha256=module.CURRENT_ADC_SHA256))
         with tempfile.TemporaryDirectory() as temporary, \
-             patch.object(module, "read_active_epoch", return_value=epoch), \
+             patch("p_ases.current_epoch.read_current_epoch", return_value=epoch), \
              patch.object(phase_evidence, "is_ancestor", return_value=True):
             root = Path(temporary)
+            from p_ases.current_epoch import epoch_paths as generic_epoch_paths
+            epoch_file, attachment_file = generic_epoch_paths(root, 71)
+            epoch_file.parent.mkdir(parents=True)
+            epoch_file.write_text("{}")
+            attachment_file.write_text("{}")
             self.assertFalse((root / ".p_ases" / "state" / "71" / "execution-binding.json").exists())
             phase_evidence._verify_frozen_binding(
                 fake_github, root, 71, verified, module.BRANCH_REF, module.BASE_SHA40,
@@ -203,9 +208,15 @@ class EpochIdentityTests(unittest.TestCase):
         verified = SimpleNamespace(pointer=SimpleNamespace(comment_id=6881591677),
                                    contract=SimpleNamespace(sha256=module.CURRENT_ADC_SHA256))
         with tempfile.TemporaryDirectory() as temporary, \
-             patch.object(module, "read_active_epoch", return_value=epoch):
+             patch("p_ases.current_epoch.read_current_epoch", return_value=epoch):
+            root = Path(temporary)
+            from p_ases.current_epoch import epoch_paths as generic_epoch_paths
+            epoch_file, attachment_file = generic_epoch_paths(root, 71)
+            epoch_file.parent.mkdir(parents=True)
+            epoch_file.write_text("{}")
+            attachment_file.write_text("{}")
             generation = phase_restart.current_phase_generation(
-                fake_github, Path(temporary), 71, verified,
+                fake_github, root, 71, verified,
             )
         self.assertEqual(generation.comment_id, epoch.applied_comment_id)
         self.assertEqual(generation.sha256, epoch.applied_body_sha256)
