@@ -800,38 +800,38 @@ class PasesCLITests(unittest.TestCase):
         make_github.assert_called_once_with(github.repo)
         emit.assert_called_once_with(expected)
 
-    def test_issue71_phase_rework_cli_dispatches_to_dedicated_route(self):
-        expected = {"status": "NOOP", "issue": 71, "label_write_count": 0}
-        class NoWriteGitHub:
-            repo = "puchinya/ai-agent-workflow"
+    def test_generic_epoch_reset_cli_routes_without_issue_allowlist(self):
+        expected = {"status": "NOOP", "issue": 128, "writes_performed": 0}
+        github = SimpleNamespace(repo="owner/repo")
+        for verb in ("epoch-reset", "phase-epoch-rebaseline"):
+            with self.subTest(verb=verb), \
+                    patch("p_ases.cli._repo_root", return_value=ROOT), \
+                    patch("p_ases.cli.discover_repository", return_value=github.repo), \
+                    patch("p_ases.cli.GitHub", return_value=github), \
+                    patch("p_ases.cli.reset_execution_epoch", return_value=expected) as reset, \
+                    patch("p_ases.cli._json") as emit:
+                status = main([
+                    "issue", verb, "128", "--repo", github.repo, "--root", str(ROOT),
+                ])
+                self.assertEqual(status, 0)
+                reset.assert_called_once_with(github, ROOT.resolve(), 128)
+                emit.assert_called_once_with(expected)
 
-            def __init__(self):
-                self.write_calls = []
-
-            def __getattr__(self, name):
-                if any(token in name.casefold() for token in ("create", "post", "label", "update")):
-                    def record(*_args, **_kwargs):
-                        self.write_calls.append(name)
-                    return record
-                raise AttributeError(name)
-
-        github = NoWriteGitHub()
+    def test_phase_rework_cli_dispatches_to_generic_current_adc_route(self):
+        expected = {"status": "NOOP", "issue": 128, "writes_performed": 0}
+        github = SimpleNamespace(repo="owner/repo")
         with patch("p_ases.cli._repo_root", return_value=ROOT), \
                 patch("p_ases.cli.discover_repository", return_value=github.repo), \
                 patch("p_ases.cli.GitHub", return_value=github) as make_github, \
-                patch("p_ases.cli.apply_issue71_phase_rework", return_value=expected) as rework, \
+                patch("p_ases.cli.apply_phase_rework", return_value=expected) as rework, \
                 patch("p_ases.cli._json") as emit:
             status = main([
-                "issue", "phase-rework", "71", "--repo", github.repo, "--root", str(ROOT),
+                "issue", "phase-rework", "128", "--repo", github.repo, "--root", str(ROOT),
             ])
         self.assertEqual(status, 0)
-        rework.assert_called_once()
-        args, kwargs = rework.call_args
-        self.assertEqual(args, (github, ROOT.resolve(), 71))
-        self.assertIsNone(kwargs["readiness_factory"])
+        rework.assert_called_once_with(github, ROOT.resolve(), 128, readiness_factory=None)
         make_github.assert_called_once_with(github.repo)
         emit.assert_called_once_with(expected)
-        self.assertEqual(github.write_calls, [])
 
     def test_phase_refresh_ready_cli_is_generic_and_reports_current_receipt(self):
         args = _parser().parse_args([

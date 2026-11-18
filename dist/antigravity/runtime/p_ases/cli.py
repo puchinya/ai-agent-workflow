@@ -112,13 +112,11 @@ from .phase_evidence import (
     verify_phase_evidence,
 )
 from .phase_restart import PhaseRestartError, restart_issue_phase
-from .phase_epoch_rebaseline import (
-    PhaseEpochRebaselineError, apply_phase_epoch_rebaseline,
-)
+from .epoch_lifecycle import EpochLifecycleError, reset_execution_epoch
 from .current_epoch import (
     CurrentEpochError, epoch_paths as current_epoch_paths, read_current_epoch,
 )
-from .phase_rework import PhaseReworkError, apply_issue71_phase_rework
+from .phase_rework_lifecycle import PhaseReworkLifecycleError, apply_phase_rework
 from .oracle_trace import (
     OracleDefinition, OracleTraceError, TestDefinition, validate_plan_oracles,
     validate_plan_tests,
@@ -4758,19 +4756,20 @@ def _parser() -> argparse.ArgumentParser:
     phase_restart.add_argument("--root", type=Path, required=True,
                                 help="bound Issue worktree containing its current ExecutionBinding history")
     phase_epoch_rebaseline = issue_commands.add_parser(
-        "phase-epoch-rebaseline", help="apply/recover the one ADC-authorized Issue #71 epoch-3 rebaseline"
+        "phase-epoch-rebaseline", aliases=["epoch-reset"],
+        help="apply/recover a current-ADC-authorized execution epoch reset"
     )
     phase_epoch_rebaseline.add_argument("issue", type=_positive_number)
     phase_epoch_rebaseline.add_argument("--repo", help="repository owner/name; defaults to origin")
     phase_epoch_rebaseline.add_argument("--root", type=Path, required=True,
-                                        help="the exact authorized Issue #71 epoch-3 worktree")
+                                        help="the exact authorized Issue worktree")
     phase_rework = issue_commands.add_parser(
-        "phase-rework", help="apply/recover the one ADC-authorized Issue #71 verification rework"
+        "phase-rework", help="apply/recover a current-ADC-authorized verification rework"
     )
     phase_rework.add_argument("issue", type=_positive_number)
     phase_rework.add_argument("--repo", help="repository owner/name; defaults to origin")
     phase_rework.add_argument("--root", type=Path, required=True,
-                              help="the exact authorized Issue #71 epoch-3 worktree")
+                              help="the exact authorized Issue worktree")
     phase_rework.add_argument("--plan", type=Path,
                               help="fresh current-subject Verification Plan input")
     phase_rework.add_argument("--verification", type=Path,
@@ -5581,13 +5580,13 @@ def main(argv: list[str] | None = None) -> int:
             except PhaseRestartError as exc:
                 return _blocked_result((str(exc),))
 
-        if args.verb == "phase-epoch-rebaseline":
+        if args.verb in {"phase-epoch-rebaseline", "epoch-reset"}:
             root = _repo_root(str(args.root)).resolve()
             try:
-                result = apply_phase_epoch_rebaseline(GitHub(repository), root, args.issue)
+                result = reset_execution_epoch(GitHub(repository), root, args.issue)
                 _json(result)
                 return 0
-            except PhaseEpochRebaselineError as exc:
+            except EpochLifecycleError as exc:
                 return _blocked_result((str(exc),))
 
         if args.verb == "phase-rework":
@@ -5629,14 +5628,14 @@ def main(argv: list[str] | None = None) -> int:
                 return result
 
             try:
-                result = apply_issue71_phase_rework(
+                result = apply_phase_rework(
                     github, root, args.issue,
                     readiness_factory=(readiness_factory
                                        if all(path is not None for path in input_paths) else None),
                 )
                 _json(result)
                 return 0
-            except (PhaseReworkError, CLIError, ADCError, GitError, GitHubError, OSError, ValueError) as exc:
+            except (PhaseReworkLifecycleError, CLIError, ADCError, GitError, GitHubError, OSError, ValueError) as exc:
                 return _blocked_result((str(exc),))
 
         if args.verb == "phase-evidence":
