@@ -484,58 +484,15 @@ def _latest_pointer_record(
     issue_body: str,
     comments: Sequence[dict[str, Any]] | None = None,
 ) -> tuple[ADCPointer | None, str | None, int | None]:
-    """Read the append-only pointer journal; fall back to the legacy Issue-body pointer."""
-    try:
-        records: list[tuple[int, str, str, ADCPointer]] = []
-        operation_records: dict[str, tuple[str, str, ADCPointer, int]] = {}
-        listed_comments = github.issue_comments(issue_number) if comments is None else comments
-        for listed in listed_comments:
-            body = listed.get("body") if isinstance(listed, dict) else None
-            if not isinstance(body, str) or not body.startswith(POINTER_RECORD_SENTINEL):
-                continue
-            comment_id = listed.get("id")
-            if type(comment_id) is not int or comment_id < 1:
-                raise ADCError("ADC pointer record has an invalid Comment ID")
-            _check_comment(listed, github.repo, issue_number, comment_id)
-            match = _parse_pointer_record_body(body, github.repo, issue_number)
-            if match is None:
-                raise ADCError("malformed ADC pointer record; refusing to select a pointer")
-            (operation_id, predecessor_id, adc_comment_id_text, digest, byte_length_text, state) = match.groups()
-            adc_comment_id = int(adc_comment_id_text)
-            byte_length = int(byte_length_text)
-            computed_id = _publication_operation_id(
-                github.repo, issue_number, predecessor_id, digest, byte_length, state,
-            )
-            if operation_id != computed_id or adc_comment_id >= comment_id:
-                raise ADCError("ADC pointer record identity or comment order is invalid")
-            pointer = ADCPointer(adc_comment_id, digest, byte_length, state)
-            prior = operation_records.get(operation_id)
-            if prior is not None and prior[:3] != (body, predecessor_id, pointer):
-                    raise ADCError("ADC pointer records conflict for one publication operation")
-            if prior is None or comment_id > prior[3]:
-                operation_records[operation_id] = (body, predecessor_id, pointer, comment_id)
-        for operation_id, (_body, predecessor_id, pointer, record_id) in operation_records.items():
-            records.append((record_id, operation_id, predecessor_id, pointer))
-        if records:
-            ordered = sorted(records)
-            legacy_pointer = parse_pointer(issue_body)
-            expected_first_predecessor = (
-                "none" if legacy_pointer is None else str(legacy_pointer.comment_id)
-            )
-            if ordered[0][2] != expected_first_predecessor:
-                raise ADCError(
-                    "first ADC pointer journal record does not continue the Issue body pointer"
-                )
-            for previous, current in zip(ordered, ordered[1:]):
-                if current[2] != str(previous[3].comment_id):
-                    raise ADCError(
-                        "ADC pointer journal contains concurrent publications from the same predecessor"
-                    )
-            record_id, operation_id, _predecessor_id, pointer = ordered[-1]
-            return pointer, operation_id, record_id
-    except GitHubError as exc:
-        raise ADCError(str(exc)) from exc
-    return parse_pointer(issue_body), None, None
+    """Read only the current ADC pointer; never validate superseded generations."""
+    if comments is not None:
+        return _latest_current_adc_pointer(
+            github, issue_number, {"body": issue_body}, pages=(comments,),
+        )
+    issue = _check_issue(github.issue(issue_number), github.repo, issue_number)
+    if issue.get("body") != issue_body:
+        raise ADCError("Issue body changed during current ADC pointer selection")
+    return _latest_current_adc_pointer(github, issue_number, issue)
 
 
 def _pointer_record_body(
@@ -855,6 +812,7 @@ def publish_adc(
 
 def _latest_current_adc_pointer(
     github: GitHub, issue_number: int, issue: dict[str, Any],
+    *, pages: Sequence[Sequence[dict[str, Any]]] | None = None,
 ) -> tuple[ADCPointer | None, str | None, int | None]:
     """Select the newest pointer, without validating superseded ADC generations.
 
@@ -862,13 +820,14 @@ def _latest_current_adc_pointer(
     preceding marker to detect competing writes from the same predecessor.
     This reader never dereferences an old ADC body or traverses the full chain.
     """
-    count = issue.get("comments")
-    recent_reader = getattr(github, "issue_comment_pages_newest", None)
-    if callable(recent_reader) and type(count) is int and count >= 0:
-        pages = recent_reader(issue_number, count)
-    else:
-        # Test doubles and legacy transports supply a complete local snapshot.
-        pages = (github.issue_comments(issue_number),)
+    if pages is None:
+        count = issue.get("comments")
+        recent_reader = getattr(github, "issue_comment_pages_newest", None)
+        if callable(recent_reader) and type(count) is int and count >= 0:
+            pages = recent_reader(issue_number, count)
+        else:
+            # Legacy transports and test doubles supply their own local snapshot.
+            pages = (github.issue_comments(issue_number),)
 
     selected: list[tuple[int, str, str, ADCPointer]] = []
     for page in pages:
