@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .adc import ADCError, verify_adc, verify_adc_forward_generations
+from .adc import ADCError, verify_adc
 from .checkpoint import (
     CheckpointError, PRBinding, WorkCheckpoint, checkpoint_path, read_checkpoint,
     read_pr_binding, write_checkpoint, write_pr_binding,
@@ -74,20 +74,20 @@ def _positive(value: Any) -> bool:
 
 
 def adoption_path(root: Path, issue_number: int = ISSUE_NUMBER) -> Path:
-    if issue_number != ISSUE_NUMBER:
-        raise ExecutionAdoptionError("adoption is restricted to Issue #63")
+    if not _positive(issue_number):
+        raise ExecutionAdoptionError("adoption Issue number must be positive")
     return Path(root) / ".p_ases" / "state" / str(issue_number) / "execution-adoption.json"
 
 
 def attachment_path(root: Path, issue_number: int = ISSUE_NUMBER) -> Path:
-    if issue_number != ISSUE_NUMBER:
-        raise ExecutionAdoptionError("workspace adoption is restricted to Issue #63")
+    if not _positive(issue_number):
+        raise ExecutionAdoptionError("workspace attachment Issue number must be positive")
     return Path(root) / ".p_ases" / "state" / str(issue_number) / "workspace-attachment.json"
 
 
 def adoption_plan_path(root: Path, issue_number: int = ISSUE_NUMBER) -> Path:
-    if issue_number != ISSUE_NUMBER:
-        raise ExecutionAdoptionError("adoption plan storage is restricted to Issue #63")
+    if not _positive(issue_number):
+        raise ExecutionAdoptionError("adoption plan Issue number must be positive")
     return Path(root) / ".p_ases" / "state" / str(issue_number) / "execution-adoption-plan.json"
 
 
@@ -1195,42 +1195,26 @@ def append_adopted_pr_binding(github: Any, root: Path, *,
 def _verify_adopted_effective_adc(github: Any, epoch: AdoptedExecutionEpoch, *,
                                   expected_adc_comment_id: int,
                                   expected_adc_sha256: str) -> tuple[Any, bool]:
-    """Verify the current pointer as an approved forward continuation of the immutable origin."""
+    """Select the current approved ADC without fetching any superseded ADC.
+
+    An older epoch remains provenance only. The current ADC is the sole source
+    of authorization, and each consuming write must be validated against it.
+    """
     try:
-        current = verify_adc(github, ISSUE_NUMBER)
-        if (current.pointer.comment_id != expected_adc_comment_id
-                or current.pointer.sha256 != expected_adc_sha256
-                or current.pointer.state != "approved"):
-            raise ExecutionAdoptionError("adopted execution does not match the current approved ADC pointer")
-        if (current.pointer.comment_id, current.pointer.sha256) == (epoch.adc_comment_id, epoch.adc_sha256):
-            return current, False
-        forward = verify_adc_forward_generations(
-            github, ISSUE_NUMBER, prior_comment_id=epoch.adc_comment_id,
-            prior_sha256=epoch.adc_sha256, current_comment_id=current.pointer.comment_id,
-            current_sha256=current.pointer.sha256,
-        )
-        if (len(forward) < 2 or forward[0].pointer.comment_id != epoch.adc_comment_id
-                or forward[0].pointer.sha256 != epoch.adc_sha256
-                or forward[-1].pointer != current.pointer):
-            raise ExecutionAdoptionError("current ADC is not a complete forward successor of the adopted epoch ADC")
-        generations = _approved_generations(github)
-        if (not generations or generations[-1].pointer != current.pointer
-                or not any(item.pointer.comment_id == epoch.adc_comment_id
-                           and item.pointer.sha256 == epoch.adc_sha256 for item in generations)):
-            raise ExecutionAdoptionError("current ADC is outside the verified #63 approved generation chain")
-        records = _read_history(github)
-        _v1_intent, _v1_applied, pairs = _validate_generation_history(records, generations)
-        generation_index = len(generations) - 1
-        current_pair = pairs.get(generation_index)
-        if current_pair is None or current_pair[1] is None:
-            raise ExecutionAdoptionError(
-                "ADC_REFRESH_PENDING_PHASE_REBASELINE: current ADC generation has no completed V2 Intent/Applied pair"
-            )
-        return current, True
+        current = verify_adc(github, epoch.issue_number)
     except ADCError as exc:
-        raise ExecutionAdoptionError(f"adopted current ADC forward-chain verification failed: {exc}") from exc
-    except PhaseRebaselineError as exc:
-        raise ExecutionAdoptionError(f"current ADC Phase generation is invalid: {exc}") from exc
+        raise ExecutionAdoptionError(f"current approved ADC verification failed: {exc}") from exc
+    if (current.pointer.comment_id != expected_adc_comment_id
+            or current.pointer.sha256 != expected_adc_sha256
+            or current.pointer.state != "approved"):
+        raise ExecutionAdoptionError("adopted execution does not match the current approved ADC pointer")
+    if current.pointer.comment_id == epoch.adc_comment_id:
+        if current.pointer.sha256 != epoch.adc_sha256:
+            raise ExecutionAdoptionError("current ADC identity conflicts with adopted origin")
+        return current, False
+    if current.pointer.comment_id < epoch.adc_comment_id:
+        raise ExecutionAdoptionError("current ADC predates the immutable adopted origin")
+    return current, True
 
 
 def verify_adopted_execution(
@@ -1370,19 +1354,8 @@ def verify_adopted_execution(
     if not binding_adc_matches:
         if not has_adc_successor:
             raise ExecutionAdoptionError("latest PRBinding ADC differs from the adopted epoch ADC")
-        try:
-            binding_to_current = verify_adc_forward_generations(
-                github, ISSUE_NUMBER,
-                prior_comment_id=latest_pr_binding.adc_comment_id,
-                prior_sha256=latest_pr_binding.adc_sha256,
-                current_comment_id=current_adc.pointer.comment_id,
-                current_sha256=current_adc.pointer.sha256,
-            )
-        except ADCError as exc:
-            raise ExecutionAdoptionError(f"latest PRBinding is not an ancestor of the effective ADC: {exc}") from exc
-        if (not binding_to_current or binding_to_current[0].pointer.comment_id != latest_pr_binding.adc_comment_id
-                or binding_to_current[-1].pointer != current_adc.pointer):
-            raise ExecutionAdoptionError("latest PRBinding ADC is not in the effective forward generation chain")
+        if latest_pr_binding.adc_comment_id >= current_adc.pointer.comment_id:
+            raise ExecutionAdoptionError("latest PRBinding ADC does not precede the current approved ADC")
         if not allow_adc_refresh_pending:
             raise ExecutionAdoptionError("ADC_REFRESH_REQUIRED: current approved ADC has not been bridged by PRBinding")
     head_binding_matches = latest_pr_binding.pr_head_sha40 == current_head
