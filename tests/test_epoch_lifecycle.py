@@ -165,7 +165,7 @@ class EpochLifecycleTests(unittest.TestCase):
                 self._run(root, github, adc)
             self.assertEqual((github.post_count, github.label_writes), (1, 1))
             github.fail_label = False
-            with self.assertRaisesRegex(module.EpochLifecycleError, "already attempted"):
+            with self.assertRaisesRegex(module.EpochLifecycleError, "remote epoch reset journal already exists"):
                 self._run(root, github, adc)
             self.assertEqual((github.post_count, github.label_writes), (1, 1))
 

@@ -195,7 +195,7 @@ class GenericPhaseReworkTests(unittest.TestCase):
                 self._run(root, github, adc)
             self.assertEqual((github.post_count, github.label_writes), (1, 1))
             github.fail_label = False
-            with self.assertRaisesRegex(phase.PhaseReworkLifecycleError, "already attempted"):
+            with self.assertRaisesRegex(phase.PhaseReworkLifecycleError, "remote Phase rework journal already exists"):
                 self._run(root, github, adc)
             self.assertEqual((github.post_count, github.label_writes), (1, 1))
 
