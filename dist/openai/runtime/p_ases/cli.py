@@ -2880,7 +2880,7 @@ def execute_current_chat_confirmed_adoption(
 
 def _publish_owner_approved_adc(args: argparse.Namespace, repository: str, github: GitHub,
                                 plan: dict[str, Any], decision: dict[str, Any]) -> dict[str, Any]:
-    """Dispatch exact local ADC approval through the existing ADC and phase writers."""
+    """Publish an exact owner-approved ADC without implicit Phase mutations."""
     if args.subject_file is None or args.subject_file.is_symlink() or not args.subject_file.is_file():
         raise OwnerAuthorizationError("ADC_SUPERSEDE commit requires the same regular --subject-file")
     if repository.casefold() != "puchinya/ai-agent-workflow":
@@ -2926,21 +2926,11 @@ def _publish_owner_approved_adc(args: argparse.Namespace, repository: str, githu
             raise ADCError("approved successor ADC did not pass exact pointer and byte readback")
     except ADCError as exc:
         raise OwnerAuthorizationError(f"approved successor ADC publication failed: {exc}") from exc
-    try:
-        phase_result = rebaseline_issue_phase(github, 63)
-    except PhaseRebaselineError as exc:
-        status = ("BLOCKED_PERMISSION" if str(exc).startswith("BLOCKED_PERMISSION:")
-                  else "ADC_PUBLISHED_PHASE_BLOCKED")
-        return {"status": status, "operation": "ADC_SUPERSEDE",
-                "owner_decision_comment_id": verified_decision.comment_id,
-                "adc_comment_id": published.pointer.comment_id,
-                "adc_sha256": published.pointer.sha256,
-                "reasons": [str(exc)]}
     return {"status": "PUBLISHED", "operation": "ADC_SUPERSEDE",
             "owner_decision_comment_id": verified_decision.comment_id,
             "adc_comment_id": published.pointer.comment_id,
             "adc_sha256": published.pointer.sha256,
-            "state": published.pointer.state, "phase_rebaseline": phase_result}
+            "state": published.pointer.state}
 
 
 def _merge_attempt_path(root: Path, plan_sha256: str) -> Path:
@@ -5539,21 +5529,9 @@ def main(argv: list[str] | None = None) -> int:
                                       explicitly_approved=(args.state == "approved"),
                                       supersede=args.supersede,
                                       expected_current=expected_current)
-                phase_result = None
-                if issue63_target and pointer.state == "approved":
-                    try:
-                        phase_result = rebaseline_issue_phase(github, args.issue)
-                    except PhaseRebaselineError as exc:
-                        status = ("BLOCKED_PERMISSION" if str(exc).startswith("BLOCKED_PERMISSION:")
-                                  else "ADC_PUBLISHED_PHASE_BLOCKED")
-                        _json({"status": status, "issue": args.issue,
-                               "comment_id": pointer.comment_id, "adc_sha256": pointer.sha256,
-                               "byte_length": pointer.byte_length, "state": pointer.state,
-                               "reasons": [str(exc)]})
-                        return 2
                 _json({"status": "PUBLISHED", "issue": args.issue, "comment_id": pointer.comment_id,
                        "adc_sha256": pointer.sha256, "byte_length": pointer.byte_length,
-                       "state": pointer.state, "phase_rebaseline": phase_result})
+                       "state": pointer.state})
                 return 0
             if args.verb == "verify":
                 verified = verify_adc(github, args.issue)

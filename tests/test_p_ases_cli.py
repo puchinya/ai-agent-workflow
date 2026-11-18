@@ -862,7 +862,7 @@ class PasesCLITests(unittest.TestCase):
         })
         refresh.assert_called_once()
 
-    def test_issue_63_approved_adc_publish_requires_exact_supersede_and_runs_phase_bootstrap(self):
+    def test_approved_adc_publish_does_not_implicitly_transition_phase(self):
         pointer = SimpleNamespace(comment_id=6228771810, sha256="a" * 64,
                                   byte_length=7, state="approved")
         predecessor = SimpleNamespace(comment_id=6228771805, sha256="b" * 64,
@@ -875,7 +875,8 @@ class PasesCLITests(unittest.TestCase):
                 patch("p_ases.cli.read_verified_owner_decision", return_value=decision) as read_decision, \
                 patch("p_ases.cli.verify_adc", return_value=SimpleNamespace(pointer=predecessor)), \
                 patch("p_ases.cli.publish_adc", return_value=pointer) as publish, \
-                patch("p_ases.cli.rebaseline_issue_phase", return_value={"status": "APPLIED"}) as rebaseline, \
+                patch("p_ases.cli.rebaseline_issue_phase", side_effect=AssertionError(
+                    "phase mutation must be explicit")) as rebaseline, \
                 contextlib.redirect_stdout(output):
             status = main([
                 "adc", "publish", "63", str(Path(__file__)),
@@ -883,7 +884,7 @@ class PasesCLITests(unittest.TestCase):
                 "--approval-comment-id", str(decision.comment_id),
             ])
         self.assertEqual(status, 0)
-        self.assertIn('"phase_rebaseline": {\n    "status": "APPLIED"', output.getvalue())
+        self.assertNotIn('"phase_rebaseline"', output.getvalue())
         read_decision.assert_called_once_with(
             github, issue_number=63, owner_id=3744776,
                 operation="ADC_SUPERSEDE", subject_sha256="a" * 64,
@@ -891,7 +892,7 @@ class PasesCLITests(unittest.TestCase):
         )
         publish.assert_called_once()
         self.assertIs(publish.call_args.kwargs["expected_current"], predecessor)
-        rebaseline.assert_called_once_with(github, 63)
+        rebaseline.assert_not_called()
 
     def test_issue_63_approved_adc_without_exact_supersede_is_pending_and_never_publishes(self):
         github = SimpleNamespace(repo="puchinya/ai-agent-workflow")

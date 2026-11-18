@@ -625,7 +625,7 @@ class OwnerAuthorizationTests(unittest.TestCase):
                 target_issue_number=63, pr_number=65, pr_head_sha40="d" * 40,
             )
 
-    def test_adc_local_commit_dispatches_exact_publication_then_phase_rebaseline(self):
+    def test_adc_local_commit_dispatches_publication_without_implicit_phase_transition(self):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / "successor.md"
             source.write_bytes(b"exact successor bytes\n")
@@ -652,17 +652,18 @@ class OwnerAuthorizationTests(unittest.TestCase):
                     patch("p_ases.cli.read_verified_owner_decision", return_value=verified_decision), \
                     patch("p_ases.cli.verify_adc", side_effect=[previous, published]), \
                     patch("p_ases.cli.publish_adc", return_value=published_pointer) as publish, \
-                    patch("p_ases.cli.rebaseline_issue_phase", return_value={"status": "APPLIED"}) as rebaseline:
+                    patch("p_ases.cli.rebaseline_issue_phase", side_effect=AssertionError(
+                        "ADC publication must not advance a Phase")) as rebaseline:
                 result = _publish_owner_approved_adc(args, REPOSITORY, FakeGitHub(), plan, decision)
             self.assertEqual(result["status"], "PUBLISHED")
-            self.assertEqual(result["phase_rebaseline"], {"status": "APPLIED"})
+            self.assertNotIn("phase_rebaseline", result)
             self.assertEqual(publish.call_args.kwargs["state"], "approved")
             self.assertIs(publish.call_args.kwargs["expected_current"], previous.pointer)
             preflight.assert_called_once_with(
                 source.read_bytes(), REPOSITORY, 63,
                 current_pointer=previous.pointer, check_current_pointer=True,
             )
-            rebaseline.assert_called_once()
+            rebaseline.assert_not_called()
 
     def test_lost_merge_response_never_retries_while_pr_remains_open(self):
         from unittest.mock import patch
