@@ -224,7 +224,7 @@ def apply_phase_rework(github: GitHub, root: Path, issue_number: int, *,
         _verify_pr(github, issue_number, auth)
         if any(isinstance(row, dict) and isinstance(row.get("body"), str)
                and row["body"].startswith((
-                   f"<!-- {INTENT_SCHEMA}\\n", f"<!-- {APPLIED_SCHEMA}\\n",
+                   f"<!-- {INTENT_SCHEMA}\n", f"<!-- {APPLIED_SCHEMA}\n",
                )) for row in github.issue_comments(issue_number)):
             raise PhaseReworkLifecycleError(
                 "remote Phase rework journal already exists; read-only reconciliation required"

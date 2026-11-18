@@ -263,7 +263,7 @@ def reset_execution_epoch(github: GitHub, root: Path, issue_number: int) -> dict
         existing = github.issue_comments(issue_number)
         if any(isinstance(row, dict) and isinstance(row.get("body"), str)
                and row["body"].startswith((
-                   f"<!-- {INTENT_SCHEMA}\\n", f"<!-- {APPLIED_SCHEMA}\\n",
+                   f"<!-- {INTENT_SCHEMA}\n", f"<!-- {APPLIED_SCHEMA}\n",
                )) for row in existing):
             raise EpochLifecycleError("remote epoch reset journal already exists; read-only reconciliation required")
         intent_id, intent_sha = _post(
