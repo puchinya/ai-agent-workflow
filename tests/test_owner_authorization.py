@@ -993,6 +993,27 @@ class OwnerAuthorizationTests(unittest.TestCase):
                     authorize_plan(stale, root, path, stdin=TTY(), input_fn=lambda _prompt: "")
             self.assertEqual(stale.writes, [])
 
+    def test_adc_supersede_plan_supports_arbitrary_issue_without_legacy_owner_carrier(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            github = FakeGitHub()
+            github.comments[128] = []
+            with patch("p_ases.owner_authorization.worktree_clean", return_value=True), \
+                    patch("p_ases.owner_authorization.head_sha40", return_value=PLAN_HEAD):
+                plan = create_authorization_plan(
+                    github, root, operation="ADC_SUPERSEDE", subject_sha256=SUBJECT_SHA,
+                    issue_number=128,
+                    details={"predecessor_comment_id": 123,
+                             "predecessor_sha256": "b" * 64,
+                             "predecessor_byte_length": 400,
+                             "predecessor_state": "approved"},
+                )
+            self.assertEqual(plan["issue_number"], 128)
+            self.assertEqual(owner_module._validate_plan(plan), plan)
+            history = owner_module._read_history(github, 128)
+            self.assertEqual(history, ())
+            self.assertEqual(github.writes, [])
+
     def test_issue71_user_review_plan_binds_profile_and_pr75(self):
         plan = issue71_user_review_plan()
         self.assertEqual((plan["issue_number"], plan["pr_number"]), (71, 75))

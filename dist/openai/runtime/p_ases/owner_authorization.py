@@ -340,7 +340,7 @@ def create_authorization_plan(
     """Read live GitHub subjects and create an immutable canonical plan."""
     if operation not in PLAN_OPERATIONS:
         raise OwnerAuthorizationError("unsupported owner operation")
-    if (not _positive(issue_number) or (operation != "USER_REVIEW" and issue_number != ISSUE_NUMBER)
+    if (not _positive(issue_number) or (operation not in {"USER_REVIEW", "ADC_SUPERSEDE"} and issue_number != ISSUE_NUMBER)
             or not isinstance(subject_sha256, str)
             or SHA256.fullmatch(subject_sha256) is None
             or (target_issue_number is not None and not _positive(target_issue_number))
@@ -429,7 +429,8 @@ def _validate_plan(value: Any) -> dict[str, Any]:
         raise OwnerAuthorizationError("authorization plan has unknown or missing fields")
     plan = dict(value)
     supplied = plan.pop("plan_sha256")
-    allowed_issue = (_positive(plan.get("issue_number")) if plan.get("operation") == "USER_REVIEW"
+    allowed_issue = (_positive(plan.get("issue_number"))
+                     if plan.get("operation") in {"USER_REVIEW", "ADC_SUPERSEDE"}
                      else plan.get("issue_number") == ISSUE_NUMBER)
     if (plan.get("schema") != PLAN_SCHEMA or plan.get("repository") != REPOSITORY
             or plan.get("repository_id") != REPOSITORY_ID or plan.get("owner_id") != OWNER_ID
@@ -586,10 +587,10 @@ def read_authorization_plan(path: Path) -> dict[str, Any]:
     return plan
 
 
-def _read_history(github: Any) -> tuple[tuple[int, Any], ...]:
+def _read_history(github: Any, issue_number: int = ISSUE_NUMBER) -> tuple[tuple[int, Any], ...]:
     """Read every V1/V2 decision carrier direct/list/direct before appending."""
-    _check_identity(github, ISSUE_NUMBER, None, None, None)
-    initial = github.issue_comments(ISSUE_NUMBER)
+    _check_identity(github, issue_number, None, None, None)
+    initial = github.issue_comments(issue_number)
     def marked(rows: list[Any]) -> list[dict[str, Any]]:
         selected = []
         for row in rows:
@@ -602,20 +603,20 @@ def _read_history(github: Any) -> tuple[tuple[int, Any], ...]:
     if (any(not _positive(value) for value in ids) or ids != sorted(ids)
             or len(ids) != len(set(ids))):
         raise OwnerAuthorizationError("owner decision history IDs are invalid or nonmonotonic")
-    direct_before = {comment_id: github.issue_comment(ISSUE_NUMBER, comment_id) for comment_id in ids}
-    second = marked(github.issue_comments(ISSUE_NUMBER))
+    direct_before = {comment_id: github.issue_comment(issue_number, comment_id) for comment_id in ids}
+    second = marked(github.issue_comments(issue_number))
     second_ids = [row.get("id") for row in second]
     if second_ids != ids:
         raise OwnerAuthorizationError("owner decision history changed during direct/list/direct readback")
-    direct_after = {comment_id: github.issue_comment(ISSUE_NUMBER, comment_id) for comment_id in ids}
+    direct_after = {comment_id: github.issue_comment(issue_number, comment_id) for comment_id in ids}
     for row in second:
-        fingerprint = _comment_fingerprint(row, REPOSITORY, ISSUE_NUMBER)
+        fingerprint = _comment_fingerprint(row, REPOSITORY, issue_number)
         comment_id = fingerprint[0]
-        if (_comment_fingerprint(direct_before[comment_id], REPOSITORY, ISSUE_NUMBER) != fingerprint
-                or _comment_fingerprint(direct_after[comment_id], REPOSITORY, ISSUE_NUMBER) != fingerprint):
+        if (_comment_fingerprint(direct_before[comment_id], REPOSITORY, issue_number) != fingerprint
+                or _comment_fingerprint(direct_after[comment_id], REPOSITORY, issue_number) != fingerprint):
             raise OwnerAuthorizationError("owner decision carrier changed during direct/list/direct readback")
     try:
-        return verify_owner_decision_history_tail(second, REPOSITORY, ISSUE_NUMBER, OWNER_ID)
+        return verify_owner_decision_history_tail(second, REPOSITORY, issue_number, OWNER_ID)
     except OwnerDecisionError as exc:
         raise OwnerAuthorizationError(str(exc)) from exc
 
@@ -638,7 +639,7 @@ def _check_owner_local_tty(stdin: Any) -> None:
 
 def _decision_body_v2(plan: dict[str, Any], predecessor: int | None) -> str:
     payload = {
-        "schema": SCHEMA_V2, "repository": REPOSITORY, "issue_number": ISSUE_NUMBER,
+        "schema": SCHEMA_V2, "repository": REPOSITORY, "issue_number": plan["issue_number"],
         "operation": plan["operation"], "subject_sha256": plan["subject_sha256"],
         "plan_sha256": plan["plan_sha256"],
         "operation_plan_sha256": (plan["subject_sha256"]
@@ -737,7 +738,7 @@ def _validate_adc_authorization_subject(
         raise OwnerAuthorizationError("ADC source bytes differ from the exact authorization plan")
     from .adc import ADCError, validate_approval_ready_adc, verify_adc
     try:
-        predecessor = verify_adc(github, ISSUE_NUMBER).pointer
+        predecessor = verify_adc(github, plan["issue_number"]).pointer
         details = plan["details"]
         if (predecessor.state != "approved"
                 or predecessor.comment_id != details.get("predecessor_comment_id")
@@ -746,7 +747,7 @@ def _validate_adc_authorization_subject(
                 or predecessor.state != details.get("predecessor_state")):
             raise OwnerAuthorizationError("current approved ADC predecessor changed after plan creation")
         validate_approval_ready_adc(
-            subject_bytes, REPOSITORY, ISSUE_NUMBER,
+            subject_bytes, REPOSITORY, plan["issue_number"],
             current_pointer=predecessor, check_current_pointer=True,
         )
     except ADCError as exc:
@@ -840,7 +841,7 @@ def authorize_plan(
             "evidence_channel": approval.evidence_channel, "chat_signature": False,
         }
 
-    history = _read_history(github)
+    history = _read_history(github, plan["issue_number"])
     same_subject = [(comment_id, decision) for comment_id, decision in history
                     if decision.operation == plan["operation"]
                     and decision.subject_sha256 == plan["subject_sha256"]
@@ -857,12 +858,12 @@ def authorize_plan(
         predecessor = history[-1][0] if history else None
         body = _decision_body_v2(plan, predecessor)
         try:
-            github.create_issue_comment(ISSUE_NUMBER, body)
+            github.create_issue_comment(plan["issue_number"], body)
         except GitHubError as exc:
             # Reconcile a possibly successful POST by complete readback. Never issue a second POST.
             try:
                 verified = read_verified_owner_decision(
-                    github, issue_number=ISSUE_NUMBER, owner_id=OWNER_ID,
+                    github, issue_number=plan["issue_number"], owner_id=OWNER_ID,
                     operation=plan["operation"], subject_sha256=plan["subject_sha256"],
                     expected_pr_number=plan["pr_number"], expected_pr_head_sha40=plan["pr_head_sha40"],
                     expected_plan_sha256=plan["plan_sha256"], repository_id=REPOSITORY_ID,
@@ -873,7 +874,7 @@ def authorize_plan(
             comment_id = verified.comment_id
         else:
             verified = read_verified_owner_decision(
-                github, issue_number=ISSUE_NUMBER, owner_id=OWNER_ID,
+                github, issue_number=plan["issue_number"], owner_id=OWNER_ID,
                 operation=plan["operation"], subject_sha256=plan["subject_sha256"],
                 expected_pr_number=plan["pr_number"], expected_pr_head_sha40=plan["pr_head_sha40"],
                 expected_plan_sha256=plan["plan_sha256"], repository_id=REPOSITORY_ID,
@@ -973,7 +974,7 @@ def authorize_chat_confirmed_plan(
             "evidence_channel": approval.evidence_channel, "chat_signature": False,
         }
 
-    history = _read_history(github)
+    history = _read_history(github, checked["issue_number"])
     same_subject = [(comment_id, decision) for comment_id, decision in history
                     if decision.operation == checked["operation"]
                     and decision.subject_sha256 == checked["subject_sha256"]
@@ -984,12 +985,12 @@ def authorize_chat_confirmed_plan(
     predecessor = history[-1][0] if history else None
     body = _decision_body_v3(checked, predecessor, grant)
     try:
-        github.create_issue_comment(ISSUE_NUMBER, body)
+        github.create_issue_comment(checked["issue_number"], body)
     except GitHubError as exc:
         # Resolve an uncertain POST with reads only; never retry it.
         try:
             verified = read_verified_owner_decision(
-                github, issue_number=ISSUE_NUMBER, owner_id=OWNER_ID,
+                github, issue_number=checked["issue_number"], owner_id=OWNER_ID,
                 operation=checked["operation"], subject_sha256=checked["subject_sha256"],
                 expected_pr_number=checked["pr_number"], expected_pr_head_sha40=checked["pr_head_sha40"],
                 expected_plan_sha256=checked["plan_sha256"], repository_id=REPOSITORY_ID,
@@ -1002,7 +1003,7 @@ def authorize_chat_confirmed_plan(
             raise OwnerAuthorizationError("readback selected an incompatible approval channel") from exc
     else:
         verified = read_verified_owner_decision(
-            github, issue_number=ISSUE_NUMBER, owner_id=OWNER_ID,
+            github, issue_number=checked["issue_number"], owner_id=OWNER_ID,
             operation=checked["operation"], subject_sha256=checked["subject_sha256"],
             expected_pr_number=checked["pr_number"], expected_pr_head_sha40=checked["pr_head_sha40"],
             expected_plan_sha256=checked["plan_sha256"], repository_id=REPOSITORY_ID,
@@ -1031,7 +1032,7 @@ def resume_authorization(github: Any, plan_path: Path) -> dict[str, Any]:
     plan = read_authorization_plan(plan_path)
     try:
         verified = read_verified_owner_decision(
-            github, issue_number=ISSUE_NUMBER, owner_id=OWNER_ID,
+            github, issue_number=plan["issue_number"], owner_id=OWNER_ID,
             operation=plan["operation"], subject_sha256=plan["subject_sha256"],
             expected_pr_number=plan["pr_number"], expected_pr_head_sha40=plan["pr_head_sha40"],
             expected_plan_sha256=plan["plan_sha256"], repository_id=REPOSITORY_ID,
