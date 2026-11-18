@@ -100,7 +100,7 @@ class CurrentBaseAdvanceTests(unittest.TestCase):
             ).validate()
             pr = {
                 "number": number, "state": "open", "draft": False,
-                "body": f"Implementation.\\n\\n{verb} #{issue}\\n",
+                "body": f"Implementation.\n\n{verb} #{issue}\n",
                 "base": {"ref": "main", "sha": base, "repo": {"full_name": REPOSITORY}},
                 "head": {"ref": "pases/work", "sha": "b" * 40,
                          "repo": {"full_name": REPOSITORY}},
