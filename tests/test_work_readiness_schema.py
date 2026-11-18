@@ -148,7 +148,7 @@ class WorkReadinessSchemaTests(unittest.TestCase):
                 adc_comment_id=subject.adc_comment_id, adc_sha256=subject.adc_sha256,
                 base_ref="main", base_sha="07481c4b451a81750a6c2e1a6a18bdfd4e3459c2",
                 work_directory=str(Path(tempfile.gettempdir()) / "pases-work"),
-                branch_ref="pases/work", initial_head_sha="07481c4b451a81750a6a18bdfd4e3459c2",
+                branch_ref="pases/work", initial_head_sha="07481c4b451a81750a6c2e1a6a18bdfd4e3459c2",
             ).validate()
             context = WorkContext(binding, subject.pr_head_sha40, binding.branch_ref, True,
                                   binding_digest(binding)).validate()
