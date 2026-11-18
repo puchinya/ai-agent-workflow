@@ -274,15 +274,14 @@ class ADCValidationTests(unittest.TestCase):
             current_pointer=predecessor, check_current_pointer=True,
         ).content, exact)
 
-    def test_issue63_approval_preflight_requires_latest_pointer_predecessor(self):
+    def test_predecessor_declaration_is_optional_and_validated_for_any_issue(self):
         current = ADCPointer(6244160653, "f1cab9b9edca34d4e80c486642059881b62abd5d95b993999a52494494bafac8",
                              2048, "approved")
         candidate = adc_bytes("puchinya/ai-agent-workflow", issue=63)
-        with self.assertRaisesRegex(ADCError, "must name its current predecessor"):
-            validate_approval_ready_adc(
-                candidate, "puchinya/ai-agent-workflow", 63,
-                current_pointer=current, check_current_pointer=True,
-            )
+        self.assertEqual(validate_approval_ready_adc(
+            candidate, "puchinya/ai-agent-workflow", 63,
+            current_pointer=current, check_current_pointer=True,
+        ).content, candidate)
         candidate = candidate.replace(
             b"Repository: puchinya/ai-agent-workflow\n",
             b"Repository: puchinya/ai-agent-workflow\nPredecessor ADC: Issue #63 comment #6244160653, SHA-256 `f1cab9b9edca34d4e80c486642059881b62abd5d95b993999a52494494bafac8`\n",
