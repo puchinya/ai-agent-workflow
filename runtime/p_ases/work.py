@@ -31,7 +31,6 @@ from .issue_association import (
 )
 from .path_safety import path_has_symlink
 from .profile import ProfileError, load_profile
-from .phase_epoch_rebaseline import PhaseEpochRebaselineError, read_active_epoch
 
 
 class WorkError(RuntimeError):
@@ -280,48 +279,50 @@ def ensure_pull_request(repository_root: Path, github: GitHub, *, repository: st
 def ensure_epoch_pull_request(repository_root: Path, github: GitHub, *, repository: str,
                               issue_number: int, execution_epoch: Issue71ExecutionEpochIdentity,
                               branch_ref: str, base_ref: str, title: str, body: str) -> PREnsureResult:
-    """Create or resume an Issue #71 PR bound to its active epoch-3 identity."""
+    """Create or resume a PR for an arbitrary validated execution epoch."""
+    from .current_epoch import CurrentEpochError, read_current_epoch
     root = Path(repository_root).resolve()
     if (not is_issue71_execution_epoch(execution_epoch)
-            or repository.casefold() != "puchinya/ai-agent-workflow" or issue_number != 71
+            or execution_epoch.repository.casefold() != repository.casefold()
+            or execution_epoch.issue_number != issue_number
             or github.repo.casefold() != repository.casefold()):
-        raise WorkError("execution-epoch PR creation is restricted to puchinya/ai-agent-workflow Issue #71")
+        raise WorkError("execution epoch does not match the requested repository and Issue")
     try:
-        current_epoch = read_active_epoch(github, root)
-    except (PhaseEpochRebaselineError, GitHubError, GitError, OSError) as exc:
-        raise WorkError(f"active Issue #71 execution epoch readback failed: {exc}") from exc
+        current_epoch = read_current_epoch(github, root, issue_number)
+    except (CurrentEpochError, GitHubError, GitError, OSError) as exc:
+        raise WorkError(f"active execution epoch readback failed: {exc}") from exc
     if current_epoch != execution_epoch:
-        raise WorkError("active Issue #71 execution epoch changed before PR creation")
+        raise WorkError("active execution epoch changed before PR creation")
     branch_ref, base_ref = validate_ref(branch_ref), validate_ref(base_ref)
     if (branch_ref != execution_epoch.branch_ref or base_ref != execution_epoch.base_ref
             or not worktree_clean(root) or current_branch(root) != branch_ref):
         raise WorkError("epoch PR ensure requires a clean worktree on the exact authorized branch and base")
     if _validate_pr_body(body, issue_number) != "auto_close":
-        raise WorkError("Issue #71 implementation PR must contain the exact Closes #71 association")
+        raise WorkError("execution epoch implementation PR must contain the exact auto-close association")
     local_head = head_sha40(root)
     if not is_ancestor(root, execution_epoch.base_sha40, local_head):
-        raise WorkError("Issue #71 PR HEAD does not descend from the epoch base")
+        raise WorkError("execution epoch PR HEAD does not descend from the epoch base")
     remote_head = remote_branch_sha(root, branch_ref)
     remote_base = remote_branch_sha(root, base_ref)
     if remote_head != local_head or remote_base != execution_epoch.base_sha40:
-        raise WorkError("Issue #71 PR branch or authorized base differs from the exact remote SHA")
+        raise WorkError("execution epoch PR branch or authorized base differs from the exact remote SHA")
 
     history = read_pr_binding_history(root, issue_number, github=github)
     if any(row.execution_epoch_sha256 != execution_epoch.sha256 for _path, row in history):
-        raise WorkError("Issue #71 PRBinding history is missing or mixes the active epoch-3 identity")
+        raise WorkError("execution epoch PRBinding history is missing or mixes the active epoch-3 identity")
     candidates = github.pull_requests_for_refs(base_ref=base_ref, head_ref=branch_ref)
     if len(candidates) > 1:
-        raise WorkError("multiple exact branch/base PRs match the active Issue #71 epoch")
+        raise WorkError("multiple exact branch/base PRs match the active execution epoch epoch")
     reused = bool(candidates)
     if candidates:
         pull = _readback_pull(github, candidates[0], repository=repository, issue_number=issue_number,
                               base_ref=base_ref, base_sha40=remote_base, head_ref=branch_ref,
                               head_sha40=local_head, expected_association_mode="auto_close")
         if pull.get("title") != title or pull.get("body") != body:
-            raise WorkError("existing Issue #71 PR title/body differs from the authorized handoff")
+            raise WorkError("existing execution epoch PR title/body differs from the authorized handoff")
     else:
         if history:
-            raise WorkError("active Issue #71 epoch already has a PRBinding but no exact PR was found")
+            raise WorkError("active execution epoch epoch already has a PRBinding but no exact PR was found")
         try:
             created = github.create_pull_request(title=title, body=body,
                                                  head_ref=branch_ref, base_ref=base_ref)
@@ -330,24 +331,24 @@ def ensure_epoch_pull_request(repository_root: Path, github: GitHub, *, reposito
             try:
                 recovered = github.pull_requests_for_refs(base_ref=base_ref, head_ref=branch_ref)
             except GitHubError as read_error:
-                raise WorkError(f"Issue #71 PR create was ambiguous and read-only recovery failed: {read_error}") from exc
+                raise WorkError(f"execution epoch PR create was ambiguous and read-only recovery failed: {read_error}") from exc
             if len(recovered) != 1:
-                raise WorkError(f"Issue #71 PR create was ambiguous; recovery found {len(recovered)} candidates") from exc
+                raise WorkError(f"execution epoch PR create was ambiguous; recovery found {len(recovered)} candidates") from exc
             reused = True
             pull = recovered[0]
         pull = _readback_pull(github, pull, repository=repository, issue_number=issue_number,
                               base_ref=base_ref, base_sha40=remote_base, head_ref=branch_ref,
                               head_sha40=local_head, expected_association_mode="auto_close")
         if pull.get("title") != title or pull.get("body") != body:
-            raise WorkError("created Issue #71 PR title/body differs from the authorized handoff")
+            raise WorkError("created execution epoch PR title/body differs from the authorized handoff")
 
     if (not worktree_clean(root) or current_branch(root) != branch_ref or head_sha40(root) != local_head
             or remote_branch_sha(root, branch_ref) != local_head
             or remote_branch_sha(root, base_ref) != execution_epoch.base_sha40):
-        raise WorkError("Issue #71 epoch, local worktree, or remote refs changed during PR readback")
+        raise WorkError("execution epoch epoch, local worktree, or remote refs changed during PR readback")
     pr_number = pull.get("number")
     if type(pr_number) is not int or pr_number < 1:
-        raise WorkError("Issue #71 PR readback has no valid number")
+        raise WorkError("execution epoch PR readback has no valid number")
     pr_binding = PRBinding(
         repository, issue_number, execution_epoch.adc_comment_id, execution_epoch.adc_sha256,
         execution_epoch.base_sha40, branch_ref, pr_number, local_head,
@@ -355,7 +356,7 @@ def ensure_epoch_pull_request(repository_root: Path, github: GitHub, *, reposito
     ).validate()
     previous = latest_checkpoint(root, issue_number)
     if previous is not None and previous[1].execution_epoch_sha256 != execution_epoch.sha256:
-        raise WorkError("Issue #71 checkpoint history does not belong to the active epoch-3 identity")
+        raise WorkError("execution epoch checkpoint history does not belong to the active epoch-3 identity")
     checkpoint_artifacts = tuple(sorted((
         ("execution-epoch", execution_epoch.sha256), ("pr-binding", pr_binding.sha256),
     )))
@@ -367,7 +368,7 @@ def ensure_epoch_pull_request(repository_root: Path, github: GitHub, *, reposito
         # head.  Validate the complete immutable record chain before either
         # append below so a stale or non-PR checkpoint cannot be bypassed.
         if history[-1][1].pr_head_sha40 != local_head or previous is None:
-            raise WorkError("Issue #71 same-HEAD PR history conflicts with its latest checkpoint")
+            raise WorkError("execution epoch same-HEAD PR history conflicts with its latest checkpoint")
         previous_checkpoint = previous[1]
         previous_artifacts = dict(previous_checkpoint.artifact_digests)
         latest_binding = history[-1][1]
@@ -377,7 +378,7 @@ def ensure_epoch_pull_request(repository_root: Path, github: GitHub, *, reposito
                 or set(previous_artifacts) != {"execution-epoch", "pr-binding"}
                 or previous_artifacts.get("execution-epoch") != execution_epoch.sha256
                 or previous_artifacts.get("pr-binding") != latest_binding.sha256):
-            raise WorkError("Issue #71 same-HEAD checkpoint conflicts with the latest immutable PRBinding")
+            raise WorkError("execution epoch same-HEAD checkpoint conflicts with the latest immutable PRBinding")
         if (latest_binding.repository != pr_binding.repository
                 or latest_binding.issue_number != pr_binding.issue_number
                 or latest_binding.base_sha40 != pr_binding.base_sha40
@@ -388,7 +389,7 @@ def ensure_epoch_pull_request(repository_root: Path, github: GitHub, *, reposito
                 or latest_binding.current_base_advance_sha256 != pr_binding.current_base_advance_sha256
                 or latest_binding.adoption_id != pr_binding.adoption_id
                 or latest_binding.execution_epoch_sha256 != pr_binding.execution_epoch_sha256):
-            raise WorkError("Issue #71 same-HEAD PRBinding successor changes its immutable execution identity")
+            raise WorkError("execution epoch same-HEAD PRBinding successor changes its immutable execution identity")
         checkpoint_step = previous_checkpoint.step
         if previous_artifacts["pr-binding"] == pr_binding.sha256:
             reuse_checkpoint = True
@@ -399,13 +400,13 @@ def ensure_epoch_pull_request(repository_root: Path, github: GitHub, *, reposito
         execution_epoch_sha256=execution_epoch.sha256,
     ).validate()
     if reuse_checkpoint and checkpoint != previous[1]:
-        raise WorkError("Issue #71 PR checkpoint retry conflicts with its immutable epoch record")
+        raise WorkError("execution epoch PR checkpoint retry conflicts with its immutable epoch record")
 
     if history and history[-1][1] != pr_binding:
         if not _same_pr_execution_identity(history[-1][1], pr_binding):
-            raise WorkError("existing Issue #71 PRBinding changes the PR or execution epoch")
+            raise WorkError("existing execution epoch PRBinding changes the PR or execution epoch")
         if not is_ancestor(root, history[-1][1].pr_head_sha40, local_head):
-            raise WorkError("new Issue #71 PRBinding HEAD does not descend from its predecessor")
+            raise WorkError("new execution epoch PRBinding HEAD does not descend from its predecessor")
         write_pr_binding(_pr_binding_version_path(root, issue_number, len(history) + 1), pr_binding)
     elif not history:
         write_pr_binding(_pr_binding_version_path(root, issue_number, 1), pr_binding)
