@@ -1242,11 +1242,25 @@ def _current_rebaseline_applied(github: Any, issue_number: int, current_adc: Any
             intent = github.issue_comment(issue_number, intent_id)
             intent_body = intent.get("body") if isinstance(intent, dict) else None
             expected_intent_schema = INTENT_V3_SCHEMA if payload["schema"] == APPLIED_V3_SCHEMA else INTENT_V2_SCHEMA
-            if (not isinstance(intent_body, str) or not intent_body.startswith(f"<!-- {expected_intent_schema}\n")
-                    or hashlib.sha256(intent_body.encode("utf-8")).hexdigest() != intent_sha
+            marker = f"<!-- {expected_intent_schema}\n"
+            if (not isinstance(intent_body, str) or not intent_body.startswith(marker)
+                    or not intent_body.endswith("\n-->")
                     or intent.get("issue_url") != direct.get("issue_url")
                     or intent.get("created_at") != intent.get("updated_at")):
-                raise ExecutionAdoptionError("current Phase Intent proof does not match Applied")
+                raise ExecutionAdoptionError("current Phase Intent carrier does not match Applied")
+            intent_json = intent_body[len(marker):-len("\n-->")]
+            try:
+                intent_payload = json.loads(intent_json)
+            except json.JSONDecodeError as exc:
+                raise ExecutionAdoptionError("current Phase Intent JSON is malformed") from exc
+            if (not isinstance(intent_payload, dict)
+                    or json.dumps(intent_payload, sort_keys=True, separators=(",", ":"),
+                                  ensure_ascii=True) != intent_json
+                    or intent_payload.get("schema") != expected_intent_schema
+                    or intent_payload.get("successor_adc_comment_id") != current_adc.pointer.comment_id
+                    or intent_payload.get("successor_adc_sha256") != current_adc.pointer.sha256
+                    or hashlib.sha256(intent_json.encode("utf-8")).hexdigest() != intent_sha):
+                raise ExecutionAdoptionError("current Phase Intent payload does not match Applied")
             return True
     return False
 
