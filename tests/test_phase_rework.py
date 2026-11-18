@@ -1722,6 +1722,109 @@ class OneShotWriteTests(unittest.TestCase):
                     ["history", "refresh", "fresh-validation", "post", "refresh", "history"],
                 )
 
+    def test_lost_comment_post_response_is_read_back_once_without_retry_for_all_schemas(self):
+        schemas = (
+            module.INTENT_SCHEMA,
+            module.APPLIED_SCHEMA,
+            module.ISSUE71_REWORK_INTENT_V3_SCHEMA,
+            module.ISSUE71_REWORK_APPLIED_V3_SCHEMA,
+        )
+        operations = {
+            module.INTENT_SCHEMA: "intent",
+            module.APPLIED_SCHEMA: "applied",
+            module.ISSUE71_REWORK_INTENT_V3_SCHEMA: "intent_v3",
+            module.ISSUE71_REWORK_APPLIED_V3_SCHEMA: "applied_v3",
+        }
+        for schema_index, schema in enumerate(schemas):
+            for server_applied in (False, True):
+                with self.subTest(schema=schema, server_applied=server_applied), \
+                        tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    events: list[str] = []
+                    payload = {
+                        "schema": schema,
+                        "executor_user_id": module.OWNER_ID,
+                        "record_id": f"{schema_index}-{server_applied}",
+                    }
+                    prior_schema = schemas[(schema_index + 1) % len(schemas)]
+                    prior_body = module._record_body(prior_schema, {
+                        "schema": prior_schema,
+                        "executor_user_id": module.OWNER_ID,
+                        "record_id": "pre-existing-record",
+                    })
+                    prior_record = SimpleNamespace(
+                        schema=prior_schema, body=prior_body, comment_id=180,
+                        actor_id=module.OWNER_ID,
+                    )
+                    current_records = [prior_record]
+                    posted_records: list[SimpleNamespace] = []
+
+                    class FakeGitHub:
+                        posts = 0
+
+                        def create_issue_comment(self, _issue: int, body: str) -> dict:
+                            self.posts += 1
+                            events.append("post")
+                            record = SimpleNamespace(
+                                schema=schema, body=body, comment_id=181,
+                                actor_id=module.OWNER_ID,
+                            )
+                            posted_records.append(record)
+                            if server_applied:
+                                current_records.append(record)
+                            raise GitHubError("connection closed before POST response readback")
+
+                    github = FakeGitHub()
+
+                    def read_history(_github):
+                        events.append("history")
+                        return tuple(current_records)
+
+                    def validate_current_subject():
+                        events.append("fresh-validation")
+
+                    with patch.object(module, "_read_history", side_effect=read_history), \
+                            patch.object(module, "refresh_adc_forward_generation_session",
+                                         side_effect=lambda *_args: events.append("refresh")):
+                        if server_applied:
+                            first = module._post_record_once(
+                                github, root, schema, payload,
+                                before_write=validate_current_subject,
+                            )
+                            self.assertIs(first, posted_records[0])
+                        else:
+                            with self.assertRaisesRegex(module.PhaseReworkError, "will not be retried"):
+                                module._post_record_once(
+                                    github, root, schema, payload,
+                                    before_write=validate_current_subject,
+                                )
+
+                        post_index = events.index("post")
+                        self.assertEqual(events[post_index + 1:post_index + 3], ["refresh", "history"])
+                        marker_path = module._record_path(root, operations[schema])
+                        marker_bytes = marker_path.read_bytes()
+                        prior_bytes = prior_record.body.encode("utf-8")
+
+                        if server_applied:
+                            second = module._post_record_once(
+                                github, root, schema, payload,
+                                before_write=validate_current_subject,
+                            )
+                            self.assertIs(second, posted_records[0])
+                            self.assertEqual(posted_records[0].body.encode("utf-8"),
+                                             module._record_body(schema, payload).encode("utf-8"))
+                        else:
+                            with self.assertRaises(module.PhaseReworkError):
+                                module._post_record_once(
+                                    github, root, schema, payload,
+                                    before_write=validate_current_subject,
+                                )
+
+                    self.assertEqual(github.posts, 1)
+                    self.assertEqual(marker_path.read_bytes(), marker_bytes)
+                    self.assertEqual(prior_record.body.encode("utf-8"), prior_bytes)
+                    self.assertEqual(current_records[0].body.encode("utf-8"), prior_bytes)
+
     def test_comment_post_requires_fresh_validation_before_attempt_marker(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
