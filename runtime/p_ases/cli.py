@@ -4732,7 +4732,7 @@ def _parser() -> argparse.ArgumentParser:
     publish.add_argument("--state", choices=("draft", "approved"), default="draft")
     publish.add_argument("--supersede", action="store_true")
     publish.add_argument("--approval-comment-id", type=_positive_number,
-                         help="exact PASES_OWNER_DECISION_V1 ADC_SUPERSEDE comment ID for Issue #63")
+                         help="exact owner ADC_SUPERSEDE decision comment ID for the target Issue")
     verify = adc_commands.add_parser("verify")
     verify.add_argument("issue", type=_positive_number)
     verify.add_argument("--repo", help="repository owner/name; defaults to origin")
@@ -5499,20 +5499,27 @@ def main(argv: list[str] | None = None) -> int:
             if args.verb == "publish":
                 data = args.source.read_bytes()
                 expected_current = None
-                issue63_target = (args.issue == 63
-                                  and repository.casefold() == "puchinya/ai-agent-workflow")
-                if issue63_target and args.state == "approved":
+                requires_owner_decision = args.state == "approved" and args.supersede
+                if requires_owner_decision:
                     if args.approval_comment_id is None:
                         _json({"status": "PENDING_APPROVAL", "issue": args.issue,
                                "operation": "ADC_SUPERSEDE",
                                "reasons": ["an exact ADC_SUPERSEDE decision comment ID is required"]})
                         return 2
                     contract = parse_adc(data, repository, args.issue)
+                    metadata = github.repository_metadata()
+                    owner = metadata.get("owner") if isinstance(metadata, dict) else None
+                    owner_id = owner.get("id") if isinstance(owner, dict) else None
+                    repository_id = metadata.get("id") if isinstance(metadata, dict) else None
+                    if (type(owner_id) is not int or owner_id < 1 or owner.get("type") != "User"
+                            or type(repository_id) is not int or repository_id < 1
+                            or metadata.get("full_name", "").casefold() != repository.casefold()):
+                        raise CLIError("ADC supersession requires a verified user-owned repository")
                     try:
                         decision = read_verified_owner_decision(
-                            github, issue_number=args.issue, owner_id=3744776,
+                            github, issue_number=args.issue, owner_id=owner_id,
                             operation="ADC_SUPERSEDE", subject_sha256=contract.sha256,
-                            repository_id=_ISSUE63_REPOSITORY_ID,
+                            repository_id=repository_id,
                         )
                     except OwnerDecisionError as exc:
                         if "missing exact owner operation/subject" in str(exc):

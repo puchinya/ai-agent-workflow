@@ -868,7 +868,13 @@ class PasesCLITests(unittest.TestCase):
         predecessor = SimpleNamespace(comment_id=6228771805, sha256="b" * 64,
                                       byte_length=7, state="approved")
         decision = SimpleNamespace(comment_id=8123)
-        github = SimpleNamespace(repo="puchinya/ai-agent-workflow")
+        github = SimpleNamespace(
+            repo="puchinya/ai-agent-workflow",
+            repository_metadata=lambda: {
+                "id": 1401910271, "full_name": "puchinya/ai-agent-workflow",
+                "owner": {"id": 3744776, "type": "User"},
+            },
+        )
         output = io.StringIO()
         with patch("p_ases.cli.GitHub", return_value=github), \
                 patch("p_ases.cli.parse_adc", return_value=SimpleNamespace(sha256="a" * 64)), \
@@ -893,6 +899,35 @@ class PasesCLITests(unittest.TestCase):
         publish.assert_called_once()
         self.assertIs(publish.call_args.kwargs["expected_current"], predecessor)
         rebaseline.assert_not_called()
+
+    def test_adc_supersede_approval_is_enforced_for_other_issue_numbers(self):
+        issue_number = 128
+        pointer = SimpleNamespace(comment_id=200, sha256="a" * 64,
+                                  byte_length=7, state="approved")
+        previous = SimpleNamespace(comment_id=199, sha256="b" * 64,
+                                   byte_length=7, state="approved")
+        github = SimpleNamespace(
+            repo="puchinya/ai-agent-workflow",
+            repository_metadata=lambda: {
+                "id": 1401910271, "full_name": "puchinya/ai-agent-workflow",
+                "owner": {"id": 3744776, "type": "User"},
+            },
+        )
+        decisions = SimpleNamespace(comment_id=1234)
+        with patch("p_ases.cli.GitHub", return_value=github), \
+                patch("p_ases.cli.parse_adc", return_value=SimpleNamespace(sha256="a" * 64)), \
+                patch("p_ases.cli.read_verified_owner_decision", return_value=decisions) as authorization, \
+                patch("p_ases.cli.verify_adc", return_value=SimpleNamespace(pointer=previous)), \
+                patch("p_ases.cli.publish_adc", return_value=pointer) as publisher, \
+                contextlib.redirect_stdout(io.StringIO()):
+            status = main([
+                "adc", "publish", str(issue_number), str(Path(__file__)),
+                "--repo", "puchinya/ai-agent-workflow", "--state", "approved",
+                "--supersede", "--approval-comment-id", str(decisions.comment_id),
+            ])
+        self.assertEqual(status, 0)
+        self.assertEqual(authorization.call_args.kwargs["issue_number"], issue_number)
+        self.assertEqual(publisher.call_args.args[1], issue_number)
 
     def test_issue_63_approved_adc_without_exact_supersede_is_pending_and_never_publishes(self):
         github = SimpleNamespace(repo="puchinya/ai-agent-workflow")
