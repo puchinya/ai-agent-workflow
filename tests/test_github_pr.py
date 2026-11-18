@@ -73,6 +73,19 @@ class GitHubPRAdapterTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 os.kill(child_pid, 0)
 
+    def test_current_adc_reader_fetches_newest_comment_pages_without_full_pagination(self):
+        github = FakeGitHub(([{"id": 201, "body": "recent"}], [{"id": 101, "body": "old"}]))
+        pages = github.issue_comment_pages_newest(7, 101)
+        self.assertEqual(list(pages), [[{"id": 201, "body": "recent"}],
+                                       [{"id": 101, "body": "old"}]])
+        self.assertEqual(
+            [call[1] for call in github.calls],
+            ["repos/owner/repo/issues/7/comments?per_page=100&page=2",
+             "repos/owner/repo/issues/7/comments?per_page=100&page=1"],
+        )
+        with self.assertRaisesRegex(GitHubError, "comment count"):
+            list(github.issue_comment_pages_newest(7, -1))
+
     def test_pr_search_paginates_exact_refs_and_closed_state(self):
         row = {"number": 42}
         github = FakeGitHub(([row],))
