@@ -92,15 +92,11 @@ class PRBinding:
                 raise CheckpointError("PRBinding current base must differ from the frozen base")
         if self.adoption_id is not None:
             _digest(self.adoption_id, "PRBinding adoption ID")
-            if (self.repository.casefold() != "puchinya/ai-agent-workflow" or self.issue_number != 63
-                    or self.pr_number != 64):
-                raise CheckpointError("adopted PRBinding is restricted to puchinya/ai-agent-workflow Issue #63 / PR #64")
         if self.execution_epoch_sha256 is not None:
             _digest(self.execution_epoch_sha256, "PRBinding Issue execution epoch")
-            if (self.repository.casefold() != "puchinya/ai-agent-workflow" or self.issue_number != 71
-                    or self.adoption_id is not None or self.current_base_sha40 is not None
+            if (self.adoption_id is not None or self.current_base_sha40 is not None
                     or self.current_base_advance_sha256 is not None):
-                raise CheckpointError("V2 execution-epoch PRBinding is restricted to Issue #71 without another epoch")
+                raise CheckpointError("execution epoch and adoption/base-advance proofs are mutually exclusive")
         validate_ref(self.branch_ref)
         return self
 
