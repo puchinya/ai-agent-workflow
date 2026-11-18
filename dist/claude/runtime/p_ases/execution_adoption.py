@@ -1192,6 +1192,65 @@ def append_adopted_pr_binding(github: Any, root: Path, *,
     ) | {"status": "PR_BINDING_CURRENT" if previous == new_binding else "PR_BINDING_ADVANCED"}
 
 
+def _current_rebaseline_applied(github: Any, issue_number: int, current_adc: Any) -> bool:
+    """Check only the newest Phase Applied for the currently approved ADC.
+
+    This does not examine superseded ADCs, their predecessor declarations, or
+    their historical chain. A matching Applied and Intent are read directly by ID.
+    """
+    from .phase_rebaseline import APPLIED_V2_SCHEMA, APPLIED_V3_SCHEMA, INTENT_V2_SCHEMA, INTENT_V3_SCHEMA
+    issue = github.issue(issue_number)
+    count = issue.get("comments")
+    if type(count) is int and count >= 0 and hasattr(github, "issue_comment_pages_newest"):
+        pages = github.issue_comment_pages_newest(issue_number, count)
+    else:
+        pages = (github.issue_comments(issue_number),)
+    for page in pages:
+        for row in reversed(page):
+            body = row.get("body") if isinstance(row, dict) else None
+            if not isinstance(body, str):
+                continue
+            first = body.split("\n", 1)[0]
+            if first not in (f"<!-- {APPLIED_V2_SCHEMA}", f"<!-- {APPLIED_V3_SCHEMA}"):
+                continue
+            raw = body.split("\n", 1)[1].removesuffix("\n-->")
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise ExecutionAdoptionError("current Phase Applied record is malformed") from exc
+            if (not isinstance(payload, dict) or payload.get("schema") not in (APPLIED_V2_SCHEMA, APPLIED_V3_SCHEMA)
+                    or payload.get("issue_number") != issue_number):
+                raise ExecutionAdoptionError("current Phase Applied record has inconsistent identity")
+            if (payload.get("successor_adc_comment_id") != current_adc.pointer.comment_id
+                    or payload.get("successor_adc_sha256") != current_adc.pointer.sha256):
+                continue
+            comment_id = row.get("id")
+            if type(comment_id) is not int or comment_id < 1:
+                raise ExecutionAdoptionError("current Phase Applied has no valid ID")
+            direct = github.issue_comment(issue_number, comment_id)
+            author = direct.get("user") if isinstance(direct, dict) else None
+            if (not isinstance(direct, dict) or direct.get("body") != body
+                    or direct.get("issue_url") != f"https://api.github.com/repos/{github.repo}/issues/{issue_number}"
+                    or direct.get("created_at") != direct.get("updated_at")
+                    or not isinstance(author, dict) or author.get("type") != "User"):
+                raise ExecutionAdoptionError("current Phase Applied carrier changed")
+            intent_id = payload.get("intent_comment_id")
+            intent_sha = payload.get("intent_sha256")
+            if (type(intent_id) is not int or intent_id < 1
+                    or not isinstance(intent_sha, str) or not SHA256.fullmatch(intent_sha)):
+                raise ExecutionAdoptionError("current Phase Applied has no valid Intent proof")
+            intent = github.issue_comment(issue_number, intent_id)
+            intent_body = intent.get("body") if isinstance(intent, dict) else None
+            expected_intent_schema = INTENT_V3_SCHEMA if payload["schema"] == APPLIED_V3_SCHEMA else INTENT_V2_SCHEMA
+            if (not isinstance(intent_body, str) or not intent_body.startswith(f"<!-- {expected_intent_schema}\n")
+                    or hashlib.sha256(intent_body.encode("utf-8")).hexdigest() != intent_sha
+                    or intent.get("issue_url") != direct.get("issue_url")
+                    or intent.get("created_at") != intent.get("updated_at")):
+                raise ExecutionAdoptionError("current Phase Intent proof does not match Applied")
+            return True
+    return False
+
+
 def _verify_adopted_effective_adc(github: Any, epoch: AdoptedExecutionEpoch, *,
                                   expected_adc_comment_id: int,
                                   expected_adc_sha256: str) -> tuple[Any, bool]:
@@ -1214,6 +1273,8 @@ def _verify_adopted_effective_adc(github: Any, epoch: AdoptedExecutionEpoch, *,
         return current, False
     if current.pointer.comment_id < epoch.adc_comment_id:
         raise ExecutionAdoptionError("current ADC predates the immutable adopted origin")
+    if not _current_rebaseline_applied(github, epoch.issue_number, current):
+        raise ExecutionAdoptionError("ADC_REFRESH_PENDING_PHASE_REBASELINE: current ADC has no applied Phase generation")
     return current, True
 
 
