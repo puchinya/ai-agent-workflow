@@ -633,6 +633,76 @@ ISSUE71_WINDOWS_FIXTURE_READER_MARKER_FIELDS = ISSUE71_WINDOWS_PROFILE_READER_MA
 ISSUE71_CURRENT_COMBINED_SCHEMA = "PASES_ISSUE_PHASE_AND_USER_REVIEW_V2"
 ISSUE71_CURRENT_COMBINED_MARKER_FIELDS = ISSUE71_WINDOWS_FIXTURE_READER_MARKER_FIELDS
 ISSUE71_PHASE_AND_USER_REVIEW_V3_SCHEMA = "PASES_ISSUE_PHASE_AND_USER_REVIEW_V3"
+TIMESTAMP_CONTINUATION_ADC_COMMENT_ID = 6966957737
+TIMESTAMP_CONTINUATION_ADC_SHA256 = "9bcfa163ea77ebc1dfe5c9cc10903b33191d6c2afc05f3223e28665198da16ad"
+TIMESTAMP_CONTINUATION_ADC_BYTES = 25759
+TIMESTAMP_CONTINUATION_AUTH_SCHEMA = "PASES_ISSUE71_PHASE_REWORK_TIMESTAMP_CONTINUATION_V1"
+TIMESTAMP_CONTINUATION_MARKER_BYTES = 11766
+TIMESTAMP_CONTINUATION_MARKER_SHA256 = "f88be893e4a9cb982cfa1d178cc67fe13602010f94eb4ee9feb8bf775a92e88b"
+TIMESTAMP_CONTINUATION_PREDECESSOR = (6963966853,
+                                      "ea66f7e9504908391bec106fd1ce84ac1c2fd2b994880e9171aa34e8e3128cdf")
+TIMESTAMP_CONTINUATION_HISTORY_BOUNDARY = (
+    6886739124, "9c28ac5098565f74ffb5a74ece39a5a92c1264d793c2542b12e5d2efabc8c007",
+)
+TIMESTAMP_CONTINUATION_PHASE_REWORK_ORIGIN = {
+    "adc_comment_id": 6963966853,
+    "adc_sha256": "ea66f7e9504908391bec106fd1ce84ac1c2fd2b994880e9171aa34e8e3128cdf",
+    "generation_authorization_sha256": "dfe3f08c122d9b070c2fcd861f0d4b3c316fc78d553de0232ee6d86acf907a97",
+    "generation_number": 2,
+    "intent": {
+        "body_byte_length": 1939,
+        "body_sha256": "90bef1741ed3c685d650a82f15550912cff9c77af1227f79d1747c3e606ffbb8",
+        "comment_created_at": "2026-11-18T01:48:30Z",
+        "comment_id": 6966536610,
+        "event_time": "2026-11-18T01:43:35Z",
+        "event_to_publication_delta_seconds": 295,
+        "schema": "PASES_ISSUE_VERIFICATION_REWORK_INTENT_V3",
+    },
+    "applied": {
+        "body_byte_length": 2060,
+        "body_sha256": "9f60a9f13a8d5e10899ecedc661ada1ee67e3804cb26c454bf4625cf208312c6",
+        "comment_created_at": "2026-11-18T01:51:53Z",
+        "comment_id": 6966591228,
+        "event_time": "2026-11-18T01:50:37Z",
+        "event_to_publication_delta_seconds": 76,
+        "schema": "PASES_ISSUE_VERIFICATION_REWORK_APPLIED_V3",
+    },
+    "label_writes_already_performed": 1,
+    "post_rework_phase": "requirements",
+    "predecessor_v3_marker_byte_length": 33243,
+    "predecessor_v3_marker_sha256": "37bf5bd793823b4302f12179ae8d1f3c3cde32a4d57d7a244321f45073a38066",
+    "prior_v2_applied": {
+        "body_sha256": "b8648cfd2c9c1479791554179069bfc3b57ab5c7d26ccf255184087dcf388b18",
+        "comment_id": 6889965335,
+    },
+    "prior_v2_intent": {
+        "body_sha256": "ad2b75b99d4d0aa11d2cf021605eae9ecd9386a436f8032033a4cf87e5bd5be5",
+        "comment_id": 6888474848,
+    },
+    "readiness_sha256": "ae86935f703d863ce7bc11b677ece78bce002f5492c5a6313b0450fb09026372",
+    "readiness_subject_sha256": "4174e5412e284bf960730f42a76974ed122372bf796753739c95c5095b578c07",
+    "recovery_mode": "read-only exact NOOP reconciliation; no further Intent, Applied, or label write",
+    "v3_exact_readback_sha256": "36d7c9f35b39506d8cf076196f2568d01f6ea5d306da88e2beafd8ebcdeb6aa6",
+    "v3_final_readback_blocker_sha256": "dd976cc6afd71f7606ff92afee104af16ae6d7a9ea1d1a1b74779476b87eaa49",
+}
+TIMESTAMP_CONTINUATION_FOLLOWUP_PATHS = (
+    "dist/antigravity/docs/design/workflow-design.md",
+    "dist/antigravity/docs/specs/workflow-spec.md",
+    "dist/antigravity/runtime/p_ases/phase_rework.py",
+    "dist/claude/docs/design/workflow-design.md",
+    "dist/claude/docs/specs/workflow-spec.md",
+    "dist/claude/runtime/p_ases/phase_rework.py",
+    "dist/openai/docs/design/workflow-design.md",
+    "dist/openai/docs/specs/workflow-spec.md",
+    "dist/openai/runtime/p_ases/phase_rework.py",
+    "docs/design/workflow-design.md",
+    "docs/specs/workflow-spec.md",
+    "docs/testing/pases-lifecycle-tests.md",
+    "docs/testing/runtime-tests.md",
+    "docs/testing/traceability.md",
+    "runtime/p_ases/phase_rework.py",
+    "tests/test_phase_rework.py",
+)
 ISSUE71_PHASE_AND_USER_REVIEW_V3_FIELDS = frozenset({
     "active_authorization_digests", "active_epoch_id", "active_epoch_sha256",
     "active_phase_generation_comment_id", "active_phase_generation_sha256",
@@ -993,6 +1063,9 @@ class _Live:
     execution_receipt_reader_continuation_authorization_sha256: str | None = None
     phase_rework_generation_authorization: dict[str, Any] | None = None
     phase_rework_generation_authorization_sha256: str | None = None
+    phase_rework_origin_adc_comment_id: int | None = None
+    phase_rework_origin_adc_sha256: str | None = None
+    timestamp_policy: dict[str, Any] | None = None
 
 
 def _canonical(value: Any) -> str:
@@ -1537,6 +1610,159 @@ def _has_issue71_current_combined_marker(verified: VerifiedADC) -> bool:
         return False
     return (f"<!-- {ISSUE71_CURRENT_COMBINED_SCHEMA}\n" in content
             or f"<!-- {ISSUE71_PHASE_AND_USER_REVIEW_V3_SCHEMA}\n" in content)
+
+
+def _has_issue71_timestamp_continuation_marker(verified: VerifiedADC) -> bool:
+    try:
+        content = verified.contract.content.decode("utf-8", errors="strict")
+    except (AttributeError, UnicodeError):
+        return False
+    return f"<!-- {TIMESTAMP_CONTINUATION_AUTH_SCHEMA}\n" in content
+
+
+def parse_timestamp_continuation_authorization(
+    verified: VerifiedADC,
+) -> tuple[dict[str, Any], str]:
+    """Parse the exact approved timestamp continuation marker and its bounded scope."""
+    contract = verified.contract
+    if (verified.pointer.state != "approved"
+            or verified.pointer.comment_id != TIMESTAMP_CONTINUATION_ADC_COMMENT_ID
+            or verified.pointer.sha256 != TIMESTAMP_CONTINUATION_ADC_SHA256
+            or contract.sha256 != TIMESTAMP_CONTINUATION_ADC_SHA256
+            or contract.byte_length != TIMESTAMP_CONTINUATION_ADC_BYTES
+            or contract.byte_length != len(contract.content)
+            or contract.repository.casefold() != REPOSITORY.casefold()):
+        raise PhaseReworkError("current timestamp-continuation ADC differs from its exact approved bytes")
+    text = contract.content.decode("utf-8", errors="strict")
+    start_marker = f"<!-- {TIMESTAMP_CONTINUATION_AUTH_SCHEMA}\n"
+    if text.count(start_marker) != 1:
+        raise PhaseReworkError("timestamp-continuation ADC must contain one authorization marker")
+    start = text.index(start_marker)
+    close = text.find("\n-->", start + len(start_marker))
+    if close < 0 or text[close + len("\n-->"):].strip():
+        raise PhaseReworkError("timestamp-continuation marker is incomplete or not terminal")
+    marker_bytes = text[start:close + len("\n-->")].encode("utf-8")
+    if (len(marker_bytes) != TIMESTAMP_CONTINUATION_MARKER_BYTES
+            or hashlib.sha256(marker_bytes).hexdigest() != TIMESTAMP_CONTINUATION_MARKER_SHA256):
+        raise PhaseReworkError("timestamp-continuation marker differs from the exact approved bytes")
+    raw = text[start + len(start_marker):close]
+    try:
+        value = json.loads(raw, object_pairs_hook=_pairs)
+    except (json.JSONDecodeError, UnicodeError) as exc:
+        raise PhaseReworkError("timestamp-continuation marker JSON is malformed") from exc
+    expected_fields = {
+        "approved_history", "branch_ref", "checkpoint_before_publication",
+        "current_adc_predecessor", "current_head_sha40", "current_issue", "current_pr",
+        "followup_commit_authorization", "history_boundary", "issue_number",
+        "max_same_head_binding_checkpoint_pairs",
+        "no_admin_ruleset_activation_issue63_merge_release_tag_or_issue_close", "owner_id",
+        "phase_edges", "phase_reissue_policy", "phase_rework_origin",
+        "pr_binding_before_publication", "repository", "repository_id",
+        "required_gates_after_followup_head", "reviewer_checklist_count", "schema",
+        "timestamp_policy", "user_review", "v2_record_immutability", "v3_record_immutability",
+    }
+    if not isinstance(value, dict) or set(value) != expected_fields:
+        raise PhaseReworkError("timestamp-continuation marker fields are incomplete or unknown")
+    if (value.get("schema") != TIMESTAMP_CONTINUATION_AUTH_SCHEMA
+            or value.get("repository") != REPOSITORY
+            or value.get("repository_id") != REPOSITORY_ID
+            or value.get("owner_id") != OWNER_ID
+            or value.get("issue_number") != ISSUE_NUMBER
+            or value.get("branch_ref") != BRANCH_REF
+            or value.get("current_head_sha40") != "3f5e8fc8c305d45c32617ca12ec08afd24394526"
+            or value.get("current_adc_predecessor") != {
+                "byte_length": 53083,
+                "comment_id": TIMESTAMP_CONTINUATION_PREDECESSOR[0],
+                "sha256": TIMESTAMP_CONTINUATION_PREDECESSOR[1],
+            }
+            or value.get("history_boundary") != {
+                "comment_id": TIMESTAMP_CONTINUATION_HISTORY_BOUNDARY[0],
+                "sha256": TIMESTAMP_CONTINUATION_HISTORY_BOUNDARY[1],
+            }
+            or value.get("max_same_head_binding_checkpoint_pairs") != 1
+            or value.get("no_admin_ruleset_activation_issue63_merge_release_tag_or_issue_close") is not True
+            or value.get("v2_record_immutability") is not True
+            or value.get("v3_record_immutability") is not True
+            or value.get("reviewer_checklist_count") != 12):
+        raise PhaseReworkError("timestamp-continuation marker does not match the approved Issue #71 subject")
+    issue = value.get("current_issue")
+    if (not isinstance(issue, dict) or set(issue) != {"body_sha256", "id", "labels", "number", "state"}
+            or issue.get("body_sha256") != ISSUE_BODY_SHA256 or issue.get("id") != ISSUE_ID
+            or issue.get("number") != ISSUE_NUMBER or issue.get("state") != "open"
+            or issue.get("labels") != ["enhancement", "kind:single", "phase:requirements"]):
+        raise PhaseReworkError("timestamp-continuation Issue identity or phase differs")
+    pull = value.get("current_pr")
+    if (not isinstance(pull, dict)
+            or set(pull) != {"base_ref", "base_sha40", "body_sha256", "draft", "head_sha40",
+                             "merged", "number", "state"}
+            or pull.get("base_ref") != PR_BASE_REF or pull.get("base_sha40") != PR_BASE_SHA40
+            or pull.get("body_sha256") != PR_BODY_SHA256 or pull.get("draft") is not False
+            or pull.get("head_sha40") != value["current_head_sha40"]
+            or pull.get("merged") is not False or pull.get("number") != PR_NUMBER
+            or pull.get("state") != "open"):
+        raise PhaseReworkError("timestamp-continuation PR identity or refs differ")
+    predecessor = _adc_predecessor_header(text, "timestamp-continuation ADC")
+    if predecessor != TIMESTAMP_CONTINUATION_PREDECESSOR:
+        raise PhaseReworkError("timestamp-continuation ADC predecessor differs from its approved pointer")
+    history = value.get("approved_history")
+    if not isinstance(history, list) or not history:
+        raise PhaseReworkError("timestamp-continuation marker has no approved history")
+    ids: list[int] = []
+    for row in history:
+        if (not isinstance(row, dict) or set(row) != {"byte_length", "comment_id", "sha256", "state"}
+                or type(row.get("byte_length")) is not int or row["byte_length"] < 1
+                or type(row.get("comment_id")) is not int or row["comment_id"] < 1
+                or not isinstance(row.get("sha256"), str) or not SHA256.fullmatch(row["sha256"])
+                or row.get("state") != "approved"):
+            raise PhaseReworkError("timestamp-continuation approved history contains an invalid row")
+        ids.append(row["comment_id"])
+    if ids != sorted(set(ids)) or history[-1] != {
+            "byte_length": 53083, "comment_id": TIMESTAMP_CONTINUATION_PREDECESSOR[0],
+            "sha256": TIMESTAMP_CONTINUATION_PREDECESSOR[1], "state": "approved"}:
+        raise PhaseReworkError("timestamp-continuation approved history order or predecessor differs")
+    followup = value.get("followup_commit_authorization")
+    if (not isinstance(followup, dict)
+            or set(followup) != {"max_commits", "parent_sha40", "path_allowlist",
+                                 "require_direct_child", "require_push_to_existing_branch"}
+            or followup.get("max_commits") != 1
+            or followup.get("parent_sha40") != value["current_head_sha40"]
+            or followup.get("path_allowlist") != list(TIMESTAMP_CONTINUATION_FOLLOWUP_PATHS)
+            or followup.get("require_direct_child") is not True
+            or followup.get("require_push_to_existing_branch") is not True):
+        raise PhaseReworkError("timestamp-continuation commit boundary or exact allowlist differs")
+    timestamp_policy = value.get("timestamp_policy")
+    if (not isinstance(timestamp_policy, dict)
+            or set(timestamp_policy) != {"applied_event_field", "applies_to", "intent_event_field",
+                                         "max_skew_seconds", "minimum_skew_seconds", "reason", "rule", "schema"}
+            or timestamp_policy.get("schema") != "PASES_ISSUE_PHASE_EVENT_PUBLICATION_WINDOW_V1"
+            or timestamp_policy.get("minimum_skew_seconds") != 0
+            or timestamp_policy.get("max_skew_seconds") != 300
+            or timestamp_policy.get("intent_event_field") != "created_at"
+            or timestamp_policy.get("applied_event_field") != "applied_at"
+            or timestamp_policy.get("applies_to") != [INTENT_SCHEMA, APPLIED_SCHEMA,
+                                                       ISSUE71_REWORK_INTENT_V3_SCHEMA,
+                                                       ISSUE71_REWORK_APPLIED_V3_SCHEMA]
+            or timestamp_policy.get("rule") != (
+                "Both timestamps must be strict UTC. comment created_at minus embedded event time "
+                "must be in the inclusive range 0..300 seconds.")):
+        raise PhaseReworkError("timestamp-continuation timestamp policy is invalid")
+    if value.get("phase_rework_origin") != TIMESTAMP_CONTINUATION_PHASE_REWORK_ORIGIN:
+        raise PhaseReworkError("timestamp-continuation V3 origin differs from the immutable journal")
+    if value.get("phase_edges") != [
+            ["requirements", "specification"], ["specification", "design"], ["design", "ready"],
+            ["ready", "execution"], ["execution", "verification"], ["verification", "user-review"]]:
+        raise PhaseReworkError("timestamp-continuation phase edges differ from the authorized sequence")
+    if value.get("phase_reissue_policy") != {
+            "bind_current_committed_document_bytes_at_exact_followup_head": True,
+            "documents": ["requirements", "specification", "design", "ready"],
+            "preserve_historical_receipts": True}:
+        raise PhaseReworkError("timestamp-continuation phase reissue policy differs")
+    if value.get("user_review") != {
+            "decision_allowed": False, "existing_session": "absent",
+            "feedback_snapshot": "complete and immutable", "max_sessions": 1,
+            "must_start_after_final_readiness_pass": True, "required_final_state": "PENDING"}:
+        raise PhaseReworkError("timestamp-continuation User Review gate differs")
+    return value, hashlib.sha256(marker_bytes).hexdigest()
 
 
 def _validate_historical_commit_segments(
@@ -2242,6 +2468,79 @@ def verify_issue71_phase_and_user_review_adc_chain(
     github: GitHub, verified: VerifiedADC,
 ) -> tuple[dict[str, Any], tuple[VerifiedADC, ...]]:
     """Verify the exact approved history declared by the current combined marker."""
+    if _has_issue71_timestamp_continuation_marker(verified):
+        authorization, _marker_sha = parse_timestamp_continuation_authorization(verified)
+        boundary = authorization["history_boundary"]
+        try:
+            chain = verify_adc_forward_generations(
+                github, ISSUE_NUMBER,
+                prior_comment_id=boundary["comment_id"],
+                prior_sha256=boundary["sha256"],
+                current_comment_id=verified.pointer.comment_id,
+                current_sha256=verified.contract.sha256,
+            )
+        except ADCError as exc:
+            raise PhaseReworkError(f"timestamp-continuation ADC history readback failed: {exc}") from exc
+        actual_history = [
+            {"byte_length": row.contract.byte_length, "comment_id": row.pointer.comment_id,
+             "sha256": row.contract.sha256, "state": row.pointer.state}
+            for row in chain[1:-1]
+        ]
+        if (not chain or chain[0].pointer.comment_id != boundary["comment_id"]
+                or chain[0].contract.sha256 != boundary["sha256"]
+                or chain[-1].pointer != verified.pointer
+                or actual_history != authorization["approved_history"]):
+            raise PhaseReworkError(
+                "timestamp-continuation approved history is missing, reordered, changed, or not current"
+            )
+        previous = (boundary["comment_id"], boundary["sha256"])
+        for row in chain[1:-1]:
+            body = row.contract.content.decode("utf-8", errors="strict")
+            declared = _optional_historical_adc_predecessor_header(
+                body, f"approved historical ADC #{row.pointer.comment_id}",
+            )
+            if declared is not None and declared != previous:
+                raise PhaseReworkError(
+                    f"timestamp-continuation historical predecessor differs at #{row.pointer.comment_id}"
+                )
+            previous = (row.pointer.comment_id, row.contract.sha256)
+        current_text = verified.contract.content.decode("utf-8", errors="strict")
+        if _adc_predecessor_header(current_text, "timestamp-continuation ADC") != previous:
+            raise PhaseReworkError("timestamp-continuation predecessor differs from its approved history")
+        origin = next((row for row in chain
+                       if row.pointer.comment_id == TIMESTAMP_CONTINUATION_PREDECESSOR[0]), None)
+        if (origin is None or origin.pointer.sha256 != TIMESTAMP_CONTINUATION_PREDECESSOR[1]
+                or origin.contract.byte_length != 53083):
+            raise PhaseReworkError("immutable V3 origin ADC is absent from the verified forward chain")
+        origin_authorization = parse_issue71_phase_and_user_review_authorization(origin)
+        origin_generation = origin_authorization.get("phase_rework_generation_authorization")
+        origin_content = origin.contract.content.decode("utf-8", errors="strict")
+        origin_marker_start = f"<!-- {ISSUE71_PHASE_AND_USER_REVIEW_V3_SCHEMA}\n"
+        if origin_content.count(origin_marker_start) != 1:
+            raise PhaseReworkError("immutable V3 origin ADC has no unique authorization marker")
+        origin_start = origin_content.index(origin_marker_start)
+        origin_close = origin_content.find("\n-->", origin_start + len(origin_marker_start))
+        if origin_close < 0:
+            raise PhaseReworkError("immutable V3 origin marker is incomplete")
+        origin_marker = origin_content[origin_start:origin_close + len("\n-->")].encode("utf-8")
+        origin_record = authorization["phase_rework_origin"]
+        if (len(origin_marker) != origin_record["predecessor_v3_marker_byte_length"]
+                or hashlib.sha256(origin_marker).hexdigest()
+                != origin_record["predecessor_v3_marker_sha256"]
+                or not isinstance(origin_generation, dict)
+                or hashlib.sha256(_canonical(origin_generation).encode("utf-8")).hexdigest()
+                != origin_record["generation_authorization_sha256"]
+                or origin_generation.get("new_generation_number") != origin_record["generation_number"]
+                or origin_authorization.get("intent_comment_id")
+                != origin_record["prior_v2_intent"]["comment_id"]
+                or origin_authorization.get("intent_body_sha256")
+                != origin_record["prior_v2_intent"]["body_sha256"]
+                or origin_authorization.get("applied_comment_id")
+                != origin_record["prior_v2_applied"]["comment_id"]
+                or origin_authorization.get("applied_body_sha256")
+                != origin_record["prior_v2_applied"]["body_sha256"]):
+            raise PhaseReworkError("immutable V3 origin authorization or marker digest differs")
+        return origin_authorization, chain
     authorization = parse_issue71_phase_and_user_review_authorization(verified)
     boundary_value = authorization.get("history_predecessor_boundary")
     if boundary_value is None:
@@ -2326,15 +2625,51 @@ def _verify_combined_followup_commit_set(root: Path, head: str,
         raise PhaseReworkError("combined ADC implementation commit exceeds its exact path allowlist")
 
 
-def _authorization_context(github: GitHub, current: VerifiedADC
-                            ) -> tuple[dict[str, Any], str, dict[str, Any] | None, str | None,
-                                       dict[str, Any] | None, str | None,
-                                       dict[str, Any] | None, str | None,
-                                       dict[str, Any] | None, str | None,
-                                       dict[str, Any] | None, str | None]:
+def _verify_timestamp_continuation_commit_set(
+    root: Path, head: str, authorization: Mapping[str, Any],
+) -> None:
+    followup = authorization.get("followup_commit_authorization")
+    if not isinstance(followup, dict):
+        raise PhaseReworkError("timestamp-continuation commit authorization is missing")
+    start = followup.get("parent_sha40")
+    allowlist = followup.get("path_allowlist")
+    if (start != "3f5e8fc8c305d45c32617ca12ec08afd24394526"
+            or not isinstance(allowlist, list)
+            or tuple(allowlist) != TIMESTAMP_CONTINUATION_FOLLOWUP_PATHS
+            or not is_ancestor(root, start, head)):
+        raise PhaseReworkError("timestamp-continuation parent or path allowlist is invalid")
+    rows = run_git(root, "rev-list", "--reverse", f"{start}..{head}").splitlines()
+    if not rows:
+        if head != start:
+            raise PhaseReworkError("timestamp-continuation HEAD does not equal its authorized start")
+        return
+    if (len(rows) != 1 or rows[0] != head
+            or commit_parents_sha40(root, rows[0]) != (start,)):
+        raise PhaseReworkError("timestamp continuation requires zero or one direct-child commit")
+    changed = changed_paths_between(root, start, rows[0])
+    if not changed or any(path not in allowlist for path in changed):
+        raise PhaseReworkError("timestamp-continuation commit exceeds its exact path allowlist")
+
+
+def _authorization_context(github: GitHub, current: VerifiedADC) -> tuple[Any, ...]:
     """Resolve the original rework authorization and its exact approved successors."""
+    if _has_issue71_timestamp_continuation_marker(current):
+        phase_authorization, _chain = verify_issue71_phase_and_user_review_adc_chain(github, current)
+        continuation, _marker_sha = parse_timestamp_continuation_authorization(current)
+        policy = continuation["timestamp_policy"]
+        policy_sha = hashlib.sha256(_canonical(policy).encode("utf-8")).hexdigest()
+        return (
+            AUTHORIZATION, REWORK_AUTH_MARKER_SHA256,
+            RECOVERY_AUTHORIZATION, RECOVERY_AUTH_MARKER_SHA256,
+            policy, policy_sha,
+            CONTINUATION_AUTHORIZATION, CONTINUATION_AUTH_MARKER_SHA256,
+            READER_CONTINUATION_AUTHORIZATION, READER_CONTINUATION_AUTH_MARKER_SHA256,
+            EXECUTION_RECEIPT_READER_CONTINUATION_AUTHORIZATION,
+            EXECUTION_RECEIPT_READER_CONTINUATION_AUTH_MARKER_SHA256,
+            phase_authorization,
+        )
     if _has_issue71_current_combined_marker(current):
-        verify_issue71_phase_and_user_review_adc_chain(github, current)
+        phase_authorization, _chain = verify_issue71_phase_and_user_review_adc_chain(github, current)
         return (
             AUTHORIZATION, REWORK_AUTH_MARKER_SHA256,
             RECOVERY_AUTHORIZATION, RECOVERY_AUTH_MARKER_SHA256,
@@ -2343,6 +2678,7 @@ def _authorization_context(github: GitHub, current: VerifiedADC
             READER_CONTINUATION_AUTHORIZATION, READER_CONTINUATION_AUTH_MARKER_SHA256,
             EXECUTION_RECEIPT_READER_CONTINUATION_AUTHORIZATION,
             EXECUTION_RECEIPT_READER_CONTINUATION_AUTH_MARKER_SHA256,
+            phase_authorization,
         )
     if current.pointer.comment_id == APPROVED_HISTORY_READER_ADC_COMMENT_ID:
         authorization, _current_marker_sha = parse_approved_history_reader_authorization(current)
@@ -2355,6 +2691,7 @@ def _authorization_context(github: GitHub, current: VerifiedADC
             READER_CONTINUATION_AUTHORIZATION, READER_CONTINUATION_AUTH_MARKER_SHA256,
             EXECUTION_RECEIPT_READER_CONTINUATION_AUTHORIZATION,
             EXECUTION_RECEIPT_READER_CONTINUATION_AUTH_MARKER_SHA256,
+            None,
         )
     if current.pointer.comment_id == REWORK_ADC_COMMENT_ID:
         try:
@@ -2373,7 +2710,7 @@ def _authorization_context(github: GitHub, current: VerifiedADC
             raise PhaseReworkError("current ADC is not the exact approved successor of #6886911700")
         authorization, authorization_sha = parse_authorization(current)
         return (authorization, authorization_sha, None, None, None, None, None, None,
-                None, None, None, None)
+                None, None, None, None, None)
     if current.pointer.comment_id == EXECUTION_RECEIPT_READER_CONTINUATION_ADC_COMMENT_ID:
         execution_reader_authorization, execution_reader_sha = (
             parse_execution_receipt_reader_continuation_authorization(current)
@@ -2433,7 +2770,7 @@ def _authorization_context(github: GitHub, current: VerifiedADC
         return (authorization, authorization_sha, recovery_authorization, recovery_sha,
                 timestamp_authorization, timestamp_sha, continuation_authorization,
                 continuation_sha, reader_authorization, reader_sha,
-                execution_reader_authorization, execution_reader_sha)
+                execution_reader_authorization, execution_reader_sha, None)
     if current.pointer.comment_id == READER_CONTINUATION_ADC_COMMENT_ID:
         reader_authorization, reader_sha = parse_reader_continuation_authorization(current)
         try:
@@ -2477,7 +2814,7 @@ def _authorization_context(github: GitHub, current: VerifiedADC
             raise PhaseReworkError("reader-continuation marker does not bind its exact approved predecessor chain")
         return (authorization, authorization_sha, recovery_authorization, recovery_sha,
                 timestamp_authorization, timestamp_sha, continuation_authorization,
-                continuation_sha, reader_authorization, reader_sha, None, None)
+                continuation_sha, reader_authorization, reader_sha, None, None, None)
     if current.pointer.comment_id == CONTINUATION_ADC_COMMENT_ID:
         continuation_authorization, continuation_sha = parse_continuation_authorization(current)
         try:
@@ -2517,7 +2854,7 @@ def _authorization_context(github: GitHub, current: VerifiedADC
             raise PhaseReworkError("continuation authorization does not bind its exact approved predecessor chain")
         return (authorization, authorization_sha, recovery_authorization, recovery_sha,
                 timestamp_recovery_authorization, timestamp_recovery_sha,
-                continuation_authorization, continuation_sha, None, None, None, None)
+                continuation_authorization, continuation_sha, None, None, None, None, None)
     if current.pointer.comment_id == TIMESTAMP_RECOVERY_ADC_COMMENT_ID:
         timestamp_recovery_authorization, timestamp_recovery_sha = (
             parse_timestamp_recovery_authorization(current)
@@ -2550,7 +2887,7 @@ def _authorization_context(github: GitHub, current: VerifiedADC
             raise PhaseReworkError("timestamp-recovery authorization does not bind its exact approved predecessor")
         return (authorization, authorization_sha, recovery_authorization, recovery_sha,
                 timestamp_recovery_authorization, timestamp_recovery_sha,
-                None, None, None, None, None, None)
+                None, None, None, None, None, None, None)
     recovery_authorization, recovery_sha = parse_authorization(current)
     if current.pointer.comment_id != RECOVERY_ADC_COMMENT_ID:
         raise PhaseReworkError("current ADC is not an exact Issue #71 rework generation")
@@ -2577,7 +2914,7 @@ def _authorization_context(github: GitHub, current: VerifiedADC
             or recovery_authorization.get("predecessor_adc_sha256") != chain[1].contract.sha256):
         raise PhaseReworkError("recovery authorization does not bind its exact approved predecessor")
     return (authorization, authorization_sha, recovery_authorization, recovery_sha,
-            None, None, None, None, None, None, None, None)
+            None, None, None, None, None, None, None, None, None)
 
 
 def _label_names(issue: Mapping[str, Any]) -> tuple[str, ...]:
@@ -2629,20 +2966,28 @@ def _pr(github: GitHub, head_sha40: str) -> dict[str, Any]:
     return pull
 
 
+def _reader_continuation_allowed_labels(live: _Live) -> set[tuple[str, ...]]:
+    phases = {"design", "ready", "execution"}
+    if _has_issue71_current_combined_marker(live.current_adc):
+        phases.update({"verification", "user-review"})
+    if _has_issue71_timestamp_continuation_marker(live.current_adc):
+        authorization, _marker_sha = parse_timestamp_continuation_authorization(live.current_adc)
+        edges = authorization["phase_edges"]
+        # The current approved contract owns the legal phase graph. Include both
+        # edge endpoints so the exact starting phase and every authorized next
+        # state are accepted by all inherited continuation readers.
+        phases = {phase for edge in edges for phase in edge}
+    return {
+        tuple(sorted(("enhancement", "kind:single", f"phase:{phase}")))
+        for phase in phases
+    }
+
+
 def _validate_reader_continuation_subject(live: _Live) -> None:
     authorization = live.reader_continuation_authorization
     if authorization is None:
         return
-    allowed_labels = {
-        tuple(sorted(("enhancement", "kind:single", "phase:design"))),
-        tuple(sorted(("enhancement", "kind:single", "phase:ready"))),
-        tuple(sorted(("enhancement", "kind:single", "phase:execution"))),
-    }
-    if _has_issue71_current_combined_marker(live.current_adc):
-        allowed_labels.update({
-            tuple(sorted(("enhancement", "kind:single", "phase:verification"))),
-            tuple(sorted(("enhancement", "kind:single", "phase:user-review"))),
-        })
+    allowed_labels = _reader_continuation_allowed_labels(live)
     body = live.issue.get("body")
     if (not isinstance(body, str) or authorization != READER_CONTINUATION_AUTHORIZATION
             or live.reader_continuation_authorization_sha256 != READER_CONTINUATION_AUTH_MARKER_SHA256
@@ -2660,16 +3005,7 @@ def _validate_execution_receipt_reader_continuation_subject(live: _Live) -> None
     authorization = live.execution_receipt_reader_continuation_authorization
     if authorization is None:
         return
-    allowed_labels = {
-        tuple(sorted(("enhancement", "kind:single", "phase:design"))),
-        tuple(sorted(("enhancement", "kind:single", "phase:ready"))),
-        tuple(sorted(("enhancement", "kind:single", "phase:execution"))),
-    }
-    if _has_issue71_current_combined_marker(live.current_adc):
-        allowed_labels.update({
-            tuple(sorted(("enhancement", "kind:single", "phase:verification"))),
-            tuple(sorted(("enhancement", "kind:single", "phase:user-review"))),
-        })
+    allowed_labels = _reader_continuation_allowed_labels(live)
     body = live.issue.get("body")
     if (not isinstance(body, str)
             or authorization != EXECUTION_RECEIPT_READER_CONTINUATION_AUTHORIZATION
@@ -3062,18 +3398,19 @@ def _live(github: GitHub, root: Path, *, phase: str | None = None,
 
     try:
         current = verify_adc(github, ISSUE_NUMBER)
-        current_combined = _has_issue71_current_combined_marker(current)
+        current_timestamp_continuation = _has_issue71_timestamp_continuation_marker(current)
+        current_combined = (_has_issue71_current_combined_marker(current)
+                            or current_timestamp_continuation)
         authorization, authorization_sha, recovery_authorization, recovery_sha, \
             timestamp_recovery_authorization, timestamp_recovery_sha, \
             continuation_authorization, continuation_sha, \
             reader_authorization, reader_sha, \
-            execution_reader_authorization, execution_reader_sha = (
+            execution_reader_authorization, execution_reader_sha, \
+            combined_authorization = (
             _authorization_context(github, current)
         )
-        combined_authorization = (
-            parse_issue71_phase_and_user_review_authorization(current)
-            if current_combined else None
-        )
+        if not current_combined:
+            combined_authorization = None
         generation_authorization = (
             combined_authorization.get("phase_rework_generation_authorization")
             if isinstance(combined_authorization, dict)
@@ -3145,6 +3482,9 @@ def _live(github: GitHub, root: Path, *, phase: str | None = None,
                 combined_authorization["approved_history"],
             )
             _verify_combined_followup_commit_set(root, head, combined_authorization)
+            if current_timestamp_continuation:
+                timestamp_continuation, _marker_sha = parse_timestamp_continuation_authorization(current)
+                _verify_timestamp_continuation_commit_set(root, head, timestamp_continuation)
         else:
             _verify_issue71_commit_lineage(
                 root, head, authorization, recovery_authorization, timestamp_recovery_authorization,
@@ -3158,7 +3498,13 @@ def _live(github: GitHub, root: Path, *, phase: str | None = None,
                      continuation_authorization, continuation_sha,
                      reader_authorization, reader_sha,
                      execution_reader_authorization, execution_reader_sha,
-                     generation_authorization, generation_authorization_sha256)
+                     generation_authorization, generation_authorization_sha256,
+                     (TIMESTAMP_CONTINUATION_PREDECESSOR[0]
+                      if current_timestamp_continuation else None),
+                     (TIMESTAMP_CONTINUATION_PREDECESSOR[1]
+                      if current_timestamp_continuation else None),
+                     (parse_timestamp_continuation_authorization(current)[0]["timestamp_policy"]
+                      if current_timestamp_continuation else None))
         _validate_reader_continuation_subject(live)
         _validate_execution_receipt_reader_continuation_subject(live)
         return live
@@ -3326,6 +3672,9 @@ def _validate_intent(record: PhaseReworkRecord, live: _Live,
     if payload["readiness_sha256"] == PRIOR_READINESS_SHA256:
         raise PhaseReworkError("historical Readiness cannot authorize the one-shot rework")
     _strict_utc(payload.get("created_at"), "Intent created_at")
+    _validate_phase_event_timestamp(
+        record.schema, payload.get("created_at"), record.created_at, live, "Intent",
+    )
     if readiness is not None:
         _validate_readiness(readiness, live)
         if (readiness.sha256 != payload["readiness_sha256"]
@@ -3367,6 +3716,39 @@ def _applied_timestamp_delta_seconds(applied_at: str, comment_created_at: str,
     return delta
 
 
+def _phase_event_publication_delta_seconds(
+    event_time: Any, published_time: Any, max_skew_seconds: int, label: str,
+) -> int:
+    event = datetime.fromisoformat(_strict_utc(event_time, f"{label} event timestamp")[:-1] + "+00:00")
+    published = datetime.fromisoformat(
+        _strict_utc(published_time, f"{label} comment created_at")[:-1] + "+00:00"
+    )
+    delta = int((published - event).total_seconds())
+    if delta < 0 or delta > max_skew_seconds:
+        raise PhaseReworkError(
+            f"{label} event/publication timestamps exceed the authorized UTC skew"
+        )
+    return delta
+
+
+def _validate_phase_event_timestamp(
+    schema: str, event_time: Any, published_time: Any, live: _Live, label: str,
+) -> None:
+    event = _strict_utc(event_time, f"{label} event timestamp")
+    published = _strict_utc(published_time, f"{label} comment created_at")
+    policy = live.timestamp_policy
+    if policy is None:
+        if event != published and label in {"V3 Applied", "Applied"}:
+            raise PhaseReworkError(f"{label} event timestamp differs from its immutable Issue comment")
+        return
+    if (schema not in policy.get("applies_to", ())
+            or policy.get("schema") != "PASES_ISSUE_PHASE_EVENT_PUBLICATION_WINDOW_V1"):
+        raise PhaseReworkError("timestamp policy does not cover this phase-rework event schema")
+    _phase_event_publication_delta_seconds(
+        event, published, policy["max_skew_seconds"], label,
+    )
+
+
 def _validate_applied(applied: PhaseReworkRecord, intent: PhaseReworkRecord,
                       live: _Live, *, allow_bootstrap_descendant: bool = False) -> None:
     if (applied.schema != APPLIED_SCHEMA or applied.comment_id <= intent.comment_id
@@ -3377,7 +3759,11 @@ def _validate_applied(applied: PhaseReworkRecord, intent: PhaseReworkRecord,
     applied_at = _strict_utc(applied.payload.get("applied_at"), "Applied applied_at")
     comment_created_at = _strict_utc(applied.created_at, "Applied comment created_at")
     timestamp_authorization = live.timestamp_recovery_authorization
-    if timestamp_authorization is None:
+    if live.timestamp_policy is not None:
+        _validate_phase_event_timestamp(
+            applied.schema, applied_at, comment_created_at, live, "Applied",
+        )
+    elif timestamp_authorization is None:
         if applied_at != comment_created_at:
             raise PhaseReworkError("phase rework Applied timestamp differs from its Issue comment")
     else:
@@ -3400,8 +3786,35 @@ def _validate_applied(applied: PhaseReworkRecord, intent: PhaseReworkRecord,
 
 
 def _active_rework_records(history: tuple[PhaseReworkRecord, ...],
-                           current_adc: VerifiedADC) -> tuple[PhaseReworkRecord | None,
+                           current_adc: VerifiedADC,
+                           generation: Mapping[str, Any] | None = None) -> tuple[PhaseReworkRecord | None,
                                                               PhaseReworkRecord | None]:
+    if generation is not None:
+        intent, applied = _active_v3_rework_records(history, current_adc, generation)
+        if _has_issue71_timestamp_continuation_marker(current_adc):
+            authorization, _marker_sha = parse_timestamp_continuation_authorization(current_adc)
+            origin = authorization["phase_rework_origin"]
+            if intent is None or applied is None:
+                raise PhaseReworkError("timestamp continuation requires the exact already-applied V3 pair")
+            for record, expected, field in (
+                    (intent, origin["intent"], "created_at"),
+                    (applied, origin["applied"], "applied_at")):
+                event_time = record.payload.get(field)
+                delta = _phase_event_publication_delta_seconds(
+                    event_time, record.created_at, authorization["timestamp_policy"]["max_skew_seconds"],
+                    record.schema,
+                )
+                if (record.comment_id != expected["comment_id"]
+                        or record.schema != expected["schema"]
+                        or len(record.body.encode("utf-8")) != expected["body_byte_length"]
+                        or record.body_sha256 != expected["body_sha256"]
+                        or record.created_at != expected["comment_created_at"]
+                        or event_time != expected["event_time"]
+                        or delta != expected["event_to_publication_delta_seconds"]):
+                    raise PhaseReworkError(
+                        "immutable V3 phase-rework record differs from the approved continuation tuple"
+                    )
+        return intent, applied
     if _has_issue71_current_combined_marker(current_adc):
         authorization = parse_issue71_phase_and_user_review_authorization(current_adc)
         generation = authorization.get("phase_rework_generation_authorization")
@@ -3552,6 +3965,12 @@ def _validate_v3_intent(
             or payload.get("schema") != ISSUE71_REWORK_INTENT_V3_SCHEMA
             or payload.get("generation_number") != generation["new_generation_number"]):
         raise PhaseReworkError("V3 phase-rework Intent schema or generation is invalid")
+    origin_comment_id = (live.phase_rework_origin_adc_comment_id
+                         if live.phase_rework_origin_adc_comment_id is not None
+                         else live.current_adc.pointer.comment_id)
+    origin_sha256 = (live.phase_rework_origin_adc_sha256
+                     if live.phase_rework_origin_adc_sha256 is not None
+                     else live.current_adc.contract.sha256)
     expected = {
         "schema": ISSUE71_REWORK_INTENT_V3_SCHEMA,
         "generation_number": generation["new_generation_number"],
@@ -3559,8 +3978,8 @@ def _validate_v3_intent(
         "repository_id": REPOSITORY_ID,
         "issue_number": ISSUE_NUMBER,
         "issue_id": ISSUE_ID,
-        "adc_comment_id": live.current_adc.pointer.comment_id,
-        "adc_sha256": live.current_adc.contract.sha256,
+        "adc_comment_id": origin_comment_id,
+        "adc_sha256": origin_sha256,
         "authorization_sha256": live.phase_rework_generation_authorization_sha256,
         "predecessor_adc_comment_id": generation["predecessor_adc_comment_id"],
         "predecessor_adc_sha256": generation["predecessor_adc_sha256"],
@@ -3608,6 +4027,9 @@ def _validate_v3_intent(
     _sha(payload.get("readiness_sha256"), "V3 Intent Readiness SHA-256")
     _sha(payload.get("readiness_subject_sha256"), "V3 Intent Readiness subject SHA-256")
     _strict_utc(payload.get("created_at"), "V3 Intent created_at")
+    _validate_phase_event_timestamp(
+        intent.schema, payload.get("created_at"), intent.created_at, live, "V3 Intent",
+    )
     if readiness is not None:
         _validate_readiness(readiness, live)
         if (readiness.sha256 != payload["readiness_sha256"]
@@ -3627,10 +4049,9 @@ def _validate_v3_applied(
             or applied.payload.get("intent_comment_id") != intent.comment_id
             or applied.payload.get("intent_body_sha256") != intent.body_sha256):
         raise PhaseReworkError("V3 phase-rework Applied does not reference its exact Intent")
-    if _strict_utc(applied.payload.get("applied_at"), "V3 Applied applied_at") != _strict_utc(
-        applied.created_at, "V3 Applied comment created_at",
-    ):
-        raise PhaseReworkError("V3 Applied event timestamp differs from its immutable Issue comment")
+    _validate_phase_event_timestamp(
+        applied.schema, applied.payload.get("applied_at"), applied.created_at, live, "V3 Applied",
+    )
     expected = {key: value for key, value in intent.payload.items() if key != "created_at"}
     expected.update({
         "schema": ISSUE71_REWORK_APPLIED_V3_SCHEMA,
@@ -4251,12 +4672,9 @@ def active_phase_generation_for_epoch(github: GitHub, root: Path, current_adc: V
      timestamp_recovery_authorization, timestamp_recovery_sha,
      continuation_authorization, continuation_sha,
      reader_authorization, reader_sha,
-     execution_reader_authorization, execution_reader_sha) = (
+     execution_reader_authorization, execution_reader_sha,
+     combined) = (
         _authorization_context(github, current_adc)
-    )
-    combined = (
-        parse_issue71_phase_and_user_review_authorization(current_adc)
-        if _has_issue71_current_combined_marker(current_adc) else None
     )
     generation = (
         combined.get("phase_rework_generation_authorization")
@@ -4264,12 +4682,18 @@ def active_phase_generation_for_epoch(github: GitHub, root: Path, current_adc: V
         and combined.get("schema") == ISSUE71_PHASE_AND_USER_REVIEW_V3_SCHEMA
         else None
     )
+    current_timestamp_continuation = _has_issue71_timestamp_continuation_marker(current_adc)
+    timestamp_policy = (
+        parse_timestamp_continuation_authorization(current_adc)[0]["timestamp_policy"]
+        if current_timestamp_continuation else None
+    )
+    origin = TIMESTAMP_CONTINUATION_PHASE_REWORK_ORIGIN if current_timestamp_continuation else {}
     generation_sha = (
         hashlib.sha256(_canonical(generation).encode("utf-8")).hexdigest()
         if isinstance(generation, dict) else None
     )
     history = _read_history(github)
-    intent, applied = _active_rework_records(history, current_adc)
+    intent, applied = _active_rework_records(history, current_adc, generation)
     issue_labels = _label_names(issue)
     if intent is None:
         if recovery_authorization is not None:
@@ -4290,7 +4714,8 @@ def active_phase_generation_for_epoch(github: GitHub, root: Path, current_adc: V
                  timestamp_recovery_authorization, timestamp_recovery_sha,
                  continuation_authorization, continuation_sha, reader_authorization, reader_sha,
                  execution_reader_authorization, execution_reader_sha,
-                 generation, generation_sha)
+                 generation, generation_sha,
+                 origin.get("adc_comment_id"), origin.get("adc_sha256"), timestamp_policy)
     _validate_reader_continuation_subject(live)
     _validate_execution_receipt_reader_continuation_subject(live)
     if intent.schema == ISSUE71_REWORK_INTENT_V3_SCHEMA:

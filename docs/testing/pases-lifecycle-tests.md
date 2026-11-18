@@ -145,6 +145,10 @@
     - [2.67.1 ORA-F01-103 Expected result](#2671-ora-f01-103-expected-result)
   - [2.68 TST-F01-104 V3 phase rework preserves V2 and is one-shot](#268-tst-f01-104-v3-phase-rework-preserves-v2-and-is-one-shot)
     - [2.68.1 ORA-F01-104 Expected result](#2681-ora-f01-104-expected-result)
+  - [2.69 TST-F01-105 Uniform V2 and V3 event/publication window](#269-tst-f01-105-uniform-v2-and-v3-eventpublication-window)
+    - [2.69.1 ORA-F01-105 Expected result](#2691-ora-f01-105-expected-result)
+  - [2.70 TST-F01-106 Continuation phase labels follow the approved graph](#270-tst-f01-106-continuation-phase-labels-follow-the-approved-graph)
+    - [2.70.1 ORA-F01-106 Expected result](#2701-ora-f01-106-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -285,6 +289,10 @@
 - [ORA-F01-103](#ora-f01-103) — 2.67.1 ORA-F01-103 Expected result
 - [TST-F01-104](#tst-f01-104) — 2.68 TST-F01-104 V3 phase rework preserves V2 and is one-shot
 - [ORA-F01-104](#ora-f01-104) — 2.68.1 ORA-F01-104 Expected result
+- [TST-F01-105](#tst-f01-105) — 2.69 TST-F01-105 Uniform V2 and V3 event/publication window
+- [ORA-F01-105](#ora-f01-105) — 2.69.1 ORA-F01-105 Expected result
+- [TST-F01-106](#tst-f01-106) — 2.70 TST-F01-106 Continuation phase labels follow the approved graph
+- [ORA-F01-106](#ora-f01-106) — 2.70.1 ORA-F01-106 Expected result
 <!-- heading-map:end -->
 
 
@@ -1026,3 +1034,23 @@ Snapshot count remains exactly two as the selected range grows, while direct-rea
 #### 2.68.1 ORA-F01-104 Expected result
 
 The old V2 pair remains byte-identical. One exact V3 generation may apply once and is fully read back; exact retry performs zero writes. Stale, conflicting, partial, duplicated, or reordered state fails closed without a second POST or label PUT. Executable cases are in `tests/test_phase_rework.py`.
+
+<a id="tst-f01-105"></a>
+### 2.69 TST-F01-105 Uniform V2 and V3 event/publication window
+
+**Setup and action:** Exercise the production timestamp reader for V2 and V3 Intent and Applied schemas using canonical UTC event/publication pairs at 0, the observed 76 and 295 seconds, and the inclusive 300-second boundary. Reject 301 seconds, future publication order, malformed UTC, and a schema omitted from the authorized policy. Seed the existing V2 and V3 records and require exact byte preservation and a read-only complete-pair reconciliation with zero comment or label writes.
+
+<a id="ora-f01-105"></a>
+#### 2.69.1 ORA-F01-105 Expected result
+
+All four schemas use the same strict 0..300 second window. Invalid timestamp pairs fail closed. Existing V2/V3 bytes remain unchanged, and reconciliation does not append records or update labels.
+
+<a id="tst-f01-106"></a>
+### 2.70 TST-F01-106 Continuation phase labels follow the approved graph
+
+**Setup and action:** Validate both inherited Issue #71 continuation readers against a current approved marker containing the full requirements→specification→design→ready→execution→verification→user-review graph. Accept every source and destination phase with the exact Issue-kind, enhancement, branch, and PR subject. Reject `phase:integration`, malformed/duplicate phase labels, wrong kind, branch, or PR metadata and assert no GitHub mutation.
+
+<a id="ora-f01-106"></a>
+#### 2.70.1 ORA-F01-106 Expected result
+
+Both readers accept exactly the phase states declared by the verified current ADC graph and reject all other labels or subject drift without writes. The starting `phase:requirements` state is accepted from the graph itself, not from a special-case label exception.

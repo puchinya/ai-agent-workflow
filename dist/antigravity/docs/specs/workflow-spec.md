@@ -135,6 +135,8 @@
   - [9.108 REQ-F01-170 Accept every valid post-rework phase label](#9108-req-f01-170-accept-every-valid-post-rework-phase-label)
   - [9.109 REQ-F01-171 Batch approved ADC history snapshots without weakening validation](#9109-req-f01-171-batch-approved-adc-history-snapshots-without-weakening-validation)
   - [9.110 REQ-F01-172 Preserve V2 and apply one exact V3 phase-rework generation](#9110-req-f01-172-preserve-v2-and-apply-one-exact-v3-phase-rework-generation)
+  - [9.111 REQ-F01-173 Apply one event/publication window to V2 and V3](#9111-req-f01-173-apply-one-eventpublication-window-to-v2-and-v3)
+  - [9.112 REQ-F01-174 Derive continuation labels from the approved Phase graph](#9112-req-f01-174-derive-continuation-labels-from-the-approved-phase-graph)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -259,6 +261,8 @@
 - [REQ-F01-170](#req-f01-170) — 9.108 REQ-F01-170 Accept every valid post-rework phase label
 - [REQ-F01-171](#req-f01-171) — 9.109 REQ-F01-171 Batch approved ADC history snapshots without weakening validation
 - [REQ-F01-172](#req-f01-172) — 9.110 REQ-F01-172 Preserve V2 and apply one exact V3 phase-rework generation
+- [REQ-F01-173](#req-f01-173) — 9.111 REQ-F01-173 Apply one event/publication window to V2 and V3
+- [REQ-F01-174](#req-f01-174) — 9.112 REQ-F01-174 Derive continuation labels from the approved Phase graph
 <!-- heading-map:end -->
 
 
@@ -1090,3 +1094,13 @@ For one selected approved-ADC forward range, the reader MUST fetch the complete 
 ### 9.110 REQ-F01-172 Preserve V2 and apply one exact V3 phase-rework generation
 
 Issue #71 MAY append one typed V3 phase-rework Intent/Applied pair linked to the exact current approved ADC chain, epoch, original Phase generation, Issue, PR, branch, frozen base, HEAD, labels, and fresh exact-subject Readiness. The existing V2 Intent/Applied bodies MUST remain byte-identical. The one-shot order is Intent, local attempt marker, one `verification → requirements` label update, Applied, and complete readback. The reader MUST reject stale or mismatched subjects, wrong order, duplicates, unknown records, partial pairs, conflicting local attempts, and labels outside the exact before/after sets. A complete exact retry is a zero-write NOOP; an ambiguous or partial write is read-only and MUST NOT be retried. No Issue #63 access or unrelated phase transition is authorized.
+
+<a id="req-f01-173"></a>
+### 9.111 REQ-F01-173 Apply one event/publication window to V2 and V3
+
+When the current approved Issue #71 ADC authorizes `PASES_ISSUE_PHASE_EVENT_PUBLICATION_WINDOW_V1`, validate all V2 and V3 phase-rework Intent and Applied records using their schema-specific event fields and the GitHub comment's server `created_at`. Both values MUST be canonical UTC timestamps ending in `Z`; comment publication time minus the embedded event time MUST be within the inclusive range 0..300 seconds. Preserve all existing record bytes and treat a complete pair as read-only reconciliation; do not rewrite records or issue another Intent, Applied, or label update.
+
+<a id="req-f01-174"></a>
+### 9.112 REQ-F01-174 Derive continuation labels from the approved Phase graph
+
+For Issue #71 continuation readers, derive valid phase labels from the exact current approved ADC's ordered `phase_edges`, including each edge's source and destination. Require the exact Issue-kind and enhancement labels, exact branch and PR metadata, and one phase label from that graph. Reject an unlisted phase or any subject mismatch before evidence writes. Do not maintain issue-specific phase exceptions or mutate labels during readback.

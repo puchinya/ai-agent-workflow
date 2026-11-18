@@ -71,6 +71,8 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
     - [2.29.1 ORA-RT-029 Expected result](#2291-ora-rt-029-expected-result)
   - [2.30 TST-RT-030 Combined ADC receipts and Issue #71 User Review identity](#230-tst-rt-030-combined-adc-receipts-and-issue-71-user-review-identity)
     - [2.30.1 ORA-RT-030 Expected result](#2301-ora-rt-030-expected-result)
+  - [2.31 TST-RT-031 Issue #71 timestamp continuation context read](#231-tst-rt-031-issue-71-timestamp-continuation-context-read)
+    - [2.31.1 ORA-RT-031 Expected result](#2311-ora-rt-031-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -135,6 +137,8 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
 - [ORA-RT-029](#ora-rt-029) — 2.29.1 ORA-RT-029 Expected result
 - [TST-RT-030](#tst-rt-030) — 2.30 TST-RT-030 Combined ADC receipts and Issue #71 User Review identity
 - [ORA-RT-030](#ora-rt-030) — 2.30.1 ORA-RT-030 Expected result
+- [TST-RT-031](#tst-rt-031) — 2.31 TST-RT-031 Issue #71 timestamp continuation context read
+- [ORA-RT-031](#ora-rt-031) — 2.31.1 ORA-RT-031 Expected result
 <!-- heading-map:end -->
 
 
@@ -489,3 +493,13 @@ The CLI accepts only the exact timestamp-recovery successor and its pinned Appli
 #### 2.30.1 ORA-RT-030 Expected result
 
 Only a complete canonical marker for the verified current ADC and its exact ordered chain pass. Historical receipt continuations bind current generation and HEAD; current documents match their separately authorized snapshot; every malformed, duplicated, or stale Artifact impact declaration stops before writes. Issue #71 V3 rework preserves the old V2 pair, binds the current chain and exact subject, and is one-shot with read-only handling of partial or ambiguous state. Issue #71 User Review start and V3 authorization both use the live current ADC chain and accept no stale generation pin; they retain all exact subject checks, publish or read only through the bound Issue #71 route, and never touch Issue #63. Issue #63 regressions retain their prior results.
+
+<a id="tst-rt-031"></a>
+### 2.31 TST-RT-031 Issue #71 timestamp continuation context read
+
+**Setup and action:** Run `context show` using the exact approved timestamp-continuation ADC, its complete approved history, immutable V3 origin authorization, existing V2/V3 journal, current Issue labels, and PR subject. Verify graph-derived acceptance of `phase:requirements` and each declared successor state through `phase:user-review`; vary ADC pointers, predecessor links, timestamp boundaries, labels, branch, PR title/body, and binding/checkpoint fingerprints. Assert context inspection is read-only and does not append comments or update labels.
+
+<a id="ora-rt-031"></a>
+#### 2.31.1 ORA-RT-031 Expected result
+
+Only the exact current approved chain, immutable origin, authorized event/publication windows, current graph phase, and bound PR metadata pass. A mismatch reports a bounded blocked/stale state without GitHub writes. A valid current binding is read back without exposing local workspace paths.

@@ -56,6 +56,8 @@
   - [6.4 6.3 6.2 5.38 DES-F01-098 Generic historical ADC predecessor validation](#64-63-62-538-des-f01-098-generic-historical-adc-predecessor-validation)
   - [6.5 DES-F01-101 Batch the selected ADC journal range](#65-des-f01-101-batch-the-selected-adc-journal-range)
   - [6.6 DES-F01-102 Append one V3 rework generation](#66-des-f01-102-append-one-v3-rework-generation)
+  - [6.7 DES-F01-103 Resolve continuation labels from the current Phase graph](#67-des-f01-103-resolve-continuation-labels-from-the-current-phase-graph)
+  - [6.8 DES-F01-104 Validate event and publication timestamps uniformly](#68-des-f01-104-validate-event-and-publication-timestamps-uniformly)
 - [7 DES-WF-004 Failure handling](#7-des-wf-004-failure-handling)
 - [8 DES-WF-005 Authorization boundary and PR handoff](#8-des-wf-005-authorization-boundary-and-pr-handoff)
 - [9 Alternatives considered](#9-alternatives-considered)
@@ -110,6 +112,8 @@
 - [DES-F01-098](#des-f01-098) — 6.4 6.3 6.2 5.38 DES-F01-098 Generic historical ADC predecessor validation
 - [DES-F01-101](#des-f01-101) — 6.5 DES-F01-101 Batch the selected ADC journal range
 - [DES-F01-102](#des-f01-102) — 6.6 DES-F01-102 Append one V3 rework generation
+- [DES-F01-103](#des-f01-103) — 6.7 DES-F01-103 Resolve continuation labels from the current Phase graph
+- [DES-F01-104](#des-f01-104) — 6.8 DES-F01-104 Validate event and publication timestamps uniformly
 - [DES-WF-004](#des-wf-004) — 7 DES-WF-004 Failure handling
 - [DES-WF-005](#des-wf-005) — 8 DES-WF-005 Authorization boundary and PR handoff
 - [DES-WF-006](#des-wf-006) — 11 DES-WF-006 Human review and final delivery
@@ -511,6 +515,16 @@ The verified approved pointer journal and current marker's exact ordered history
 ### 6.6 DES-F01-102 Append one V3 rework generation
 
 `phase_rework.py` retains the completed V2 Intent/Applied pair as immutable history and recognizes at most one ordered V3 successor pair. The V3 payload binds the current approved ADC authorization, epoch, original Phase generation, repository/Issue, branch, base, PR, bootstrap HEAD, exact label sets, and fresh Readiness. First application records the Intent, durably records one-shot attempts, updates labels once, appends Applied, and reads the full subject back. A complete pair is a zero-write retry; partial, ambiguous, duplicate, out-of-order, or stale state blocks without another POST or label PUT. The new generation becomes active only after complete readback.
+
+<a id="des-f01-103"></a>
+### 6.7 DES-F01-103 Resolve continuation labels from the current Phase graph
+
+The phase-rework reader validates the live ADC and its complete approved history before deriving lifecycle labels. A shared continuation-label helper uses the current marker's ordered `phase_edges` and accepts only those source and destination states, together with the required Issue-kind and enhancement labels. Both inherited continuation readers use this same graph-derived set and retain exact branch, PR title, and PR body digest checks. Unknown phases and subject drift stop before writes; the reader never updates labels.
+
+<a id="des-f01-104"></a>
+### 6.8 DES-F01-104 Validate event and publication timestamps uniformly
+
+The phase-rework timestamp policy maps V2 and V3 Intent to their embedded `created_at` event and Applied to `applied_at`, then compares each event with its GitHub comment's server `created_at`. Strict UTC parsing and the inclusive 0..300 second window are shared across all four schemas. Existing V2/V3 records remain immutable; complete records are reconciled as a read-only NOOP, with no second append or label write.
 
 <a id="des-wf-004"></a>
 <a id="des-wf-004-failure-handling"></a>

@@ -495,7 +495,7 @@ class AuthorizationTests(unittest.TestCase):
             module.RECOVERY_ADC_COMMENT_ID, module.RECOVERY_ADC_SHA256, module.RECOVERY_ADC_BYTES,
         )
         with patch.object(module, "verify_adc_forward_generations", return_value=(predecessor, old, current)):
-            authorization, authorization_sha, recovery, recovery_sha, timestamp, timestamp_sha, continuation, continuation_sha, reader, reader_sha, execution_reader, execution_reader_sha = module._authorization_context(
+            authorization, authorization_sha, recovery, recovery_sha, timestamp, timestamp_sha, continuation, continuation_sha, reader, reader_sha, execution_reader, execution_reader_sha, _phase_authorization = module._authorization_context(
                 SimpleNamespace(), current,
             )
         self.assertEqual(authorization, module.AUTHORIZATION)
@@ -543,7 +543,7 @@ class AuthorizationTests(unittest.TestCase):
             self.assertEqual(timestamp, module.TIMESTAMP_RECOVERY_AUTHORIZATION)
             self.assertEqual(parsed_sha, timestamp_sha)
             self.assertEqual(len(parsed_sha), 64)
-            authorization, authorization_sha, recovery_auth, recovery_sha, timestamp_auth, _, continuation_auth, continuation_sha, reader_auth, reader_sha, execution_reader, execution_reader_sha = (
+            authorization, authorization_sha, recovery_auth, recovery_sha, timestamp_auth, _, continuation_auth, continuation_sha, reader_auth, reader_sha, execution_reader, execution_reader_sha, _phase_authorization = (
                 module._authorization_context(SimpleNamespace(), current)
             )
         self.assertEqual(authorization, module.AUTHORIZATION)
@@ -2214,7 +2214,7 @@ class PendingRecoveryTests(unittest.TestCase):
             with patch.object(module, "_authorization_context",
                               return_value=(module.AUTHORIZATION, live.authorization_sha256,
                                             live.recovery_authorization, live.recovery_authorization_sha256,
-                                            None, None, None, None, None, None, None, None)), \
+                                            None, None, None, None, None, None, None, None, None)), \
                     patch.object(module, "_read_history", return_value=(intent, applied)), \
                     patch.object(module, "head_sha40", return_value=live.head_sha40), \
                     patch.object(module, "_pr", return_value={}), \
@@ -2244,7 +2244,7 @@ class ActiveGenerationTests(unittest.TestCase):
             with patch.object(module, "_read_history", return_value=(intent, applied)), \
                     patch.object(module, "_authorization_context",
                                  return_value=(module.AUTHORIZATION, "c" * 64, None, None,
-                                               None, None, None, None, None, None, None, None)), \
+                                               None, None, None, None, None, None, None, None, None)), \
                     patch.object(module, "head_sha40", return_value="f" * 40), \
                     patch.object(module, "_pr", return_value={}), \
                     patch.object(module, "is_ancestor", return_value=True), \
@@ -2265,7 +2265,7 @@ class ActiveGenerationTests(unittest.TestCase):
             with patch.object(module, "_read_history", return_value=(intent,)), \
                     patch.object(module, "_authorization_context",
                                  return_value=(module.AUTHORIZATION, "c" * 64, None, None,
-                                               None, None, None, None, None, None, None, None)), \
+                                               None, None, None, None, None, None, None, None, None)), \
                     patch.object(module, "head_sha40", return_value="e" * 40), \
                     patch.object(module, "_pr", return_value={}), \
                     patch.object(module, "is_ancestor", return_value=True):
@@ -2276,6 +2276,17 @@ class ActiveGenerationTests(unittest.TestCase):
 
 
 class V3PhaseReworkTests(unittest.TestCase):
+    @staticmethod
+    def _timestamp_policy() -> dict:
+        return {
+            "schema": "PASES_ISSUE_PHASE_EVENT_PUBLICATION_WINDOW_V1",
+            "applies_to": [module.INTENT_SCHEMA, module.APPLIED_SCHEMA,
+                           module.ISSUE71_REWORK_INTENT_V3_SCHEMA,
+                           module.ISSUE71_REWORK_APPLIED_V3_SCHEMA],
+            "minimum_skew_seconds": 0,
+            "max_skew_seconds": 300,
+        }
+
     def test_current_v3_marker_uses_authorized_history_route(self):
         current = SimpleNamespace(
             contract=SimpleNamespace(content=(
@@ -2289,6 +2300,67 @@ class V3PhaseReworkTests(unittest.TestCase):
             authorization = module._authorization_context(github, current)
         verify_chain.assert_called_once_with(github, current)
         self.assertEqual(authorization[0], module.AUTHORIZATION)
+
+    def test_timestamp_continuation_readers_derive_labels_from_approved_phase_edges(self):
+        issue_body = "exact Issue body"
+        pr_body = "exact PR body"
+        issue_body_sha = hashlib.sha256(issue_body.encode("utf-8")).hexdigest()
+        pr_body_sha = hashlib.sha256(pr_body.encode("utf-8")).hexdigest()
+        reader_authorization = dict(module.READER_CONTINUATION_AUTHORIZATION)
+        reader_authorization.update({
+            "branch_ref": module.BRANCH_REF,
+            "current_issue_body_sha256": issue_body_sha,
+            "pr_body_sha256": pr_body_sha,
+        })
+        execution_authorization = dict(
+            module.EXECUTION_RECEIPT_READER_CONTINUATION_AUTHORIZATION,
+        )
+        execution_authorization.update({
+            "branch_ref": module.BRANCH_REF,
+            "current_issue_body_sha256": issue_body_sha,
+            "pr_body_sha256": pr_body_sha,
+        })
+        edges = [
+            ["requirements", "specification"], ["specification", "design"],
+            ["design", "ready"], ["ready", "execution"],
+            ["execution", "verification"], ["verification", "user-review"],
+        ]
+        live = SimpleNamespace(
+            current_adc=object(),
+            reader_continuation_authorization=reader_authorization,
+            reader_continuation_authorization_sha256=module.READER_CONTINUATION_AUTH_MARKER_SHA256,
+            execution_receipt_reader_continuation_authorization=execution_authorization,
+            execution_receipt_reader_continuation_authorization_sha256=(
+                module.EXECUTION_RECEIPT_READER_CONTINUATION_AUTH_MARKER_SHA256
+            ),
+            issue={"body": issue_body},
+            labels=tuple(sorted(("enhancement", "kind:single", "phase:requirements"))),
+            branch_ref=module.BRANCH_REF,
+            pr={"title": module.PR_TITLE, "body": pr_body},
+        )
+        with patch.object(module, "READER_CONTINUATION_AUTHORIZATION", reader_authorization), \
+                patch.object(module, "EXECUTION_RECEIPT_READER_CONTINUATION_AUTHORIZATION",
+                             execution_authorization), \
+                patch.object(module, "_has_issue71_current_combined_marker", return_value=False), \
+                patch.object(module, "_has_issue71_timestamp_continuation_marker", return_value=True), \
+                patch.object(module, "parse_timestamp_continuation_authorization",
+                             return_value=({"phase_edges": edges}, "f" * 64)):
+            allowed = module._reader_continuation_allowed_labels(live)
+            self.assertEqual(
+                {row[-1].removeprefix("phase:") for row in allowed},
+                {phase for edge in edges for phase in edge},
+            )
+            for phase in {phase for edge in edges for phase in edge}:
+                live.labels = tuple(sorted((
+                    "enhancement", "kind:single", f"phase:{phase}",
+                )))
+                module._validate_reader_continuation_subject(live)
+                module._validate_execution_receipt_reader_continuation_subject(live)
+            live.labels = tuple(sorted(("enhancement", "kind:single", "phase:integration")))
+            with self.assertRaisesRegex(module.PhaseReworkError, "labels, branch, or PR metadata"):
+                module._validate_reader_continuation_subject(live)
+            with self.assertRaisesRegex(module.PhaseReworkError, "labels, branch, or PR metadata"):
+                module._validate_execution_receipt_reader_continuation_subject(live)
 
     @staticmethod
     def _v2_pair() -> tuple[module.PhaseReworkRecord, module.PhaseReworkRecord]:
@@ -2397,6 +2469,102 @@ class V3PhaseReworkTests(unittest.TestCase):
                 )
                 with self.assertRaisesRegex(module.PhaseReworkError, "exact ADC and active subject"):
                     module._validate_v3_intent(intent, replace(live, current_adc=stale_adc))
+
+    def test_v2_and_v3_event_publication_window_is_uniform_and_inclusive(self):
+        event = "2026-11-18T10:00:00Z"
+        cases = ((0, "2026-11-18T10:00:00Z"),
+                 (3, "2026-11-18T10:00:03Z"),
+                 (76, "2026-11-18T10:01:16Z"),
+                 (295, "2026-11-18T10:04:55Z"),
+                 (300, "2026-11-18T10:05:00Z"))
+        for schema in self._timestamp_policy()["applies_to"]:
+            for expected_delta, published in cases:
+                with self.subTest(schema=schema, delta=expected_delta):
+                    self.assertEqual(
+                        module._phase_event_publication_delta_seconds(
+                            event, published, 300, schema,
+                        ),
+                        expected_delta,
+                    )
+        for schema in self._timestamp_policy()["applies_to"]:
+            with self.subTest(schema=schema, delta=301):
+                with self.assertRaisesRegex(module.PhaseReworkError, "authorized UTC skew"):
+                    module._phase_event_publication_delta_seconds(
+                        event, "2026-11-18T10:05:01Z", 300, schema,
+                    )
+            with self.subTest(schema=schema, delta=-1):
+                with self.assertRaisesRegex(module.PhaseReworkError, "authorized UTC skew"):
+                    module._phase_event_publication_delta_seconds(
+                        "2026-11-18T10:00:01Z", event, 300, schema,
+                    )
+            with self.subTest(schema=schema, malformed=True):
+                with self.assertRaisesRegex(module.PhaseReworkError, "canonical UTC"):
+                    module._phase_event_publication_delta_seconds(
+                        "2026-11-18 10:00:00Z", event, 300, schema,
+                    )
+
+    def test_v3_intent_reader_uses_origin_adc_and_generic_timestamp_policy(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            v2_intent, v2_applied = self._v2_pair()
+            generation = self._generation(v2_intent, v2_applied)
+            live = self._live(root, generation)
+            payload = {
+                "schema": module.ISSUE71_REWORK_INTENT_V3_SCHEMA,
+                "generation_number": generation["new_generation_number"],
+                "repository": module.REPOSITORY,
+                "repository_id": module.REPOSITORY_ID,
+                "issue_number": module.ISSUE_NUMBER,
+                "issue_id": module.ISSUE_ID,
+                "adc_comment_id": module.TIMESTAMP_CONTINUATION_PREDECESSOR[0],
+                "adc_sha256": module.TIMESTAMP_CONTINUATION_PREDECESSOR[1],
+                "authorization_sha256": live.phase_rework_generation_authorization_sha256,
+                "predecessor_adc_comment_id": generation["predecessor_adc_comment_id"],
+                "predecessor_adc_sha256": generation["predecessor_adc_sha256"],
+                "epoch_origin_adc_comment_id": module.EPOCH_ORIGIN_ADC_COMMENT_ID,
+                "epoch_origin_adc_sha256": module.EPOCH_ORIGIN_ADC_SHA256,
+                "active_epoch_id": generation["active_epoch_id"],
+                "active_epoch_sha256": generation["active_epoch_sha256"],
+                "active_phase_generation_comment_id": generation["prior_phase_generation_comment_id"],
+                "active_phase_generation_sha256": generation["prior_phase_generation_sha256"],
+                "baseline_head_sha40": generation["starting_head_sha40"],
+                "bootstrap_head_sha40": generation["starting_head_sha40"],
+                "branch_ref": generation["branch_ref"],
+                "pr_number": generation["pr_number"],
+                "pr_base_ref": generation["pr_base_ref"],
+                "pr_base_sha40": generation["pr_base_sha40"],
+                "pr_head_sha40": generation["starting_head_sha40"],
+                "readiness_sha256": "a" * 64,
+                "readiness_subject_sha256": "b" * 64,
+                "issue_body_sha256": generation["current_issue_body_sha256"],
+                "labels_before": generation["labels_before"],
+                "labels_after": generation["labels_after"],
+                "from_phase": generation["from_phase"],
+                "to_phase": generation["to_phase"],
+                "max_applications": generation["max_applications"],
+                "owner_id": generation["owner_id"],
+                "executor_user_id": module.OWNER_ID,
+                "created_at": "2026-11-18T10:00:00Z",
+            }
+            body = module._record_body(module.ISSUE71_REWORK_INTENT_V3_SCHEMA, payload)
+            intent = module.PhaseReworkRecord(
+                103, module.ISSUE71_REWORK_INTENT_V3_SCHEMA, payload, body,
+                module.OWNER_ID, "2026-11-18T10:04:55Z",
+            )
+            current_adc = SimpleNamespace(
+                pointer=SimpleNamespace(comment_id=module.TIMESTAMP_CONTINUATION_ADC_COMMENT_ID),
+                contract=SimpleNamespace(sha256=module.TIMESTAMP_CONTINUATION_ADC_SHA256),
+            )
+            current = replace(
+                live, current_adc=current_adc,
+                phase_rework_origin_adc_comment_id=module.TIMESTAMP_CONTINUATION_PREDECESSOR[0],
+                phase_rework_origin_adc_sha256=module.TIMESTAMP_CONTINUATION_PREDECESSOR[1],
+                timestamp_policy=self._timestamp_policy(),
+            )
+            module._validate_v3_intent(intent, current)
+            too_late = replace(intent, created_at="2026-11-18T10:05:01Z")
+            with self.assertRaisesRegex(module.PhaseReworkError, "authorized UTC skew"):
+                module._validate_v3_intent(too_late, current)
 
     def test_v3_apply_writes_once_and_exact_retry_is_noop(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -3077,7 +3245,8 @@ class CombinedAuthorizationTests(unittest.TestCase):
             module.REPOSITORY, b"approved ADC bytes",
         )
         with patch.object(module, "_has_issue71_current_combined_marker", return_value=True), \
-                patch.object(module, "verify_issue71_phase_and_user_review_adc_chain") as verify:
+                patch.object(module, "verify_issue71_phase_and_user_review_adc_chain",
+                             return_value=({}, ())) as verify:
             result = module._authorization_context(SimpleNamespace(), current)
         verify.assert_called_once_with(SimpleNamespace(), current)
         self.assertEqual(result[0], module.AUTHORIZATION)
