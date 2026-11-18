@@ -33,9 +33,6 @@ SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 def _identity_adc_matches_subject(identity: Any, pr_binding: Any, subject: VerificationSubject) -> bool:
     """Require a typed generation bridge where an execution identity is epoch-scoped."""
-    if (subject.repository.casefold() == "puchinya/ai-agent-workflow"
-            and subject.issue_number == 71 and not is_issue71_execution_epoch(identity)):
-        return False
     if isinstance(identity, AdoptedExecutionEpoch):
         return (
             isinstance(pr_binding, PRBinding)
@@ -422,10 +419,6 @@ def evaluate_readiness(
         if not isinstance(reason, str) or not reason.strip():
             raise ReadinessError("Readiness blocker reasons must be non-empty text")
         reasons.append(reason.strip())
-    if (subject.repository.casefold() == "puchinya/ai-agent-workflow" and subject.issue_number == 71
-            and not is_issue71_execution_epoch(getattr(work_context, "execution_identity", None))):
-        reasons.append("Issue #71 requires the active epoch-3 execution identity")
-
     pr_readback_valid = False
     if not isinstance(pr, PRReadback):
         reasons.append("GitHub PR readback is missing")

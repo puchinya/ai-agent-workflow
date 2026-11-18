@@ -76,42 +76,39 @@ class WorkExecutionTests(unittest.TestCase):
                 )
             self.assertFalse(binding_path.exists())
 
-    def test_issue71_generic_bind_and_recover_cannot_create_a_v1_binding(self):
+    def test_any_epoch_identity_blocks_v1_bind_and_recover_without_writes(self):
         with tempfile.TemporaryDirectory() as temporary:
-            work, _bare, base = self._repo(Path(temporary))
-            binding_path = work / ".p_ases/state/71/execution-binding.json"
-            with self.assertRaisesRegex(WorkError, "active epoch-3 identity"):
-                bind_work(
-                    work, repository="puchinya/ai-agent-workflow", issue_number=71,
-                    adc_comment_id=6881591677,
-                    adc_sha256="3c6b3ac28270357b57047dc5da0a2c1fbdbada269d55225ea33a656cd3076e17",
-                    base_ref="main", branch_ref="pases/issue-71-local-activation-v2-phase-rebaseline-epoch-3",
-                )
-            with self.assertRaisesRegex(WorkError, "active epoch-3 identity"):
-                recover_work(
-                    work, repository="puchinya/ai-agent-workflow", issue_number=71,
-                    adc_comment_id=6881591677,
-                    adc_sha256="3c6b3ac28270357b57047dc5da0a2c1fbdbada269d55225ea33a656cd3076e17",
-                    expected_branch_ref="pases/issue-71-local-activation-v2-phase-rebaseline-epoch-3",
-                )
-            ordinary = ExecutionBinding(
-                repository="puchinya/ai-agent-workflow", issue_number=71,
-                adc_comment_id=6881591677,
-                adc_sha256="3c6b3ac28270357b57047dc5da0a2c1fbdbada269d55225ea33a656cd3076e17",
-                base_ref="main", base_sha=base,
-                work_directory=str(work.resolve()),
-                branch_ref="pases/issue-71-local-activation-v2-phase-rebaseline-epoch-3", initial_head_sha=base,
-            ).validate()
-            epoch_file = work / ".p_ases" / "state" / "71" / "execution-epoch.json"
-            epoch_file.parent.mkdir(parents=True, exist_ok=True)
-            epoch_file.write_text("{}")
-            with self.assertRaisesRegex(WorkError, "existing adopted or epoch execution identity"):
-                ensure_pull_request(
-                    work, None, repository="puchinya/ai-agent-workflow", issue_number=71,
-                    binding=ordinary, branch_ref=ordinary.branch_ref, base_ref="main",
-                    title="Issue #71", body="Closes #71",
-                )
-            self.assertFalse(binding_path.exists())
+            work, _bare, _base = self._repo(Path(temporary))
+            for issue_number in (30, 71, 128):
+                state = work / ".p_ases" / "state" / str(issue_number)
+                state.mkdir(parents=True)
+                for marker in ("execution-epoch.json", "execution-epoch-attachment.json",
+                               "execution-adoption.json", "workspace-attachment.json"):
+                    path = state / marker
+                    path.write_text("{}")
+                    with self.assertRaisesRegex(WorkError, "existing execution epoch"):
+                        bind_work(
+                            work, repository="owner/repo", issue_number=issue_number,
+                            adc_comment_id=123, adc_sha256="a" * 64,
+                            base_ref="main", branch_ref="pases/work",
+                        )
+                    with self.assertRaisesRegex(WorkError, "existing execution epoch"):
+                        recover_work(
+                            work, repository="owner/repo", issue_number=issue_number,
+                            adc_comment_id=123, adc_sha256="a" * 64,
+                            expected_branch_ref="pases/work",
+                        )
+                    self.assertFalse((state / "execution-binding.json").exists())
+                    path.unlink()
+                # A symlinked carrier is treated as present, never ignored.
+                (state / "execution-epoch.json").symlink_to("missing-target")
+                with self.assertRaisesRegex(WorkError, "existing execution epoch"):
+                    bind_work(
+                        work, repository="owner/repo", issue_number=issue_number,
+                        adc_comment_id=123, adc_sha256="a" * 64,
+                        base_ref="main", branch_ref="pases/work",
+                    )
+                (state / "execution-epoch.json").unlink()
 
     def _issue71_epoch_pr_fixture(self, root: Path, *, malformed_checkpoint: bool = False,
                                   unbound_checkpoint_digest: bool = False,

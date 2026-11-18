@@ -135,35 +135,36 @@ class WorkReadinessSchemaTests(unittest.TestCase):
             ).validate(), subject,
         ))
 
-    def test_issue71_rejects_a_v1_binding_even_when_adc_matches(self):
+    def test_v1_binding_is_not_rejected_by_hardcoded_issue_number(self):
         repository = "puchinya/ai-agent-workflow"
-        subject = VerificationSubject(
-            repository, 71, 81, 6881591677,
-            "3c6b3ac28270357b57047dc5da0a2c1fbdbada269d55225ea33a656cd3076e17",
-            PLAN_SHA, "e" * 40,
-        )
-        old_binding = ExecutionBinding(
-            repository=repository, issue_number=71, adc_comment_id=subject.adc_comment_id,
-            adc_sha256=subject.adc_sha256, base_ref="main",
-            base_sha="07481c4b451a81750a6c2e1a6a18bdfd4e3459c2",
-            work_directory=str(Path(tempfile.gettempdir()) / "pases-71-old"),
-            branch_ref="pases/issue-71-local-activation-v2-phase-rebaseline-epoch-3",
-            initial_head_sha="07481c4b451a81750a6c2e1a6a18bdfd4e3459c2",
-        ).validate()
-        old_context = WorkContext(old_binding, subject.pr_head_sha40, old_binding.branch_ref, True,
-                                  binding_digest(old_binding)).validate()
-        old_pr_binding = PRBinding(
-            repository, 71, subject.adc_comment_id, subject.adc_sha256, old_binding.base_sha,
-            old_binding.branch_ref, 81, subject.pr_head_sha40,
-        ).validate()
-        self.assertFalse(_identity_adc_matches_subject(old_binding, old_pr_binding, subject))
-        result = evaluate_readiness(
-            subject=subject, pr=None, pr_binding=old_pr_binding, work_context=old_context,
-            verification=None, acceptance=None, self_audit=None, required_item_ids=(),
-            independent_review=None, required_checks_sha256=None,
-        )
-        self.assertEqual(result.status, "BLOCKED")
-        self.assertIn("Issue #71 requires the active epoch-3 execution identity", result.reasons)
+        for issue_number in (71, 128):
+            subject = VerificationSubject(
+                repository, issue_number, 81, 6881591677,
+                "3c6b3ac28270357b57047dc5da0a2c1fbdbada269d55225ea33a656cd3076e17",
+                PLAN_SHA, "e" * 40,
+            )
+            binding = ExecutionBinding(
+                repository=repository, issue_number=issue_number,
+                adc_comment_id=subject.adc_comment_id, adc_sha256=subject.adc_sha256,
+                base_ref="main", base_sha="07481c4b451a81750a6c2e1a6a18bdfd4e3459c2",
+                work_directory=str(Path(tempfile.gettempdir()) / "pases-work"),
+                branch_ref="pases/work", initial_head_sha="07481c4b451a81750a6a18bdfd4e3459c2",
+            ).validate()
+            context = WorkContext(binding, subject.pr_head_sha40, binding.branch_ref, True,
+                                  binding_digest(binding)).validate()
+            pr_binding = PRBinding(
+                repository, issue_number, subject.adc_comment_id, subject.adc_sha256,
+                binding.base_sha, binding.branch_ref, 81, subject.pr_head_sha40,
+            ).validate()
+            self.assertTrue(_identity_adc_matches_subject(binding, pr_binding, subject))
+            result = evaluate_readiness(
+                subject=subject, pr=None, pr_binding=pr_binding, work_context=context,
+                verification=None, acceptance=None, self_audit=None, required_item_ids=(),
+                independent_review=None, required_checks_sha256=None,
+            )
+            self.assertEqual(result.status, "BLOCKED")
+            self.assertFalse(any("Issue #71 requires" in reason for reason in result.reasons))
+
 
     def test_readiness_identity_evidence_refs_follow_validated_active_source(self):
         with tempfile.TemporaryDirectory() as temporary:

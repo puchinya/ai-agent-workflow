@@ -631,12 +631,24 @@ def ensure_branch(repository_root: Path, base_ref: str, base_sha40: str, branch_
                       reasons=(f"previous_head={before_head}",))
 
 
+def _has_persisted_execution_epoch(root: Path, issue_number: int) -> bool:
+    """An epoch/adoption journal takes precedence over ordinary V1 binding."""
+    state = Path(root) / ".p_ases" / "state" / str(issue_number)
+    return any(
+        (state / name).exists() or (state / name).is_symlink()
+        for name in (
+            "execution-epoch.json", "execution-epoch-attachment.json",
+            "execution-adoption.json", "workspace-attachment.json",
+        )
+    )
+
+
 def bind_work(repository_root: Path, *, repository: str, issue_number: int, adc_comment_id: int,
               adc_sha256: str, base_ref: str, branch_ref: str,
               expected_base_sha40: str | None = None) -> WorkResult:
-    if issue_number == 71 and repository.casefold() == "puchinya/ai-agent-workflow":
-        raise WorkError("Issue #71 requires its active epoch-3 identity; generic work bind cannot synthesize V1")
     root = Path(repository_root).resolve()
+    if _has_persisted_execution_epoch(root, issue_number):
+        raise WorkError("existing execution epoch takes precedence; ordinary V1 binding is forbidden")
     base_ref, branch_ref = validate_ref(base_ref), validate_ref(branch_ref)
     path = execution_binding_path(root, issue_number)
     _reject_symlink_path(path, "ExecutionBinding path")
@@ -682,9 +694,9 @@ def bind_work(repository_root: Path, *, repository: str, issue_number: int, adc_
 
 def recover_work(repository_root: Path, *, repository: str, issue_number: int,
                  adc_comment_id: int, adc_sha256: str, expected_branch_ref: str) -> WorkResult:
-    if issue_number == 71 and repository.casefold() == "puchinya/ai-agent-workflow":
-        raise WorkError("Issue #71 requires its active epoch-3 identity; generic work recover cannot select or reconstruct V1")
     root = Path(repository_root).resolve()
+    if _has_persisted_execution_epoch(root, issue_number):
+        raise WorkError("existing execution epoch takes precedence; ordinary V1 recovery is forbidden")
     path = execution_binding_path(root, issue_number)
     _reject_symlink_path(path, "ExecutionBinding path")
     try:
