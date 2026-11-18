@@ -404,22 +404,22 @@ def _kind_from_issue(issue: dict[str, Any]) -> tuple[IssueKind, list[str]]:
 
 def _verify_frozen_binding(github: GitHub, root: Path, issue_number: int, verified: VerifiedADC,
                            branch_ref: str, commit_sha: str) -> None:
-    if issue_number == 71 and github.repo.casefold() == "puchinya/ai-agent-workflow":
+    from .current_epoch import CurrentEpochError, epoch_paths, read_current_epoch
+    epoch_file, attachment_file = epoch_paths(root, issue_number)
+    if (epoch_file.exists() or epoch_file.is_symlink()
+            or attachment_file.exists() or attachment_file.is_symlink()):
         try:
-            from .phase_epoch_rebaseline import PhaseEpochRebaselineError, read_active_epoch
-            epoch = read_active_epoch(github, root, verified)
+            epoch = read_current_epoch(github, root, issue_number, verified)
             if (epoch.repository.casefold() != github.repo.casefold()
                     or epoch.issue_number != issue_number or epoch.branch_ref != branch_ref
                     or not is_ancestor(root, epoch.base_sha40, commit_sha)):
-                raise PhaseEvidenceError(
-                    "verified Issue #71 epoch-3 identity does not match the current branch and commit"
-                )
+                raise PhaseEvidenceError("execution epoch differs from the current Issue, branch, or HEAD")
             return
-        except (PhaseEpochRebaselineError, GitError) as exc:
-            raise PhaseEvidenceError(f"a valid verified Issue #71 execution epoch is required: {exc}") from exc
+        except (CurrentEpochError, GitError, GitHubError, OSError) as exc:
+            raise PhaseEvidenceError(f"a valid current execution epoch is required: {exc}") from exc
     path = execution_binding_path(root.resolve(), issue_number)
     if not path.exists():
-        if issue_number != 63 or not (
+        if not (
                 (root / ".p_ases" / "state" / str(issue_number) / "execution-adoption.json").exists()
                 or (root / ".p_ases" / "state" / str(issue_number) / "workspace-attachment.json").exists()):
             raise PhaseEvidenceError("a valid frozen Issue ExecutionBinding is required when no adopted epoch exists")
@@ -431,7 +431,7 @@ def _verify_frozen_binding(github: GitHub, root: Path, issue_number: int, verifi
             )
             adopted = adopted_readback["epoch"]
             current_binding = adopted_readback["pr_binding"]
-            if (issue_number != 63 or adopted.repository.casefold() != github.repo.casefold()
+            if (adopted.repository.casefold() != github.repo.casefold()
                     or adopted.issue_number != issue_number
                     or current_binding.adoption_id != adopted.adoption_id
                     or current_binding.adc_comment_id != verified.pointer.comment_id
@@ -855,13 +855,6 @@ def _verify_predecessor_receipt(github: GitHub, root: Path, issue_number: int,
 
 def _active_phase_generation_subject(github: GitHub, root: Path, issue_number: int,
                                     verified: VerifiedADC) -> tuple[int, str] | None:
-    if issue_number == 71 and github.repo.casefold() == "puchinya/ai-agent-workflow":
-        try:
-            from .phase_epoch_rebaseline import PhaseEpochRebaselineError, read_active_epoch
-            epoch = read_active_epoch(github, root, verified)
-        except (PhaseEpochRebaselineError, GitError) as exc:
-            raise PhaseEvidenceError(f"active Issue #71 epoch-3 generation is invalid: {exc}") from exc
-        return epoch.applied_comment_id, epoch.applied_body_sha256
     try:
         from .phase_restart import PhaseRestartError, current_phase_generation
         active_generation = current_phase_generation(github, root, issue_number, verified)
