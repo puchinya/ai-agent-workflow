@@ -24,14 +24,11 @@ from .owner_consent import (
     OwnerDecisionError, read_verified_owner_decision,
     verify_owner_decision_history_tail, _comment_fingerprint, _has_owner_decision_marker,
 )
-from .profile import ProfileError, canonical_project_profile_sha256
+from .profile import ProfileError, canonical_project_profile_sha256, load_profile
 from .work import WorkError, closing_issue_references, parse_issue_association
 
 REPOSITORY = "puchinya/ai-agent-workflow"
 ISSUE_NUMBER = 63
-ISSUE71_NUMBER = 71
-ISSUE71_PR_NUMBER = 75
-ISSUE71_PROFILE_SHA256 = "396379272080348b5b7b2a78faac09ab28dcdb001106a238c5e62945eaf8f820"
 PLAN_SCHEMA = "PASES_OWNER_AUTHORIZATION_PLAN_V2"
 PLAN_OPERATIONS = OPERATIONS | {"USER_REVIEW"}
 PLAN_FIELDS = frozenset({
@@ -194,88 +191,80 @@ def _check_identity(github: Any, issue_number: int, target_issue_number: int | N
                     raise OwnerAuthorizationError("Activation Setup PR does not bind Issue #57")
 
 
-def _validate_issue71_user_review_subject(
-    github: Any, root: Path, *, pr_number: int | None, pr_head_sha40: str | None,
-    details: dict[str, Any],
+def _validate_user_review_subject(
+    github: Any, root: Path, *, issue_number: int, pr_number: int | None,
+    pr_head_sha40: str | None, details: dict[str, Any],
 ) -> None:
-    """Validate Issue #71's exact V3 User Review scope without consulting Issue #63."""
+    """Validate current Issue, PR, profile and approved ADC; never scan ADC history."""
     from .adc import ADCError, verify_adc
-    from .phase_rework import (
-        verify_issue71_phase_and_user_review_adc_chain,
-    )
-    expected_detail_fields = {
-        "review_session_sha256", "readiness_sha256", "adc_sha256", "pr_head_sha40",
-        "feedback_sha256", "project_profile_sha256", "verifier_user_id",
-    }
-    if (pr_number != ISSUE71_PR_NUMBER or not isinstance(pr_head_sha40, str)
-            or set(details) != expected_detail_fields
-            or details.get("pr_head_sha40") != pr_head_sha40
-            or details.get("project_profile_sha256") != ISSUE71_PROFILE_SHA256
-            or type(details.get("verifier_user_id")) is not int
-            or details["verifier_user_id"] < 1
+    from .path_safety import path_has_symlink
+
+    expected = {"review_session_sha256", "readiness_sha256", "adc_sha256",
+                "pr_head_sha40", "feedback_sha256", "project_profile_sha256",
+                "verifier_user_id"}
+    digests = expected - {"pr_head_sha40", "verifier_user_id"}
+    if (not _positive(issue_number) or not _positive(pr_number)
+            or not isinstance(pr_head_sha40, str) or SHA40.fullmatch(pr_head_sha40) is None
+            or set(details) != expected or details.get("pr_head_sha40") != pr_head_sha40
+            or not _positive(details.get("verifier_user_id"))
             or any(not isinstance(details.get(key), str) or SHA256.fullmatch(details[key]) is None
-                   for key in ("review_session_sha256", "readiness_sha256", "adc_sha256", "feedback_sha256"))):
-        raise OwnerAuthorizationError("Issue #71 User Review details do not bind the exact session, profile, and PR")
-    profile_path = Path(root) / ".agent" / "project.json"
-    if (Path(root).is_symlink() or profile_path.parent.is_symlink()
-            or profile_path.is_symlink() or not profile_path.is_file()):
-        raise OwnerAuthorizationError("Issue #71 project profile differs from the approved solo_owner profile")
+                   for key in digests)):
+        raise OwnerAuthorizationError("User Review details do not bind the exact session, profile and PR")
+    root = Path(root)
+    profile_path = root / ".agent" / "project.json"
+    if path_has_symlink(profile_path, root=root) or not profile_path.is_file():
+        raise OwnerAuthorizationError("User Review project profile must be a regular file")
     try:
-        profile_sha256 = canonical_project_profile_sha256(profile_path.read_bytes())
+        profile_digest = canonical_project_profile_sha256(profile_path.read_bytes())
+        profile = load_profile(root)
     except (OSError, ProfileError) as exc:
-        raise OwnerAuthorizationError(
-            "Issue #71 project profile differs from the approved solo_owner profile"
-        ) from exc
-    if profile_sha256 != ISSUE71_PROFILE_SHA256:
-        raise OwnerAuthorizationError("Issue #71 project profile differs from the approved solo_owner profile")
+        raise OwnerAuthorizationError("User Review project profile is invalid") from exc
+    if (profile_digest != details["project_profile_sha256"]
+            or profile.final_delivery_review_mode != "solo_owner"):
+        raise OwnerAuthorizationError("User Review project profile differs from the approved solo_owner profile")
     try:
-        verified = verify_adc(github, ISSUE71_NUMBER)
-        authorization, chain = verify_issue71_phase_and_user_review_adc_chain(github, verified)
-    except (ADCError, ValueError) as exc:
-        raise OwnerAuthorizationError(f"Issue #71 current ADC authorization is invalid: {exc}") from exc
-    user_review = authorization["issue71_user_review_authorization"]
-    if (not chain or chain[-1].pointer != verified.pointer
-            or chain[-1].contract.content != verified.contract.content
-            or details["adc_sha256"] != verified.contract.sha256
-            or user_review["project_profile_sha256"] != ISSUE71_PROFILE_SHA256
-            or user_review["pr_number"] != pr_number):
-        raise OwnerAuthorizationError("Issue #71 current ADC, profile, or PR differs from the authorized User Review")
-    issue = github.issue(ISSUE71_NUMBER)
-    body = issue.get("body") if isinstance(issue, dict) else None
-    labels = [row.get("name") for row in issue.get("labels", []) if isinstance(row, dict)] if isinstance(issue, dict) else []
-    if (not isinstance(issue, dict) or issue.get("number") != ISSUE71_NUMBER
+        current = verify_adc(github, issue_number)
+    except (ADCError, GitHubError) as exc:
+        raise OwnerAuthorizationError(f"User Review current ADC verification failed: {exc}") from exc
+    if current.pointer.state != "approved" or current.contract.sha256 != details["adc_sha256"]:
+        raise OwnerAuthorizationError("User Review approved current ADC differs from the exact session")
+    metadata = github.repository_metadata()
+    issue = github.issue(issue_number)
+    labels = issue.get("labels") if isinstance(issue, dict) else None
+    names = [row.get("name") for row in labels] if isinstance(labels, list) else []
+    if (not isinstance(issue, dict) or issue.get("number") != issue_number
             or issue.get("state") != "open" or issue.get("pull_request") is not None
             or issue.get("repository_url") != f"https://api.github.com/repos/{REPOSITORY}"
-            or not isinstance(body, str)
-            or hashlib.sha256(body.encode("utf-8")).hexdigest() != authorization["current_issue_body_sha256"]
-            or tuple(sorted(labels)) != tuple(sorted(("enhancement", "kind:single", "phase:user-review")))):
-        raise OwnerAuthorizationError("Issue #71 carrier identity, body, or phase labels are not exact")
-    pull = github.pull_request(ISSUE71_PR_NUMBER)
+            or not isinstance(labels, list) or any(not isinstance(x, str) for x in names)
+            or len(names) != len(set(names))
+            or sum(x.startswith("kind:") for x in names) != 1
+            or [x for x in names if x.startswith("phase:")] != ["phase:user-review"]):
+        raise OwnerAuthorizationError("User Review Issue identity or phase changed")
+    pull = github.pull_request(pr_number)
     head = pull.get("head") if isinstance(pull, dict) else None
     base = pull.get("base") if isinstance(pull, dict) else None
     author = pull.get("user") if isinstance(pull, dict) else None
     head_repo = head.get("repo") if isinstance(head, dict) else None
     base_repo = base.get("repo") if isinstance(base, dict) else None
-    from .phase_rework import PR_BODY_SHA256, PR_TITLE
-    pr_body = pull.get("body") if isinstance(pull, dict) else None
-    if (not isinstance(pull, dict) or pull.get("number") != ISSUE71_PR_NUMBER
+    if (not isinstance(pull, dict) or pull.get("number") != pr_number
             or pull.get("state") != "open" or pull.get("draft") is not False
             or pull.get("merged_at") is not None or pull.get("merged") is True
-            or pull.get("title") != PR_TITLE or not isinstance(pr_body, str)
-            or hashlib.sha256(pr_body.encode("utf-8")).hexdigest() != PR_BODY_SHA256
             or not isinstance(head, dict) or head.get("sha") != pr_head_sha40
-            or head.get("ref") != authorization["branch_ref"]
-            or not isinstance(head_repo, dict) or head_repo.get("id") != REPOSITORY_ID
-            or not isinstance(base, dict) or base.get("ref") != authorization["frozen_base_ref"]
-            or base.get("sha") != authorization["frozen_base_sha40"]
-            or not isinstance(base_repo, dict) or base_repo.get("id") != REPOSITORY_ID
+            or not isinstance(head_repo, dict) or head_repo.get("id") != metadata.get("id")
+            or not isinstance(base_repo, dict) or base_repo.get("id") != metadata.get("id")
             or not isinstance(author, dict) or author.get("type") != "User"
             or author.get("id") != OWNER_ID):
-        raise OwnerAuthorizationError("PR #75 author, state, HEAD, base, or repository differs from the plan")
+        raise OwnerAuthorizationError("User Review PR identity, owner or exact HEAD changed")
+    try:
+        association = parse_issue_association(pull.get("body"), issue_number)
+    except WorkError as exc:
+        raise OwnerAuthorizationError(f"User Review PR Issue association is invalid: {exc}") from exc
+    if association not in {"auto_close", "deferred_close"}:
+        raise OwnerAuthorizationError("User Review PR does not associate the exact Issue")
     verifier = github.authenticated_user()
     if (not isinstance(verifier, dict) or verifier.get("type") != "User"
             or verifier.get("id") != details["verifier_user_id"]):
-        raise OwnerAuthorizationError("Issue #71 User Review verifier identity changed")
+        raise OwnerAuthorizationError("User Review independent verifier identity changed")
 
 
 def issue63_deferred_merge_details(github: Any, *, pr_number: int,
@@ -351,8 +340,7 @@ def create_authorization_plan(
     """Read live GitHub subjects and create an immutable canonical plan."""
     if operation not in PLAN_OPERATIONS:
         raise OwnerAuthorizationError("unsupported owner operation")
-    if (issue_number not in {ISSUE_NUMBER, ISSUE71_NUMBER} or
-            (issue_number == ISSUE71_NUMBER and operation != "USER_REVIEW")
+    if (not _positive(issue_number) or (operation != "USER_REVIEW" and issue_number != ISSUE_NUMBER)
             or not isinstance(subject_sha256, str)
             or SHA256.fullmatch(subject_sha256) is None
             or (target_issue_number is not None and not _positive(target_issue_number))
@@ -368,8 +356,7 @@ def create_authorization_plan(
         raise OwnerAuthorizationError("Issue #63 merge authorization is bound only to existing PR #64")
     if operation == "EXECUTION_ADOPTION" and (target_issue_number != 63 or pr_number != 64):
         raise OwnerAuthorizationError("execution adoption is restricted to Issue #63 / PR #64")
-    if operation == "USER_REVIEW" and (target_issue_number is not None
-                                        or issue_number not in {ISSUE_NUMBER, ISSUE71_NUMBER}):
+    if operation == "USER_REVIEW" and target_issue_number is not None:
         raise OwnerAuthorizationError("User Review decision carrier is the exact configured plan Issue")
     root = Path(root)
     if root.is_symlink() or not root.is_dir():
@@ -387,17 +374,17 @@ def create_authorization_plan(
     try:
         _canonical(details)
         identity_github = github
-        if operation == "USER_REVIEW" and issue_number == ISSUE71_NUMBER:
+        if operation == "USER_REVIEW":
             if type(github) is ReadOnlyGitHub:
                 identity_github = github
             else:
                 identity_github = ReadOnlyGitHub(REPOSITORY)
             identity_github.verify_read_only_scope()
         _check_identity(identity_github, issue_number, target_issue_number, pr_number, pr_head_sha40)
-        if operation == "USER_REVIEW" and issue_number == ISSUE71_NUMBER:
-            _validate_issue71_user_review_subject(
-                identity_github, root, pr_number=pr_number, pr_head_sha40=pr_head_sha40,
-                details=details,
+        if operation == "USER_REVIEW":
+            _validate_user_review_subject(
+                identity_github, root, issue_number=issue_number, pr_number=pr_number,
+                pr_head_sha40=pr_head_sha40, details=details,
             )
         if operation == "PR_MERGE" and target_issue_number == 63:
             expected_deferred = issue63_deferred_merge_details(
@@ -442,9 +429,8 @@ def _validate_plan(value: Any) -> dict[str, Any]:
         raise OwnerAuthorizationError("authorization plan has unknown or missing fields")
     plan = dict(value)
     supplied = plan.pop("plan_sha256")
-    allowed_issue = (plan.get("issue_number") == ISSUE_NUMBER
-                     or (plan.get("operation") == "USER_REVIEW"
-                         and plan.get("issue_number") == ISSUE71_NUMBER))
+    allowed_issue = (_positive(plan.get("issue_number")) if plan.get("operation") == "USER_REVIEW"
+                     else plan.get("issue_number") == ISSUE_NUMBER)
     if (plan.get("schema") != PLAN_SCHEMA or plan.get("repository") != REPOSITORY
             or plan.get("repository_id") != REPOSITORY_ID or plan.get("owner_id") != OWNER_ID
             or not allowed_issue or plan.get("operation") not in PLAN_OPERATIONS
@@ -512,21 +498,20 @@ def _validate_plan(value: Any) -> dict[str, Any]:
     if plan["operation"] == "USER_REVIEW":
         common_fields = {"review_session_sha256", "readiness_sha256", "adc_sha256",
                          "pr_head_sha40", "feedback_sha256"}
-        expected_fields = (common_fields if plan["issue_number"] == ISSUE_NUMBER else
-                           common_fields | {"project_profile_sha256", "verifier_user_id"})
+        current_fields = common_fields | {"project_profile_sha256", "verifier_user_id"}
+        expected_fields = (common_fields, current_fields)
         digest_fields = common_fields - {"pr_head_sha40"}
-        if (set(details) != expected_fields
+        if (set(details) not in expected_fields
                 or plan["target_issue_number"] is not None
                 or details.get("pr_head_sha40") != plan["pr_head_sha40"]
                 or any(not isinstance(details.get(key), str) or SHA256.fullmatch(details[key]) is None
                        for key in digest_fields)
                 or not isinstance(details.get("pr_head_sha40"), str)
                 or SHA40.fullmatch(details["pr_head_sha40"]) is None
-                or (plan["issue_number"] == ISSUE71_NUMBER
-                    and (plan["pr_number"] != ISSUE71_PR_NUMBER
-                         or details.get("project_profile_sha256") != ISSUE71_PROFILE_SHA256
-                         or type(details.get("verifier_user_id")) is not int
-                         or details["verifier_user_id"] < 1))):
+                or (set(details) == current_fields
+                    and (not isinstance(details.get("project_profile_sha256"), str)
+                         or SHA256.fullmatch(details["project_profile_sha256"]) is None
+                         or not _positive(details.get("verifier_user_id"))))):
             raise OwnerAuthorizationError("User Review authorization plan details are invalid")
     if plan["operation"] == "EXECUTION_ADOPTION":
         adoption = details.get("adoption_plan") if set(details) == {"adoption_plan"} else None
@@ -777,9 +762,9 @@ def authorize_plan(
     """Confirm and append one V2 owner decision; no blind retry is attempted."""
     _check_owner_local_tty(stdin)
     plan = read_authorization_plan(plan_path)
-    if plan["operation"] == "USER_REVIEW" and plan["issue_number"] == ISSUE71_NUMBER:
+    if plan["operation"] == "USER_REVIEW":
         raise OwnerAuthorizationError(
-            "Issue #71 User Review requires the direct in-process chat confirmation path; owner-local V2 is disabled"
+            "User Review requires the direct in-process chat confirmation path; owner-local V2 is disabled"
         )
     if plan["operation"] == "EXECUTION_ADOPTION":
         raise OwnerAuthorizationError(

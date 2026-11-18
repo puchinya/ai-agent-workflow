@@ -2628,18 +2628,17 @@ def _user_review_owner_context(args: argparse.Namespace, repository: str,
         "repository": repository, "issue_number": issue_number,
         "pr_number": verification_subject.pr_number, **details,
     })).hexdigest()
-    if issue_number == 71:
-        details = {
-            **details,
-            "project_profile_sha256": canonical_project_profile_sha256(
-                (root / ".agent" / "project.json").read_bytes()
-            ),
-            "verifier_user_id": verifier_id,
-        }
-        subject_sha256 = hashlib.sha256(_canonical({
-            "repository": repository, "issue_number": issue_number,
-            "pr_number": verification_subject.pr_number, **details,
-        })).hexdigest()
+    details = {
+        **details,
+        "project_profile_sha256": canonical_project_profile_sha256(
+            (root / ".agent" / "project.json").read_bytes()
+        ),
+        "verifier_user_id": verifier_id,
+    }
+    subject_sha256 = hashlib.sha256(_canonical({
+        "repository": repository, "issue_number": issue_number,
+        "pr_number": verification_subject.pr_number, **details,
+    })).hexdigest()
     return {"session": session, "readiness": readiness, "snapshot": snapshot,
             "details": details, "subject_sha256": subject_sha256,
             "pr_number": verification_subject.pr_number,
@@ -2700,9 +2699,12 @@ def _owner_authorization_plan_command(args: argparse.Namespace, repository: str,
         if args.subject_file is not None or args.ruleset_plan is not None:
             raise OwnerAuthorizationError("USER_REVIEW plan does not accept ADC or Ruleset source files")
         requested_issue = getattr(args, "target_issue", None)
-        if requested_issue not in {None, 63, 71}:
-            raise OwnerAuthorizationError("USER_REVIEW target is limited to the configured Issue #63 or Issue #71 path")
-        plan_issue = 71 if requested_issue == 71 else 63
+        if args.session is None:
+            raise OwnerAuthorizationError("USER_REVIEW requires --session")
+        subject_issue = read_review_session(args.session).subject.verification_subject.issue_number
+        if requested_issue is not None and requested_issue != subject_issue:
+            raise OwnerAuthorizationError("USER_REVIEW target differs from the session Issue")
+        plan_issue = subject_issue
         context = _user_review_owner_context(
             args, repository, root, github, issue_number=plan_issue,
         )
@@ -3237,12 +3239,12 @@ def _owner_authorization_resume_command(args: argparse.Namespace, repository: st
         read_github, repository, plan["issue_number"], plan["pr_number"],
         details["pr_head_sha40"], root=root,
     )
-    if plan["issue_number"] == 71 and (
-            details.get("project_profile_sha256") != canonical_project_profile_sha256(
+    if ("project_profile_sha256" in details and (
+            details["project_profile_sha256"] != canonical_project_profile_sha256(
                 (root / ".agent" / "project.json").read_bytes()
             )
-            or details.get("verifier_user_id") != verifier_id):
-        raise OwnerAuthorizationError("Issue #71 profile or independent verifier differs from the exact plan")
+            or details.get("verifier_user_id") != verifier_id)):
+        raise OwnerAuthorizationError("User Review profile or independent verifier differs from the exact plan")
     approval = _read_user_review_relay_approval(
         read_github, session=session, readiness=readiness, owner_id=owner_id, verifier_id=verifier_id,
         feedback_sha256=details["feedback_sha256"], plan_sha256=plan["plan_sha256"],
