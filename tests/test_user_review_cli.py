@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import io
 import json
 import sys
@@ -27,7 +26,6 @@ from p_ases.cli import (
     CLIError, _latest_review_snapshot, _parser, _read_only_github, _readiness_phase_blocker,
     _review_phase_transition, _solo_owner_identity, _user_review_owner_context, _user_review_run,
 )
-from p_ases import phase_rework as phase_rework_module
 
 
 HEAD = "a" * 40
@@ -161,23 +159,9 @@ class UserReviewCliRegressionTests(unittest.TestCase):
                 canonical_project_profile_sha256(profile_bytes + b" "),
             )
             profile_path.write_bytes(crlf_profile_bytes)
-            profile_sha = canonical_project_profile_sha256(profile_bytes)
-            issue_body = "Exact Issue 71 body"
-            issue_body_sha = hashlib.sha256(issue_body.encode()).hexdigest()
-            pr_body = "Refs #71"
-            pr_body_sha = hashlib.sha256(pr_body.encode()).hexdigest()
-            phase_authorization = {
-                "repository_id": 1401910271,
-                "owner_id": 3744776,
-                "current_issue_body_sha256": issue_body_sha,
-                "branch_ref": phase_rework_module.BRANCH_REF,
-                "frozen_base_ref": "main",
-                "frozen_base_sha40": "b" * 40,
-                "issue71_user_review_authorization": {
-                    "project_profile_sha256": profile_sha,
-                    "pr_number": 75,
-                },
-            }
+            issue_body = "Exact current Issue body"
+            pr_body = "Refs #128"
+            branch_ref = "pases/issue-128-user-review"
             reader = ReadOnlyGitHub("puchinya/ai-agent-workflow")
             reader.verify_read_only_scope()
             issue_numbers = []
@@ -188,10 +172,10 @@ class UserReviewCliRegressionTests(unittest.TestCase):
 
             def read_issue(number):
                 issue_numbers.append(number)
-                if number != 71:
-                    raise AssertionError("Issue #71 User Review must not read Issue #63")
+                if number != 128:
+                    raise AssertionError("User Review must read only its requested Issue")
                 return {
-                    "number": 71, "id": 6135294757, "state": "open", "pull_request": None,
+                    "number": 128, "id": 128001, "state": "open", "pull_request": None,
                     "repository_url": "https://api.github.com/repos/puchinya/ai-agent-workflow",
                     "body": issue_body,
                     "labels": [{"name": label} for label in
@@ -201,8 +185,8 @@ class UserReviewCliRegressionTests(unittest.TestCase):
             reader.issue = read_issue
             reader.pull_request = lambda number: {
                 "number": number, "state": "open", "draft": False, "merged": False,
-                "merged_at": None, "title": phase_rework_module.PR_TITLE, "body": pr_body,
-                "head": {"sha": HEAD, "ref": phase_rework_module.BRANCH_REF,
+                "merged_at": None, "title": "Test PR for Issue #128", "body": pr_body,
+                "head": {"sha": HEAD, "ref": branch_ref,
                          "repo": {"id": 1401910271}},
                 "base": {"ref": "main", "sha": "b" * 40, "repo": {"id": 1401910271}},
                 "user": {"id": 3744776, "type": "User"},
@@ -210,18 +194,18 @@ class UserReviewCliRegressionTests(unittest.TestCase):
             reader.authenticated_user = lambda: {"id": 9881, "type": "User"}
             verified = SimpleNamespace(
                 pointer=SimpleNamespace(
-                    comment_id=phase_rework_module.ISSUE71_WINDOWS_PROFILE_READER_ADC_COMMENT_ID,
-                    sha256=phase_rework_module.ISSUE71_WINDOWS_PROFILE_READER_ADC_SHA256,
+                    comment_id=456,
+                    sha256="f" * 64,
                     state="approved",
                 ),
                 contract=SimpleNamespace(
-                    sha256=phase_rework_module.ISSUE71_WINDOWS_PROFILE_READER_ADC_SHA256,
+                    sha256="f" * 64,
                     content=b"current approved ADC bytes",
                 ),
             )
             with patch("p_ases.cli.verify_adc", return_value=verified):
                 self.assertEqual(
-                    _solo_owner_identity(reader, "puchinya/ai-agent-workflow", 71, 75, HEAD, root=root),
+                    _solo_owner_identity(reader, "puchinya/ai-agent-workflow", 128, 129, HEAD, root=root),
                     (3744776, 3744776, 9881),
                 )
                 for invalid_profile in (
@@ -230,11 +214,11 @@ class UserReviewCliRegressionTests(unittest.TestCase):
                     profile_path.write_bytes(invalid_profile)
                     with self.assertRaisesRegex(CLIError, "project profile"):
                         _solo_owner_identity(
-                            reader, "puchinya/ai-agent-workflow", 71, 75, HEAD, root=root,
+                            reader, "puchinya/ai-agent-workflow", 128, 129, HEAD, root=root,
                         )
-            self.assertTrue(issue_numbers and all(item == 71 for item in issue_numbers))
+            self.assertTrue(issue_numbers and all(item == 128 for item in issue_numbers))
 
-    def test_issue71_user_review_owner_context_produces_canonical_profile_digest(self):
+    def test_user_review_owner_context_produces_canonical_profile_digest(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / ".agent").mkdir()
@@ -244,7 +228,7 @@ class UserReviewCliRegressionTests(unittest.TestCase):
             )
             (root / ".agent" / "project.json").write_bytes(crlf_profile_bytes)
             verification_subject = SimpleNamespace(
-                repository="puchinya/ai-agent-workflow", issue_number=71, pr_number=75,
+                repository="puchinya/ai-agent-workflow", issue_number=128, pr_number=129,
                 pr_head_sha40=HEAD, adc_sha256="a" * 64,
             )
             subject = SimpleNamespace(
@@ -263,7 +247,7 @@ class UserReviewCliRegressionTests(unittest.TestCase):
                     patch("p_ases.cli._review_payload_from_github", return_value=current):
                 result = _user_review_owner_context(
                     args, "puchinya/ai-agent-workflow", root,
-                    ReadOnlyGitHub("puchinya/ai-agent-workflow"), issue_number=71,
+                    ReadOnlyGitHub("puchinya/ai-agent-workflow"), issue_number=128,
                 )
             self.assertEqual(
                 result["details"]["project_profile_sha256"],
