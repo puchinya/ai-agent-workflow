@@ -43,6 +43,7 @@ class FakeGitHub:
         self.latest, self.phase_intent = latest, phase_intent
         self.direct_calls = []
         self.pages = 0
+        self.comment_pages = None
 
     def repository_metadata(self):
         return {"id": 8, "full_name": self.repo,
@@ -68,8 +69,13 @@ class FakeGitHub:
         raise AssertionError("unexpected historical carrier request")
 
     def issue_comment_pages_newest(self, number, total_comments):
-        self.pages += 1
-        yield [self.latest] if self.latest else []
+        assert number == 24 and total_comments == 1000000
+        rows = self.comment_pages
+        if rows is None:
+            rows = [[self.origin, self.latest]] if self.latest else [[self.origin]]
+        for page in rows:
+            self.pages += 1
+            yield page
 
     def issue_comments(self, number):
         raise AssertionError("full Issue history must not be read")
@@ -143,6 +149,49 @@ class CurrentEpochTests(unittest.TestCase):
         self.assertEqual(active.issue_number, 24)
         self.assertEqual(active.adc_comment_id, 77)
         self.assertEqual(active.applied_comment_id, 41)
+        self.assertEqual(github.direct_calls, [41, 40])
+        self.assertEqual(github.pages, 1)
+
+    def test_stops_at_epoch_origin_without_scanning_historical_phase_records(self):
+        old_applied = carrier(REWORK_APPLIED, {
+            "repository": "demo/project", "issue_number": 24,
+            "active_epoch_id": "f" * 64,
+            "active_epoch_sha256": "a" * 64,
+        }, self.issue, 35)
+        github = FakeGitHub(self.origin, self.intent)
+        github.comment_pages = [
+            [{"id": 90, "body": "Newer unrelated comment"}],
+            [old_applied, self.origin],
+            [{"id": 20, "body": "Historical ADC, must not be read"}],
+        ]
+        active = self.read(github)
+        self.assertEqual(active.applied_comment_id, 41)
+        self.assertEqual(github.direct_calls, [41, 40])
+        self.assertEqual(github.pages, 2)
+
+    def test_missing_epoch_origin_in_newest_pages_fails_closed(self):
+        github = FakeGitHub(self.origin, self.intent)
+        github.comment_pages = [[{"id": 90, "body": "Unrelated comment"}]]
+        with self.assertRaisesRegex(CurrentEpochError, "origin was not found"):
+            self.read(github)
+        self.assertEqual(github.direct_calls, [41, 40])
+
+    def test_changed_comment_count_blocks_stale_generation(self):
+        github = FakeGitHub(self.origin, self.intent)
+        original_issue = github.issue
+        calls = 0
+
+        def changing_issue(number):
+            nonlocal calls
+            calls += 1
+            row = original_issue(number)
+            if calls > 1:
+                row["comments"] += 1
+            return row
+
+        github.issue = changing_issue
+        with self.assertRaisesRegex(CurrentEpochError, "comment count changed"):
+            self.read(github)
         self.assertEqual(github.direct_calls, [41, 40])
         self.assertEqual(github.pages, 1)
 
