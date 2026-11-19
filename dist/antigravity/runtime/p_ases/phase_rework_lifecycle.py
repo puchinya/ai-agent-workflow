@@ -191,6 +191,35 @@ def _no_review_session(root: Path, issue_number: int) -> None:
         raise PhaseReworkLifecycleError("User Review session already exists")
 
 
+def _no_remote_rework_journal(
+        github: GitHub, issue_number: int, origin_applied_id: int, comment_count: Any) -> None:
+    """Check every post-origin rework attempt, not pre-epoch Issue/ADC history.
+
+    An Intent may exist without Applied after an ambiguous POST or label PUT.
+    The entire post-origin interval must be free of both schemas before a new
+    Intent is allowed; do not treat absence of Applied as permission to retry.
+    """
+    if (type(origin_applied_id) is not int or origin_applied_id < 1
+            or type(comment_count) is not int or comment_count < 1):
+        raise PhaseReworkLifecycleError("Phase rework journal scan requires a valid origin and Issue comment count")
+    for page in github.issue_comment_pages_newest(issue_number, comment_count):
+        if not isinstance(page, list):
+            raise PhaseReworkLifecycleError("remote Phase rework journal page is malformed")
+        for row in reversed(page):
+            if (not isinstance(row, dict) or type(row.get("id")) is not int
+                    or row["id"] < 1 or not isinstance(row.get("body"), str)):
+                raise PhaseReworkLifecycleError("remote Phase rework journal comment is malformed")
+            if row["id"] == origin_applied_id:
+                return
+            if row["body"].startswith((
+                    f"<!-- {INTENT_SCHEMA}\n", f"<!-- {APPLIED_SCHEMA}\n",
+            )):
+                raise PhaseReworkLifecycleError(
+                    "remote Phase rework journal already exists; read-only reconciliation required"
+                )
+    raise PhaseReworkLifecycleError("immutable epoch origin was not found in remote Phase rework journal")
+
+
 def apply_phase_rework(github: GitHub, root: Path, issue_number: int, *,
                        readiness_factory: Callable[[], Any] | None = None) -> dict[str, Any]:
     root = Path(root).resolve()
@@ -221,13 +250,9 @@ def apply_phase_rework(github: GitHub, root: Path, issue_number: int, *,
                                           adc=adc, auth=auth)
         # A different session cannot silently alter the subject after the first
         # evidence calculation, especially before the one-shot Intent POST.
-        if any(isinstance(row, dict) and isinstance(row.get("body"), str)
-               and row["body"].startswith((
-                   f"<!-- {INTENT_SCHEMA}\n", f"<!-- {APPLIED_SCHEMA}\n",
-               )) for row in github.issue_comments(issue_number)):
-            raise PhaseReworkLifecycleError(
-                "remote Phase rework journal already exists; read-only reconciliation required"
-            )
+        _no_remote_rework_journal(
+            github, issue_number, epoch.origin["applied_comment_id"], initial_issue.get("comments"),
+        )
         if _readiness(readiness_factory(), repository=github.repo,
                       issue_number=issue_number, adc=adc, auth=auth) != (ready_sha, subject_sha):
             raise PhaseReworkLifecycleError("fresh Readiness changed before Phase rework Intent")
@@ -235,6 +260,8 @@ def apply_phase_rework(github: GitHub, root: Path, issue_number: int, *,
         before_intent, *_ = _live(github, root, issue_number, adc, auth, auth["labels_before"])
         if before_intent.get("body") != initial_issue["body"]:
             raise PhaseReworkLifecycleError("Phase rework Issue body changed before Intent")
+        if before_intent.get("comments") != initial_issue["comments"]:
+            raise PhaseReworkLifecycleError("Phase rework Issue comments changed after journal preflight")
         _verify_pr(github, issue_number, auth)
         intent = {
             **auth, "schema": INTENT_SCHEMA,
