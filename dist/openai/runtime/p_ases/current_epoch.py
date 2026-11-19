@@ -239,44 +239,61 @@ def read_current_epoch(github: GitHub, root: Path, issue_number: int,
         raise CurrentEpochError("execution epoch origin Intent does not match its Applied")
     active_id = epoch["applied_comment_id"]
     active_sha = epoch["applied_body_sha256"]
-    # Read the newest completed phase rework only. Earlier ADCs are not read.
+    # Only records newer than this immutable epoch origin can define its active
+    # Phase generation. Never scan older Issue/ADC comments to find a rework.
     count = issue.get("comments")
-    pages = (github.issue_comment_pages_newest(issue_number, count)
-             if type(count) is int and count >= 0 else (github.issue_comments(issue_number),))
-    for page in pages:
-        found = next((row for row in reversed(page)
-                      if isinstance(row, dict) and isinstance(row.get("body"), str)
-                      and row["body"].startswith(f"<!-- {REWORK_APPLIED}\n")), None)
-        if found is None:
-            continue
-        identifier = found.get("id")
-        if type(identifier) is not int or identifier < 1:
-            raise CurrentEpochError("current Phase Applied comment has an invalid ID")
-        data, active_sha = _carrier(github, issue_number, identifier, REWORK_APPLIED, None, owner_id)
-        if (data.get("repository", "").casefold() != github.repo.casefold()
-                or data.get("issue_number") != issue_number
-                or data.get("active_epoch_id") != epoch["epoch_id"]
-                or data.get("active_epoch_sha256") != digest
-                or data.get("branch_ref") != epoch["branch_ref"]):
-            raise CurrentEpochError("current Phase Applied does not bind the active epoch")
-        intent_id = data.get("intent_comment_id")
-        intent_sha = data.get("intent_body_sha256")
-        if (type(intent_id) is not int or intent_id < 1
-                or not isinstance(intent_sha, str) or SHA256.fullmatch(intent_sha) is None):
-            raise CurrentEpochError("current Phase Applied lacks an exact Intent reference")
-        active_intent, _phase_intent_digest = _carrier(
-            github, issue_number, intent_id, REWORK_INTENT, intent_sha, owner_id,
-        )
-        if (active_intent.get("repository", "").casefold() != github.repo.casefold()
-                or active_intent.get("issue_number") != issue_number
-                or active_intent.get("active_epoch_id") != epoch["epoch_id"]
-                or active_intent.get("active_epoch_sha256") != digest
-                or active_intent.get("branch_ref") != epoch["branch_ref"]
-                or active_intent.get("adc_comment_id") != data.get("adc_comment_id")
-                or active_intent.get("adc_sha256") != data.get("adc_sha256")):
-            raise CurrentEpochError("current Phase Intent does not match its Applied")
-        active_id = identifier
-        break
+    if type(count) is not int or count < 1:
+        raise CurrentEpochError("current Issue comment count is unavailable")
+    origin_id = epoch["applied_comment_id"]
+    reached_origin = False
+    for page in github.issue_comment_pages_newest(issue_number, count):
+        if not isinstance(page, list):
+            raise CurrentEpochError("current Issue comment page is malformed")
+        for row in reversed(page):
+            identifier = row.get("id") if isinstance(row, dict) else None
+            if type(identifier) is not int or identifier < 1:
+                raise CurrentEpochError("current Issue comment has an invalid ID")
+            if identifier == origin_id:
+                reached_origin = True
+                break
+            body = row.get("body")
+            if not isinstance(body, str) or not body.startswith(f"<!-- {REWORK_APPLIED}\n"):
+                continue
+            data, active_sha = _carrier(
+                github, issue_number, identifier, REWORK_APPLIED, None, owner_id,
+            )
+            if (data.get("repository", "").casefold() != github.repo.casefold()
+                    or data.get("issue_number") != issue_number
+                    or data.get("active_epoch_id") != epoch["epoch_id"]
+                    or data.get("active_epoch_sha256") != digest
+                    or data.get("branch_ref") != epoch["branch_ref"]):
+                raise CurrentEpochError("current Phase Applied does not bind the active epoch")
+            intent_id = data.get("intent_comment_id")
+            intent_sha = data.get("intent_body_sha256")
+            if (type(intent_id) is not int or intent_id < 1
+                    or not isinstance(intent_sha, str) or SHA256.fullmatch(intent_sha) is None):
+                raise CurrentEpochError("current Phase Applied lacks an exact Intent reference")
+            active_intent, _phase_intent_digest = _carrier(
+                github, issue_number, intent_id, REWORK_INTENT, intent_sha, owner_id,
+            )
+            if (active_intent.get("repository", "").casefold() != github.repo.casefold()
+                    or active_intent.get("issue_number") != issue_number
+                    or active_intent.get("active_epoch_id") != epoch["epoch_id"]
+                    or active_intent.get("active_epoch_sha256") != digest
+                    or active_intent.get("branch_ref") != epoch["branch_ref"]
+                    or active_intent.get("adc_comment_id") != data.get("adc_comment_id")
+                    or active_intent.get("adc_sha256") != data.get("adc_sha256")):
+                raise CurrentEpochError("current Phase Intent does not match its Applied")
+            active_id = identifier
+            break
+        if reached_origin or active_id != origin_id:
+            break
+    if not reached_origin and active_id == origin_id:
+        raise CurrentEpochError("immutable epoch origin was not found in current Issue comments")
+    # The newest-first window can shift as comments arrive; never return a
+    # potentially stale generation selected from a changed pagination count.
+    if github.issue(issue_number).get("comments") != count:
+        raise CurrentEpochError("current Issue comment count changed during epoch lookup")
     return ActiveExecutionEpoch(
         epoch, current.pointer.comment_id, current.pointer.sha256, active_id, active_sha,
     ).validate()
