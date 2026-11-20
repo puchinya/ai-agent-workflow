@@ -3039,28 +3039,32 @@ def _merge_readback(github: GitHub, plan: dict[str, Any]) -> dict[str, Any]:
     if (pr.get("number") != plan["pr_number"] or pr.get("merged") is not True
             or pr.get("state") != "closed" or not isinstance(head, dict)
             or head.get("sha") != plan["pr_head_sha40"]
-            or not isinstance(head_repo, dict) or head_repo.get("full_name") != "puchinya/ai-agent-workflow"
-            or not isinstance(base_repo, dict) or base_repo.get("full_name") != "puchinya/ai-agent-workflow"
+            or not isinstance(head_repo, dict) or str(head_repo.get("full_name", "")).casefold() != plan["repository"].casefold()
+            or not isinstance(base_repo, dict) or str(base_repo.get("full_name", "")).casefold() != plan["repository"].casefold()
             or not isinstance(pr.get("merge_commit_sha"), str)
             or not re.fullmatch(r"[0-9a-f]{40}", pr["merge_commit_sha"])
-            or not isinstance(merger, dict) or merger.get("id") != _ISSUE63_OWNER_ID
+            or not isinstance(merger, dict) or merger.get("id") != plan["owner_id"]
             or merger.get("type") != "User"):
         raise OwnerAuthorizationError("PR merge readback does not prove the exact owner-merged HEAD")
     body = pr.get("body")
-    if plan["target_issue_number"] == 63:
-        try:
-            details = issue63_deferred_merge_details(
+    if plan["target_issue_number"] != 57:
+        details = (
+            issue63_deferred_merge_details(
                 github, pr_number=plan["pr_number"], pr_head_sha40=plan["pr_head_sha40"],
                 allow_merged=True,
+            ) if plan["target_issue_number"] == 63 else
+            deferred_merge_details(
+                github, issue_number=plan["target_issue_number"],
+                pr_number=plan["pr_number"], pr_head_sha40=plan["pr_head_sha40"],
+                allow_merged=True,
             )
-        except OwnerAuthorizationError:
-            raise
+        )
         if details != plan["details"]:
             raise OwnerAuthorizationError("merged implementation PR association or merge plan differs from approval")
-        issue = github.issue(63)
-        if (issue.get("number") != 63 or issue.get("state") != "open"
-                or issue.get("repository_url") != "https://api.github.com/repos/puchinya/ai-agent-workflow"):
-            raise OwnerAuthorizationError("Issue #63 did not remain open after deferred-close PR merge")
+        issue = github.issue(plan["target_issue_number"])
+        if (issue.get("number") != plan["target_issue_number"] or issue.get("state") != "open"
+                or issue.get("repository_url") != f"https://api.github.com/repos/{plan['repository']}"):
+            raise OwnerAuthorizationError("deferred-close Issue did not remain open after PR merge")
         merge_commit = github.commit_details(pr["merge_commit_sha"])
         merge_message = merge_commit.get("message")
         if not isinstance(merge_message, str) or closing_issue_references(merge_message):
@@ -3075,7 +3079,7 @@ def _merge_readback(github: GitHub, plan: dict[str, Any]) -> dict[str, Any]:
             raise OwnerAuthorizationError("merged Activation Setup PR does not bind Issue #57")
     return {"pr_number": plan["pr_number"], "head_sha40": plan["pr_head_sha40"],
             "merge_commit_sha40": pr["merge_commit_sha"], "merged_by_id": merger["id"],
-            "issue_state": "open" if plan["target_issue_number"] == 63 else None}
+            "issue_state": "open" if plan["target_issue_number"] != 57 else None}
 
 
 def _owner_merge_gate(args: argparse.Namespace, root: Path, github: GitHub,
@@ -3089,16 +3093,16 @@ def _owner_merge_gate(args: argparse.Namespace, root: Path, github: GitHub,
                 "independent_review", "user_review_record")
     missing = [f"--{name.replace('_', '-')}" for name in required if getattr(args, name, None) is None]
     if missing:
-        raise OwnerAuthorizationError("PR #64 merge requires fresh Final Delivery evidence: " + ", ".join(missing))
+        raise OwnerAuthorizationError("deferred-close PR merge requires fresh Final Delivery evidence: " + ", ".join(missing))
     final_args = argparse.Namespace(
-        issue=63, pr=plan["pr_number"], head=plan["pr_head_sha40"],
+        issue=plan["target_issue_number"], pr=plan["pr_number"], head=plan["pr_head_sha40"],
         plan=args.delivery_plan, readiness=args.readiness, verification=args.verification,
         acceptance=args.acceptance, self_audit=args.self_audit,
         independent_review=args.independent_review, user_review_record=args.user_review_record,
     )
     output = io.StringIO()
     with contextlib.redirect_stdout(output):
-        exit_code = _delivery_final(final_args, "puchinya/ai-agent-workflow", root, github)
+        exit_code = _delivery_final(final_args, plan["repository"], root, github)
     try:
         final = json.loads(output.getvalue())
     except json.JSONDecodeError as exc:
@@ -3129,12 +3133,12 @@ def _owner_merge_gate(args: argparse.Namespace, root: Path, github: GitHub,
             or final.get("merge_authorized") is not False
             or not final_policy_shape_ok
             or not isinstance(final.get("subject"), dict)
-            or final["subject"].get("repository") != "puchinya/ai-agent-workflow"
-            or final["subject"].get("issue_number") != 63
+            or final["subject"].get("repository") != plan["repository"]
+            or final["subject"].get("issue_number") != plan["target_issue_number"]
             or final["subject"].get("pr_number") != plan["pr_number"]
             or final["subject"].get("pr_head_sha40") != plan["pr_head_sha40"]
             or final.get("blockers")):
-        raise OwnerAuthorizationError("PR #64 Final Delivery gates are not PASS for this exact merge plan")
+        raise OwnerAuthorizationError("deferred-close Final Delivery gates are not PASS for this exact merge plan")
     return {"status": final["status"], "final_delivery_sha256": final.get("final_delivery_sha256"),
             "final_delivery_schema": final_schema,
             "subject": final["subject"]}
@@ -3187,12 +3191,18 @@ def _perform_authorized_merge(args: argparse.Namespace, root: Path, github: GitH
             ) from exc
     else:
         gates = _owner_merge_gate(args, root, github, plan)
-    if plan["target_issue_number"] == 63:
-        live_details = issue63_deferred_merge_details(
-            github, pr_number=plan["pr_number"], pr_head_sha40=plan["pr_head_sha40"],
+    if plan["target_issue_number"] != 57:
+        live_details = (
+            issue63_deferred_merge_details(
+                github, pr_number=plan["pr_number"], pr_head_sha40=plan["pr_head_sha40"],
+            ) if plan["target_issue_number"] == 63 else
+            deferred_merge_details(
+                github, issue_number=plan["target_issue_number"],
+                pr_number=plan["pr_number"], pr_head_sha40=plan["pr_head_sha40"],
+            )
         )
         if live_details != plan["details"]:
-            raise OwnerAuthorizationError("Issue #63 close association, commits, or planned message changed before merge")
+            raise OwnerAuthorizationError("deferred-close Issue association, commits or planned message changed before merge")
     current = github.pull_request(plan["pr_number"])
     head = current.get("head") if isinstance(current, dict) else None
     if (current.get("state") != "open" or current.get("merged") is True
@@ -3208,7 +3218,7 @@ def _perform_authorized_merge(args: argparse.Namespace, root: Path, github: GitH
     _create_merge_attempt(path, intent, root=root)
     response_error: GitHubError | None = None
     try:
-        if plan["target_issue_number"] == 63:
+        if plan["target_issue_number"] != 57:
             github.merge_pull_request(
                 plan["pr_number"], plan["pr_head_sha40"],
                 commit_title=plan["details"]["merge_commit_title"],
