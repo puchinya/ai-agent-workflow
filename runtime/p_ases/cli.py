@@ -1185,18 +1185,29 @@ def _identity_evidence_paths(root: Path, issue_number: int, identity: ExecutionI
 
 def _require_current_adopted_generation(github: GitHub, root: Path, repository: str,
                                         issue_number: int, verified_adc: Any) -> None:
-    """Prevent #63 exact-subject evidence until the adopted epoch has its current ADC bridge."""
-    if (issue_number != 63 or repository.casefold() != "puchinya/ai-agent-workflow"
-            or not (adoption_path(root).exists() or adoption_path(root).is_symlink())):
+    """Guard a legacy adopted identity by its persisted subject, not Issue number.
+
+    New Issues use the generic typed ExecutionEpoch lifecycle. A historical V1
+    adoption is inspected only if its immutable state is present, and it must
+    resolve to this exact repository/Issue and an ADC/HEAD-bound PRBinding.
+    """
+    adopted = adoption_path(root, issue_number)
+    attachment = adoption_attachment_path(root, issue_number)
+    if not (adopted.exists() or adopted.is_symlink()
+            or attachment.exists() or attachment.is_symlink()):
         return
     identity = _read_execution_identity(github, root, repository, issue_number, verified_adc)
-    if not isinstance(identity, AdoptedExecutionEpoch):
-        raise CLIError("Issue #63 adopted execution did not resolve to its immutable epoch")
+    if (not isinstance(identity, AdoptedExecutionEpoch)
+            or identity.repository.casefold() != repository.casefold()
+            or identity.issue_number != issue_number):
+        raise CLIError("adopted execution state does not resolve to its exact repository/Issue")
     try:
         current_binding = read_pr_binding(pr_binding_path(root, issue_number, github=github))
     except (CheckpointError, WorkError, OSError) as exc:
         raise CLIError(f"current adopted PRBinding readback failed: {exc}") from exc
-    if (current_binding.adoption_id != identity.adoption_id
+    if (current_binding.repository.casefold() != repository.casefold()
+            or current_binding.issue_number != issue_number
+            or current_binding.adoption_id != identity.adoption_id
             or current_binding.adc_comment_id != verified_adc.pointer.comment_id
             or current_binding.adc_sha256 != verified_adc.pointer.sha256
             or current_binding.pr_number != identity.pr_number
