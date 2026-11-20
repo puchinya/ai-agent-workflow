@@ -380,6 +380,8 @@ def create_authorization_plan(
         raise OwnerAuthorizationError("operation plan has an invalid exact subject")
     if operation == "PR_MERGE" and not _positive(target_issue_number):
         raise OwnerAuthorizationError("PR merge requires a positive target Issue")
+    if operation == "PR_MERGE" and target_issue_number != 57 and issue_number != target_issue_number:
+        raise OwnerAuthorizationError("deferred-close owner decision must be carried on the exact target Issue")
     if operation == "PR_MERGE" and target_issue_number == 63 and pr_number != 64:
         raise OwnerAuthorizationError("Issue #63 merge authorization is bound only to existing PR #64")
     if operation == "EXECUTION_ADOPTION" and (target_issue_number != 63 or pr_number != 64):
@@ -505,6 +507,8 @@ def _validate_plan(value: Any) -> dict[str, Any]:
         target = plan["target_issue_number"]
         if not _positive(target):
             raise OwnerAuthorizationError("PR merge requires an exact target Issue")
+        if target != 57 and plan["issue_number"] != target:
+            raise OwnerAuthorizationError("deferred-close plan carrier does not bind its target Issue")
         if target == 57:
             if details != {"target_issue_number": 57}:
                 raise OwnerAuthorizationError("Activation Setup PR merge authorization target is invalid")
