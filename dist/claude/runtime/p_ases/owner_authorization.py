@@ -270,6 +270,9 @@ def _validate_user_review_subject(
 def merge_commit_message(issue_number: int) -> str:
     if not _positive(issue_number):
         raise OwnerAuthorizationError("merge message requires a positive Issue number")
+    if issue_number == 63:
+        # Existing V1 owner-approved merge plans pin these exact historical bytes.
+        return ISSUE63_MERGE_COMMIT_MESSAGE
     return f"Implementation delivered. Issue #{issue_number} remains open pending verified Consumer Activation V2."
 
 
@@ -342,11 +345,18 @@ def issue63_deferred_merge_details(github: Any, *, pr_number: int,
                                    allow_merged: bool = False) -> dict[str, Any]:
     """Legacy exact #63/#64 adapter; never migrate an old plan or merge record."""
     if pr_number != 64:
-        raise OwnerAuthorizationError("historical Issue #63 deferred-close merge requires PR #64")
-    return deferred_merge_details(
-        github, issue_number=63, pr_number=pr_number,
-        pr_head_sha40=pr_head_sha40, allow_merged=allow_merged,
-    )
+        raise OwnerAuthorizationError("historical Issue #63 deferred-close merge is bound only to PR #64")
+    try:
+        return deferred_merge_details(
+            github, issue_number=63, pr_number=pr_number,
+            pr_head_sha40=pr_head_sha40, allow_merged=allow_merged,
+        )
+    except OwnerAuthorizationError as exc:
+        if "deferred-close association is invalid" in str(exc):
+            raise OwnerAuthorizationError(
+                "Issue #63 deferred-close association is invalid: " + str(exc)
+            ) from exc
+        raise
 
 
 def create_authorization_plan(
