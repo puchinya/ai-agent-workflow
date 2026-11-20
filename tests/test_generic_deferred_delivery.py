@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import io
 import json
 import sys
@@ -213,6 +214,11 @@ class GenericDeferredDeliveryTests(unittest.TestCase):
                 )
             mismatched = copy.deepcopy(plan)
             mismatched["issue_number"] = 63
+            mismatched["approval_scope_sha256"] = owner._approval_scope_sha256(mismatched)
+            mismatched_without_digest = {key: value for key, value in mismatched.items()
+                                         if key != "plan_sha256"}
+            mismatched["plan_sha256"] = hashlib.sha256(
+                owner._canonical(mismatched_without_digest)).hexdigest()
             with self.assertRaisesRegex(owner.OwnerAuthorizationError, "carrier"):
                 owner._validate_plan(mismatched)
             broken = copy.deepcopy(plan)
