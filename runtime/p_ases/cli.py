@@ -4044,10 +4044,14 @@ def _create_issue_close_intent(path: Path, payload: dict[str, Any], *, root: Pat
         raise CLIError("Issue close intent failed exact readback; no close retry is permitted")
 
 
-def _activation_v2_issue63_proof(root: Path, github: GitHub, repository: str, *,
+def _activation_v2_proof(root: Path, github: GitHub, repository: str, *,
                                  policy_github: GitHub | None = None) -> dict[str, Any] | None:
     """Return fresh ACTIVE V2 and policy proof, or None while Activation is not active."""
-    history = read_consumer_activation_history(github, repository, 57)
+    profile = load_profile(root)
+    activation_issue = profile.activation_issue_number
+    if type(activation_issue) is not int or activation_issue < 1:
+        raise CLIError("Activation V2 requires a configured positive Activation Issue")
+    history = read_consumer_activation_history(github, repository, activation_issue)
     if not history or history[-1][0].schema_version != 2:
         return None
     try:
@@ -4060,10 +4064,9 @@ def _activation_v2_issue63_proof(root: Path, github: GitHub, repository: str, *,
     if policy_github.repo.casefold() != github.repo.casefold():
         raise CLIError("Activation policy reader targets a different repository")
     record, record_id = history[-1]
-    profile = load_profile(root)
-    if (repository.casefold() != "puchinya/ai-agent-workflow" or profile.activation_issue_number != 57
+    if (repository.casefold() != github.repo.casefold()
             or profile.final_delivery_review_mode != "solo_owner"
-            or record.activation_issue_number != 57 or record.repository.casefold() != repository.casefold()
+            or record.activation_issue_number != activation_issue or record.repository.casefold() != repository.casefold()
             or record.review_mode != "solo_owner" or record.ruleset_id is None
             or record.branch_policy_sha256 is None or record.ruleset_applied_record_id is None):
         raise CLIError("latest Activation record is not the configured Consumer Activation V2")
@@ -4084,12 +4087,12 @@ def _activation_v2_issue63_proof(root: Path, github: GitHub, repository: str, *,
     profile_bytes = github.regular_content_at_ref(".agent/project.json", main_sha)
     if hashlib.sha256(profile_bytes).hexdigest() != record.activation_profile_sha256:
         raise CLIError("current main profile differs from the ACTIVE V2 Activation record")
-    current_adc = verify_adc(github, 57)
+    current_adc = verify_adc(github, activation_issue)
     if (current_adc.pointer.state != "approved" or current_adc.pointer.sha256 != record.adc_sha256
             or current_adc.pointer.comment_id != record.adc_comment_id):
         raise CLIError("current approved Activation ADC differs from the ACTIVE V2 record")
-    first = read_verified_managed_policy(policy_github, default_branch, checks, "solo_owner", 57)
-    second = read_verified_managed_policy(policy_github, default_branch, checks, "solo_owner", 57)
+    first = read_verified_managed_policy(policy_github, default_branch, checks, "solo_owner", activation_issue)
+    second = read_verified_managed_policy(policy_github, default_branch, checks, "solo_owner", activation_issue)
     if (first != second or first.get("ruleset_id") != record.ruleset_id
             or first.get("effective_policy_sha256") != record.branch_policy_sha256
             or first.get("applied_record_id") != record.ruleset_applied_record_id):
