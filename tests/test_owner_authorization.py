@@ -507,7 +507,7 @@ class OwnerAuthorizationTests(unittest.TestCase):
             details = issue63_deferred_merge_details(
                 github, pr_number=64, pr_head_sha40="d" * 40,
             )
-            plan = {"plan_sha256": "f" * 64, "source_head_sha40": PLAN_HEAD,
+            plan = {"repository": REPOSITORY, "owner_id": OWNER_ID, "plan_sha256": "f" * 64, "source_head_sha40": PLAN_HEAD,
                     "target_issue_number": 63, "pr_number": 64, "pr_head_sha40": "d" * 40,
                     "details": details}
             decision = {"status": "AUTHORIZED", "operation": "PR_MERGE",
@@ -560,7 +560,7 @@ class OwnerAuthorizationTests(unittest.TestCase):
                     github, pr_number=64, pr_head_sha40="d" * 40,
                 )
                 github.commit_rows[0]["commit"]["message"] = message
-                plan = {"plan_sha256": "a" * 64, "source_head_sha40": PLAN_HEAD,
+                plan = {"repository": REPOSITORY, "owner_id": OWNER_ID, "plan_sha256": "a" * 64, "source_head_sha40": PLAN_HEAD,
                         "target_issue_number": 63, "pr_number": 64, "pr_head_sha40": "d" * 40,
                         "details": details}
                 decision = {"status": "AUTHORIZED", "operation": "PR_MERGE",
@@ -582,7 +582,7 @@ class OwnerAuthorizationTests(unittest.TestCase):
         github.pr.update({"state": "closed", "merged": True, "merge_commit_sha": "e" * 40,
                           "merged_by": {"id": OWNER_ID, "type": "User"}})
         github.commit_details = lambda _sha: {"message": "Resolves: #63"}
-        plan = {"target_issue_number": 63, "pr_number": 64, "pr_head_sha40": "d" * 40,
+        plan = {"repository": REPOSITORY, "owner_id": OWNER_ID, "target_issue_number": 63, "pr_number": 64, "pr_head_sha40": "d" * 40,
                 "details": details}
         with self.assertRaisesRegex(OwnerAuthorizationError, "merged PR commit message contains"):
             _merge_readback(github, plan)
@@ -641,7 +641,7 @@ class OwnerAuthorizationTests(unittest.TestCase):
                 decision=SimpleNamespace(schema="PASES_OWNER_DECISION_V3",
                                          evidence_channel="chat_confirmed_gh_v1"),
             )
-            plan = {"issue_number": 63, "subject_sha256": contract.sha256, "plan_sha256": "a" * 64,
+            plan = {"owner_id": OWNER_ID, "repository_id": REPOSITORY_ID, "issue_number": 63, "subject_sha256": contract.sha256, "plan_sha256": "a" * 64,
                     "approval_scope_sha256": "d" * 64,
                     "details": {"predecessor_comment_id": 12, "predecessor_sha256": "b" * 64,
                                 "predecessor_byte_length": 1200, "predecessor_state": "approved"}}
