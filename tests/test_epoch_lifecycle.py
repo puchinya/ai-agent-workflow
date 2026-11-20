@@ -28,7 +28,8 @@ class FakeGitHub:
             "repository_url": f"https://api.github.com/repos/{self.repo}",
             "labels": [{"name": "kind:single"}, {"name": "phase:ready"}],
         }
-        self.records = {}
+        self.records = {900: {"id": 900, "body": "current approved ADC pointer"}}
+        self.pages_read = 0
         self.label_writes = 0
         self.post_count = 0
         self.fail_label = False
@@ -44,7 +45,9 @@ class FakeGitHub:
 
     def issue(self, issue_number):
         assert issue_number == self.issue_number
-        return copy.deepcopy(self.issue_row)
+        row = copy.deepcopy(self.issue_row)
+        row["comments"] = len(self.records)
+        return row
 
     def branch(self, branch_ref):
         assert branch_ref == self.branch_ref
@@ -64,8 +67,15 @@ class FakeGitHub:
         return record
 
     def issue_comments(self, issue_number):
+        raise AssertionError("full Issue history must not be materialized")
+
+    def issue_comment_pages_newest(self, issue_number, total_comments):
         assert issue_number == self.issue_number
-        return copy.deepcopy(list(self.records.values()))
+        assert total_comments == len(self.records)
+        records = sorted(self.records.values(), key=lambda row: row["id"])
+        for end in range(len(records), 0, -100):
+            self.pages_read += 1
+            yield copy.deepcopy(records[max(0, end - 100):end])
 
     def issue_comment(self, issue_number, comment_id):
         assert issue_number == self.issue_number
@@ -210,15 +220,53 @@ class EpochLifecycleTests(unittest.TestCase):
     def test_issue_body_drift_during_remote_journal_scan_blocks_intent(self):
         with tempfile.TemporaryDirectory() as temporary:
             root, github = Path(temporary), FakeGitHub(128)
-            original = github.issue_comments
+            original = github.issue_comment_pages_newest
 
-            def changed_history(number):
-                history = original(number)
-                github.issue_row["body"] = "Changed during remote journal scan"
-                return history
+            def changed_history(number, total_comments):
+                for page in original(number, total_comments):
+                    github.issue_row["body"] = "Changed during remote journal scan"
+                    yield page
 
-            github.issue_comments = changed_history
+            github.issue_comment_pages_newest = changed_history
             with self.assertRaisesRegex(module.EpochLifecycleError, "Issue body changed before Intent"):
+                self._run(root, github, verified_adc(authorization(128)))
+            self.assertEqual((github.post_count, github.label_writes), (0, 0))
+
+    def test_epoch_reset_streams_every_page_without_materializing_history(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, github = Path(temporary), FakeGitHub(128)
+            for ident in range(100, 335):
+                github.records[ident] = {"id": ident, "body": "historical ADC or Issue comment"}
+            result = self._run(root, github, verified_adc(authorization(128)))
+            self.assertEqual(result["status"], "APPLIED")
+            self.assertEqual(github.pages_read, 3)
+            self.assertEqual((github.post_count, github.label_writes), (2, 1))
+
+    def test_epoch_reset_detects_old_pending_intent_across_pages(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, github = Path(temporary), FakeGitHub(128)
+            for ident in range(100, 335):
+                github.records[ident] = {"id": ident, "body": "historical unrelated comment"}
+            github.records[105]["body"] = f"<!-- {module.INTENT_SCHEMA}\npending"
+            with self.assertRaisesRegex(module.EpochLifecycleError,
+                                        "remote epoch reset journal already exists"):
+                self._run(root, github, verified_adc(authorization(128)))
+            self.assertEqual(github.pages_read, 3)
+            self.assertEqual((github.post_count, github.label_writes), (0, 0))
+
+    def test_epoch_reset_concurrent_comment_change_blocks_before_post(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, github = Path(temporary), FakeGitHub(128)
+            original = github.issue_comment_pages_newest
+
+            def changed_history(number, total_comments):
+                for page in original(number, total_comments):
+                    yield page
+                github.records[950] = {"id": 950, "body": "concurrent comment"}
+
+            github.issue_comment_pages_newest = changed_history
+            with self.assertRaisesRegex(module.EpochLifecycleError,
+                                        "Issue comments changed during journal preflight"):
                 self._run(root, github, verified_adc(authorization(128)))
             self.assertEqual((github.post_count, github.label_writes), (0, 0))
 
