@@ -2569,24 +2569,43 @@ def _read_review_record(path: Path) -> tuple[UserReviewSubject, UserReviewResult
     return result.subject, result, value["snapshot_sha256"]
 
 
-_ISSUE63_REPOSITORY_ID = 1401910271
-_ISSUE63_OWNER_ID = 3744776
+def _ruleset_operation_plan(
+        github: GitHub, plan_path: Path,
+        approval_comment_id: int | None = None) -> tuple[dict[str, Any], int | None]:
+    """Bind Ruleset apply to exact plan identity and its authenticated owner decision.
 
-
-def _ruleset_operation_plan(github: GitHub, plan_path: Path) -> tuple[dict[str, Any], int | None]:
-    """Require the separate exact-plan owner decision before any Ruleset write path."""
+    The approval's carrier Issue comes from the direct GitHub comment's
+    repository-scoped issue_url, never from a fixed migration Issue number.
+    """
     plan = read_ruleset_plan(plan_path)
-    if (github.repo.casefold() != "puchinya/ai-agent-workflow"
-            or plan["repository_id"] != _ISSUE63_REPOSITORY_ID
-            or plan["owner_id"] != _ISSUE63_OWNER_ID or plan["activation_issue_number"] != 57):
-        raise CLIError("Ruleset owner relay is configured only for the approved #63 repository/Activation Issue")
+    metadata = github.repository_metadata()
+    owner = metadata.get("owner") if isinstance(metadata, dict) else None
+    if (plan["repository"].casefold() != github.repo.casefold()
+            or not isinstance(metadata, dict)
+            or not isinstance(metadata.get("full_name"), str)
+            or metadata["full_name"].casefold() != github.repo.casefold()
+            or metadata.get("id") != plan["repository_id"]
+            or not isinstance(owner, dict) or owner.get("type") != "User"
+            or owner.get("id") != plan["owner_id"]):
+        raise CLIError("Ruleset plan repository and owner differ from the live GitHub identity")
     if plan["diff"]["operation"] == "noop":
         return plan, None
+    if type(approval_comment_id) is not int or approval_comment_id < 1:
+        raise OwnerDecisionError("missing exact owner operation/subject approval comment ID")
+    carrier = github.issue_comment(plan["activation_issue_number"], approval_comment_id)
+    expected_prefix = f"https://api.github.com/repos/{github.repo}/issues/"
+    url = carrier.get("issue_url") if isinstance(carrier, dict) else None
+    if (not isinstance(url, str) or not url.startswith(expected_prefix)
+            or re.fullmatch(r"[1-9][0-9]*", url[len(expected_prefix):]) is None):
+        raise OwnerDecisionError("Ruleset approval carrier does not belong to a repository Issue")
+    owner_issue_number = int(url[len(expected_prefix):])
     verified = read_verified_owner_decision(
-        github, issue_number=63, owner_id=_ISSUE63_OWNER_ID,
+        github, issue_number=owner_issue_number, owner_id=plan["owner_id"],
         operation="RULESET_PLAN_APPLY", subject_sha256=plan["plan_sha256"],
-        repository_id=_ISSUE63_REPOSITORY_ID,
+        repository_id=plan["repository_id"],
     )
+    if verified.comment_id != approval_comment_id:
+        raise OwnerDecisionError("Ruleset owner decision differs from the exact approval carrier")
     if (verified.decision.schema in {"PASES_OWNER_DECISION_V2", "PASES_OWNER_DECISION_V3"}
             and verified.decision.operation_plan_sha256 != plan["plan_sha256"]):
         raise OwnerDecisionError("owner-local RULESET_PLAN_APPLY decision is bound to another plan")
@@ -2695,13 +2714,14 @@ def _owner_authorization_plan_command(args: argparse.Namespace, repository: str,
             raise OwnerAuthorizationError("RULESET_PLAN_APPLY plan requires --ruleset-plan")
         ruleset = read_ruleset_plan(args.ruleset_plan)
         if (ruleset.get("blockers") or ruleset.get("diff", {}).get("operation") == "noop"
-                or ruleset.get("activation_issue_number") != 57):
-            raise OwnerAuthorizationError("Ruleset approval is only for a blocker-free write plan bound to Activation #57")
+                or type(ruleset.get("activation_issue_number")) is not int
+                or ruleset["activation_issue_number"] < 1):
+            raise OwnerAuthorizationError("Ruleset approval requires a blocker-free plan bound to an Activation Issue")
         subject_sha256 = ruleset.get("plan_sha256")
         if not isinstance(subject_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", subject_sha256):
             raise OwnerAuthorizationError("Ruleset plan digest is invalid")
-        target_issue = 57
-        details = {"activation_issue_number": 57}
+        target_issue = ruleset["activation_issue_number"]
+        details = {"activation_issue_number": target_issue}
     elif operation == "USER_REVIEW":
         if args.subject_file is not None or args.ruleset_plan is not None:
             raise OwnerAuthorizationError("USER_REVIEW plan does not accept ADC or Ruleset source files")
@@ -2749,7 +2769,8 @@ def _owner_authorization_plan_command(args: argparse.Namespace, repository: str,
     plan = create_authorization_plan(
         github, root, operation=operation, subject_sha256=subject_sha256,
         issue_number=(plan_issue if operation == "USER_REVIEW" else
-                      target_adc_issue if operation == "ADC_SUPERSEDE" else 63),
+                      target_adc_issue if operation == "ADC_SUPERSEDE" else
+                      target_issue if operation == "RULESET_PLAN_APPLY" else 63),
         target_issue_number=target_issue,
         pr_number=pr_number, pr_head_sha40=pr_head, details=details,
     )
@@ -5240,7 +5261,7 @@ def main(argv: list[str] | None = None) -> int:
                     authorized_plan_sha: str | None = None
                     if args.verb == "consumer-activation-admin-apply":
                         try:
-                            plan, _decision_id = _ruleset_operation_plan(github, args.plan)
+                            plan, _decision_id = _ruleset_operation_plan(github, args.plan, args.approval_comment_id)
                         except OwnerDecisionError as exc:
                             if "missing exact owner operation/subject" in str(exc):
                                 _json({"status": "PENDING_APPROVAL", "stage": "AWAIT_OWNER_POLICY_DECISION",
@@ -5389,7 +5410,7 @@ def main(argv: list[str] | None = None) -> int:
                     return _blocked_result((str(exc),))
             if args.verb == "consumer-activation-ruleset-apply":
                 try:
-                    plan, _decision_id = _ruleset_operation_plan(github, args.plan)
+                    plan, _decision_id = _ruleset_operation_plan(github, args.plan, args.approval_comment_id)
                     if plan["diff"]["operation"] == "noop":
                         with temporary_admin_client(repository) as admin:
                             policy = _verify_ruleset_noop(admin, plan)
