@@ -171,14 +171,14 @@ def _check_identity(github: Any, issue_number: int, target_issue_number: int | N
             raise OwnerAuthorizationError("live PR identity, state, repository, or HEAD differs from the plan")
         if target_issue_number is not None:
             body = pr.get("body")
-            if target_issue_number == 63:
+            if target_issue_number != 57:
                 try:
-                    association = parse_issue_association(body, 63)
+                    association = parse_issue_association(body, target_issue_number)
                 except WorkError as exc:
                     raise OwnerAuthorizationError(f"implementation PR Issue association is invalid: {exc}") from exc
                 if association != "deferred_close":
-                    raise OwnerAuthorizationError("implementation PR must use deferred-close Refs #63")
-            elif target_issue_number == 57:
+                    raise OwnerAuthorizationError("deferred-close implementation PR must use one standalone Refs #N")
+            else:
                 # The Activation Setup PR is about Issue #57 but must leave that
                 # long-lived control Issue open. Its canonical V2 carrier binds
                 # the target Issue without using a Closes keyword.
@@ -358,7 +358,7 @@ def create_authorization_plan(
     """Read live GitHub subjects and create an immutable canonical plan."""
     if operation not in PLAN_OPERATIONS:
         raise OwnerAuthorizationError("unsupported owner operation")
-    if (not _positive(issue_number) or (operation not in {"USER_REVIEW", "ADC_SUPERSEDE", "RULESET_PLAN_APPLY"} and issue_number != ISSUE_NUMBER)
+    if (not _positive(issue_number) or (operation not in {"USER_REVIEW", "ADC_SUPERSEDE", "RULESET_PLAN_APPLY", "PR_MERGE"} and issue_number != ISSUE_NUMBER)
             or not isinstance(subject_sha256, str)
             or SHA256.fullmatch(subject_sha256) is None
             or (target_issue_number is not None and not _positive(target_issue_number))
@@ -368,8 +368,8 @@ def create_authorization_plan(
             or ((operation in {"PR_MERGE", "USER_REVIEW", "EXECUTION_ADOPTION"})
                 != (pr_number is not None))):
         raise OwnerAuthorizationError("operation plan has an invalid exact subject")
-    if operation == "PR_MERGE" and target_issue_number not in {57, 63}:
-        raise OwnerAuthorizationError("PR merge decisions are limited to Activation #57 or implementation #63")
+    if operation == "PR_MERGE" and not _positive(target_issue_number):
+        raise OwnerAuthorizationError("PR merge requires a positive target Issue")
     if operation == "PR_MERGE" and target_issue_number == 63 and pr_number != 64:
         raise OwnerAuthorizationError("Issue #63 merge authorization is bound only to existing PR #64")
     if operation == "EXECUTION_ADOPTION" and (target_issue_number != 63 or pr_number != 64):
@@ -404,12 +404,13 @@ def create_authorization_plan(
                 identity_github, root, issue_number=issue_number, pr_number=pr_number,
                 pr_head_sha40=pr_head_sha40, details=details,
             )
-        if operation == "PR_MERGE" and target_issue_number == 63:
-            expected_deferred = issue63_deferred_merge_details(
-                github, pr_number=pr_number, pr_head_sha40=pr_head_sha40,
+        if operation == "PR_MERGE" and target_issue_number != 57:
+            expected_deferred = deferred_merge_details(
+                github, issue_number=target_issue_number,
+                pr_number=pr_number, pr_head_sha40=pr_head_sha40,
             )
             if details != expected_deferred:
-                raise OwnerAuthorizationError("Issue #63 PR close mode, commit messages, or merge metadata changed")
+                raise OwnerAuthorizationError("deferred-close PR association or merge metadata changed")
     except (GitHubError, TypeError, ValueError) as exc:
         if isinstance(exc, OwnerAuthorizationError):
             raise
@@ -448,7 +449,7 @@ def _validate_plan(value: Any) -> dict[str, Any]:
     plan = dict(value)
     supplied = plan.pop("plan_sha256")
     allowed_issue = (_positive(plan.get("issue_number"))
-                     if plan.get("operation") in {"USER_REVIEW", "ADC_SUPERSEDE", "RULESET_PLAN_APPLY"}
+                     if plan.get("operation") in {"USER_REVIEW", "ADC_SUPERSEDE", "RULESET_PLAN_APPLY", "PR_MERGE"}
                      else plan.get("issue_number") == ISSUE_NUMBER)
     if (plan.get("schema") != PLAN_SCHEMA or plan.get("repository") != REPOSITORY
             or plan.get("repository_id") != REPOSITORY_ID or plan.get("owner_id") != OWNER_ID
@@ -457,8 +458,6 @@ def _validate_plan(value: Any) -> dict[str, Any]:
             or SHA256.fullmatch(plan["subject_sha256"]) is None
             or (plan.get("target_issue_number") is not None and not _positive(plan["target_issue_number"]))
             or (plan.get("pr_number") is not None and not _positive(plan["pr_number"]))
-            or (plan.get("operation") == "PR_MERGE" and plan.get("target_issue_number") == 63
-                and plan.get("pr_number") != 64)
             or (plan.get("pr_head_sha40") is not None and (not isinstance(plan["pr_head_sha40"], str)
                                                             or SHA40.fullmatch(plan["pr_head_sha40"]) is None))
             or ((plan.get("pr_number") is None) != (plan.get("pr_head_sha40") is None))
@@ -494,27 +493,28 @@ def _validate_plan(value: Any) -> dict[str, Any]:
         raise OwnerAuthorizationError("Ruleset authorization plan must bind its exact Activation Issue")
     if plan["operation"] == "PR_MERGE":
         target = plan["target_issue_number"]
-        if target == 57 and details != {"target_issue_number": 57}:
-            raise OwnerAuthorizationError("Activation Setup PR merge authorization plan target is invalid")
-        if target == 63:
+        if not _positive(target):
+            raise OwnerAuthorizationError("PR merge requires an exact target Issue")
+        if target == 57:
+            if details != {"target_issue_number": 57}:
+                raise OwnerAuthorizationError("Activation Setup PR merge authorization target is invalid")
+        else:
             expected_fields = {
                 "target_issue_number", "association_mode", "pr_body_sha256", "pr_title_sha256",
                 "pr_commits_sha256", "closing_issue_numbers", "issue_auto_close_link",
                 "merge_commit_title", "merge_commit_message",
             }
-            if (set(details) != expected_fields or details.get("target_issue_number") != 63
+            if (set(details) != expected_fields or details.get("target_issue_number") != target
                     or details.get("association_mode") != "deferred_close"
                     or details.get("closing_issue_numbers") != []
                     or details.get("issue_auto_close_link") is not False
                     or any(not isinstance(details.get(field), str) or SHA256.fullmatch(details[field]) is None
                            for field in ("pr_body_sha256", "pr_title_sha256", "pr_commits_sha256"))
                     or details.get("merge_commit_title") != f"Merge PR #{plan['pr_number']} at {plan['pr_head_sha40'][:12]}"
-                    or details.get("merge_commit_message") != ISSUE63_MERGE_COMMIT_MESSAGE
+                    or details.get("merge_commit_message") != merge_commit_message(target)
                     or closing_issue_references(details.get("merge_commit_title", ""))
                     or closing_issue_references(details.get("merge_commit_message", ""))):
                 raise OwnerAuthorizationError("deferred-close PR merge authorization plan details are invalid")
-        if target not in {57, 63}:
-            raise OwnerAuthorizationError("PR merge authorization plan target is invalid")
     if plan["operation"] == "USER_REVIEW":
         common_fields = {"review_session_sha256", "readiness_sha256", "adc_sha256",
                          "pr_head_sha40", "feedback_sha256"}
