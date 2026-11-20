@@ -2950,9 +2950,9 @@ def _publish_owner_approved_adc(args: argparse.Namespace, repository: str, githu
         raise OwnerAuthorizationError("successor ADC bytes changed after owner authorization")
     try:
         verified_decision = read_verified_owner_decision(
-            github, issue_number=plan["issue_number"], owner_id=_ISSUE63_OWNER_ID,
+            github, issue_number=plan["issue_number"], owner_id=plan["owner_id"],
             operation="ADC_SUPERSEDE", subject_sha256=contract.sha256,
-            expected_plan_sha256=plan["plan_sha256"], repository_id=_ISSUE63_REPOSITORY_ID,
+            expected_plan_sha256=plan["plan_sha256"], repository_id=plan["repository_id"],
             expected_approval_scope_sha256=plan["approval_scope_sha256"],
             expected_schema="PASES_OWNER_DECISION_V3",
         )
