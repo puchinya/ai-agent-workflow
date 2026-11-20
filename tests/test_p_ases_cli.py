@@ -200,7 +200,8 @@ class PasesCLITests(unittest.TestCase):
             "repository": "puchinya/ai-agent-workflow", "issue_number": 63,
             "pr_number": 64, "pr_head_sha40": head,
         }
-        plan = {"target_issue_number": 63, "pr_number": 64, "pr_head_sha40": head}
+        plan = {"repository": "puchinya/ai-agent-workflow",
+                "target_issue_number": 63, "pr_number": 64, "pr_head_sha40": head}
         args = SimpleNamespace(
             delivery_plan=Path("plan.json"), readiness=Path("readiness.json"),
             verification=Path("verification.json"), acceptance=Path("acceptance.json"),
@@ -546,7 +547,17 @@ class PasesCLITests(unittest.TestCase):
             "owner_id": 3744776, "activation_issue_number": 57,
             "plan_sha256": "a" * 64, "diff": {"operation": "create"},
         }
-        fake_github = SimpleNamespace(repo="puchinya/ai-agent-workflow")
+        fake_github = SimpleNamespace(
+            repo="puchinya/ai-agent-workflow",
+            repository_metadata=lambda: {
+                "full_name": "puchinya/ai-agent-workflow", "id": 1401910271,
+                "owner": {"id": 3744776, "type": "User"},
+            },
+            issue_comment=lambda issue, comment_id: {
+                "id": comment_id,
+                "issue_url": "https://api.github.com/repos/puchinya/ai-agent-workflow/issues/63",
+            },
+        )
         with patch("p_ases.cli._runtime_root", return_value=ROOT), \
                 patch("p_ases.cli.discover_repository", return_value="puchinya/ai-agent-workflow"), \
                 patch("p_ases.cli.GitHub", return_value=fake_github), \
