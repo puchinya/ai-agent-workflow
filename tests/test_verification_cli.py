@@ -98,9 +98,7 @@ class VerificationCLITests(unittest.TestCase):
             invalid_rows.append(changed)
         for side, key, value in (
             ("head", "sha", "f" * 40),
-            ("head", "ref", "pases/other"),
             ("head", "repo", {"full_name": "someone/fork"}),
-            ("base", "ref", "main"),
             ("base", "sha", "not-a-sha"),
             ("base", "repo", {"full_name": "someone/other"}),
         ):
@@ -110,16 +108,62 @@ class VerificationCLITests(unittest.TestCase):
             with self.subTest(row=row), self.assertRaises(cli.CLIError):
                 cli._readback_current_pr(ResponseGitHub(row), subject)
 
+    def test_verification_pr_readback_accepts_any_issue_branch_and_association_mode(self):
+        class ResponseGitHub:
+            def __init__(self, response):
+                self.response = response
+
+            def pull_request(self, number):
+                self.requested = number
+                return self.response
+
+        # Previously fixed Issue 29/31 refs and Issue 63/PR 64 are no longer
+        # hidden authorization policies in the generic Verification reader.
+        for issue, pr_number, body in (
+                (29, 83, "Closes #29\\n"),
+                (31, 93, "Refs #31\\n"),
+                (63, 105, "Closes #63\\n"),
+                (63, 106, "Refs #63\\n"),
+                (128, 209, "Closes #128\\n")):
+            with self.subTest(issue=issue, pr=pr_number):
+                row = FakePullRequestGitHub().pull_request(pr_number)
+                row["body"] = body
+                row["base"]["ref"] = "custom/base"
+                row["head"]["ref"] = f"feature/issue-{issue}"
+                subject = VerificationSubject(
+                    "owner/repo", issue, pr_number, 501, "a" * 64, "c" * 64, "b" * 40,
+                )
+                result = cli._readback_current_pr(ResponseGitHub(row), subject)
+                self.assertEqual(result["head_ref"], f"feature/issue-{issue}")
+                self.assertEqual(result["base_ref"], "custom/base")
+                self.assertEqual(result["association_mode"],
+                                 "deferred_close" if body.startswith("Refs") else "auto_close")
+
     def test_acceptance_keeps_upstream_issues_in_waiting_dependency_state(self):
         class FakeGitHub:
             def issue(self, number):
                 return {"number": number, "state": "open"}
 
-        contract = SimpleNamespace(issue_number=29, section=lambda _name: "")
+        contract = SimpleNamespace(
+            issue_number=29,
+            section=lambda name: "Depends on #27 and #28" if name == "Dependencies" else "",
+        )
         reasons = cli._unaccepted_dependencies(FakeGitHub(), contract)
         self.assertEqual(len(reasons), 2)
         self.assertIn("WAITING_DEPENDENCY #27", reasons[0])
         self.assertIn("WAITING_DEPENDENCY #28", reasons[1])
+        # Legacy hardcoded dependencies are not silently inferred for Issue 30.
+        undeclared = SimpleNamespace(issue_number=30, section=lambda _name: "")
+        self.assertEqual(cli._unaccepted_dependencies(FakeGitHub(), undeclared), ())
+        # Any Issue number uses exactly the declared upstream references.
+        generic = SimpleNamespace(
+            issue_number=412,
+            section=lambda name: "Depends on #51 and #52" if name == "Dependencies" else "",
+        )
+        result = cli._unaccepted_dependencies(FakeGitHub(), generic)
+        self.assertEqual(len(result), 2)
+        self.assertIn("WAITING_DEPENDENCY #51", result[0])
+        self.assertIn("WAITING_DEPENDENCY #52", result[1])
 
     def test_plan_collect_validate_uses_external_evidence_and_reports_missing_trust_policy(self):
         with tempfile.TemporaryDirectory() as temporary:
