@@ -13,6 +13,8 @@ Design documents explain decisions that satisfy approved specifications without 
 - A material specification change updates its specification before dependent design or implementation.
 - For P-ASES work, use the approved ADC's Design artifact impact and specification decision to determine whether design is required. Establish the frozen Issue binding before phase artifacts are committed. Commit required design artifacts on the Issue branch after the specification receipt, then bind the design receipt to that exact commit and predecessor chain. The receipt records verification; it does not approve the design or expand the ADC.
 - Keep unresolved choices visible; do not disguise them as implementation details.
+- Apply the [issue-neutral architecture rule](technical-design.md#issue-neutral-architecture-required): never specialize generic P-ASES code by literal Issue/PR number or an equivalent one-off flag/path. Derive behavior from validated subject, typed evidence, approved policy and lifecycle state. A separately approved immutable historical adapter is an isolated compatibility exception, not authorization for new special-case writes.
+- State the general behavior, historical boundaries, rejected one-off alternatives, and tests for at least two distinct eligible Issue/PR subjects; report an authorization/schema conflict rather than inventing a ticket-specific workaround.
 
 ## Validation
 

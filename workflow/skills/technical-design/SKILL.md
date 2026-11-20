@@ -13,6 +13,8 @@ Owner: workflow/standards/technical-design.md, workflow/templates/technical-desi
 1. Map each requirement to an owned module or external boundary.
 2. Preserve the one-shot standard-library runtime, GitHub API boundary, Git subprocess boundary, host-specific schemas, and immutable evidence rules.
 3. Explain data flow, failure behavior, idempotency, migration impact, and any security-relevant alternatives.
+   Apply `workflow/standards/technical-design.md`'s **issue-neutral architecture** rule before selecting APIs or ownership: no Issue/PR-number-driven generic behavior, special branch/path tables, or hidden one-ticket flags. Derive routing from validated subject, approved ADC, typed evidence, and lifecycle.
+   Any previously authorized immutable historical migration exception must remain isolated and byte-compatible; it is not a template for a new Issue-specific writer. Reject one-off alternatives and state the generic design explicitly.
 4. Link designs to the exact specification and keep existing DES identifiers stable.
 5. Validate links and traceability before the design is presented for approval.
 6. Commit the design on the bound Issue branch after the approved specification receipt. Publish the design receipt against that exact commit; it must verify the predecessor receipt and unchanged specification hashes. Use the ADC's unchanged reason when specification is intentionally skipped.
