@@ -509,25 +509,58 @@ def _result_comment(kind: str, value: dict[str, Any]) -> str:
     return f"<!-- {marker} -->\n\n```json\n{payload}\n```"
 
 
-def _publish_once(github: GitHub, issue_number: int, body: str) -> int:
-    def find() -> list[dict[str, Any]]:
-        rows = [item for item in github.issue_comments(issue_number) if item.get("body") == body]
-        if len(rows) > 1:
-            raise CLIError("identical immutable evidence comments are duplicated")
-        return rows
+def _matching_immutable_evidence_comments(
+        github: GitHub, issue_number: int, body: str) -> tuple[list[dict[str, Any]], int]:
+    """Check immutable evidence uniqueness without materializing Issue history.
 
-    existing = find()
+    Before publishing there is no trusted direct comment ID, so the complete
+    Issue comment range is required to prove that no identical body exists.
+    A moving or incomplete snapshot must never authorize another POST.
+    """
+    issue = github.issue(issue_number)
+    count = issue.get("comments") if isinstance(issue, dict) and issue.get("number") == issue_number else None
+    if type(count) is not int or count < 0:
+        raise CLIError("immutable evidence scan requires a valid current Issue comment count")
+    matches: list[dict[str, Any]] = []
+    seen = 0
+    for page in github.issue_comment_pages_newest(issue_number, count):
+        if not isinstance(page, list):
+            raise CLIError("immutable evidence comment page is malformed")
+        for row in page:
+            if (not isinstance(row, dict) or type(row.get("id")) is not int or row["id"] < 1
+                    or not isinstance(row.get("body"), str)):
+                raise CLIError("immutable evidence comment is malformed")
+            seen += 1
+            if row["body"] == body:
+                matches.append(row)
+                if len(matches) > 1:
+                    raise CLIError("identical immutable evidence comments are duplicated")
+    if seen != count:
+        raise CLIError("immutable evidence comment page count differs from Issue snapshot")
+    latest = github.issue(issue_number)
+    if (not isinstance(latest, dict) or latest.get("number") != issue_number
+            or latest.get("comments") != count):
+        raise CLIError("Issue comment count changed during immutable evidence scan")
+    return matches, count
+
+
+def _publish_once(github: GitHub, issue_number: int, body: str) -> int:
+    existing, count = _matching_immutable_evidence_comments(github, issue_number, body)
     if existing:
-        comment_id = existing[0].get("id")
+        comment_id = existing[0]["id"]
     else:
+        # A concurrent comment after the completed scan cannot be treated as
+        # proof that the original no-match result still holds.
+        if github.issue(issue_number).get("comments") != count:
+            raise CLIError("Issue comments changed before immutable evidence publication")
         try:
             created = github.create_issue_comment(issue_number, body)
             comment_id = created["id"]
         except GitHubError:
-            recovered = find()
+            recovered, _ = _matching_immutable_evidence_comments(github, issue_number, body)
             if len(recovered) != 1:
                 raise
-            comment_id = recovered[0].get("id")
+            comment_id = recovered[0]["id"]
     if type(comment_id) is not int or comment_id < 1:
         raise CLIError("GitHub comment readback has an invalid Comment ID")
     readback = github.issue_comment(issue_number, comment_id)
@@ -538,19 +571,14 @@ def _publish_once(github: GitHub, issue_number: int, body: str) -> int:
 
 
 def _exact_published(github: GitHub, issue_number: int, body: str) -> int | None:
-    matches = [item for item in github.issue_comments(issue_number) if item.get("body") == body]
-    if len(matches) > 1:
-        raise CLIError("identical immutable evidence comments are duplicated")
+    matches, _ = _matching_immutable_evidence_comments(github, issue_number, body)
     if not matches:
         return None
-    comment_id = matches[0].get("id")
-    if type(comment_id) is not int or comment_id < 1:
-        raise CLIError("published evidence Comment ID is invalid")
+    comment_id = matches[0]["id"]
     readback = github.issue_comment(issue_number, comment_id)
     if readback.get("body") != body:
         raise CLIError("published evidence comment changed during readback")
     return comment_id
-
 
 def _blocked_result(reasons: list[str] | tuple[str, ...], subject: VerificationSubject | None = None) -> int:
     _json({"status": "BLOCKED", "subject": None if subject is None else subject.as_dict(),
