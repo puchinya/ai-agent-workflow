@@ -1050,23 +1050,26 @@ def _context_show(issue_number: int, repository: str, root: Path, github: GitHub
                "issue_state": "open", "adc_status": "APPROVED", "binding_status": "INVALID",
                "reason": "ExecutionBinding path traverses a symbolic link"})
         return 2
-    if not binding_path.is_file() and issue_number == 63 and repository.casefold() == "puchinya/ai-agent-workflow":
-        adoption_path = root / ".p_ases" / "state" / "63" / "execution-adoption.json"
-        attachment_path = root / ".p_ases" / "state" / "63" / "workspace-attachment.json"
-        if adoption_path.exists() or adoption_path.is_symlink() or attachment_path.exists() or attachment_path.is_symlink():
+    if not binding_path.is_file():
+        adopted_file = adoption_path(root, issue_number)
+        attached_file = adoption_attachment_path(root, issue_number)
+        if (adopted_file.exists() or adopted_file.is_symlink()
+                or attached_file.exists() or attached_file.is_symlink()):
             try:
                 identity = read_execution_identity(
                     github, root, adc_comment_id=verified.pointer.comment_id,
                     adc_sha256=verified.pointer.sha256,
                 )
-                if not isinstance(identity, AdoptedExecutionEpoch):
-                    raise ExecutionAdoptionError("adoption artifacts resolved to a non-adopted identity")
+                if (not isinstance(identity, AdoptedExecutionEpoch)
+                        or identity.repository.casefold() != repository.casefold()
+                        or identity.issue_number != issue_number):
+                    raise ExecutionAdoptionError("adoption artifacts do not bind the current repository/Issue")
             except (ExecutionAdoptionError, ExecutionError, OSError, ValueError) as exc:
                 _json({"status": "ADOPTION_INVALID", "issue": issue_number, "repository": repository,
                        "issue_state": "open", "adc_status": "APPROVED", "binding_status": "INVALID",
                        "reason": str(exc)})
                 return 2
-            attachment = root / ".p_ases" / "state" / "63" / "workspace-attachment.json"
+            attachment = attached_file
             _json({"status": "ADOPTED", "issue": issue_number, "repository": repository,
                    "issue_state": "open", "adc_status": "APPROVED",
                    "adc_comment_id": verified.pointer.comment_id, "adc_sha256": verified.pointer.sha256,
