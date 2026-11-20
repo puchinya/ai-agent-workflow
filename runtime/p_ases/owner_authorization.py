@@ -340,7 +340,7 @@ def create_authorization_plan(
     """Read live GitHub subjects and create an immutable canonical plan."""
     if operation not in PLAN_OPERATIONS:
         raise OwnerAuthorizationError("unsupported owner operation")
-    if (not _positive(issue_number) or (operation not in {"USER_REVIEW", "ADC_SUPERSEDE"} and issue_number != ISSUE_NUMBER)
+    if (not _positive(issue_number) or (operation not in {"USER_REVIEW", "ADC_SUPERSEDE", "RULESET_PLAN_APPLY"} and issue_number != ISSUE_NUMBER)
             or not isinstance(subject_sha256, str)
             or SHA256.fullmatch(subject_sha256) is None
             or (target_issue_number is not None and not _positive(target_issue_number))
@@ -430,7 +430,7 @@ def _validate_plan(value: Any) -> dict[str, Any]:
     plan = dict(value)
     supplied = plan.pop("plan_sha256")
     allowed_issue = (_positive(plan.get("issue_number"))
-                     if plan.get("operation") in {"USER_REVIEW", "ADC_SUPERSEDE"}
+                     if plan.get("operation") in {"USER_REVIEW", "ADC_SUPERSEDE", "RULESET_PLAN_APPLY"}
                      else plan.get("issue_number") == ISSUE_NUMBER)
     if (plan.get("schema") != PLAN_SCHEMA or plan.get("repository") != REPOSITORY
             or plan.get("repository_id") != REPOSITORY_ID or plan.get("owner_id") != OWNER_ID
@@ -471,8 +471,9 @@ def _validate_plan(value: Any) -> dict[str, Any]:
                 or details["predecessor_state"] != "approved"):
             raise OwnerAuthorizationError("ADC_SUPERSEDE plan must bind its current approved predecessor")
     if plan["operation"] == "RULESET_PLAN_APPLY" and (
-            details != {"activation_issue_number": 57} or plan["target_issue_number"] != 57):
-        raise OwnerAuthorizationError("Ruleset authorization plan must bind Activation Issue #57")
+            not _positive(plan["target_issue_number"])
+            or details != {"activation_issue_number": plan["target_issue_number"]}):
+        raise OwnerAuthorizationError("Ruleset authorization plan must bind its exact Activation Issue")
     if plan["operation"] == "PR_MERGE":
         target = plan["target_issue_number"]
         if target == 57 and details != {"target_issue_number": 57}:
@@ -683,28 +684,30 @@ def _decision_body_v3(plan: dict[str, Any], predecessor: int | None,
 
 
 def _verify_ruleset_plan_approval(github: Any, plan: dict[str, Any], *, write_missing: bool) -> int:
-    if plan["operation"] != "RULESET_PLAN_APPLY" or plan["target_issue_number"] != 57:
-        raise OwnerAuthorizationError("Ruleset plan approval requires configured Activation Issue #57")
+    if (plan["operation"] != "RULESET_PLAN_APPLY"
+            or not _positive(plan["target_issue_number"])):
+        raise OwnerAuthorizationError("Ruleset plan approval requires a configured positive Activation Issue")
+    issue_number = plan["target_issue_number"]
     expected = f"{RULESET_APPROVAL_PREFIX}{plan['subject_sha256']}\nPASES-REPOSITORY: {REPOSITORY}"
-    issue = github.issue(57)
-    comments = [row for row in github.issue_comments(57) if isinstance(row, dict)]
+    issue = github.issue(issue_number)
+    comments = [row for row in github.issue_comments(issue_number) if isinstance(row, dict)]
     matches = [row for row in comments if row.get("body") == expected]
     if len(matches) > 1:
         raise OwnerAuthorizationError("exact Ruleset plan approval is duplicated")
     if not matches and write_missing:
         try:
-            response = github.create_issue_comment(57, expected)
+            response = github.create_issue_comment(issue_number, expected)
             comment_id = response.get("id") if isinstance(response, dict) else None
             if not _positive(comment_id):
                 raise OwnerAuthorizationError("Ruleset plan approval response lacks a comment ID")
         except (GitHubError, OwnerAuthorizationError) as exc:
             # The result may be ambiguous. Read back once; never retry the POST.
-            comments = [row for row in github.issue_comments(57) if isinstance(row, dict)]
+            comments = [row for row in github.issue_comments(issue_number) if isinstance(row, dict)]
             matches = [row for row in comments if row.get("body") == expected]
             if len(matches) != 1:
                 raise OwnerAuthorizationError("Ruleset plan approval write is ambiguous; no retry was attempted") from exc
         else:
-            comments = [row for row in github.issue_comments(57) if isinstance(row, dict)]
+            comments = [row for row in github.issue_comments(issue_number) if isinstance(row, dict)]
             matches = [row for row in comments if row.get("body") == expected]
     if len(matches) != 1:
         raise OwnerAuthorizationError("exact Ruleset plan approval is missing")
@@ -712,17 +715,17 @@ def _verify_ruleset_plan_approval(github: Any, plan: dict[str, Any], *, write_mi
     comment_id = selected.get("id")
     if not _positive(comment_id):
         raise OwnerAuthorizationError("Ruleset plan approval comment ID is invalid")
-    first = github.issue_comment(57, comment_id)
-    listed_again = [row for row in github.issue_comments(57) if row.get("id") == comment_id]
-    final = github.issue_comment(57, comment_id)
+    first = github.issue_comment(issue_number, comment_id)
+    listed_again = [row for row in github.issue_comments(issue_number) if row.get("id") == comment_id]
+    final = github.issue_comment(issue_number, comment_id)
     user = final.get("user") if isinstance(final.get("user"), dict) else {}
-    fingerprints = (_comment_fingerprint(first, REPOSITORY, 57),
-                    _comment_fingerprint(listed_again[0], REPOSITORY, 57),
-                    _comment_fingerprint(final, REPOSITORY, 57)) if len(listed_again) == 1 else ()
+    fingerprints = (_comment_fingerprint(first, REPOSITORY, issue_number),
+                    _comment_fingerprint(listed_again[0], REPOSITORY, issue_number),
+                    _comment_fingerprint(final, REPOSITORY, issue_number)) if len(listed_again) == 1 else ()
     if (len(listed_again) != 1 or fingerprints[0] != fingerprints[1]
             or fingerprints[1] != fingerprints[2] or final.get("body") != expected
             or user.get("id") != OWNER_ID or user.get("type") != "User"
-            or not isinstance(issue, dict) or issue.get("number") != 57
+            or not isinstance(issue, dict) or issue.get("number") != issue_number
             or issue.get("state") != "open" or issue.get("repository_url") != f"https://api.github.com/repos/{REPOSITORY}"):
         raise OwnerAuthorizationError("exact Ruleset approval failed owner/source/direct-list-direct verification")
     return comment_id
