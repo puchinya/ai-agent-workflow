@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases.adc import publish_adc
 from p_ases.cli import (
-    CLI_ADVANCE_TARGETS, CLIError, OwnerAuthorizationError, _activation_v2_issue63_proof,
+    CLI_ADVANCE_TARGETS, CLIError, OwnerAuthorizationError, _activation_v2_proof,
     _audit_independent, _delivery_final,
     _owner_merge_gate, _parser, _work_command, main,
 )
@@ -724,7 +724,7 @@ class PasesCLITests(unittest.TestCase):
                 patch("p_ases.cli.require_local_activation_execution"), \
                 patch("p_ases.cli.require_isolated_device_admin_client") as require_admin, \
                 patch("p_ases.cli.read_verified_managed_policy", return_value=policy_evidence) as read_policy:
-            result = _activation_v2_issue63_proof(
+            result = _activation_v2_proof(
                 Path(temporary), ordinary, repository, policy_github=admin,
             )
         self.assertEqual(result["status"], "ACTIVE")
