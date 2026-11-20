@@ -267,13 +267,19 @@ def _validate_user_review_subject(
         raise OwnerAuthorizationError("User Review independent verifier identity changed")
 
 
-def issue63_deferred_merge_details(github: Any, *, pr_number: int,
-                                   pr_head_sha40: str,
+def merge_commit_message(issue_number: int) -> str:
+    if not _positive(issue_number):
+        raise OwnerAuthorizationError("merge message requires a positive Issue number")
+    return f"Implementation delivered. Issue #{issue_number} remains open pending verified Consumer Activation V2."
+
+
+def deferred_merge_details(github: Any, *, issue_number: int, pr_number: int,
+                           pr_head_sha40: str,
                                    allow_merged: bool = False) -> dict[str, Any]:
-    """Read every GitHub auto-close surface and freeze a safe merge message."""
-    if (pr_number != 64 or not isinstance(pr_head_sha40, str)
-            or SHA40.fullmatch(pr_head_sha40) is None):
-        raise OwnerAuthorizationError("Issue #63 deferred-close merge is bound only to PR #64 and its exact HEAD")
+    """Read all GitHub auto-close surfaces for one exact deferred-close Issue/PR."""
+    if (not _positive(issue_number) or not _positive(pr_number)
+            or not isinstance(pr_head_sha40, str) or SHA40.fullmatch(pr_head_sha40) is None):
+        raise OwnerAuthorizationError("deferred-close merge requires an exact Issue, PR and HEAD")
     try:
         pr = github.pull_request(pr_number)
         body, title = pr.get("body"), pr.get("title")
@@ -284,42 +290,42 @@ def issue63_deferred_merge_details(github: Any, *, pr_number: int,
         head = pr.get("head") if isinstance(pr, dict) else None
         if not isinstance(head, dict) or head.get("sha") != pr_head_sha40:
             raise OwnerAuthorizationError("deferred-close PR HEAD changed during association readback")
-        if parse_issue_association(body, 63) != "deferred_close":
-            raise OwnerAuthorizationError("Issue #63 PR body does not uniquely use Refs #63")
+        if parse_issue_association(body, issue_number) != "deferred_close":
+            raise OwnerAuthorizationError("deferred-close Issue PR body does not uniquely use Refs #N")
         if not isinstance(title, str) or not title.strip() or closing_issue_references(title):
             raise OwnerAuthorizationError("PR title is invalid or contains an auto-close reference")
         commits = github.pull_request_commits(pr_number)
         if not commits:
-            raise OwnerAuthorizationError("Issue #63 PR commit history is unavailable or empty")
+            raise OwnerAuthorizationError("deferred-close Issue PR commit history is unavailable or empty")
         commit_rows = []
         for row in commits:
             if (not isinstance(row, dict) or not isinstance(row.get("sha"), str)
                     or not SHA40.fullmatch(row["sha"]) or not isinstance(row.get("commit"), dict)
                     or not isinstance(row["commit"].get("message"), str)):
-                raise OwnerAuthorizationError("Issue #63 PR commit history is incomplete")
+                raise OwnerAuthorizationError("deferred-close Issue PR commit history is incomplete")
             message = row["commit"]["message"]
             if closing_issue_references(message):
-                raise OwnerAuthorizationError("Issue #63 PR commit message contains an auto-close reference")
+                raise OwnerAuthorizationError("deferred-close Issue PR commit message contains an auto-close reference")
             commit_rows.append({"sha": row["sha"], "message": message})
         closing_issues = github.pull_request_closing_issues(pr_number)
         if closing_issues:
             raise OwnerAuthorizationError("GitHub reports one or more Issues that this PR will auto-close")
-        timeline = github.issue_pull_request_cross_references(63)
+        timeline = github.issue_pull_request_cross_references(issue_number)
         close_links = [row for row in timeline
                        if row.get("pr_number") == pr_number
                        and str(row.get("repository", "")).casefold() == REPOSITORY.casefold()
                        and row.get("will_close_target") is True]
         if close_links:
-            raise OwnerAuthorizationError("GitHub Issue metadata reports an auto-closing PR link for Issue #63")
+            raise OwnerAuthorizationError("GitHub Issue metadata reports an auto-closing PR link for deferred-close Issue")
     except WorkError as exc:
-        raise OwnerAuthorizationError(f"Issue #63 deferred-close association is invalid: {exc}") from exc
+        raise OwnerAuthorizationError(f"deferred-close Issue deferred-close association is invalid: {exc}") from exc
     except GitHubError as exc:
-        raise OwnerAuthorizationError(f"Issue #63 auto-close metadata could not be read completely: {exc}") from exc
+        raise OwnerAuthorizationError(f"deferred-close Issue auto-close metadata could not be read completely: {exc}") from exc
     merge_title = f"Merge PR #{pr_number} at {pr_head_sha40[:12]}"
-    if closing_issue_references(merge_title) or closing_issue_references(ISSUE63_MERGE_COMMIT_MESSAGE):
+    if closing_issue_references(merge_title) or closing_issue_references(merge_commit_message(issue_number)):
         raise OwnerAuthorizationError("planned merge metadata contains an auto-close token")
     return {
-        "target_issue_number": 63,
+        "target_issue_number": issue_number,
         "association_mode": "deferred_close",
         "pr_body_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
         "pr_title_sha256": hashlib.sha256(title.encode("utf-8")).hexdigest(),
@@ -327,8 +333,20 @@ def issue63_deferred_merge_details(github: Any, *, pr_number: int,
         "closing_issue_numbers": [],
         "issue_auto_close_link": False,
         "merge_commit_title": merge_title,
-        "merge_commit_message": ISSUE63_MERGE_COMMIT_MESSAGE,
+        "merge_commit_message": merge_commit_message(issue_number),
     }
+
+
+def issue63_deferred_merge_details(github: Any, *, pr_number: int,
+                                   pr_head_sha40: str,
+                                   allow_merged: bool = False) -> dict[str, Any]:
+    """Legacy exact #63/#64 adapter; never migrate an old plan or merge record."""
+    if pr_number != 64:
+        raise OwnerAuthorizationError("historical Issue #63 deferred-close merge requires PR #64")
+    return deferred_merge_details(
+        github, issue_number=63, pr_number=pr_number,
+        pr_head_sha40=pr_head_sha40, allow_merged=allow_merged,
+    )
 
 
 def create_authorization_plan(
