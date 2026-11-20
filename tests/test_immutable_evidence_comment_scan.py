@@ -47,7 +47,7 @@ class FakeGitHub:
 
     def issue_comment_pages_newest(self, number, total_comments):
         assert number == self.number
-        rows = sorted(self.records.values(), key=lambda item: item["id"])
+        rows = [self.records[comment_id] for comment_id in sorted(self.records)]
         if not rows:
             self.page_reads += 1
             yield []
