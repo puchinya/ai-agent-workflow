@@ -519,7 +519,7 @@ The active phase-rework reader uses the same recognized phase vocabulary as the 
 <a id="des-f01-101"></a>
 ### 6.5 DES-F01-101 Batch the selected ADC journal range
 
-The current-only reader performs bounded newest-pointer discovery and direct retrieval of exactly the named current ADC comment. The old two-full-snapshot, per-historical-body batch validator is not called by active lifecycle routes. Mutable subjects are re-read before and after writes; stale or competing current pointers, malformed bodies, draft state and changed direct evidence fail closed. Intent/Applied journal duplication checks are independent of ADC history.
+The current-only reader performs bounded newest-pointer discovery and direct retrieval of exactly the named current ADC comment. The old two-full-snapshot, per-historical-body batch validator is not called by active lifecycle routes. Mutable subjects are re-read before and after writes; stale or competing current pointers, malformed bodies, draft state and changed direct evidence fail closed. Intent/Applied journal duplication checks are independent of ADC history. A first epoch-reset write has no immutable origin comment that could bound prior attempts: `epoch_lifecycle._no_remote_epoch_journal` therefore streams all Issue comment pages newest-first, checking only the epoch-reset Intent/Applied schemas and retaining at most one page in memory; it stops immediately on a matching record. A changed Issue comment count before the Intent POST blocks. Do not replace this complete absence proof with a fixed recent-page limit or an unverified historical ADC cutoff.
 
 <a id="des-f01-102"></a>
 ### 6.6 DES-F01-102 Append one V3 rework generation
