@@ -1186,11 +1186,13 @@ class ConsumerActivationTests(unittest.TestCase):
             return activation_proof
 
         with tempfile.TemporaryDirectory() as tmp, \
-                patch("p_ases.cli.issue63_deferred_merge_details", return_value={
+                patch("p_ases.cli.deferred_merge_details", return_value={
                     "association_mode": "deferred_close"}), \
+                patch("p_ases.cli.load_profile",
+                      return_value=SimpleNamespace(activation_issue_number=57)), \
                 patch("p_ases.cli.read_consumer_activation_history",
                       side_effect=history_for_issue63), \
-                patch("p_ases.cli._activation_v2_issue63_proof",
+                patch("p_ases.cli._activation_v2_proof",
                       side_effect=activation_proof_for_issue63) as proof:
             status = _delivery_finalize(
                 SimpleNamespace(issue=63, pr=64), REPO, Path(tmp), github,
