@@ -216,6 +216,30 @@ def _create_once(path: Path, raw: bytes, root: Path) -> None:
         os.fsync(stream.fileno())
 
 
+def _no_remote_epoch_journal(github: GitHub, issue_number: int, comment_count: Any) -> None:
+    """Stream all remote epoch attempts, retaining no historical ADC bodies.
+
+    A new epoch has no trusted origin bound, unlike Phase rework. Scanning the
+    entire operation-journal window remains mandatory until a durable remote
+    index can prove the absence of any prior Intent/Applied.
+    """
+    if type(comment_count) is not int or comment_count < 1:
+        raise EpochLifecycleError("epoch reset requires a valid current Issue comment count")
+    for page in github.issue_comment_pages_newest(issue_number, comment_count):
+        if not isinstance(page, list):
+            raise EpochLifecycleError("remote epoch reset journal page is malformed")
+        for row in page:
+            if (not isinstance(row, dict) or type(row.get("id")) is not int
+                    or row["id"] < 1 or not isinstance(row.get("body"), str)):
+                raise EpochLifecycleError("remote epoch reset journal comment is malformed")
+            if row["body"].startswith((
+                    f"<!-- {INTENT_SCHEMA}\n", f"<!-- {APPLIED_SCHEMA}\n",
+            )):
+                raise EpochLifecycleError(
+                    "remote epoch reset journal already exists; read-only reconciliation required"
+                )
+
+
 def reset_execution_epoch(github: GitHub, root: Path, issue_number: int) -> dict[str, Any]:
     """Append a newly authorized epoch exactly once; completed retries do no writes."""
     root = Path(root).resolve()
@@ -260,16 +284,13 @@ def reset_execution_epoch(github: GitHub, root: Path, issue_number: int) -> dict
         }
         # This is a one-shot writer. A missing local journal is never permission
         # to duplicate an already published remote Intent or Applied record.
-        existing = github.issue_comments(issue_number)
-        if any(isinstance(row, dict) and isinstance(row.get("body"), str)
-               and row["body"].startswith((
-                   f"<!-- {INTENT_SCHEMA}\n", f"<!-- {APPLIED_SCHEMA}\n",
-               )) for row in existing):
-            raise EpochLifecycleError("remote epoch reset journal already exists; read-only reconciliation required")
+        _no_remote_epoch_journal(github, issue_number, issue.get("comments"))
         # Place the mutable Issue readback after the journal scan, nearest the POST.
         before_intent, *_ = _live(github, root, issue_number, verified, auth, auth["labels_before"])
         if before_intent.get("body") != issue["body"]:
             raise EpochLifecycleError("epoch Issue body changed before Intent")
+        if before_intent.get("comments") != issue["comments"]:
+            raise EpochLifecycleError("epoch Issue comments changed during journal preflight")
         intent_id, intent_sha = _post(
             github, root, issue_number, "intent", INTENT_SCHEMA, intent, owner_id,
         )
