@@ -204,6 +204,17 @@ class GenericDeferredDeliveryTests(unittest.TestCase):
             )
             self.assertEqual(owner._validate_plan(plan), plan)
             self.assertEqual(identity.call_args.args[1:3], (91, 91))
+            with self.assertRaisesRegex(owner.OwnerAuthorizationError, "exact target Issue"):
+                owner.create_authorization_plan(
+                    github, Path(temp), operation="PR_MERGE",
+                    subject_sha256="d" * 64, issue_number=63,
+                    target_issue_number=91, pr_number=120, pr_head_sha40=github.head,
+                    details=details,
+                )
+            mismatched = copy.deepcopy(plan)
+            mismatched["issue_number"] = 63
+            with self.assertRaisesRegex(owner.OwnerAuthorizationError, "carrier"):
+                owner._validate_plan(mismatched)
             broken = copy.deepcopy(plan)
             broken["details"]["merge_commit_message"] = "Closes #91"
             with self.assertRaises(owner.OwnerAuthorizationError):
