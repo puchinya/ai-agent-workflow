@@ -4126,15 +4126,14 @@ def _delivery_finalize(args: argparse.Namespace, repository: str, root: Path, gi
         except WorkError as exc:
             association_mode = None
             reasons.append(f"PR Issue association is invalid: {exc}")
-        if args.issue == 63 and (args.pr != 64 or association_mode != "deferred_close"):
-            reasons.append("Issue #63 requires PR #64 with one standalone Refs #63 association")
-        if association_mode == "deferred_close" and args.issue == 63 and pr.get("merged") is True:
+        if association_mode == "deferred_close" and pr.get("merged") is True:
             raw_head = pr.get("head")
             current_pr_head = raw_head.get("sha") if isinstance(raw_head, dict) else None
             if not isinstance(current_pr_head, str):
                 raise CLIError("merged deferred-close PR HEAD is unavailable")
-            planned = issue63_deferred_merge_details(
-                github, pr_number=args.pr, pr_head_sha40=current_pr_head,
+            planned = deferred_merge_details(
+                github, issue_number=args.issue,
+                pr_number=args.pr, pr_head_sha40=current_pr_head,
                 allow_merged=True,
             )
             if planned.get("association_mode") != "deferred_close":
@@ -4156,19 +4155,21 @@ def _delivery_finalize(args: argparse.Namespace, repository: str, root: Path, gi
                 reasons.append("GitHub has not auto-closed the Issue after merge")
             close_status = "FINALIZED" if not reasons else "BLOCKED"
         elif association_mode == "deferred_close":
-            if args.issue != 63 or args.pr != 64:
-                reasons.append("deferred-close finalization is configured only for Issue #63 and PR #64")
             if not reasons:
-                history = read_consumer_activation_history(github, repository, 57)
+                profile = load_profile(root)
+                activation_issue = profile.activation_issue_number
+                if type(activation_issue) is not int or activation_issue < 1:
+                    raise CLIError("deferred-close requires a configured positive Activation Issue")
+                history = read_consumer_activation_history(github, repository, activation_issue)
                 if not history or history[-1][0].schema_version != 2:
-                    close_intent_path = _issue_close_intent_path(root, 63, merge_sha)
+                    close_intent_path = _issue_close_intent_path(root, args.issue, merge_sha)
                     if issue.get("state") == "closed" or close_intent_path.exists() or close_intent_path.is_symlink():
                         close_status = "BLOCKED"
-                        reasons.append("Issue #63 closure exists without a current verified Activation V2 proof")
+                        reasons.append("Issue closure exists without a current verified Activation V2 proof")
                     else:
                         close_status = "MERGED_AWAITING_ISSUE_COMPLETION"
                 else:
-                    activation_proof = _activation_v2_issue63_proof(
+                    activation_proof = _activation_v2_proof(
                         root, github, repository, policy_github=policy_github,
                     )
                     if activation_proof is None:
@@ -4180,12 +4181,12 @@ def _delivery_finalize(args: argparse.Namespace, repository: str, root: Path, gi
                         except (KeyError, TypeError, ValueError) as exc:
                             raise CLIError("PR merge or Activation V2 effective timestamp is invalid") from exc
                         if merged_at.tzinfo is None or activated_at.tzinfo is None or activated_at <= merged_at:
-                            reasons.append("Activation V2 must become ACTIVE after PR #64 merge")
+                            reasons.append("Activation V2 must become ACTIVE after the deferred-close PR merge")
                             close_status = "BLOCKED"
                         else:
                             intent = {
                                 "schema": "PASES_DEFERRED_ISSUE_CLOSE_INTENT_V1",
-                                "repository": repository, "issue_number": 63, "pr_number": 64,
+                                "repository": repository, "issue_number": args.issue, "pr_number": args.pr,
                                 "pr_merge_sha40": merge_sha,
                                 "activation_record_id": activation_proof["activation_record_id"],
                                 "activation_record_sha256": activation_proof["activation_record_sha256"],
@@ -4195,8 +4196,8 @@ def _delivery_finalize(args: argparse.Namespace, repository: str, root: Path, gi
                                 "default_branch": activation_proof["default_branch"],
                                 "default_branch_sha40": activation_proof["default_branch_sha40"],
                             }
-                            intent_path = _issue_close_intent_path(root, 63, merge_sha)
-                            issue_before = _issue_state_triplet(github, 63, repository)[0]
+                            intent_path = _issue_close_intent_path(root, args.issue, merge_sha)
+                            issue_before = _issue_state_triplet(github, args.issue, repository)[0]
                             if intent_path.exists() or intent_path.is_symlink():
                                 existing = _read_json(intent_path, "Issue close intent", root=root)
                                 if existing != intent:
@@ -4208,16 +4209,16 @@ def _delivery_finalize(args: argparse.Namespace, repository: str, root: Path, gi
                                     reasons.append("Issue close intent exists but Issue remains open; recovery is read-only and no retry is permitted")
                             else:
                                 if issue_before.get("state") == "closed":
-                                    raise CLIError("Issue #63 closed before this verified P-ASES completion path")
+                                    raise CLIError("deferred-close Issue closed before this verified completion path")
                                 if issue_before.get("state") != "open":
-                                    raise CLIError("Issue #63 was not open immediately before deferred close")
+                                    raise CLIError("deferred-close Issue was not open immediately before the close attempt")
                                 _create_issue_close_intent(intent_path, intent, root=root)
                                 close_error: GitHubError | None = None
                                 try:
-                                    github.close_issue(63)
+                                    github.close_issue(args.issue)
                                 except GitHubError as exc:
                                     close_error = exc
-                                issue_after = _issue_state_triplet(github, 63, repository)[0]
+                                issue_after = _issue_state_triplet(github, args.issue, repository)[0]
                                 if issue_after.get("state") == "closed" and isinstance(issue_after.get("closed_at"), str):
                                     close_status = "FINALIZED"
                                 else:
@@ -4234,7 +4235,7 @@ def _delivery_finalize(args: argparse.Namespace, repository: str, root: Path, gi
                  "reasons": reasons, "issue_state": github.issue(args.issue).get("state"),
                  "association_mode": association_mode,
                  "activation_v2": activation_proof,
-                 "note": ("Issue #63 remains open until post-merge Activation V2 and effective policy verify"
+                 "note": ("deferred-close Issue remains open until post-merge Activation V2 and effective policy verify"
                           if status == "MERGED_AWAITING_ISSUE_COMPLETION" else
                           "deferred Issue closure uses one durable close intent and read-only recovery")}
         _json(value)
