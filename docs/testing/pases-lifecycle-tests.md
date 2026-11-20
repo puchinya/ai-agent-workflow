@@ -1038,7 +1038,7 @@ The validator accepts `phase:verification` as a normal valid lifecycle state wit
 <a id="tst-f01-103"></a>
 ### 2.67 TST-F01-103 Batched ADC journal snapshots and drift rejection
 
-**Setup and action:** Exercise current-only ADC verification against synthetic short and million-comment Issue histories while holding the latest pointer and current ADC constant. Assert no growth in historical ADC body reads. Inject conflicting current pointers, wrong digest or draft state and require fail-closed results without a complete-history fallback. Verify separately that one-shot remote operation-journal duplication checks remain active.
+**Setup and action:** Exercise current-only ADC verification against synthetic short and million-comment Issue histories while holding the latest pointer and current ADC constant. Assert no growth in historical ADC body reads. Inject conflicting current pointers, wrong digest or draft state and require fail-closed results without a complete-history fallback. Verify separately that one-shot remote operation-journal duplication checks remain active: the first epoch-reset scan must stream every page (without full-history materialization), reject an old pending Intent on an earlier page and refuse a comment-count drift before the first POST. Test the bounded post-origin phase-rework lookup separately; an epoch without a prior origin must not use a recent-page-only absence check.
 
 <a id="ora-f01-103"></a>
 #### 2.67.1 ORA-F01-103 Expected result
