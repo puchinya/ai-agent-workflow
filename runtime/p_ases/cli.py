@@ -27,7 +27,8 @@ from .local_execution import (
 )
 from .owner_authorization import (
     OwnerAuthorizationError, authorize_chat_confirmed_plan, authorize_plan, create_authorization_plan,
-    issue63_deferred_merge_details, read_authorization_plan, resume_authorization, write_authorization_plan,
+    deferred_merge_details, issue63_deferred_merge_details, read_authorization_plan,
+    resume_authorization, write_authorization_plan,
 )
 from .owner_authorization import capture_direct_chat_confirmation
 from .consumer_activation import (
@@ -2758,11 +2759,16 @@ def _owner_authorization_plan_command(args: argparse.Namespace, repository: str,
                 or args.pr is None or args.head is None or args.target_issue is None):
             raise OwnerAuthorizationError("PR_MERGE plan requires --pr, --head, and --target-issue")
         pr_number, pr_head, target_issue = args.pr, args.head, args.target_issue
-        details = (issue63_deferred_merge_details(github, pr_number=pr_number, pr_head_sha40=pr_head)
-                   if target_issue == 63 else {"target_issue_number": target_issue})
+        details = (
+            {"target_issue_number": target_issue} if target_issue == 57 else
+            issue63_deferred_merge_details(github, pr_number=pr_number, pr_head_sha40=pr_head)
+            if target_issue == 63 else
+            deferred_merge_details(github, issue_number=target_issue,
+                                   pr_number=pr_number, pr_head_sha40=pr_head)
+        )
         subject_value = {"repository": repository, "target_issue_number": target_issue,
                          "pr_number": pr_number, "pr_head_sha40": pr_head}
-        if target_issue == 63:
+        if target_issue != 57:
             subject_value["details"] = details
         subject_sha256 = hashlib.sha256(_canonical(subject_value)).hexdigest()
     elif operation == "EXECUTION_ADOPTION":
@@ -2784,7 +2790,8 @@ def _owner_authorization_plan_command(args: argparse.Namespace, repository: str,
         github, root, operation=operation, subject_sha256=subject_sha256,
         issue_number=(plan_issue if operation == "USER_REVIEW" else
                       target_adc_issue if operation == "ADC_SUPERSEDE" else
-                      target_issue if operation == "RULESET_PLAN_APPLY" else 63),
+                      target_issue if operation == "RULESET_PLAN_APPLY" else
+                      target_issue if operation == "PR_MERGE" and target_issue != 57 else 63),
         target_issue_number=target_issue,
         pr_number=pr_number, pr_head_sha40=pr_head, details=details,
     )
@@ -2832,12 +2839,19 @@ def _validate_owner_authorization_source(args: argparse.Namespace, plan: dict[st
             raise OwnerAuthorizationError("Ruleset plan changed or no longer requires an approved write")
     elif plan["operation"] == "PR_MERGE":
         target = plan["target_issue_number"]
-        details = (issue63_deferred_merge_details(
-            github, pr_number=plan["pr_number"], pr_head_sha40=plan["pr_head_sha40"],
-        ) if target == 63 else {"target_issue_number": target})
+        details = (
+            {"target_issue_number": target} if target == 57 else
+            issue63_deferred_merge_details(
+                github, pr_number=plan["pr_number"], pr_head_sha40=plan["pr_head_sha40"],
+            ) if target == 63 else
+            deferred_merge_details(
+                github, issue_number=target, pr_number=plan["pr_number"],
+                pr_head_sha40=plan["pr_head_sha40"],
+            )
+        )
         expected_value = {"repository": repository, "target_issue_number": target,
                           "pr_number": plan["pr_number"], "pr_head_sha40": plan["pr_head_sha40"]}
-        if target == 63:
+        if target != 57:
             expected_value["details"] = details
         expected = hashlib.sha256(_canonical(expected_value)).hexdigest()
         if expected != plan["subject_sha256"] or details != plan["details"]:
