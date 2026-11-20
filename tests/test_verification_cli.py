@@ -120,11 +120,11 @@ class VerificationCLITests(unittest.TestCase):
         # Previously fixed Issue 29/31 refs and Issue 63/PR 64 are no longer
         # hidden authorization policies in the generic Verification reader.
         for issue, pr_number, body in (
-                (29, 83, "Closes #29\\n"),
-                (31, 93, "Refs #31\\n"),
-                (63, 105, "Closes #63\\n"),
-                (63, 106, "Refs #63\\n"),
-                (128, 209, "Closes #128\\n")):
+                (29, 83, "Closes #29\n"),
+                (31, 93, "Refs #31\n"),
+                (63, 105, "Closes #63\n"),
+                (63, 106, "Refs #63\n"),
+                (128, 209, "Closes #128\n")):
             with self.subTest(issue=issue, pr=pr_number):
                 row = FakePullRequestGitHub().pull_request(pr_number)
                 row["body"] = body
