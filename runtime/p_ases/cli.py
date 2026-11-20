@@ -205,11 +205,6 @@ CLI_ADVANCE_TARGETS = tuple(
     phase.value for phase in Phase if phase not in {Phase.USER_REVIEW, Phase.CLOSED}
 )
 
-# The approved stacked-PR contract for this repository's Verification issue.
-ISSUE_PR_REFS = {
-    29: ("pases/adc-core", "pases/verification"),
-    31: ("main", "pases/user-review-integration"),
-}
 def _json(value: Any) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2))
 
@@ -480,17 +475,12 @@ def _readback_current_pr(github: GitHub, subject: VerificationSubject) -> dict[s
         raise CLIError("current PR is closed, draft, forked, cross-repository, or has incomplete base/head identity")
     if head_sha != subject.pr_head_sha40:
         raise CLIError("Verification subject HEAD differs from the current GitHub PR HEAD")
-    expected_refs = ISSUE_PR_REFS.get(subject.issue_number)
-    if expected_refs is not None and (base_ref, head_ref) != expected_refs:
-        raise CLIError("current PR base/head branches do not match the approved Issue branch contract")
     if not isinstance(body, str):
         raise CLIError("current PR body is missing; Issue closing association cannot be verified")
     try:
         association_mode = parse_issue_association(body, subject.issue_number)
     except WorkError as exc:
         raise CLIError(f"current PR Issue association is invalid: {exc}") from exc
-    if subject.issue_number == 63 and (subject.pr_number != 64 or association_mode != "deferred_close"):
-        raise CLIError("Issue #63 deferred delivery requires existing PR #64 with standalone Refs #63")
     return {
         "number": subject.pr_number,
         "state": "open",
@@ -790,15 +780,6 @@ def _unaccepted_dependencies(github: GitHub, contract: Any) -> tuple[str, ...]:
     except (KeyError, ValueError):
         text = ""
     numbers = sorted({int(value) for value in _ISSUE_REF.findall(text)})
-    if not numbers and getattr(contract, "issue_number", None) == 29:
-        # The approved #29 ADC fixes #27/#28 as its upstream dependencies.
-        numbers = [27, 28]
-    elif not numbers and getattr(contract, "issue_number", None) == 30:
-        # The approved #30 ADC fixes #27/#29 as its upstream dependencies.
-        numbers = [27, 29]
-    if getattr(contract, "issue_number", None) == 30:
-        # #28 is an explicit transitive blocker through #29 until formal Oracle acceptance.
-        numbers = sorted(set(numbers) | {28})
     pending: list[str] = []
     for number in numbers:
         try:
