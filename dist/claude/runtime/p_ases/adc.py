@@ -70,7 +70,7 @@ REQUIRED_SECTIONS = {
 }
 PREDECESSOR_ADC_FIELDS = re.compile(
     r"^Predecessor ADC:\s*Issue\s+#?([1-9][0-9]*)\s+comment\s+#?([1-9][0-9]*),\s*"
-    r"SHA-256\s+`?([0-9a-f]{64})`?(?:\s+\(.*\))?$"
+    r"SHA-256\s+`?([0-9a-f]{64})`?(?:[ \t]+\(([1-9][0-9]{0,9}) bytes\))?$"
 )
 
 
@@ -392,20 +392,27 @@ def validate_approval_ready_adc(
                          if line.strip().startswith("Predecessor ADC:")]
     if len(predecessor_lines) > 1:
         raise ADCError("approved ADC header has multiple predecessor declarations")
-    declared: tuple[int, int, str] | None = None
+    declared: tuple[int, int, str, int | None] | None = None
     if predecessor_lines:
         match = PREDECESSOR_ADC_FIELDS.fullmatch(predecessor_lines[0])
         if match is None:
             raise ADCError("approved ADC predecessor declaration is malformed")
-        declared = (int(match.group(1)), int(match.group(2)), match.group(3))
+        declared = (int(match.group(1)), int(match.group(2)), match.group(3),
+                    int(match.group(4)) if match.group(4) is not None else None)
 
+    if declared is not None and declared[3] is not None and not check_current_pointer:
+        raise ADCError("predecessor byte length requires the direct current pointer")
     if check_current_pointer and declared is not None:
         # Current contracts may name their immediate predecessor, but no
         # historical ADC declaration or Issue-specific policy is required.
         if current_pointer is None:
             raise ADCError("approved ADC declares a predecessor but the current pointer is absent")
+        if (declared[3] is not None
+                and (type(current_pointer.byte_length) is not int or current_pointer.byte_length < 1)):
+            raise ADCError("current ADC predecessor pointer byte length is invalid")
         if (declared[0] != issue_number or declared[1] != current_pointer.comment_id
-                or declared[2] != current_pointer.sha256):
+                or declared[2] != current_pointer.sha256
+                or declared[3] is not None and declared[3] != current_pointer.byte_length):
             raise ADCError("approved ADC predecessor does not match the current approved pointer")
     return contract
 
@@ -681,8 +688,9 @@ def publish_adc(
         raise ADCError("expected current ADC pointer is malformed")
     if state == "approved" and explicitly_approved is not True:
         raise ADCError("publishing an approved ADC requires explicit user approval")
-    contract = (validate_approval_ready_adc(data, github.repo, issue_number)
-                if state == "approved" else parse_adc(data, github.repo, issue_number))
+    # Parse before reading the live pointer; strict approval validation runs
+    # below once the directly observed predecessor pointer is available.
+    contract = parse_adc(data, github.repo, issue_number)
     try:
         before = _check_issue(github.issue(issue_number), github.repo, issue_number)
     except GitHubError as exc:

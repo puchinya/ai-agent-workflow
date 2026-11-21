@@ -14,7 +14,8 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .adc import ADCError, verify_adc
-from .current_epoch import CurrentEpochError, read_current_epoch
+from .current_epoch import (CurrentEpochError, _rework_candidate_kind, read_current_epoch,
+                             validate_rework_publication_window)
 from .epoch_lifecycle import (
     EpochLifecycleError, _attempt, _json, _live, _post, _sha,
 )
@@ -117,6 +118,7 @@ def _completed(github: GitHub, issue_number: int, epoch: Any) -> int | None:
                 or payload.get("issue_number") != issue_number
                 or payload.get("schema") != APPLIED_SCHEMA):
             raise PhaseReworkLifecycleError("active Phase Applied does not bind the immutable epoch")
+        validate_rework_publication_window(payload, row, "applied_at")
         intent_id = payload.get("intent_comment_id")
         digest = payload.get("intent_body_sha256")
         if (type(intent_id) is not int or intent_id < 1
@@ -130,6 +132,19 @@ def _completed(github: GitHub, issue_number: int, epoch: Any) -> int | None:
                 or intent.get("issue_url") != row.get("issue_url")
                 or intent.get("created_at") != intent.get("updated_at")):
             raise PhaseReworkLifecycleError("active Phase Intent is missing or changed")
+        intent_raw = body[len(f"<!-- {INTENT_SCHEMA}\n"):-len("\n-->")]
+        intent_payload = json.loads(intent_raw)
+        if (not isinstance(intent_payload, dict)
+                or _json(intent_payload).decode("utf-8") != intent_raw
+                or intent_payload.get("schema") != INTENT_SCHEMA
+                or intent_payload.get("active_epoch_id") != epoch.epoch_id
+                or intent_payload.get("active_epoch_sha256") != epoch.sha256
+                or intent_payload.get("repository", "").casefold() != github.repo.casefold()
+                or intent_payload.get("issue_number") != issue_number
+                or any(intent_payload.get(key) != payload.get(key)
+                       for key in ("branch_ref", "adc_comment_id", "adc_sha256"))):
+            raise PhaseReworkLifecycleError("active Phase Intent does not match its Applied")
+        validate_rework_publication_window(intent_payload, intent, "created_at")
         return epoch.applied_comment_id
     except (GitHubError, ValueError, TypeError) as exc:
         if isinstance(exc, PhaseReworkLifecycleError):
@@ -211,9 +226,7 @@ def _no_remote_rework_journal(
                 raise PhaseReworkLifecycleError("remote Phase rework journal comment is malformed")
             if row["id"] == origin_applied_id:
                 return
-            if row["body"].startswith((
-                    f"<!-- {INTENT_SCHEMA}\n", f"<!-- {APPLIED_SCHEMA}\n",
-            )):
+            if _rework_candidate_kind(row["body"]) is not None:
                 raise PhaseReworkLifecycleError(
                     "remote Phase rework journal already exists; read-only reconciliation required"
                 )

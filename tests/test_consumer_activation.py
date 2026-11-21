@@ -14,9 +14,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases.adc import ADCError, parse_adc, publish_adc, verify_adc  # noqa: E402
+from p_ases import consumer_activation  # noqa: E402
 from p_ases.consumer_activation import (  # noqa: E402
     APPROVAL_MARKER, ISSUE_MARKER, RECORD_MARKER, ConsumerActivationError, ConsumerActivationRecord,
-    RequiredCheckEvidence, _default_activation_adc, _default_profile, activation_checkpoint_path,
+    RequiredCheckEvidence, _default_activation_adc, _default_profile, _validate_merged_setup,
+    activation_checkpoint_path, activation_profile,
     read_activation_checkpoint,
     read_consumer_activation_history, read_consumer_activation_record,
     setup_consumer_activation,
@@ -1093,10 +1095,12 @@ class ConsumerActivationTests(unittest.TestCase):
         writes["create_issue_comment"].assert_called()
         self.assertEqual(successor.predecessor_record_id, first_id)
         self.assertGreater(successor_id, first_id)
-        history = read_consumer_activation_record(github, REPO, ISSUE)
-        self.assertEqual(history, (successor, successor_id))
-        self.assertEqual(read_consumer_activation_history(github, REPO, ISSUE),
-                         [(first, first_id), (successor, successor_id)])
+        with patch("p_ases.consumer_activation.verify_adc_generation",
+                   side_effect=AssertionError("Activation history traversed ADC generations")):
+            history = read_consumer_activation_record(github, REPO, ISSUE)
+            self.assertEqual(history, (successor, successor_id))
+            self.assertEqual(read_consumer_activation_history(github, REPO, ISSUE),
+                             [(first, first_id), (successor, successor_id)])
         github.issue_created_at_by_number[28] = "2026-10-14T12:02:00Z"
         reselected = choose_gate_for_new_issue(
             github, REPO, 28, "2026-10-14T13:03:00Z", activation_issue_number=ISSUE,
@@ -1212,6 +1216,46 @@ class ConsumerActivationTests(unittest.TestCase):
         ), selected_before)
         with self.assertRaisesRegex(ConsumerActivationError, "canonical|history|schema"):
             read_consumer_activation_history(github, REPO, ISSUE)
+
+    def test_current_activation_setup_adc_mismatch_blocks_without_history_reads(self):
+        from types import SimpleNamespace
+
+        issue_number = 57
+        expected = {
+            "schema": "PASES_CONSUMER_ACTIVATION_SETUP_V1",
+            "activation_issue_number": issue_number,
+            "activation_profile_sha256": hashlib.sha256(
+                consumer_activation._canonical(activation_profile(issue_number))).hexdigest(),
+            "adc_comment_id": 100, "adc_sha256": "a" * 64, "adc_state": "approved",
+        }
+        main_sha = "9" * 40
+        pr = {
+            "number": PR, "id": PR + 1000, "state": "closed", "merged": True, "draft": False,
+            "body": "setup body", "base": {"ref": "main", "repo": {"full_name": REPO}},
+            "head": {"sha": HEAD_SHA, "repo": {"full_name": REPO}}, "merged_by": copy.deepcopy(USER),
+            "merge_commit_sha": MERGE_SHA, "merged_at": MERGED_AT,
+        }
+        class CurrentGitHub:
+            repo = REPO
+            def pull_request(self, number): return copy.deepcopy(pr)
+            def repository_metadata(self): return {"default_branch": "main", "id": 123}
+            def branch(self, ref): return {"commit": {"sha": main_sha}}
+            def compare_commits(self, base, head): return {"status": "identical"}
+            def pull_request_files(self, number): return [{"filename": ".agent/project.json"}]
+            def regular_content_at_ref(self, path, ref): return b"{}"
+            def issue(self, number):
+                return {"number": number, "pull_request": None, "body": ISSUE_MARKER,
+                        "repository_url": f"https://api.github.com/repos/{REPO}"}
+        current = SimpleNamespace(pointer=SimpleNamespace(
+            state="approved", comment_id=101, sha256="b" * 64, byte_length=1234,
+        ), contract=SimpleNamespace(content=b"current ADC"))
+        with patch.object(consumer_activation, "_decode", return_value=expected),                 patch.object(consumer_activation, "_repositories_match", return_value=True),                 patch.object(consumer_activation, "_validate_profile_bytes",
+                             return_value=(activation_profile(issue_number), ())),                 patch.object(consumer_activation, "_required_check_evidence", return_value=()),                 patch.object(consumer_activation, "verify_adc", return_value=current) as current_read,                 patch.object(consumer_activation, "verify_adc_generation",
+                             side_effect=AssertionError("current check traversed ADC history")):
+            with self.assertRaisesRegex(ConsumerActivationError, "stale or superseded"):
+                _validate_merged_setup(CurrentGitHub(), PR, expected,
+                                       require_current_adc=True, require_current_admin=False)
+        current_read.assert_called_once_with(unittest.mock.ANY, issue_number)
 
     def test_v2_activation_uses_record_comment_created_at_as_effective_time(self):
         v1 = ConsumerActivationRecord(

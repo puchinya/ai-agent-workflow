@@ -2,7 +2,8 @@
 <!-- agent-doc-schema: 2 -->
 # Portable Workflow Specification
 
-- Status: Issue #63 is OPEN at `phase:requirements`. Current approved ADC comment #6471580482 has SHA-256 `22ec1585a11d9a791eaf9b0e89baf604775e5168b3f5844a290485a7aab5d218`; its Phase V2 Intent/Applied pair is #6472026312/#6472411402. The V3 recovery generations remain #6469356263/#6469538910 and #6469619562/#6470070164. PR #64 HEAD immediately before this documentation update was `5d1267f1ba436d3681ea261372aca6ea084a757e`; it had no current-head Independent Review V2, Readiness PASS, or User Review record. These changes require fresh exact-HEAD evidence.
+- Historical progress snapshot (before the later #63 exception close): Issue #63 was OPEN at `phase:requirements`. Its then-current ADC comment #6471580482 had SHA-256 `22ec1585a11d9a791eaf9b0e89baf604775e5168b3f5844a290485a7aab5d218`; its Phase V2 Intent/Applied pair was #6472026312/#6472411402. The V3 recovery generations were #6469356263/#6469538910 and #6469619562/#6470070164. PR #64 HEAD immediately before that documentation update was `5d1267f1ba436d3681ea261372aca6ea084a757e`; it had no current-head Independent Review V2, Readiness PASS, or User Review record. This is a retained historical snapshot, not the current Issue state.
+- Current reconciliation (2026-11-21): PR #64 is MERGED and Issue #63 is CLOSED under the one-time development exception. This was not normal P-ASES Final Delivery success. Ruleset and Activation V2 work remains with Issue #71.
 - Owning Issue: [Issue #7](https://github.com/puchinya/ai-agent-workflow/issues/7)
 - Related design: [Workflow design](../design/workflow-design.md)
 - Runtime contract: [Runtime specification](runtime-spec.md)
@@ -129,14 +130,14 @@
   - [9.102 REQ-F01-150 Preserve exact append-only User Review decisions](#9102-req-f01-150-preserve-exact-append-only-user-review-decisions)
   - [9.103 REQ-F01-151 Start User Review and leave its decision pending](#9103-req-f01-151-start-user-review-and-leave-its-decision-pending)
   - [9.104 REQ-F01-152 Enforce the authorization exclusions](#9104-req-f01-152-enforce-the-authorization-exclusions)
-  - [9.105 REQ-F01-165 Verify historical ADC predecessor evidence generically](#9105-req-f01-165-verify-historical-adc-predecessor-evidence-generically)
+  - [9.105 REQ-F01-165 Verify the current ADC and direct predecessor declaration](#9105-req-f01-165-verify-the-current-adc-and-direct-predecessor-declaration)
   - [9.106 REQ-F01-166 Apply one strict history rule to every generation](#9106-req-f01-166-apply-one-strict-history-rule-to-every-generation)
   - [9.107 REQ-F01-167 Verify authorized historical commit segments generically](#9107-req-f01-167-verify-authorized-historical-commit-segments-generically)
   - [9.108 REQ-F01-170 Accept every valid post-rework phase label](#9108-req-f01-170-accept-every-valid-post-rework-phase-label)
-  - [9.109 REQ-F01-171 Batch approved ADC history snapshots without weakening validation](#9109-req-f01-171-batch-approved-adc-history-snapshots-without-weakening-validation)
+  - [9.109 REQ-F01-171 Batch current ADC pointer snapshots without weakening validation](#9109-req-f01-171-batch-current-adc-pointer-snapshots-without-weakening-validation)
   - [9.110 REQ-F01-172 Preserve V2 and apply one exact V3 phase-rework generation](#9110-req-f01-172-preserve-v2-and-apply-one-exact-v3-phase-rework-generation)
   - [9.111 REQ-F01-173 Apply one event/publication window to V2 and V3](#9111-req-f01-173-apply-one-eventpublication-window-to-v2-and-v3)
-  - [9.112 REQ-F01-174 Validate the immutable V3 origin through approved history](#9112-req-f01-174-validate-the-immutable-v3-origin-through-approved-history)
+  - [9.112 REQ-F01-174 Validate the immutable V3 origin and active pair](#9112-req-f01-174-validate-the-immutable-v3-origin-and-active-pair)
   - [9.113 REQ-F01-175 Bound the successor commit and Phase continuation](#9113-req-f01-175-bound-the-successor-commit-and-phase-continuation)
   - [9.114 REQ-F01-176 Reuse exact verified ADC ranges within one command](#9114-req-f01-176-reuse-exact-verified-adc-ranges-within-one-command)
   - [9.115 REQ-F01-177 Bound GitHub API child execution](#9115-req-f01-177-bound-github-api-child-execution)
@@ -260,14 +261,14 @@
 - [REQ-F01-150](#req-f01-150) — 9.102 REQ-F01-150 Preserve exact append-only User Review decisions
 - [REQ-F01-151](#req-f01-151) — 9.103 REQ-F01-151 Start User Review and leave its decision pending
 - [REQ-F01-152](#req-f01-152) — 9.104 REQ-F01-152 Enforce the authorization exclusions
-- [REQ-F01-165](#req-f01-165) — 9.105 REQ-F01-165 Verify historical ADC predecessor evidence generically
+- [REQ-F01-165](#req-f01-165) — 9.105 REQ-F01-165 Verify the current ADC and direct predecessor declaration
 - [REQ-F01-166](#req-f01-166) — 9.106 REQ-F01-166 Apply one strict history rule to every generation
 - [REQ-F01-167](#req-f01-167) — 9.107 REQ-F01-167 Verify authorized historical commit segments generically
 - [REQ-F01-170](#req-f01-170) — 9.108 REQ-F01-170 Accept every valid post-rework phase label
-- [REQ-F01-171](#req-f01-171) — 9.109 REQ-F01-171 Batch approved ADC history snapshots without weakening validation
+- [REQ-F01-171](#req-f01-171) — 9.109 REQ-F01-171 Batch current ADC pointer snapshots without weakening validation
 - [REQ-F01-172](#req-f01-172) — 9.110 REQ-F01-172 Preserve V2 and apply one exact V3 phase-rework generation
 - [REQ-F01-173](#req-f01-173) — 9.111 REQ-F01-173 Apply one event/publication window to V2 and V3
-- [REQ-F01-174](#req-f01-174) — 9.112 REQ-F01-174 Validate the immutable V3 origin through approved history
+- [REQ-F01-174](#req-f01-174) — 9.112 REQ-F01-174 Validate the immutable V3 origin and active pair
 - [REQ-F01-175](#req-f01-175) — 9.113 REQ-F01-175 Bound the successor commit and Phase continuation
 - [REQ-F01-176](#req-f01-176) — 9.114 REQ-F01-176 Reuse exact verified ADC ranges within one command
 - [REQ-F01-177](#req-f01-177) — 9.115 REQ-F01-177 Bound GitHub API child execution
@@ -314,6 +315,8 @@ Every new durable work item records explicit specification, design, testing, and
 <a id="req-wf-002"></a>
 <a id="req-wf-002-host-managed-implementation-workspaces"></a>
 ### 3.2 REQ-WF-002 Host-managed implementation workspaces
+
+**Historical Issue #63 exception:** the one-time `EXECUTION_ADOPTION_V1` and Issue #63 adopted-epoch refresh paragraphs below record a completed, sealed route. Issue #63 is closed under the development exception; do not replay those Issue-specific writers. Preserve their immutable history. Remaining Ruleset/Activation V2 work belongs to Issue #71.
 
 Publishing, reviewing, or approving an Implementation Contract does not allocate a workspace. Execution of the approved Contract is the trigger. The normal user request remains “Implement this Contract”; the Skill reads the Schema 2 `workspace.isolation` policy before edits and lets the active host establish or reuse isolation.
 
@@ -583,6 +586,8 @@ Validation of an existing Gate Selection MUST validate only the authenticated Ac
 <a id="req-f01-013"></a>
 ### 9.10 REQ-F01-013 Bootstrap and review gates
 
+**Status: HISTORICAL / SUPERSEDED for Issue #63.** PR #64 is merged and Issue #63 is closed under the one-time development exception, not normal P-ASES Final Delivery. The #63 merge and close sequence below is retained as audit history and must not be replayed. Unfinished Ruleset and Activation V2 work belongs to Issue #71.
+
 Issue #63 MUST complete implementation first, then separately formalize the exact successor ADC and its generation-scoped Phase evidence. Before PR #64 merges, its current-HEAD CI, independent review, User Review, Final Delivery, and separate exact-HEAD `PR_MERGE` decision MUST pass. Final Delivery MUST evaluate current P-ASES evidence (including exact HEAD, approved ADC/Binding/Phase, Verification, Acceptance, Self-Audit, fresh Independent Review, User Review, trusted Required Checks, PR identity, and mergeability) without reading or requiring a Ruleset or effective policy. For `solo_owner`, it emits `PASES_FINAL_DELIVERY_V3` with `review_mode=solo_owner`, null `branch_protection_sha256`, and only the P-ASES evidence it actually verified; existing V1/V2 payload and digest semantics remain unchanged. Final Delivery readiness is not merge authorization. GitHub applies its own branch and merge constraints at merge time; a rejection or ambiguous response blocks or enters read-only recovery, without bypass or a second merge request. Because Activation is post-merge work, only PR #64 uses one standalone `Refs #63` line, not a GitHub auto-closing association; ordinary PRs retain standalone `Closes #N` and GitHub's normal auto-close behavior. The shared closer detector MUST recognize GitHub's case-insensitive `close`/`closes`/`closed`, `fix`/`fixes`/`fixed`, and `resolve`/`resolves`/`resolved` keywords, with an optional colon and either `#N` or `OWNER/REPO#N`. Repository-qualified references are normalized case-insensitively before Issue identity is compared; a same-number reference to a different repository is not the same Issue. The #64 merge preflight MUST read the complete PR body, all commit messages, the planned merge message, GitHub `closingIssuesReferences`, and Issue cross-reference metadata; any auto-close relation, closer token, or incomplete read blocks the merge. Immediately after merge, Issue #63 MUST read back OPEN. The Setup PR for Consumer Activation V2 has its own exact-HEAD review and merge decision and is performed after PR #64. Only a fully verified V2 `ACTIVE` record and effective policy whose `created_at` is later than the PR #64 merge allow the finalizer to close #63 with one durable close intent and GitHub API write. If Activation or policy verification fails, #63 stays OPEN. All Ruleset discovery, plan/apply, ownership evidence, and effective-policy verification needed for Activation occur in the post-merge Consumer Activation flow; they are not pre-merge PR #64 gates.
 
 The typed Activation-owned current-base transition remains narrow for any supported workflow where Activation precedes a PR merge. It MUST preserve the original `ExecutionBinding`, V1 `PRBinding`, and frozen base bytes, and accepts only a create-only record proving frozen base A is an ancestor and the first parent of the exact Activation V2 setup merge B; the V2 record and setup PR identities agree; the setup PR and A..B change only `.agent/project.json`; current main and PR base equal B; the profile bytes at B and exact PR HEAD match the Activation profile digest; and the target code patch is unchanged across A→B. The latest PRBinding generation references this evidence. `pr ensure`, Readiness, and Final Delivery apply the same live verification. Ordinary or unknown main advancement, wrong setup PR/merge SHA, profile mismatch, missing evidence, or a different PR/repository/Issue blocks; generic base drift is never accepted. In the Issue #63 two-stage order, Activation occurs after PR #64 merges, so a later Activation base advance is not a prerequisite or substitute for #64's pre-merge base checks.
@@ -598,6 +603,8 @@ Before any Ruleset action, the selected Admin client MUST verify the authenticat
 
 <a id="req-f01-015"></a>
 ### 9.12 REQ-F01-015 Owner-authorized decisions and separated operations
+
+**Historical Issue #63 Phase journal:** the Issue #63-specific V1/V2/V3 rebaseline rules below describe immutable records and a retired writer. Issue #63 is closed. Do not append, reinterpret, or replay its specialized Phase journal; current Issue work follows the generic current-ADC routes.
 
 For self-authored `solo_owner` User Review, `evaluate_user_review` receives the validated session, full feedback snapshot, pinned `repository_owner_user_id`, fresh `pr_author_user_id`, independent `authenticated_verifier_user_id`, policy-derived `allowed_human_user_ids`, and typed V1, V2, or V3 User Review evidence. Repository ID `1401910271` and owner User ID `3744776` are pinned independently of the authenticated read-only verifier. Fresh repository metadata and PR author data must match those pins; comment actor ID must match the pinned owner. The read-only verifier is a transport identity and may differ from the owner; it is never approval evidence or the owner allowlist. A PR author's formal `APPROVED` review is never accepted in `solo_owner` mode.
 
@@ -621,7 +628,9 @@ No child result, failed or unknown spawn/join, same-context reviewer identity, s
 <a id="req-f01-018"></a>
 ### 9.14 REQ-F01-018 Exact Phase evidence recovery
 
-For Issue #63 only, the current approved ADC authorizes `PASES_PHASE_REBASE_INTENT_V3` / `PASES_PHASE_REBASE_APPLIED_V3` for exactly two incomplete historical ADC edges: #6271832228 (SHA-256 `221e62a86a5b682237948abec1ee287d24d3808a9ad4fa22960be2c869fdcd05`) → #6468215907 (SHA-256 `6b2ab1c83aead86efe602b700bdfd33807d1675a56089a6a3ffc29175e2b601a`), then #6468215907 → #6469056354 (SHA-256 `f03465611fda6df485b323beab212f132cb9df2145827d46d0f0525445584efe`). Preserve all V1 and V2 records and bytes. The first V3 edge records and, only if the complete current label state is exactly `phase:execution`, performs at most one label update to `phase:requirements`. The second edge adopts existing `phase:requirements`, records identical before/after labels, and performs zero label updates. Each V3 Intent and Applied record binds the exact ADC predecessor/successor IDs and SHA-256 values, immediately preceding Applied ID and payload digest, Issue body digest, full sorted label state, operation/phases, and authenticated executor. Every mutation is followed by exact readback. Exact retries are read-only; an interrupted write may append only its matching Applied record after proving whether the one permitted label update already took effect. Any other ADC edge, phase, label change, history gap, edited/deleted record, duplicate, actor mismatch, or uncertain API result blocks without a repeated label write. After both exact recovery generations, ordinary later ADC generations use V2.
+**Status: RETIRED; historical record only.** This section preserves the former Issue #63 ADC-edge recovery contract for audit. The `runtime/p_ases/phase_rebaseline.py` writer is retired and MUST NOT be restored or invoked. The published #63 journal and merged PR #64 remain unchanged; active lifecycle operations use generic/current-only readers, while sealed V1 adoption remains a separate compatibility path. Issue #63 was later closed under the one-time development exception, not through ordinary P-ASES Final Delivery; the unfinished Ruleset/Activation V2 work was handed to Issue #71. The exact details below describe what the historical ADC authorized and are not current authority.
+
+At the time, Issue #63's approved ADC authorized `PASES_PHASE_REBASE_INTENT_V3` / `PASES_PHASE_REBASE_APPLIED_V3` for exactly two incomplete historical ADC edges: #6271832228 (SHA-256 `221e62a86a5b682237948abec1ee287d24d3808a9ad4fa22960be2c869fdcd05`) → #6468215907 (SHA-256 `6b2ab1c83aead86efe602b700bdfd33807d1675a56089a6a3ffc29175e2b601a`), then #6468215907 → #6469056354 (SHA-256 `f03465611fda6df485b323beab212f132cb9df2145827d46d0f0525445584efe`). Preserve all V1 and V2 records and bytes. The historical first V3 edge recorded and, only when the complete label state was exactly `phase:execution`, performed at most one label update to `phase:requirements`. The historical second edge adopted existing `phase:requirements`, recorded identical before/after labels, and performed zero label updates. Each V3 Intent and Applied record binds the exact ADC predecessor/successor IDs and SHA-256 values, immediately preceding Applied ID and payload digest, Issue body digest, full sorted label state, operation/phases, and authenticated executor. Every mutation is followed by exact readback. Exact retries are read-only; an interrupted write may append only its matching Applied record after proving whether the one permitted label update already took effect. Any other ADC edge, phase, label change, history gap, edited/deleted record, duplicate, actor mismatch, or uncertain API result blocks without a repeated label write. After both exact recovery generations, ordinary later ADC generations use V2.
 
 <a id="req-f01-031"></a>
 ### 9.15 REQ-F01-031 Generic Phase restart authorization
@@ -631,7 +640,7 @@ The current approved ADC may contain one strict marker block `<!-- PASES_PHASE_R
 <a id="req-f01-032"></a>
 ### 9.16 REQ-F01-032 Eligible Issue and Binding
 
-The generic restart accepts only an open non-PR ordinary Issue with exactly one kind label in `{kind:single, kind:child}`, exactly one `phase:execution`, and a fully verified current ExecutionBinding. Repository/Issue IDs, current approved ADC pointer/SHA, frozen base, dedicated branch, worktree, initial HEAD, and Binding generation must all match. Read every label and full ADC/Binding/Phase history before a write. Missing, stale, edited, duplicate, mismatched, incomplete, 401/403/404, 429, or 5xx reads block with zero GitHub writes. Issue #63 remains on its existing specialized path.
+The generic restart accepts only an open non-PR ordinary Issue with exactly one kind label in `{kind:single, kind:child}`, exactly one `phase:execution`, and a fully verified current ExecutionBinding. Repository/Issue IDs, current approved ADC pointer/SHA, frozen base, dedicated branch, worktree, initial HEAD, and Binding generation must all match. Read every live label and directly referenced current operation record before a write; do not traverse historical ADC or full Binding/Phase generations as a fallback. Missing, stale, edited, duplicate, mismatched, incomplete, 401/403/404, 429, or 5xx reads block with zero GitHub writes. The former Issue #63-specific `phase_rebaseline.py` writer is retired; sealed V1 adoption compatibility and immutable #63 history are preserved.
 
 <a id="req-f01-033"></a>
 ### 9.17 REQ-F01-033 Append-only Phase restart records
@@ -651,7 +660,7 @@ The exact Applied record starts the new active Phase generation, bound to the cu
 <a id="req-f01-036"></a>
 ### 9.20 REQ-F01-036 Issue #63 compatibility
 
-Keep Issue #63's specialized phase-rebaseline implementation, ADC/Owner checks, V1/V2/V3 receipt readers, and recovery semantics unchanged. The generic command rejects Issue #63 and never routes it through the ordinary path. Do not change PR #64, Activation Issue #57 V1, or Issue #63 history.
+**Status: RETIRED; historical requirement text retained for lineage.** The former Issue #63-specific `phase_rebaseline.py` writer and specialized active route are retired. Preserve sealed V1 adoption compatibility and all published #63/#64 records as immutable history. Current active Phase operations use generic/current-only readers; the generic phase-restart compatibility alias has no Issue-number-specific routing, and closed #63 fails the ordinary live-state preflight.
 
 <a id="req-f01-037"></a>
 ### 9.21 REQ-F01-037 ADC is the sole Phase restart approval
@@ -698,10 +707,14 @@ Live Admin access uses only isolated-gh-device and gh api with a fresh private m
 <a id="req-f01-045"></a>
 ### 9.29 REQ-F01-045 Separated Ruleset and merge authority
 
+**Historical Issue #63 outcome:** Issue #63 was closed under the one-time development exception before V2 Activation. Its unfinished Ruleset/Activation V2 work was handed to Issue #71. Do not treat #63 as open or invoke its former finalizer.
+
 ruleset_management.py::apply_ruleset_plan remains the sole Ruleset writer. Applying a Ruleset requires separate exact-plan RULESET_PLAN_APPLY authority for the recomputed current plan and complete before/after readback. Setup PR merge requires separate exact-HEAD PR_MERGE authority. ADC approval, authentication, Issue edits, epoch creation, CI, and code review authorize neither operation. Missing chat user-role provenance yields CHAT_PROVENANCE_UNAVAILABLE and zero approval-dependent writes. Keep Issue #63 open until V2 ACTIVE and all post-activation and time-order checks pass.
 
 <a id="req-f01-046"></a>
 ### 9.30 REQ-F01-046 Compatibility and epoch test coverage
+
+Issue #63 and PR #64 are preserved as immutable compatibility history. Regression coverage may read and validate their records, but must not replay the retired Issue #63 writers or perform new Issue #63 operations.
 
 Preserve Issue #57 V1, Issue #63 and PR #64 history, predecessor ADC/Binding/Phase comments, and Issue #72/PR #73 byte-for-byte and behavior-for-behavior. Cover epoch authorization, journaling and recovery; active-reader isolation; local Codex/Claude parity and local VM acceptance; hosted, CI, remote, and unknown-context refusal; direct-runtime enforcement; device-auth separation; Admin 401/403/404/429/5xx and partial reads; stale plans; separate approvals; and zero writes on every blocked path.
 
@@ -1076,9 +1089,9 @@ After exact current-head Verification, Acceptance, audits, PRBinding, and READY 
 This continuation authorizes no Issue #63 operation, Admin or Ruleset operation, Setup PR, Activation, PR merge, release, tag push, or Issue close. A 403 or empty Rulesets result is not proof of absent protection. Keep the Admin policy readback BLOCKED until a complete verified read succeeds.
 
 <a id="req-f01-165"></a>
-### 9.105 REQ-F01-165 Verify historical ADC predecessor evidence generically
+### 9.105 REQ-F01-165 Verify the current ADC and direct predecessor declaration
 
-**Current-only normative precedence:** Live commands MUST validate the newest approved ADC pointer and its directly named current ADC comment (Issue identity, body, SHA-256, byte length and approval state). They MUST NOT traverse or revalidate superseded ADC pointers, bodies or predecessor declarations, including during Phase evidence. Earlier historical-validation requirements describe retained archival records, not runtime authorization checks. Historical records remain unmodified. At publication, an explicit predecessor declaration is checked against the observed live current pointer without opening its body.
+**Current-only normative precedence:** Live commands MUST validate the newest approved ADC pointer and its directly named current ADC comment (Issue identity, body, SHA-256, byte length and approval state). They MUST NOT traverse or revalidate superseded ADC pointers, bodies or predecessor declarations, including during Phase evidence. Earlier historical-validation requirements describe retained archival records, not runtime authorization checks. Historical records remain unmodified. At new publication, an explicit predecessor declaration is checked against the observed direct current pointer without opening its body. Its optional suffix is accepted only in the canonical form `(N bytes)` and only when `N` equals that pointer's `byte_length`; arbitrary suffixes are malformed. A suffix without the direct current pointer blocks. No historical ADC body is fetched and no predecessor chain is traversed.
 
 <a id="req-f01-166"></a>
 ### 9.106 REQ-F01-166 Apply one strict history rule to every generation
@@ -1096,7 +1109,7 @@ Only the current operation's authorized base, branch, exact start/HEAD, sole-par
 A completed active phase-rework generation is read-only valid across ordinary recognized lifecycle phase labels, including verification. Require exactly one `kind:*` and one `phase:*` label; duplicate, unknown and conflicting labels fail closed. An `attention:*` label blocks new phase mutation. A successful read does not itself authorize changing labels.
 
 <a id="req-f01-171"></a>
-### 9.109 REQ-F01-171 Batch approved ADC history snapshots without weakening validation
+### 9.109 REQ-F01-171 Batch current ADC pointer snapshots without weakening validation
 
 The current ADC verifier MUST select the newest pointer through bounded newest-first comment-page discovery and verify only its directly named current comment. It MUST NOT perform complete before/after Issue-comment history sweeps or double-read every historical ADC. Competing current pointer publication, wrong SHA/length or mutable current-identity drift blocks. Operation-specific append-only Intent/Applied duplicate checks remain separate; they are not permission to revalidate ADC history.
 
@@ -1111,9 +1124,9 @@ Every Issue with a current approved `PASES_PHASE_REWORK_AUTH_V1` may append one 
 When the current approved Issue #71 ADC authorizes `PASES_ISSUE_PHASE_EVENT_PUBLICATION_WINDOW_V1`, validate all V2 and V3 phase-rework Intent and Applied records using their schema-specific event fields and the GitHub comment's server `created_at`. Both values MUST be canonical UTC timestamps ending in `Z`; comment publication time minus the embedded event time MUST be within the inclusive range 0..300 seconds. Preserve all existing record bytes and treat a complete pair as read-only reconciliation; do not rewrite records or issue another Intent, Applied, or label update.
 
 <a id="req-f01-174"></a>
-### 9.112 REQ-F01-174 Validate the immutable V3 origin through approved history
+### 9.112 REQ-F01-174 Validate the immutable V3 origin and active pair
 
-The immutable V3 origin is verified from canonical local epoch/attachment state and its directly addressed origin Applied carrier; the active Phase Applied must point to its exact Intent. Bind repository, Issue, owner, frozen base, branch and epoch hashes to the current subject. Do not search approved predecessor ADC history for the origin. A complete matching active generation is a zero-write NOOP; missing, edited, duplicated or conflicting directly referenced evidence blocks.
+The immutable V3 origin is verified from canonical local epoch/attachment state and its directly addressed origin Applied carrier. Newest-first post-origin comment reads collect both V3 Intent and Applied records through that immutable origin. The reader returns a Phase generation only when there are no rework records or exactly one ordered, complete, matching Intent/Applied pair. An unmatched Intent (including one newer than a prior Applied), duplicate, wrong epoch/owner/branch, body-digest mismatch, order anomaly, missing origin, malformed page or comment-count drift blocks before Phase evidence, readiness, or ordinary Phase advance can write. Bind repository, Issue, owner, frozen base, branch and epoch hashes to the current subject. Do not search approved predecessor ADC history for the origin. A complete matching active generation is read-only; no blocked state may trigger a repeated POST or label update.
 
 <a id="req-f01-175"></a>
 ### 9.113 REQ-F01-175 Bound the successor commit and Phase continuation
@@ -1133,7 +1146,7 @@ Every `gh api` child started by `runtime/p_ases/github.py` MUST have a finite 30
 <a id="req-f01-178"></a>
 ### 9.116 REQ-F01-178 Parse the current continuation marker by schema
 
-The current approved ADC's marker is parsed by its declared schema, not by a hard-coded Issue number, comment ID, digest, historical predecessor or commit list. Its exact current subject, changed-path allowlist and checklist obligations must be internally consistent. Historic marker versions remain immutable bytes and are never reopened or interpreted as current authority. Malformed, unknown or ambiguous current markers block before writes.
+The current approved ADC's marker is parsed by its declared schema, not by a hard-coded Issue number, comment ID, digest, historical predecessor or commit list. Its exact current subject, changed-path allowlist and checklist obligations must be internally consistent. Historic marker versions remain immutable bytes and are never reopened or interpreted as current authority. Malformed, unknown or ambiguous current markers block before writes. This marker-schema rule is consistent with REQ-F01-165 current-only validation. The earlier historical `(N bytes)` chain wording in ADC #6979392757 is superseded for this Issue/PR by the owner correction recorded in [Issue comment #7056348899](https://github.com/puchinya/ai-agent-workflow/issues/71#issuecomment-7056348899): an optional suffix on a newly published ADC is checked only against the directly observed current predecessor pointer byte length; no historical ADC body or chain is read.
 
 <a id="req-f01-179"></a>
 ### 9.117 REQ-F01-179 Share history validation across nested lifecycle readers

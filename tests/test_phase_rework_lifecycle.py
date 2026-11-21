@@ -70,11 +70,14 @@ class FakeGitHub:
         assert number == 128
         self.post_count += 1
         ident = 3000 + self.post_count
+        schema, raw = body.split("\n", 1)
+        payload = json.loads(raw.removesuffix("\n-->"))
+        published_at = payload.get("created_at", payload.get("applied_at"))
         row = {
             "id": ident, "body": body,
             "issue_url": f"https://api.github.com/repos/{self.repo}/issues/128",
-            "created_at": "2026-11-18T00:00:00Z",
-            "updated_at": "2026-11-18T00:00:00Z",
+            "created_at": published_at,
+            "updated_at": published_at,
             "user": {"id": self.owner_id, "type": "User"},
         }
         self.records[ident] = row
@@ -196,6 +199,20 @@ class GenericPhaseReworkTests(unittest.TestCase):
             }
             with self.assertRaisesRegex(phase.PhaseReworkLifecycleError,
                                         "remote Phase rework journal already exists"):
+                self._run(root, github, verified(auth()))
+            self.assertEqual((github.post_count, github.label_writes), (0, 0))
+            self.assertEqual(github.pages_read, 1)
+
+    def test_malformed_post_origin_reserved_header_blocks_without_writes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, github = Path(temporary), FakeGitHub()
+            github.records[650] = {
+                "id": 650,
+                "body": "<!-- PASES-ISSUE-VERIFICATION-REWORK-INTENT-V3\npending",
+            }
+            with self.assertRaisesRegex(
+                    phase.PhaseReworkLifecycleError,
+                    "remote Phase rework journal already exists"):
                 self._run(root, github, verified(auth()))
             self.assertEqual((github.post_count, github.label_writes), (0, 0))
             self.assertEqual(github.pages_read, 1)

@@ -292,6 +292,40 @@ class ADCValidationTests(unittest.TestCase):
             current_pointer=current, check_current_pointer=True,
         ).content, candidate)
 
+    def test_predecessor_byte_suffix_is_canonical_and_matches_only_current_pointer(self):
+        current = ADCPointer(41, "a" * 64, 2048, "approved")
+        prefix = b"Repository: puchinya/ai-agent-workflow\n"
+        header = (b"Predecessor ADC: Issue #63 comment #41, SHA-256 `" + b"a" * 64
+                  + b"` (2048 bytes)\n")
+        candidate = adc_bytes("puchinya/ai-agent-workflow", issue=63).replace(
+            prefix, prefix + header, 1,
+        )
+        self.assertEqual(validate_approval_ready_adc(
+            candidate, "puchinya/ai-agent-workflow", 63,
+            current_pointer=current, check_current_pointer=True,
+        ).content, candidate)
+        wrong_length = candidate.replace(b"(2048 bytes)", b"(2049 bytes)", 1)
+        with self.assertRaisesRegex(ADCError, "does not match the current approved pointer"):
+            validate_approval_ready_adc(
+                wrong_length, "puchinya/ai-agent-workflow", 63,
+                current_pointer=current, check_current_pointer=True,
+            )
+        for suffix in (b"(historical note)", b"(02048 bytes)", b"(0 bytes)"):
+            with self.subTest(suffix=suffix), self.assertRaisesRegex(ADCError, "malformed"):
+                validate_approval_ready_adc(
+                    candidate.replace(b"(2048 bytes)", suffix, 1),
+                    "puchinya/ai-agent-workflow", 63,
+                    current_pointer=current, check_current_pointer=True,
+                )
+        with self.assertRaisesRegex(ADCError, "direct current pointer"):
+            validate_approval_ready_adc(candidate, "puchinya/ai-agent-workflow", 63)
+        invalid_pointer = ADCPointer(41, "a" * 64, True, "approved")
+        with self.assertRaisesRegex(ADCError, "byte length is invalid"):
+            validate_approval_ready_adc(
+                candidate, "puchinya/ai-agent-workflow", 63,
+                current_pointer=invalid_pointer, check_current_pointer=True,
+            )
+
     def test_final_issue63_candidate_is_approval_ready_for_exact_journal_predecessor(self):
         candidate = (ROOT / "docs/contracts/issue-63-successor-adc-final.md").read_bytes()
         current = ADCPointer(
@@ -615,6 +649,31 @@ class ADCPublicationTests(unittest.TestCase):
             publish_adc(self.github, 63, successor, state="approved", explicitly_approved=True,
                         supersede=True, expected_current=predecessor)
         self.assertEqual(set(self.github.comments), before)
+
+    def test_publish_checks_optional_predecessor_bytes_against_current_pointer(self):
+        self.github = FakeGitHub("puchinya/ai-agent-workflow", 63)
+        first = adc_bytes("puchinya/ai-agent-workflow", issue=63)
+        predecessor = publish_adc(
+            self.github, 63, first, state="approved", explicitly_approved=True,
+        )
+        successor = adc_bytes("puchinya/ai-agent-workflow", issue=63).replace(
+            b"REQ-01", b"REQ-02",
+        )
+        declaration = (
+            f"Predecessor ADC: Issue #63 comment #{predecessor.comment_id}, "
+            f"SHA-256 `{predecessor.sha256}` ({predecessor.byte_length} bytes)\n"
+        ).encode()
+        successor = successor.replace(
+            b"Repository: puchinya/ai-agent-workflow\n",
+            b"Repository: puchinya/ai-agent-workflow\n" + declaration,
+            1,
+        )
+        published = publish_adc(
+            self.github, 63, successor, state="approved", explicitly_approved=True,
+            supersede=True, expected_current=predecessor,
+        )
+        self.assertEqual(published.byte_length, len(successor))
+        self.assertEqual(verify_adc(self.github, 63).contract.content, successor)
 
     def test_historical_approved_draft_generation_remains_readable(self):
         historical = self.payload.replace(

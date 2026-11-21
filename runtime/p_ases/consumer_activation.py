@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .adc import ADCError, VerifiedADC, publish_adc, verify_adc, verify_adc_generation
+from .adc import ADCError, ADCPointer, VerifiedADC, publish_adc, verify_adc, verify_adc_generation
 from .github import GitHub, GitHubError
 from .local_execution import (
     LocalExecutionError, require_isolated_device_admin_client, require_local_activation_execution,
@@ -870,7 +870,7 @@ def _validate_merged_setup(github: GitHub, pr_number: int, expected: dict[str, A
                            require_current_policy: bool = True,
                            expected_check_runs: tuple[RequiredCheckEvidence, ...] | None = None,
                            policy_github: GitHub | None = None,
-                           ) -> tuple[dict[str, Any], dict[str, Any], VerifiedADC,
+                           ) -> tuple[dict[str, Any], dict[str, Any], VerifiedADC | None,
                                       tuple[RequiredCheckEvidence, ...]]:
     try:
         pr = github.pull_request(pr_number)
@@ -957,22 +957,34 @@ def _validate_merged_setup(github: GitHub, pr_number: int, expected: dict[str, A
             raise ConsumerActivationError("Activation Issue marker or repository identity is invalid")
     except GitHubError as exc:
         raise ConsumerActivationError(f"merged setup PR evidence readback failed: {exc}") from exc
-    try:
-        proposed = verify_adc_generation(
-            github, expected["activation_issue_number"], expected["adc_comment_id"],
-            expected["adc_sha256"], state=expected["adc_state"],
-        )
-        if require_current_adc:
-            latest = verify_adc(github, expected["activation_issue_number"])
-            same_content = (latest.pointer.sha256 == proposed.pointer.sha256
-                           and latest.contract.content == proposed.contract.content)
-            exact_proposal = latest.pointer == proposed.pointer
-            promoted = (expected["adc_state"] == "draft" and latest.pointer.state == "approved"
-                        and same_content)
+    proposed: VerifiedADC | None = None
+    if require_current_adc:
+        try:
+            current_adc = verify_adc(github, expected["activation_issue_number"])
+            exact_proposal = (
+                current_adc.pointer.comment_id == expected["adc_comment_id"]
+                and current_adc.pointer.sha256 == expected["adc_sha256"]
+                and current_adc.pointer.state == expected["adc_state"]
+            )
+            promoted = (
+                expected["adc_state"] == "draft"
+                and current_adc.pointer.state == "approved"
+                and current_adc.pointer.sha256 == expected["adc_sha256"]
+            )
             if not exact_proposal and not promoted:
                 raise ConsumerActivationError("setup PR refers to a stale or superseded Activation ADC")
-    except ADCError as exc:
-        raise ConsumerActivationError(f"Activation ADC is missing, changed, or not journaled: {exc}") from exc
+            if exact_proposal:
+                proposed = current_adc
+            else:
+                # The current approved bytes have the exact SHA pinned by the
+                # merged setup PR; retain its original draft pointer as a ref.
+                proposed = VerifiedADC(
+                    current_adc.contract,
+                    ADCPointer(expected["adc_comment_id"], expected["adc_sha256"],
+                               current_adc.pointer.byte_length, "draft"),
+                )
+        except ADCError as exc:
+            raise ConsumerActivationError(f"current Activation ADC is missing or invalid: {exc}") from exc
     return pr, issue, proposed, check_evidence
 
 
@@ -2372,10 +2384,7 @@ def read_consumer_activation_history(
                     )
                 except RulesetManagementError as exc:
                     raise ConsumerActivationError(f"historical V2 policy evidence is invalid: {exc}") from exc
-            approved = verify_adc_generation(github, issue_number, record.adc_comment_id,
-                                             record.adc_sha256, state="approved")
-            if (proposed.contract.content != approved.contract.content
-                    or pr.get("id") != record.setup_pr_id
+            if (pr.get("id") != record.setup_pr_id
                     or pr.get("merge_commit_sha") != record.merge_commit_sha40
                     or pr.get("merged_at") != record.merged_at
                     or _identity(pr.get("merged_by"), "setup PR merger")
