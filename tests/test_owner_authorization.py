@@ -773,15 +773,17 @@ class OwnerAuthorizationTests(unittest.TestCase):
 
         github = SetupGitHub()
         admin = SimpleNamespace(repo=REPOSITORY)
-        verified_adc = SimpleNamespace(pointer=SimpleNamespace(sha256="a" * 64),
-                                       contract=SimpleNamespace(content=b"adc"))
+        verified_adc = SimpleNamespace(pointer=SimpleNamespace(
+            comment_id=17, sha256="a" * 64, state="approved",
+        ), contract=SimpleNamespace(content=b"adc"))
         policy_read = Mock(return_value={
             "ruleset_id": 4, "applied_record_id": 18, "effective_policy_sha256": "c" * 64,
         })
         with patch("p_ases.consumer_activation._decode", side_effect=lambda *_a, **_k: github.payload), \
                 patch("p_ases.consumer_activation._check_setup_pr", return_value=github.pr), \
                 patch("p_ases.consumer_activation.read_consumer_activation_history", return_value=[]), \
-                patch("p_ases.consumer_activation.verify_adc_generation", return_value=verified_adc), \
+                patch("p_ases.consumer_activation.verify_adc_generation",
+                      side_effect=AssertionError("current setup preflight traversed ADC history")), \
                 patch("p_ases.consumer_activation.verify_adc", return_value=verified_adc), \
                 patch("p_ases.consumer_activation._validate_profile_bytes",
                       return_value=({"final_delivery": {"review_mode": "solo_owner"}}, (("ci", 15368),))), \
@@ -807,7 +809,8 @@ class OwnerAuthorizationTests(unittest.TestCase):
                     patch("p_ases.consumer_activation._decode", side_effect=lambda *_a, **_k: github.payload), \
                     patch("p_ases.consumer_activation._check_setup_pr", return_value=github.pr), \
                     patch("p_ases.consumer_activation.read_consumer_activation_history", return_value=[]), \
-                    patch("p_ases.consumer_activation.verify_adc_generation", return_value=verified_adc), \
+                    patch("p_ases.consumer_activation.verify_adc_generation",
+                      side_effect=AssertionError("current setup preflight traversed ADC history")), \
                     patch("p_ases.consumer_activation.verify_adc", return_value=verified_adc), \
                     patch("p_ases.consumer_activation._validate_profile_bytes",
                           return_value=({"final_delivery": {"review_mode": "solo_owner"}}, (("ci", 15368),))), \
@@ -823,7 +826,8 @@ class OwnerAuthorizationTests(unittest.TestCase):
         with patch("p_ases.consumer_activation._decode", side_effect=lambda *_a, **_k: github.payload), \
                 patch("p_ases.consumer_activation._check_setup_pr", return_value=github.pr), \
                 patch("p_ases.consumer_activation.read_consumer_activation_history", return_value=[]), \
-                patch("p_ases.consumer_activation.verify_adc_generation", return_value=verified_adc), \
+                patch("p_ases.consumer_activation.verify_adc_generation",
+                      side_effect=AssertionError("current setup preflight traversed ADC history")), \
                 patch("p_ases.consumer_activation.verify_adc", return_value=verified_adc), \
                 patch("p_ases.consumer_activation._validate_profile_bytes",
                       return_value=({"final_delivery": {"review_mode": "solo_owner"}}, (("ci", 15368),))), \

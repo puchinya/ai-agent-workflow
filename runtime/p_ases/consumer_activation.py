@@ -693,13 +693,10 @@ def verify_setup_pr_ready_to_merge(github: GitHub, pr_number: int, *,
         predecessor = history[-1][1] if history else None
         if expected.get("predecessor_record_id") != predecessor:
             raise ConsumerActivationError("Activation Setup PR predecessor is stale")
-        proposed = verify_adc_generation(
-            github, 57, expected.get("adc_comment_id"), expected.get("adc_sha256"),
-            state=expected.get("adc_state"),
-        )
         current_adc = verify_adc(github, 57)
-        if (current_adc.pointer.sha256 != proposed.pointer.sha256
-                or current_adc.contract.content != proposed.contract.content):
+        if (expected.get("adc_comment_id") != current_adc.pointer.comment_id
+                or expected.get("adc_sha256") != current_adc.pointer.sha256
+                or expected.get("adc_state") != current_adc.pointer.state):
             raise ConsumerActivationError("Activation ADC changed after this Setup PR was created")
 
         profile_bytes = github.regular_content_at_ref(".agent/project.json", head_sha)
@@ -762,7 +759,7 @@ def verify_setup_pr_ready_to_merge(github: GitHub, pr_number: int, *,
         return {
             "pr_number": pr_number, "head_sha40": head_sha, "base_sha40": base_sha,
             "setup_payload_sha256": hashlib.sha256(_canonical(expected)).hexdigest(),
-            "activation_adc_sha256": proposed.pointer.sha256,
+            "activation_adc_sha256": current_adc.pointer.sha256,
             "activation_predecessor_record_id": predecessor,
             "policy_sha256": policy["effective_policy_sha256"], "ruleset_id": policy["ruleset_id"],
             "applied_record_id": policy["applied_record_id"],

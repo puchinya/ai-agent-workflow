@@ -1257,6 +1257,60 @@ class ConsumerActivationTests(unittest.TestCase):
                                        require_current_adc=True, require_current_admin=False)
         current_read.assert_called_once_with(unittest.mock.ANY, issue_number)
 
+    def test_setup_pr_preflight_checks_current_adc_without_history_traversal(self):
+        from types import SimpleNamespace
+
+        base_sha = "a" * 40
+        head_sha = "b" * 40
+        expected = {
+            "activation_issue_number": 57,
+            "schema": "PASES_CONSUMER_ACTIVATION_SETUP_V2",
+            "predecessor_record_id": None,
+            "setup_branch": "pases/consumer-activation-57-current",
+            "adc_comment_id": 100,
+            "adc_sha256": "a" * 64,
+            "adc_state": "approved",
+        }
+        pr = {
+            "number": PR, "state": "open", "merged": False, "draft": False, "mergeable": True,
+            "body": "setup", "base": {"ref": "main", "sha": base_sha},
+            "head": {"ref": expected["setup_branch"], "sha": head_sha},
+            "user": {"id": USER["id"]},
+        }
+        activation_repo = "puchinya/ai-agent-workflow"
+        class CurrentGitHub:
+            repo = activation_repo
+            def repository_metadata(self):
+                return {"id": 1401910271, "full_name": activation_repo,
+                        "owner": {"id": 3744776, "type": "User"}, "default_branch": "main"}
+            def pull_request(self, number):
+                return copy.deepcopy(pr)
+            def branch(self, ref):
+                return {"commit": {"sha": base_sha}}
+            def issue(self, number):
+                return {"number": number, "state": "open", "pull_request": None,
+                        "body": ISSUE_MARKER,
+                        "repository_url": f"https://api.github.com/repos/{activation_repo}"}
+
+        current = SimpleNamespace(pointer=SimpleNamespace(
+            state="approved", comment_id=101, sha256="b" * 64,
+        ))
+        policy_reader = SimpleNamespace(repo=activation_repo)
+        with patch("p_ases.consumer_activation.require_local_activation_execution"), \
+                patch("p_ases.consumer_activation.require_isolated_device_admin_client"), \
+                patch("p_ases.consumer_activation._decode", return_value=expected), \
+                patch("p_ases.consumer_activation._check_setup_pr", return_value=pr), \
+                patch("p_ases.consumer_activation.read_consumer_activation_history", return_value=[]), \
+                patch("p_ases.consumer_activation.verify_adc", return_value=current) as current_read, \
+                patch("p_ases.consumer_activation.verify_adc_generation", create=True,
+                      side_effect=AssertionError("current setup preflight traversed ADC history")):
+            with self.assertRaisesRegex(
+                    ConsumerActivationError, "Activation ADC changed after this Setup PR was created"):
+                consumer_activation.verify_setup_pr_ready_to_merge(
+                    CurrentGitHub(), PR, policy_github=policy_reader,
+                )
+        current_read.assert_called_once_with(unittest.mock.ANY, 57)
+
     def test_v2_activation_uses_record_comment_created_at_as_effective_time(self):
         v1 = ConsumerActivationRecord(
             repository=REPO, activation_issue_number=ISSUE, proposed_adc_comment_id=100,
