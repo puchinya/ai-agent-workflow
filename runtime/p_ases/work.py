@@ -296,8 +296,7 @@ def ensure_epoch_pull_request(repository_root: Path, github: GitHub, *, reposito
     if (branch_ref != execution_epoch.branch_ref or base_ref != execution_epoch.base_ref
             or not worktree_clean(root) or current_branch(root) != branch_ref):
         raise WorkError("epoch PR ensure requires a clean worktree on the exact authorized branch and base")
-    if _validate_pr_body(body, issue_number) != "auto_close":
-        raise WorkError("execution epoch implementation PR must contain the exact auto-close association")
+    association_mode = _validate_pr_body(body, issue_number)
     local_head = head_sha40(root)
     if not is_ancestor(root, execution_epoch.base_sha40, local_head):
         raise WorkError("execution epoch PR HEAD does not descend from the epoch base")
@@ -316,7 +315,7 @@ def ensure_epoch_pull_request(repository_root: Path, github: GitHub, *, reposito
     if candidates:
         pull = _readback_pull(github, candidates[0], repository=repository, issue_number=issue_number,
                               base_ref=base_ref, base_sha40=remote_base, head_ref=branch_ref,
-                              head_sha40=local_head, expected_association_mode="auto_close")
+                              head_sha40=local_head, expected_association_mode=association_mode)
         if pull.get("title") != title or pull.get("body") != body:
             raise WorkError("existing execution epoch PR title/body differs from the authorized handoff")
     else:
@@ -337,7 +336,7 @@ def ensure_epoch_pull_request(repository_root: Path, github: GitHub, *, reposito
             pull = recovered[0]
         pull = _readback_pull(github, pull, repository=repository, issue_number=issue_number,
                               base_ref=base_ref, base_sha40=remote_base, head_ref=branch_ref,
-                              head_sha40=local_head, expected_association_mode="auto_close")
+                              head_sha40=local_head, expected_association_mode=association_mode)
         if pull.get("title") != title or pull.get("body") != body:
             raise WorkError("created execution epoch PR title/body differs from the authorized handoff")
 

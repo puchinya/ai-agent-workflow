@@ -114,7 +114,8 @@ class WorkExecutionTests(unittest.TestCase):
                                   unbound_checkpoint_digest: bool = False,
                                   checkpoint_stage: str = "pr", initial_no_history: bool = False,
                                   checkpoint_clean: bool = True, checkpoint_epoch_mismatch: bool = False,
-                                  missing_checkpoint_artifact: bool = False):
+                                  missing_checkpoint_artifact: bool = False,
+                                  pr_body: str = "Closes #71"):
         directory = root / ".p_ases" / "state" / "71"
         directory.mkdir(parents=True)
         branch = "pases/issue-71-local-activation-v2-phase-rebaseline-epoch-3"
@@ -178,7 +179,12 @@ class WorkExecutionTests(unittest.TestCase):
                 return [{"number": 75}]
 
         github = FakeGitHub()
-        pull = {"number": 75, "title": "Issue #71", "body": "Closes #71"}
+        pull = {"number": 75, "title": "Issue #71", "body": pr_body}
+        expected_mode = "deferred_close" if "Refs #71" in pr_body else "auto_close"
+
+        def readback(*_args, **kwargs):
+            self.assertEqual(kwargs.get("expected_association_mode"), expected_mode)
+            return pull
         patches = (
             patch("p_ases.current_epoch.read_current_epoch", return_value=epoch),
             patch.object(work_module, "is_execution_epoch", return_value=True),
@@ -189,7 +195,7 @@ class WorkExecutionTests(unittest.TestCase):
             patch.object(work_module, "remote_branch_sha", side_effect=lambda _root, ref:
                          head if ref == branch else base),
             patch.object(work_module, "read_pr_binding_history", side_effect=history),
-            patch.object(work_module, "_readback_pull", return_value=pull),
+            patch.object(work_module, "_readback_pull", side_effect=readback),
         )
         return github, epoch, old_binding, prior_checkpoint_path, prior_checkpoint, patches
 
@@ -226,6 +232,25 @@ class WorkExecutionTests(unittest.TestCase):
                 self.assertEqual(prior_path.read_bytes(), old_bytes)
                 self.assertEqual(len(list((root / ".p_ases/state/71").glob("pr-binding-*.json"))), 2)
                 self.assertEqual(len(list((root / ".p_ases/state/71").glob("checkpoint-*.json"))), 2)
+
+    def test_issue71_same_head_adc_pr_binding_preserves_deferred_close_association(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pr_body = "Implementation delivered.\n\nRefs #71"
+            github, epoch, _old_binding, _prior_path, _prior_checkpoint, patches = \
+                self._issue71_epoch_pr_fixture(root, pr_body=pr_body)
+            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], \
+                    patches[6], patches[7], patches[8]:
+                result = ensure_epoch_pull_request(
+                    root, github, repository="puchinya/ai-agent-workflow", issue_number=71,
+                    execution_epoch=epoch, branch_ref=epoch.branch_ref, base_ref=epoch.base_ref,
+                    title="Issue #71", body=pr_body,
+                )
+            self.assertEqual(result.binding.pr_number, 75)
+            self.assertEqual(result.binding.execution_epoch_sha256, epoch.sha256)
+            self.assertEqual(result.pull_request["body"], pr_body)
+            self.assertEqual(len(list((root / ".p_ases/state/71").glob("pr-binding-*.json"))), 2)
+            self.assertEqual(len(list((root / ".p_ases/state/71").glob("checkpoint-*.json"))), 2)
 
     def test_issue71_same_head_checkpoint_conflict_blocks_before_binding_append(self):
         with tempfile.TemporaryDirectory() as temporary:
