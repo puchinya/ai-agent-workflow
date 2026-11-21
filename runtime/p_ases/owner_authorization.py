@@ -17,13 +17,14 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .git import GitError, head_sha40, worktree_clean
-from .github import GitHubError
+from .github import GitHubError, ReadOnlyGitHub
 from .owner_consent import (
     END, FIELDS_V2, FIELDS_V3, OPERATIONS, OWNER_ID, REPOSITORY_ID,
     SCHEMA_V2, SCHEMA_V3, START_V2, START_V3,
     OwnerDecisionError, read_verified_owner_decision,
     verify_owner_decision_history_tail, _comment_fingerprint, _has_owner_decision_marker,
 )
+from .profile import ProfileError, canonical_project_profile_sha256, load_profile
 from .work import WorkError, closing_issue_references, parse_issue_association
 
 REPOSITORY = "puchinya/ai-agent-workflow"
@@ -170,14 +171,14 @@ def _check_identity(github: Any, issue_number: int, target_issue_number: int | N
             raise OwnerAuthorizationError("live PR identity, state, repository, or HEAD differs from the plan")
         if target_issue_number is not None:
             body = pr.get("body")
-            if target_issue_number == 63:
+            if target_issue_number != 57:
                 try:
-                    association = parse_issue_association(body, 63)
+                    association = parse_issue_association(body, target_issue_number)
                 except WorkError as exc:
                     raise OwnerAuthorizationError(f"implementation PR Issue association is invalid: {exc}") from exc
                 if association != "deferred_close":
-                    raise OwnerAuthorizationError("implementation PR must use deferred-close Refs #63")
-            elif target_issue_number == 57:
+                    raise OwnerAuthorizationError("deferred-close implementation PR must use one standalone Refs #N")
+            else:
                 # The Activation Setup PR is about Issue #57 but must leave that
                 # long-lived control Issue open. Its canonical V2 carrier binds
                 # the target Issue without using a Closes keyword.
@@ -190,13 +191,98 @@ def _check_identity(github: Any, issue_number: int, target_issue_number: int | N
                     raise OwnerAuthorizationError("Activation Setup PR does not bind Issue #57")
 
 
-def issue63_deferred_merge_details(github: Any, *, pr_number: int,
-                                   pr_head_sha40: str,
+def _validate_user_review_subject(
+    github: Any, root: Path, *, issue_number: int, pr_number: int | None,
+    pr_head_sha40: str | None, details: dict[str, Any],
+) -> None:
+    """Validate current Issue, PR, profile and approved ADC; never scan ADC history."""
+    from .adc import ADCError, verify_adc
+    from .path_safety import path_has_symlink
+
+    expected = {"review_session_sha256", "readiness_sha256", "adc_sha256",
+                "pr_head_sha40", "feedback_sha256", "project_profile_sha256",
+                "verifier_user_id"}
+    digests = expected - {"pr_head_sha40", "verifier_user_id"}
+    if (not _positive(issue_number) or not _positive(pr_number)
+            or not isinstance(pr_head_sha40, str) or SHA40.fullmatch(pr_head_sha40) is None
+            or set(details) != expected or details.get("pr_head_sha40") != pr_head_sha40
+            or not _positive(details.get("verifier_user_id"))
+            or any(not isinstance(details.get(key), str) or SHA256.fullmatch(details[key]) is None
+                   for key in digests)):
+        raise OwnerAuthorizationError("User Review details do not bind the exact session, profile and PR")
+    root = Path(root)
+    profile_path = root / ".agent" / "project.json"
+    if path_has_symlink(profile_path, root=root) or not profile_path.is_file():
+        raise OwnerAuthorizationError("User Review project profile must be a regular file")
+    try:
+        profile_digest = canonical_project_profile_sha256(profile_path.read_bytes())
+        profile = load_profile(root)
+    except (OSError, ProfileError) as exc:
+        raise OwnerAuthorizationError("User Review project profile is invalid") from exc
+    if (profile_digest != details["project_profile_sha256"]
+            or profile.final_delivery_review_mode != "solo_owner"):
+        raise OwnerAuthorizationError("User Review project profile differs from the approved solo_owner profile")
+    try:
+        current = verify_adc(github, issue_number)
+    except (ADCError, GitHubError) as exc:
+        raise OwnerAuthorizationError(f"User Review current ADC verification failed: {exc}") from exc
+    if current.pointer.state != "approved" or current.contract.sha256 != details["adc_sha256"]:
+        raise OwnerAuthorizationError("User Review approved current ADC differs from the exact session")
+    metadata = github.repository_metadata()
+    issue = github.issue(issue_number)
+    labels = issue.get("labels") if isinstance(issue, dict) else None
+    names = [row.get("name") for row in labels] if isinstance(labels, list) else []
+    if (not isinstance(issue, dict) or issue.get("number") != issue_number
+            or issue.get("state") != "open" or issue.get("pull_request") is not None
+            or issue.get("repository_url") != f"https://api.github.com/repos/{REPOSITORY}"
+            or not isinstance(labels, list) or any(not isinstance(x, str) for x in names)
+            or len(names) != len(set(names))
+            or sum(x.startswith("kind:") for x in names) != 1
+            or [x for x in names if x.startswith("phase:")] != ["phase:user-review"]):
+        raise OwnerAuthorizationError("User Review Issue identity or phase changed")
+    pull = github.pull_request(pr_number)
+    head = pull.get("head") if isinstance(pull, dict) else None
+    base = pull.get("base") if isinstance(pull, dict) else None
+    author = pull.get("user") if isinstance(pull, dict) else None
+    head_repo = head.get("repo") if isinstance(head, dict) else None
+    base_repo = base.get("repo") if isinstance(base, dict) else None
+    if (not isinstance(pull, dict) or pull.get("number") != pr_number
+            or pull.get("state") != "open" or pull.get("draft") is not False
+            or pull.get("merged_at") is not None or pull.get("merged") is True
+            or not isinstance(head, dict) or head.get("sha") != pr_head_sha40
+            or not isinstance(head_repo, dict) or head_repo.get("id") != metadata.get("id")
+            or not isinstance(base_repo, dict) or base_repo.get("id") != metadata.get("id")
+            or not isinstance(author, dict) or author.get("type") != "User"
+            or author.get("id") != OWNER_ID):
+        raise OwnerAuthorizationError("User Review PR identity, owner or exact HEAD changed")
+    try:
+        association = parse_issue_association(pull.get("body"), issue_number)
+    except WorkError as exc:
+        raise OwnerAuthorizationError(f"User Review PR Issue association is invalid: {exc}") from exc
+    if association not in {"auto_close", "deferred_close"}:
+        raise OwnerAuthorizationError("User Review PR does not associate the exact Issue")
+    verifier = github.authenticated_user()
+    if (not isinstance(verifier, dict) or verifier.get("type") != "User"
+            or verifier.get("id") != details["verifier_user_id"]):
+        raise OwnerAuthorizationError("User Review independent verifier identity changed")
+
+
+def merge_commit_message(issue_number: int) -> str:
+    if not _positive(issue_number):
+        raise OwnerAuthorizationError("merge message requires a positive Issue number")
+    if issue_number == 63:
+        # Existing V1 owner-approved merge plans pin these exact historical bytes.
+        return ISSUE63_MERGE_COMMIT_MESSAGE
+    return f"Implementation delivered. Issue #{issue_number} remains open pending verified Consumer Activation V2."
+
+
+def deferred_merge_details(github: Any, *, issue_number: int, pr_number: int,
+                           pr_head_sha40: str,
                                    allow_merged: bool = False) -> dict[str, Any]:
-    """Read every GitHub auto-close surface and freeze a safe merge message."""
-    if (pr_number != 64 or not isinstance(pr_head_sha40, str)
-            or SHA40.fullmatch(pr_head_sha40) is None):
-        raise OwnerAuthorizationError("Issue #63 deferred-close merge is bound only to PR #64 and its exact HEAD")
+    """Read all GitHub auto-close surfaces for one exact deferred-close Issue/PR."""
+    if (not _positive(issue_number) or not _positive(pr_number)
+            or not isinstance(pr_head_sha40, str) or SHA40.fullmatch(pr_head_sha40) is None):
+        raise OwnerAuthorizationError("deferred-close merge requires an exact Issue, PR and HEAD")
     try:
         pr = github.pull_request(pr_number)
         body, title = pr.get("body"), pr.get("title")
@@ -207,42 +293,42 @@ def issue63_deferred_merge_details(github: Any, *, pr_number: int,
         head = pr.get("head") if isinstance(pr, dict) else None
         if not isinstance(head, dict) or head.get("sha") != pr_head_sha40:
             raise OwnerAuthorizationError("deferred-close PR HEAD changed during association readback")
-        if parse_issue_association(body, 63) != "deferred_close":
-            raise OwnerAuthorizationError("Issue #63 PR body does not uniquely use Refs #63")
+        if parse_issue_association(body, issue_number) != "deferred_close":
+            raise OwnerAuthorizationError("deferred-close Issue PR body does not uniquely use Refs #N")
         if not isinstance(title, str) or not title.strip() or closing_issue_references(title):
             raise OwnerAuthorizationError("PR title is invalid or contains an auto-close reference")
         commits = github.pull_request_commits(pr_number)
         if not commits:
-            raise OwnerAuthorizationError("Issue #63 PR commit history is unavailable or empty")
+            raise OwnerAuthorizationError("deferred-close Issue PR commit history is unavailable or empty")
         commit_rows = []
         for row in commits:
             if (not isinstance(row, dict) or not isinstance(row.get("sha"), str)
                     or not SHA40.fullmatch(row["sha"]) or not isinstance(row.get("commit"), dict)
                     or not isinstance(row["commit"].get("message"), str)):
-                raise OwnerAuthorizationError("Issue #63 PR commit history is incomplete")
+                raise OwnerAuthorizationError("deferred-close Issue PR commit history is incomplete")
             message = row["commit"]["message"]
             if closing_issue_references(message):
-                raise OwnerAuthorizationError("Issue #63 PR commit message contains an auto-close reference")
+                raise OwnerAuthorizationError("deferred-close Issue PR commit message contains an auto-close reference")
             commit_rows.append({"sha": row["sha"], "message": message})
         closing_issues = github.pull_request_closing_issues(pr_number)
         if closing_issues:
             raise OwnerAuthorizationError("GitHub reports one or more Issues that this PR will auto-close")
-        timeline = github.issue_pull_request_cross_references(63)
+        timeline = github.issue_pull_request_cross_references(issue_number)
         close_links = [row for row in timeline
                        if row.get("pr_number") == pr_number
                        and str(row.get("repository", "")).casefold() == REPOSITORY.casefold()
                        and row.get("will_close_target") is True]
         if close_links:
-            raise OwnerAuthorizationError("GitHub Issue metadata reports an auto-closing PR link for Issue #63")
+            raise OwnerAuthorizationError("GitHub Issue metadata reports an auto-closing PR link for deferred-close Issue")
     except WorkError as exc:
-        raise OwnerAuthorizationError(f"Issue #63 deferred-close association is invalid: {exc}") from exc
+        raise OwnerAuthorizationError(f"deferred-close Issue deferred-close association is invalid: {exc}") from exc
     except GitHubError as exc:
-        raise OwnerAuthorizationError(f"Issue #63 auto-close metadata could not be read completely: {exc}") from exc
+        raise OwnerAuthorizationError(f"deferred-close Issue auto-close metadata could not be read completely: {exc}") from exc
     merge_title = f"Merge PR #{pr_number} at {pr_head_sha40[:12]}"
-    if closing_issue_references(merge_title) or closing_issue_references(ISSUE63_MERGE_COMMIT_MESSAGE):
+    if closing_issue_references(merge_title) or closing_issue_references(merge_commit_message(issue_number)):
         raise OwnerAuthorizationError("planned merge metadata contains an auto-close token")
     return {
-        "target_issue_number": 63,
+        "target_issue_number": issue_number,
         "association_mode": "deferred_close",
         "pr_body_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
         "pr_title_sha256": hashlib.sha256(title.encode("utf-8")).hexdigest(),
@@ -250,8 +336,27 @@ def issue63_deferred_merge_details(github: Any, *, pr_number: int,
         "closing_issue_numbers": [],
         "issue_auto_close_link": False,
         "merge_commit_title": merge_title,
-        "merge_commit_message": ISSUE63_MERGE_COMMIT_MESSAGE,
+        "merge_commit_message": merge_commit_message(issue_number),
     }
+
+
+def issue63_deferred_merge_details(github: Any, *, pr_number: int,
+                                   pr_head_sha40: str,
+                                   allow_merged: bool = False) -> dict[str, Any]:
+    """Legacy exact #63/#64 adapter; never migrate an old plan or merge record."""
+    if pr_number != 64:
+        raise OwnerAuthorizationError("historical Issue #63 deferred-close merge is bound only to PR #64")
+    try:
+        return deferred_merge_details(
+            github, issue_number=63, pr_number=pr_number,
+            pr_head_sha40=pr_head_sha40, allow_merged=allow_merged,
+        )
+    except OwnerAuthorizationError as exc:
+        if "deferred-close association is invalid" in str(exc):
+            raise OwnerAuthorizationError(
+                "Issue #63 deferred-close association is invalid: " + str(exc)
+            ) from exc
+        raise
 
 
 def create_authorization_plan(
@@ -263,7 +368,8 @@ def create_authorization_plan(
     """Read live GitHub subjects and create an immutable canonical plan."""
     if operation not in PLAN_OPERATIONS:
         raise OwnerAuthorizationError("unsupported owner operation")
-    if (issue_number != ISSUE_NUMBER or not isinstance(subject_sha256, str)
+    if (not _positive(issue_number) or (operation not in {"USER_REVIEW", "ADC_SUPERSEDE", "RULESET_PLAN_APPLY", "PR_MERGE"} and issue_number != ISSUE_NUMBER)
+            or not isinstance(subject_sha256, str)
             or SHA256.fullmatch(subject_sha256) is None
             or (target_issue_number is not None and not _positive(target_issue_number))
             or (pr_number is not None and not _positive(pr_number))
@@ -272,14 +378,16 @@ def create_authorization_plan(
             or ((operation in {"PR_MERGE", "USER_REVIEW", "EXECUTION_ADOPTION"})
                 != (pr_number is not None))):
         raise OwnerAuthorizationError("operation plan has an invalid exact subject")
-    if operation == "PR_MERGE" and target_issue_number not in {57, 63}:
-        raise OwnerAuthorizationError("PR merge decisions are limited to Activation #57 or implementation #63")
+    if operation == "PR_MERGE" and not _positive(target_issue_number):
+        raise OwnerAuthorizationError("PR merge requires a positive target Issue")
+    if operation == "PR_MERGE" and target_issue_number != 57 and issue_number != target_issue_number:
+        raise OwnerAuthorizationError("deferred-close owner decision must be carried on the exact target Issue")
     if operation == "PR_MERGE" and target_issue_number == 63 and pr_number != 64:
         raise OwnerAuthorizationError("Issue #63 merge authorization is bound only to existing PR #64")
     if operation == "EXECUTION_ADOPTION" and (target_issue_number != 63 or pr_number != 64):
         raise OwnerAuthorizationError("execution adoption is restricted to Issue #63 / PR #64")
     if operation == "USER_REVIEW" and target_issue_number is not None:
-        raise OwnerAuthorizationError("User Review decisions are stored on configured Issue #63")
+        raise OwnerAuthorizationError("User Review decision carrier is the exact configured plan Issue")
     root = Path(root)
     if root.is_symlink() or not root.is_dir():
         raise OwnerAuthorizationError("owner authorization requires a regular repository root")
@@ -295,13 +403,26 @@ def create_authorization_plan(
         raise OwnerAuthorizationError("authorization plan details must be an object")
     try:
         _canonical(details)
-        _check_identity(github, issue_number, target_issue_number, pr_number, pr_head_sha40)
-        if operation == "PR_MERGE" and target_issue_number == 63:
-            expected_deferred = issue63_deferred_merge_details(
-                github, pr_number=pr_number, pr_head_sha40=pr_head_sha40,
+        identity_github = github
+        if operation == "USER_REVIEW":
+            if type(github) is ReadOnlyGitHub:
+                identity_github = github
+            else:
+                identity_github = ReadOnlyGitHub(REPOSITORY)
+            identity_github.verify_read_only_scope()
+        _check_identity(identity_github, issue_number, target_issue_number, pr_number, pr_head_sha40)
+        if operation == "USER_REVIEW":
+            _validate_user_review_subject(
+                identity_github, root, issue_number=issue_number, pr_number=pr_number,
+                pr_head_sha40=pr_head_sha40, details=details,
+            )
+        if operation == "PR_MERGE" and target_issue_number != 57:
+            expected_deferred = deferred_merge_details(
+                github, issue_number=target_issue_number,
+                pr_number=pr_number, pr_head_sha40=pr_head_sha40,
             )
             if details != expected_deferred:
-                raise OwnerAuthorizationError("Issue #63 PR close mode, commit messages, or merge metadata changed")
+                raise OwnerAuthorizationError("deferred-close PR association or merge metadata changed")
     except (GitHubError, TypeError, ValueError) as exc:
         if isinstance(exc, OwnerAuthorizationError):
             raise
@@ -339,15 +460,16 @@ def _validate_plan(value: Any) -> dict[str, Any]:
         raise OwnerAuthorizationError("authorization plan has unknown or missing fields")
     plan = dict(value)
     supplied = plan.pop("plan_sha256")
+    allowed_issue = (_positive(plan.get("issue_number"))
+                     if plan.get("operation") in {"USER_REVIEW", "ADC_SUPERSEDE", "RULESET_PLAN_APPLY", "PR_MERGE"}
+                     else plan.get("issue_number") == ISSUE_NUMBER)
     if (plan.get("schema") != PLAN_SCHEMA or plan.get("repository") != REPOSITORY
             or plan.get("repository_id") != REPOSITORY_ID or plan.get("owner_id") != OWNER_ID
-            or plan.get("issue_number") != ISSUE_NUMBER or plan.get("operation") not in PLAN_OPERATIONS
+            or not allowed_issue or plan.get("operation") not in PLAN_OPERATIONS
             or not isinstance(plan.get("subject_sha256"), str)
             or SHA256.fullmatch(plan["subject_sha256"]) is None
             or (plan.get("target_issue_number") is not None and not _positive(plan["target_issue_number"]))
             or (plan.get("pr_number") is not None and not _positive(plan["pr_number"]))
-            or (plan.get("operation") == "PR_MERGE" and plan.get("target_issue_number") == 63
-                and plan.get("pr_number") != 64)
             or (plan.get("pr_head_sha40") is not None and (not isinstance(plan["pr_head_sha40"], str)
                                                             or SHA40.fullmatch(plan["pr_head_sha40"]) is None))
             or ((plan.get("pr_number") is None) != (plan.get("pr_head_sha40") is None))
@@ -378,40 +500,52 @@ def _validate_plan(value: Any) -> dict[str, Any]:
                 or details["predecessor_state"] != "approved"):
             raise OwnerAuthorizationError("ADC_SUPERSEDE plan must bind its current approved predecessor")
     if plan["operation"] == "RULESET_PLAN_APPLY" and (
-            details != {"activation_issue_number": 57} or plan["target_issue_number"] != 57):
-        raise OwnerAuthorizationError("Ruleset authorization plan must bind Activation Issue #57")
+            not _positive(plan["target_issue_number"])
+            or details != {"activation_issue_number": plan["target_issue_number"]}):
+        raise OwnerAuthorizationError("Ruleset authorization plan must bind its exact Activation Issue")
     if plan["operation"] == "PR_MERGE":
         target = plan["target_issue_number"]
-        if target == 57 and details != {"target_issue_number": 57}:
-            raise OwnerAuthorizationError("Activation Setup PR merge authorization plan target is invalid")
-        if target == 63:
+        if not _positive(target):
+            raise OwnerAuthorizationError("PR merge requires an exact target Issue")
+        if target != 57 and plan["issue_number"] != target:
+            raise OwnerAuthorizationError("deferred-close plan carrier does not bind its target Issue")
+        if target == 57:
+            if details != {"target_issue_number": 57}:
+                raise OwnerAuthorizationError("Activation Setup PR merge authorization target is invalid")
+        else:
             expected_fields = {
                 "target_issue_number", "association_mode", "pr_body_sha256", "pr_title_sha256",
                 "pr_commits_sha256", "closing_issue_numbers", "issue_auto_close_link",
                 "merge_commit_title", "merge_commit_message",
             }
-            if (set(details) != expected_fields or details.get("target_issue_number") != 63
+            if (set(details) != expected_fields or details.get("target_issue_number") != target
                     or details.get("association_mode") != "deferred_close"
                     or details.get("closing_issue_numbers") != []
                     or details.get("issue_auto_close_link") is not False
                     or any(not isinstance(details.get(field), str) or SHA256.fullmatch(details[field]) is None
                            for field in ("pr_body_sha256", "pr_title_sha256", "pr_commits_sha256"))
                     or details.get("merge_commit_title") != f"Merge PR #{plan['pr_number']} at {plan['pr_head_sha40'][:12]}"
-                    or details.get("merge_commit_message") != ISSUE63_MERGE_COMMIT_MESSAGE
+                    or details.get("merge_commit_message") != merge_commit_message(target)
                     or closing_issue_references(details.get("merge_commit_title", ""))
                     or closing_issue_references(details.get("merge_commit_message", ""))):
                 raise OwnerAuthorizationError("deferred-close PR merge authorization plan details are invalid")
-        if target not in {57, 63}:
-            raise OwnerAuthorizationError("PR merge authorization plan target is invalid")
     if plan["operation"] == "USER_REVIEW":
-        if (set(details) != {"review_session_sha256", "readiness_sha256", "adc_sha256",
-                             "pr_head_sha40", "feedback_sha256"}
+        common_fields = {"review_session_sha256", "readiness_sha256", "adc_sha256",
+                         "pr_head_sha40", "feedback_sha256"}
+        current_fields = common_fields | {"project_profile_sha256", "verifier_user_id"}
+        expected_fields = (common_fields, current_fields)
+        digest_fields = common_fields - {"pr_head_sha40"}
+        if (set(details) not in expected_fields
                 or plan["target_issue_number"] is not None
                 or details.get("pr_head_sha40") != plan["pr_head_sha40"]
                 or any(not isinstance(details.get(key), str) or SHA256.fullmatch(details[key]) is None
-                       for key in ("review_session_sha256", "readiness_sha256", "adc_sha256", "feedback_sha256"))
+                       for key in digest_fields)
                 or not isinstance(details.get("pr_head_sha40"), str)
-                or SHA40.fullmatch(details["pr_head_sha40"]) is None):
+                or SHA40.fullmatch(details["pr_head_sha40"]) is None
+                or (set(details) == current_fields
+                    and (not isinstance(details.get("project_profile_sha256"), str)
+                         or SHA256.fullmatch(details["project_profile_sha256"]) is None
+                         or not _positive(details.get("verifier_user_id"))))):
             raise OwnerAuthorizationError("User Review authorization plan details are invalid")
     if plan["operation"] == "EXECUTION_ADOPTION":
         adoption = details.get("adoption_plan") if set(details) == {"adoption_plan"} else None
@@ -486,10 +620,10 @@ def read_authorization_plan(path: Path) -> dict[str, Any]:
     return plan
 
 
-def _read_history(github: Any) -> tuple[tuple[int, Any], ...]:
+def _read_history(github: Any, issue_number: int = ISSUE_NUMBER) -> tuple[tuple[int, Any], ...]:
     """Read every V1/V2 decision carrier direct/list/direct before appending."""
-    _check_identity(github, ISSUE_NUMBER, None, None, None)
-    initial = github.issue_comments(ISSUE_NUMBER)
+    _check_identity(github, issue_number, None, None, None)
+    initial = github.issue_comments(issue_number)
     def marked(rows: list[Any]) -> list[dict[str, Any]]:
         selected = []
         for row in rows:
@@ -502,20 +636,20 @@ def _read_history(github: Any) -> tuple[tuple[int, Any], ...]:
     if (any(not _positive(value) for value in ids) or ids != sorted(ids)
             or len(ids) != len(set(ids))):
         raise OwnerAuthorizationError("owner decision history IDs are invalid or nonmonotonic")
-    direct_before = {comment_id: github.issue_comment(ISSUE_NUMBER, comment_id) for comment_id in ids}
-    second = marked(github.issue_comments(ISSUE_NUMBER))
+    direct_before = {comment_id: github.issue_comment(issue_number, comment_id) for comment_id in ids}
+    second = marked(github.issue_comments(issue_number))
     second_ids = [row.get("id") for row in second]
     if second_ids != ids:
         raise OwnerAuthorizationError("owner decision history changed during direct/list/direct readback")
-    direct_after = {comment_id: github.issue_comment(ISSUE_NUMBER, comment_id) for comment_id in ids}
+    direct_after = {comment_id: github.issue_comment(issue_number, comment_id) for comment_id in ids}
     for row in second:
-        fingerprint = _comment_fingerprint(row, REPOSITORY, ISSUE_NUMBER)
+        fingerprint = _comment_fingerprint(row, REPOSITORY, issue_number)
         comment_id = fingerprint[0]
-        if (_comment_fingerprint(direct_before[comment_id], REPOSITORY, ISSUE_NUMBER) != fingerprint
-                or _comment_fingerprint(direct_after[comment_id], REPOSITORY, ISSUE_NUMBER) != fingerprint):
+        if (_comment_fingerprint(direct_before[comment_id], REPOSITORY, issue_number) != fingerprint
+                or _comment_fingerprint(direct_after[comment_id], REPOSITORY, issue_number) != fingerprint):
             raise OwnerAuthorizationError("owner decision carrier changed during direct/list/direct readback")
     try:
-        return verify_owner_decision_history_tail(second, REPOSITORY, ISSUE_NUMBER, OWNER_ID)
+        return verify_owner_decision_history_tail(second, REPOSITORY, issue_number, OWNER_ID)
     except OwnerDecisionError as exc:
         raise OwnerAuthorizationError(str(exc)) from exc
 
@@ -538,7 +672,7 @@ def _check_owner_local_tty(stdin: Any) -> None:
 
 def _decision_body_v2(plan: dict[str, Any], predecessor: int | None) -> str:
     payload = {
-        "schema": SCHEMA_V2, "repository": REPOSITORY, "issue_number": ISSUE_NUMBER,
+        "schema": SCHEMA_V2, "repository": REPOSITORY, "issue_number": plan["issue_number"],
         "operation": plan["operation"], "subject_sha256": plan["subject_sha256"],
         "plan_sha256": plan["plan_sha256"],
         "operation_plan_sha256": (plan["subject_sha256"]
@@ -566,7 +700,7 @@ def _decision_body_v3(plan: dict[str, Any], predecessor: int | None,
             or grant.source != "operator_reported_direct_user_message"):
         raise OwnerAuthorizationError("CHAT_CONFIRMATION_REQUIRED: grant does not bind this exact operation")
     payload = {
-        "schema": SCHEMA_V3, "repository": REPOSITORY, "issue_number": ISSUE_NUMBER,
+        "schema": SCHEMA_V3, "repository": REPOSITORY, "issue_number": plan["issue_number"],
         "operation": plan["operation"], "subject_sha256": plan["subject_sha256"],
         "plan_sha256": plan["plan_sha256"],
         "operation_plan_sha256": (plan["subject_sha256"]
@@ -582,28 +716,30 @@ def _decision_body_v3(plan: dict[str, Any], predecessor: int | None,
 
 
 def _verify_ruleset_plan_approval(github: Any, plan: dict[str, Any], *, write_missing: bool) -> int:
-    if plan["operation"] != "RULESET_PLAN_APPLY" or plan["target_issue_number"] != 57:
-        raise OwnerAuthorizationError("Ruleset plan approval requires configured Activation Issue #57")
+    if (plan["operation"] != "RULESET_PLAN_APPLY"
+            or not _positive(plan["target_issue_number"])):
+        raise OwnerAuthorizationError("Ruleset plan approval requires a configured positive Activation Issue")
+    issue_number = plan["target_issue_number"]
     expected = f"{RULESET_APPROVAL_PREFIX}{plan['subject_sha256']}\nPASES-REPOSITORY: {REPOSITORY}"
-    issue = github.issue(57)
-    comments = [row for row in github.issue_comments(57) if isinstance(row, dict)]
+    issue = github.issue(issue_number)
+    comments = [row for row in github.issue_comments(issue_number) if isinstance(row, dict)]
     matches = [row for row in comments if row.get("body") == expected]
     if len(matches) > 1:
         raise OwnerAuthorizationError("exact Ruleset plan approval is duplicated")
     if not matches and write_missing:
         try:
-            response = github.create_issue_comment(57, expected)
+            response = github.create_issue_comment(issue_number, expected)
             comment_id = response.get("id") if isinstance(response, dict) else None
             if not _positive(comment_id):
                 raise OwnerAuthorizationError("Ruleset plan approval response lacks a comment ID")
         except (GitHubError, OwnerAuthorizationError) as exc:
             # The result may be ambiguous. Read back once; never retry the POST.
-            comments = [row for row in github.issue_comments(57) if isinstance(row, dict)]
+            comments = [row for row in github.issue_comments(issue_number) if isinstance(row, dict)]
             matches = [row for row in comments if row.get("body") == expected]
             if len(matches) != 1:
                 raise OwnerAuthorizationError("Ruleset plan approval write is ambiguous; no retry was attempted") from exc
         else:
-            comments = [row for row in github.issue_comments(57) if isinstance(row, dict)]
+            comments = [row for row in github.issue_comments(issue_number) if isinstance(row, dict)]
             matches = [row for row in comments if row.get("body") == expected]
     if len(matches) != 1:
         raise OwnerAuthorizationError("exact Ruleset plan approval is missing")
@@ -611,17 +747,17 @@ def _verify_ruleset_plan_approval(github: Any, plan: dict[str, Any], *, write_mi
     comment_id = selected.get("id")
     if not _positive(comment_id):
         raise OwnerAuthorizationError("Ruleset plan approval comment ID is invalid")
-    first = github.issue_comment(57, comment_id)
-    listed_again = [row for row in github.issue_comments(57) if row.get("id") == comment_id]
-    final = github.issue_comment(57, comment_id)
+    first = github.issue_comment(issue_number, comment_id)
+    listed_again = [row for row in github.issue_comments(issue_number) if row.get("id") == comment_id]
+    final = github.issue_comment(issue_number, comment_id)
     user = final.get("user") if isinstance(final.get("user"), dict) else {}
-    fingerprints = (_comment_fingerprint(first, REPOSITORY, 57),
-                    _comment_fingerprint(listed_again[0], REPOSITORY, 57),
-                    _comment_fingerprint(final, REPOSITORY, 57)) if len(listed_again) == 1 else ()
+    fingerprints = (_comment_fingerprint(first, REPOSITORY, issue_number),
+                    _comment_fingerprint(listed_again[0], REPOSITORY, issue_number),
+                    _comment_fingerprint(final, REPOSITORY, issue_number)) if len(listed_again) == 1 else ()
     if (len(listed_again) != 1 or fingerprints[0] != fingerprints[1]
             or fingerprints[1] != fingerprints[2] or final.get("body") != expected
             or user.get("id") != OWNER_ID or user.get("type") != "User"
-            or not isinstance(issue, dict) or issue.get("number") != 57
+            or not isinstance(issue, dict) or issue.get("number") != issue_number
             or issue.get("state") != "open" or issue.get("repository_url") != f"https://api.github.com/repos/{REPOSITORY}"):
         raise OwnerAuthorizationError("exact Ruleset approval failed owner/source/direct-list-direct verification")
     return comment_id
@@ -637,7 +773,7 @@ def _validate_adc_authorization_subject(
         raise OwnerAuthorizationError("ADC source bytes differ from the exact authorization plan")
     from .adc import ADCError, validate_approval_ready_adc, verify_adc
     try:
-        predecessor = verify_adc(github, ISSUE_NUMBER).pointer
+        predecessor = verify_adc(github, plan["issue_number"]).pointer
         details = plan["details"]
         if (predecessor.state != "approved"
                 or predecessor.comment_id != details.get("predecessor_comment_id")
@@ -646,7 +782,7 @@ def _validate_adc_authorization_subject(
                 or predecessor.state != details.get("predecessor_state")):
             raise OwnerAuthorizationError("current approved ADC predecessor changed after plan creation")
         validate_approval_ready_adc(
-            subject_bytes, REPOSITORY, ISSUE_NUMBER,
+            subject_bytes, REPOSITORY, plan["issue_number"],
             current_pointer=predecessor, check_current_pointer=True,
         )
     except ADCError as exc:
@@ -662,6 +798,10 @@ def authorize_plan(
     """Confirm and append one V2 owner decision; no blind retry is attempted."""
     _check_owner_local_tty(stdin)
     plan = read_authorization_plan(plan_path)
+    if plan["operation"] == "USER_REVIEW":
+        raise OwnerAuthorizationError(
+            "User Review requires the direct in-process chat confirmation path; owner-local V2 is disabled"
+        )
     if plan["operation"] == "EXECUTION_ADOPTION":
         raise OwnerAuthorizationError(
             "EXECUTION_ADOPTION requires an exact same-chat V3 decision; owner-local TTY/V2 cannot authorize it"
@@ -717,11 +857,12 @@ def authorize_plan(
                 or getattr(getattr(session, "subject", None), "readiness_sha256", None)
                    != details.get("readiness_sha256")
                 or plan["pr_head_sha40"] != details.get("pr_head_sha40")
-                or plan["subject_sha256"] != user_review_context.get("subject_sha256")):
+                or plan["subject_sha256"] != user_review_context.get("subject_sha256")
+                or user_review_context.get("details") != details):
             raise OwnerAuthorizationError("validated User Review context differs from the approved plan")
         from .user_review_relay import publish_owner_local_user_review_decision
         approval = publish_owner_local_user_review_decision(
-            github, repository=REPOSITORY, issue_number=ISSUE_NUMBER,
+            github, repository=REPOSITORY, issue_number=plan["issue_number"],
             pr_number=plan["pr_number"], repository_owner_user_id=OWNER_ID,
             session=session, readiness_sha256=details["readiness_sha256"],
             adc_sha256=details["adc_sha256"], pr_head_sha40=details["pr_head_sha40"],
@@ -735,7 +876,7 @@ def authorize_plan(
             "evidence_channel": approval.evidence_channel, "chat_signature": False,
         }
 
-    history = _read_history(github)
+    history = _read_history(github, plan["issue_number"])
     same_subject = [(comment_id, decision) for comment_id, decision in history
                     if decision.operation == plan["operation"]
                     and decision.subject_sha256 == plan["subject_sha256"]
@@ -752,12 +893,12 @@ def authorize_plan(
         predecessor = history[-1][0] if history else None
         body = _decision_body_v2(plan, predecessor)
         try:
-            github.create_issue_comment(ISSUE_NUMBER, body)
+            github.create_issue_comment(plan["issue_number"], body)
         except GitHubError as exc:
             # Reconcile a possibly successful POST by complete readback. Never issue a second POST.
             try:
                 verified = read_verified_owner_decision(
-                    github, issue_number=ISSUE_NUMBER, owner_id=OWNER_ID,
+                    github, issue_number=plan["issue_number"], owner_id=OWNER_ID,
                     operation=plan["operation"], subject_sha256=plan["subject_sha256"],
                     expected_pr_number=plan["pr_number"], expected_pr_head_sha40=plan["pr_head_sha40"],
                     expected_plan_sha256=plan["plan_sha256"], repository_id=REPOSITORY_ID,
@@ -768,7 +909,7 @@ def authorize_plan(
             comment_id = verified.comment_id
         else:
             verified = read_verified_owner_decision(
-                github, issue_number=ISSUE_NUMBER, owner_id=OWNER_ID,
+                github, issue_number=plan["issue_number"], owner_id=OWNER_ID,
                 operation=plan["operation"], subject_sha256=plan["subject_sha256"],
                 expected_pr_number=plan["pr_number"], expected_pr_head_sha40=plan["pr_head_sha40"],
                 expected_plan_sha256=plan["plan_sha256"], repository_id=REPOSITORY_ID,
@@ -847,11 +988,12 @@ def authorize_chat_confirmed_plan(
                 or getattr(getattr(session, "subject", None), "readiness_sha256", None)
                    != details.get("readiness_sha256")
                 or checked["pr_head_sha40"] != details.get("pr_head_sha40")
-                or checked["subject_sha256"] != user_review_context.get("subject_sha256")):
+                or checked["subject_sha256"] != user_review_context.get("subject_sha256")
+                or user_review_context.get("details") != details):
             raise OwnerAuthorizationError("validated User Review context differs from the approved plan")
         from .user_review_relay import publish_chat_confirmed_user_review_decision
         approval = publish_chat_confirmed_user_review_decision(
-            github, repository=REPOSITORY, issue_number=ISSUE_NUMBER,
+            github, repository=REPOSITORY, issue_number=checked["issue_number"],
             pr_number=checked["pr_number"], repository_owner_user_id=OWNER_ID,
             session=session, readiness_sha256=details["readiness_sha256"],
             adc_sha256=details["adc_sha256"], pr_head_sha40=details["pr_head_sha40"],
@@ -867,7 +1009,7 @@ def authorize_chat_confirmed_plan(
             "evidence_channel": approval.evidence_channel, "chat_signature": False,
         }
 
-    history = _read_history(github)
+    history = _read_history(github, checked["issue_number"])
     same_subject = [(comment_id, decision) for comment_id, decision in history
                     if decision.operation == checked["operation"]
                     and decision.subject_sha256 == checked["subject_sha256"]
@@ -878,12 +1020,12 @@ def authorize_chat_confirmed_plan(
     predecessor = history[-1][0] if history else None
     body = _decision_body_v3(checked, predecessor, grant)
     try:
-        github.create_issue_comment(ISSUE_NUMBER, body)
+        github.create_issue_comment(checked["issue_number"], body)
     except GitHubError as exc:
         # Resolve an uncertain POST with reads only; never retry it.
         try:
             verified = read_verified_owner_decision(
-                github, issue_number=ISSUE_NUMBER, owner_id=OWNER_ID,
+                github, issue_number=checked["issue_number"], owner_id=OWNER_ID,
                 operation=checked["operation"], subject_sha256=checked["subject_sha256"],
                 expected_pr_number=checked["pr_number"], expected_pr_head_sha40=checked["pr_head_sha40"],
                 expected_plan_sha256=checked["plan_sha256"], repository_id=REPOSITORY_ID,
@@ -896,7 +1038,7 @@ def authorize_chat_confirmed_plan(
             raise OwnerAuthorizationError("readback selected an incompatible approval channel") from exc
     else:
         verified = read_verified_owner_decision(
-            github, issue_number=ISSUE_NUMBER, owner_id=OWNER_ID,
+            github, issue_number=checked["issue_number"], owner_id=OWNER_ID,
             operation=checked["operation"], subject_sha256=checked["subject_sha256"],
             expected_pr_number=checked["pr_number"], expected_pr_head_sha40=checked["pr_head_sha40"],
             expected_plan_sha256=checked["plan_sha256"], repository_id=REPOSITORY_ID,
@@ -925,7 +1067,7 @@ def resume_authorization(github: Any, plan_path: Path) -> dict[str, Any]:
     plan = read_authorization_plan(plan_path)
     try:
         verified = read_verified_owner_decision(
-            github, issue_number=ISSUE_NUMBER, owner_id=OWNER_ID,
+            github, issue_number=plan["issue_number"], owner_id=OWNER_ID,
             operation=plan["operation"], subject_sha256=plan["subject_sha256"],
             expected_pr_number=plan["pr_number"], expected_pr_head_sha40=plan["pr_head_sha40"],
             expected_plan_sha256=plan["plan_sha256"], repository_id=REPOSITORY_ID,

@@ -2,7 +2,8 @@
 <!-- agent-doc-schema: 2 -->
 # Portable Workflow Design
 
-- Status: Issue #63 is OPEN at `phase:requirements`. Current approved ADC comment #6471580482 has SHA-256 `22ec1585a11d9a791eaf9b0e89baf604775e5168b3f5844a290485a7aab5d218`; its Phase V2 Intent/Applied pair is #6472026312/#6472411402. The V3 recovery generations remain #6469356263/#6469538910 and #6469619562/#6470070164. PR #64 HEAD immediately before this documentation update was `5d1267f1ba436d3681ea261372aca6ea084a757e`; it had no current-head Independent Review V2, Readiness PASS, or User Review record. These changes require fresh exact-HEAD evidence.
+- Historical progress snapshot (before the later #63 exception close): Issue #63 was OPEN at `phase:requirements`. Its then-current ADC comment #6471580482 had SHA-256 `22ec1585a11d9a791eaf9b0e89baf604775e5168b3f5844a290485a7aab5d218`; its Phase V2 Intent/Applied pair was #6472026312/#6472411402. The V3 recovery generations were #6469356263/#6469538910 and #6469619562/#6470070164. PR #64 HEAD immediately before that documentation update was `5d1267f1ba436d3681ea261372aca6ea084a757e`; it had no current-head Independent Review V2, Readiness PASS, or User Review record. This is a retained historical snapshot, not the current Issue state.
+- Current reconciliation (2026-11-21): PR #64 is MERGED and Issue #63 is CLOSED under the one-time development exception. This was not normal P-ASES Final Delivery success. Ruleset and Activation V2 work remains with Issue #71.
 - Owning Issue: [Issue #7](https://github.com/puchinya/ai-agent-workflow/issues/7)
 - Related specification: [Portable Workflow Specification](../specs/workflow-spec.md)
 
@@ -24,7 +25,45 @@
   - [5.9 DES-F01-016 Native Independent Review execution and confidence](#59-des-f01-016-native-independent-review-execution-and-confidence)
   - [5.10 DES-F01-018 Exact Phase evidence recovery](#510-des-f01-018-exact-phase-evidence-recovery)
   - [5.11 DES-F01-031 Generic ADC-authorized Phase rebaseline](#511-des-f01-031-generic-adc-authorized-phase-rebaseline)
+  - [5.12 DES-F01-038 Historical Binding provenance](#512-des-f01-038-historical-binding-provenance)
+  - [5.13 DES-F01-039 Single exact epoch authority](#513-des-f01-039-single-exact-epoch-authority)
+  - [5.14 DES-F01-040 Separate append-only journal](#514-des-f01-040-separate-append-only-journal)
+  - [5.15 DES-F01-041 One-shot migration state machine](#515-des-f01-041-one-shot-migration-state-machine)
+  - [5.16 DES-F01-042 Current evidence selection](#516-des-f01-042-current-evidence-selection)
+  - [5.17 DES-F01-043 Shared local eligibility guard](#517-des-f01-043-shared-local-eligibility-guard)
+  - [5.18 DES-F01-044 Scoped device-auth Admin client](#518-des-f01-044-scoped-device-auth-admin-client)
+  - [5.19 DES-F01-045 Separated policy and merge authority](#519-des-f01-045-separated-policy-and-merge-authority)
+  - [5.20 DES-F01-046 Compatibility boundary](#520-des-f01-046-compatibility-boundary)
+  - [5.21 DES-F01-047 Retired first V1 migration](#521-des-f01-047-retired-first-v1-migration)
+  - [5.22 DES-F01-048 Exact V2 marker contents](#522-des-f01-048-exact-v2-marker-contents)
+  - [5.23 DES-F01-049 V2 journal payload](#523-des-f01-049-v2-journal-payload)
+  - [5.24 DES-F01-050 Partial-state recovery](#524-des-f01-050-partial-state-recovery)
+  - [5.25 DES-F01-051 Phase re-entry before product work](#525-des-f01-051-phase-re-entry-before-product-work)
+  - [5.26 DES-F01-052 Reuse existing Activation V2 machinery](#526-des-f01-052-reuse-existing-activation-v2-machinery)
+  - [5.27 DES-F01-053 Canonical artifact generation](#527-des-f01-053-canonical-artifact-generation)
+  - [5.28 DES-F01-054 Failure-oriented verification](#528-des-f01-054-failure-oriented-verification)
+  - [5.29 DES-F01-067 Issue #71 epoch-3 Phase generation](#529-des-f01-067-issue-71-epoch-3-phase-generation)
+  - [5.30 DES-F01-090 Successor ADC bootstrap and active Phase bridge](#530-des-f01-090-successor-adc-bootstrap-and-active-phase-bridge)
+  - [5.31 DES-F01-091 Pending phase-rework continuation](#531-des-f01-091-pending-phase-rework-continuation)
+  - [5.32 DES-F01-092 Applied timestamp reconciliation and Phase resumption](#532-des-f01-092-applied-timestamp-reconciliation-and-phase-resumption)
+  - [5.33 DES-F01-093 Exact continuation ADC reader and lineage](#533-des-f01-093-exact-continuation-adc-reader-and-lineage)
+  - [5.34 DES-F01-094 Execution transition readback record](#534-des-f01-094-execution-transition-readback-record)
+  - [5.35 DES-F01-095 Exact Markdown predecessor parsing and successor chain](#535-des-f01-095-exact-markdown-predecessor-parsing-and-successor-chain)
+  - [5.36 DES-F01-096 Generic approved history reader and successor segment](#536-des-f01-096-generic-approved-history-reader-and-successor-segment)
 - [6 DES-WF-003 Workspace execution flow](#6-des-wf-003-workspace-execution-flow)
+  - [6.1 5.37 DES-F01-097 Combined Phase continuation and Issue #71 User Review](#61-537-des-f01-097-combined-phase-continuation-and-issue-71-user-review)
+  - [6.2 6.3 5.39 DES-F01-099 Approved historical commit segment map](#62-63-539-des-f01-099-approved-historical-commit-segment-map)
+  - [6.3 6.4 5.40 DES-F01-100 Verification-phase post-rework label validation](#63-64-540-des-f01-100-verification-phase-post-rework-label-validation)
+  - [6.4 6.3 6.2 5.38 DES-F01-098 Current ADC pointer and direct predecessor declaration](#64-63-62-538-des-f01-098-current-adc-pointer-and-direct-predecessor-declaration)
+  - [6.5 DES-F01-101 Batch the selected ADC journal range](#65-des-f01-101-batch-the-selected-adc-journal-range)
+  - [6.6 DES-F01-102 Append one V3 rework generation](#66-des-f01-102-append-one-v3-rework-generation)
+  - [6.7 DES-F01-103 Resolve continuation labels from the current Phase graph](#67-des-f01-103-resolve-continuation-labels-from-the-current-phase-graph)
+  - [6.8 DES-F01-104 Validate event and publication timestamps uniformly](#68-des-f01-104-validate-event-and-publication-timestamps-uniformly)
+  - [6.9 DES-F01-105 Resolve the immutable V3 origin independently](#69-des-f01-105-resolve-the-immutable-v3-origin-independently)
+  - [6.10 DES-F01-106 Bind one marker-derived continuation commit](#610-des-f01-106-bind-one-marker-derived-continuation-commit)
+  - [6.11 DES-F01-107 Parse generic current continuation markers](#611-des-f01-107-parse-generic-current-continuation-markers)
+  - [6.12 DES-F01-108 Reuse command-local ADC history safely](#612-des-f01-108-reuse-command-local-adc-history-safely)
+  - [6.13 DES-F01-109 Bound GitHub API child processes](#613-des-f01-109-bound-github-api-child-processes)
 - [7 DES-WF-004 Failure handling](#7-des-wf-004-failure-handling)
 - [8 DES-WF-005 Authorization boundary and PR handoff](#8-des-wf-005-authorization-boundary-and-pr-handoff)
 - [9 Alternatives considered](#9-alternatives-considered)
@@ -47,7 +86,45 @@
 - [DES-F01-016](#des-f01-016) — 5.9 DES-F01-016 Native Independent Review execution and confidence
 - [DES-F01-018](#des-f01-018) — 5.10 DES-F01-018 Exact Phase evidence recovery
 - [DES-F01-031](#des-f01-031) — 5.11 DES-F01-031 Generic ADC-authorized Phase rebaseline
+- [DES-F01-038](#des-f01-038) — 5.12 DES-F01-038 Historical Binding provenance
+- [DES-F01-039](#des-f01-039) — 5.13 DES-F01-039 Single exact epoch authority
+- [DES-F01-040](#des-f01-040) — 5.14 DES-F01-040 Separate append-only journal
+- [DES-F01-041](#des-f01-041) — 5.15 DES-F01-041 One-shot migration state machine
+- [DES-F01-042](#des-f01-042) — 5.16 DES-F01-042 Current evidence selection
+- [DES-F01-043](#des-f01-043) — 5.17 DES-F01-043 Shared local eligibility guard
+- [DES-F01-044](#des-f01-044) — 5.18 DES-F01-044 Scoped device-auth Admin client
+- [DES-F01-045](#des-f01-045) — 5.19 DES-F01-045 Separated policy and merge authority
+- [DES-F01-046](#des-f01-046) — 5.20 DES-F01-046 Compatibility boundary
+- [DES-F01-047](#des-f01-047) — 5.21 DES-F01-047 Retired first V1 migration
+- [DES-F01-048](#des-f01-048) — 5.22 DES-F01-048 Exact V2 marker contents
+- [DES-F01-049](#des-f01-049) — 5.23 DES-F01-049 V2 journal payload
+- [DES-F01-050](#des-f01-050) — 5.24 DES-F01-050 Partial-state recovery
+- [DES-F01-051](#des-f01-051) — 5.25 DES-F01-051 Phase re-entry before product work
+- [DES-F01-052](#des-f01-052) — 5.26 DES-F01-052 Reuse existing Activation V2 machinery
+- [DES-F01-053](#des-f01-053) — 5.27 DES-F01-053 Canonical artifact generation
+- [DES-F01-054](#des-f01-054) — 5.28 DES-F01-054 Failure-oriented verification
+- [DES-F01-067](#des-f01-067) — 5.29 DES-F01-067 Issue #71 epoch-3 Phase generation
+- [DES-F01-090](#des-f01-090) — 5.30 DES-F01-090 Successor ADC bootstrap and active Phase bridge
+- [DES-F01-091](#des-f01-091) — 5.31 DES-F01-091 Pending phase-rework continuation
+- [DES-F01-092](#des-f01-092) — 5.32 DES-F01-092 Applied timestamp reconciliation and Phase resumption
+- [DES-F01-093](#des-f01-093) — 5.33 DES-F01-093 Exact continuation ADC reader and lineage
+- [DES-F01-094](#des-f01-094) — 5.34 DES-F01-094 Execution transition readback record
+- [DES-F01-095](#des-f01-095) — 5.35 DES-F01-095 Exact Markdown predecessor parsing and successor chain
+- [DES-F01-096](#des-f01-096) — 5.36 DES-F01-096 Generic approved history reader and successor segment
 - [DES-WF-003](#des-wf-003) — 6 DES-WF-003 Workspace execution flow
+- [DES-F01-097](#des-f01-097) — 6.1 5.37 DES-F01-097 Combined Phase continuation and Issue #71 User Review
+- [DES-F01-099](#des-f01-099) — 6.2 6.3 5.39 DES-F01-099 Approved historical commit segment map
+- [DES-F01-100](#des-f01-100) — 6.3 6.4 5.40 DES-F01-100 Verification-phase post-rework label validation
+- [DES-F01-098](#des-f01-098) — 6.4 6.3 6.2 5.38 DES-F01-098 Current ADC pointer and direct predecessor declaration
+- [DES-F01-101](#des-f01-101) — 6.5 DES-F01-101 Batch the selected ADC journal range
+- [DES-F01-102](#des-f01-102) — 6.6 DES-F01-102 Append one V3 rework generation
+- [DES-F01-103](#des-f01-103) — 6.7 DES-F01-103 Resolve continuation labels from the current Phase graph
+- [DES-F01-104](#des-f01-104) — 6.8 DES-F01-104 Validate event and publication timestamps uniformly
+- [DES-F01-105](#des-f01-105) — 6.9 DES-F01-105 Resolve the immutable V3 origin independently
+- [DES-F01-106](#des-f01-106) — 6.10 DES-F01-106 Bind one marker-derived continuation commit
+- [DES-F01-107](#des-f01-107) — 6.11 DES-F01-107 Parse generic current continuation markers
+- [DES-F01-108](#des-f01-108) — 6.12 DES-F01-108 Reuse command-local ADC history safely
+- [DES-F01-109](#des-f01-109) — 6.13 DES-F01-109 Bound GitHub API child processes
 - [DES-WF-004](#des-wf-004) — 7 DES-WF-004 Failure handling
 - [DES-WF-005](#des-wf-005) — 8 DES-WF-005 Authorization boundary and PR handoff
 - [DES-WF-006](#des-wf-006) — 11 DES-WF-006 Human review and final delivery
@@ -83,6 +160,8 @@ Legacy design note: detailed procedures below that still mention the former flat
 | Implementation owns end-to-end handoff | The implementation flow continues through a review-ready PR, exact-HEAD self-review, and delivery gate before reporting completion. |
 | New Contract layout is checked without changing legacy publication | A separate read-only preflight validates the canonical template's physical H2 structure before new-template contracts are saved or published; the historical comment and mirror path remains unchanged. |
 | Chat project instructions work across hosts | One Japanese project-instructions body uses one repository URL substitution and describes only capabilities available to the active chat; it does not depend on installing this workflow plugin. |
+| [REQ-F01-171](../specs/workflow-spec.md#req-f01-171) | [DES-F01-101](#des-f01-101): Two complete journal snapshots bound one selected ADC range; per-generation direct reads and exact immutable fingerprints remain mandatory. |
+| [REQ-F01-172](../specs/workflow-spec.md#req-f01-172) | [DES-F01-102](#des-f01-102): The append-only V3 phase-rework generation preserves V2 bytes and permits one exact one-shot transition. |
 
 <a id="des-wf-001"></a>
 <a id="des-wf-001-architecture-and-phase-authority"></a>
@@ -170,7 +249,7 @@ For V1, `activated_at` remains the setup PR `merged_at`. For V2, the record's Gi
 <a id="des-f01-013-bootstrap-and-independent-delivery-gates"></a>
 ### 5.6 DES-F01-013 Bootstrap and independent delivery gates
 
-Issue #63 delivery runs in two stages: implementation; exact successor ADC publication and new-generation Phase receipts; PR #64's current-HEAD CI, independent review, User Review, ordinary Final Delivery and separate exact-HEAD `PR_MERGE`; merge PR #64 with standalone `Refs #63` and verify Issue #63 remains OPEN; then complete Consumer Activation V2 and its separately reviewed/merged Setup PR; verify the V2 record, `created_at`, Ruleset ID and effective policy; finally close #63 once through a durable close intent and direct/list/direct Issue readback. Final Delivery's P-ASES evidence includes exact HEAD/ADC/Binding/Phase, Verification, Acceptance, Self-Audit, fresh Independent Review, User Review, trusted Required Checks, PR identity and mergeability. For `solo_owner`, the normal `PASES_FINAL_DELIVERY_V3` explicitly has no branch-policy digest; V1/V2 stored result bytes and hashes remain unchanged. Final Delivery and owner merge gates do not read Rulesets or require a managed/effective policy. GitHub enforces its native branch/merge constraints at merge time and a rejection blocks without bypass or retry. This deferred association is limited to #63; ordinary PRs keep standalone `Closes #N` and normal GitHub auto-close behavior. The shared closing-reference detector recognizes case-insensitive GitHub close/closes/closed, fix/fixes/fixed, and resolve/resolves/resolved forms with optional colons and supports both `#N` and `OWNER/REPO#N`; repository-qualified references are compared against the target repository case-insensitively. The #64 merge preflight applies this detector to PR title/body, all commits and the planned merge message, then also checks GitHub `closingIssuesReferences` and Issue cross-reference metadata. Any auto-close token/relation or incomplete read blocks; merge and merged-commit readbacks use the same detector. Activation `ACTIVE` is post-merge completion evidence and does not gate the earlier #64 merge; its `created_at` must be later than the #64 merge. PR #62 later reuses the shared branch-policy and profile APIs without changing its #60 ADC or closing association. Before User Review readiness, the host starts and joins one dedicated fresh native Independent Review subagent and obtains its actual result. The child authors the raw context artifact and the parent ingests it unchanged. The V2 review record reports `HIGH` when all spawn/session, reviewer, and implementation-binding identifiers are available and match, or `LIMITED` when any are unavailable. Missing identifiers alone do not block an actual fresh child review or Readiness. No child result, failed or unknown spawn/join, known same-context result, stale HEAD, malformed result, available mismatching binding, or blocking finding blocks. A complete current PASS set triggers one automatic User Review session start; that pending session is not an approval.
+**Historical delivery sequence, superseded by the one-time development exception:** the former #63 route described implementation; successor ADC and Phase receipts; PR #64 current-HEAD gates and `Refs #63` merge; then Activation V2, Ruleset readback, and one-shot Issue closure. PR #64 is merged and Issue #63 is closed. The exception close did not establish normal Final Delivery success; outstanding Ruleset/Activation V2 work is tracked by Issue #71. Preserve this sequence and its evidence only as history; do not replay it. Final Delivery's P-ASES evidence includes exact HEAD/ADC/Binding/Phase, Verification, Acceptance, Self-Audit, fresh Independent Review, User Review, trusted Required Checks, PR identity and mergeability. For `solo_owner`, the normal `PASES_FINAL_DELIVERY_V3` explicitly has no branch-policy digest; V1/V2 stored result bytes and hashes remain unchanged. Final Delivery and owner merge gates do not read Rulesets or require a managed/effective policy. GitHub enforces its native branch/merge constraints at merge time and a rejection blocks without bypass or retry. Historically, #63 used the deferred association while ordinary PRs kept standalone `Closes #N` and normal GitHub auto-close behavior. The shared closing-reference detector recognizes case-insensitive GitHub close/closes/closed, fix/fixes/fixed, and resolve/resolves/resolved forms with optional colons and supports both `#N` and `OWNER/REPO#N`; repository-qualified references are compared against the target repository case-insensitively. The former #64 merge preflight applied this detector to PR title/body, all commits and the planned merge message, then also checks GitHub `closingIssuesReferences` and Issue cross-reference metadata. Any auto-close token/relation or incomplete read blocks; merge and merged-commit readbacks use the same detector. Activation `ACTIVE` is post-merge completion evidence and does not gate the earlier #64 merge; its `created_at` must be later than the #64 merge. PR #62 later reuses the shared branch-policy and profile APIs without changing its #60 ADC or closing association. Before User Review readiness, the host starts and joins one dedicated fresh native Independent Review subagent and obtains its actual result. The child authors the raw context artifact and the parent ingests it unchanged. The V2 review record reports `HIGH` when all spawn/session, reviewer, and implementation-binding identifiers are available and match, or `LIMITED` when any are unavailable. Missing identifiers alone do not block an actual fresh child review or Readiness. No child result, failed or unknown spawn/join, known same-context result, stale HEAD, malformed result, available mismatching binding, or blocking finding blocks. A complete current PASS set triggers one automatic User Review session start; that pending session is not an approval.
 
 `ExecutionBinding` uses the current nine-field row, including `branch_ref`, either as a single record or inside the append-only history wrapper. The prior eight-field form is outside the supported contract and may be rejected by read/resume commands; callers must not assume compatibility, branch inference, migration, or automatic rewrite. At `ready`, a linked test source file must already exist in the branch commit, but it may be a failing scaffold awaiting implementation; the receipt binds its path and bytes without claiming a test pass. Execution may extend that source, and later verification establishes the outcome.
 
@@ -183,9 +262,9 @@ The structural Contract preflight is a separate local flow: the CLI reads the ex
 <a id="des-f01-014"></a>
 ### 5.7 DES-F01-014 Activation-scoped administrator session
 
-`admin_auth.py::temporary_admin_client` defaults to `isolated-gh-device`. Each explicit Activation Admin command runs `gh auth login --hostname github.com --web --git-protocol https --insecure-storage` in its own child with a new mode-0700 `GH_CONFIG_DIR`; ambient token variables are removed from login and API child environments. A runner-managed PTY may show the device URL/code for owner browser authentication and does not require an owner-local TTY. If the runner cannot display the challenge, fail with `ADMIN_DEVICE_LOGIN_UNAVAILABLE` without fallback. PAT mode is a nonstandard explicit fallback that requires a trusted owner-local TTY. Both modes preserve normal `gh` config, and authentication is not approval.
+`admin_auth.py::temporary_admin_client` supports only `isolated-gh-device`. Each Activation Admin command requires the shared local interactive guard and runs `gh auth login --hostname github.com --web --git-protocol https --insecure-storage` in its own child with a new mode-0700 `GH_CONFIG_DIR`; all four ambient token variables are removed from login and API child environments. The operator must confirm local host control in the visible terminal. The existing normal `gh` config is unchanged, and there is no PAT, App, network-secret, or ordinary-credential fallback. Authentication is not approval.
 
-The isolated config is deleted best-effort on exit, errors, SIGINT, and handled SIGTERM; that does not revoke the GitHub OAuth grant. The PAT override and isolated config are passed only to their scoped `gh` children. No token is written to arguments, logs, JSON, artifacts, chat, or parent `os.environ`; same-OS-user subprocesses are not a strong sandbox. Before an Admin write, the selected authenticated client verifies owner/repository IDs, owner login, `permissions.admin=true`, collaborator `admin`, and complete legacy protection, Ruleset, and effective-policy reads. A 403 is unavailable. Admin-plan writes only a local canonical blocker-free plan. Admin-apply validates the exact plan and distinct approval, then reuses the single existing Ruleset writer, durable intent, and readback.
+The isolated config is deleted best-effort on exit, errors, SIGINT, and handled SIGTERM; that does not revoke the GitHub OAuth grant. The private config is passed only to its scoped `gh` children, and all four ambient token variables are removed. No token is written to arguments, logs, JSON, artifacts, chat, or parent `os.environ`; same-OS-user subprocesses are not a strong sandbox. Before an Admin plan or apply, the selected authenticated client verifies owner/repository IDs, owner login, `permissions.admin=true`, collaborator `admin`, and complete legacy protection, Ruleset, and effective-policy reads. A 403 is unavailable. Admin-plan writes only a local canonical blocker-free plan. Admin-apply validates the exact plan and distinct approval, then reuses the single existing Ruleset writer, durable intent, and readback.
 
 <a id="des-f01-015"></a>
 ### 5.8 DES-F01-015 Chat-confirmed decisions and separated operations
@@ -196,9 +275,9 @@ The isolated config is deleted best-effort on exit, errors, SIGINT, and handled 
 
 History collection recognizes owner decisions only when the body starts with the exact owner-decision HTML marker prefix, and recognizes User Review decisions from the top-level JSON `schema`. Unknown or malformed carrier-shaped records block; ordinary contract prose that mentions schema names is ignored. This keeps unrelated Issue comments out of the append-only carrier chain without weakening validation of actual records.
 
-The four operation classes are separate: ADC_SUPERSEDE binds exact successor bytes and current approved predecessor then uses the existing ADC publisher and automatic #63 Phase Intent/Applied route; RULESET_PLAN_APPLY binds the exact plan and additionally verifies the existing exact two-line #57 approval before the single Ruleset writer; USER_REVIEW uses a dedicated V3 carrier bound to session, Readiness, ADC, HEAD, feedback and plan scope and enters the existing full evaluator; Setup PR and #64 each use independent exact-HEAD PR_MERGE decisions. The GitHub read verifier is a transport identity distinct from the pinned repository owner and PR author. It never supplies owner identity or approval authority. Final Delivery repeats User Review carrier and snapshot reads. Merge gates, durable intent and read-only recovery remain unchanged.
+The four operation classes are separate: ADC_SUPERSEDE binds exact successor bytes and the direct current approved predecessor, then uses the existing ADC publisher. The former Issue #63-specific automatic Phase Intent/Applied writer is retired; active Phase state uses generic/current-only readers, and sealed V1 adoption remains immutable compatibility. RULESET_PLAN_APPLY binds the exact plan and additionally verifies the existing exact two-line #57 approval before the single Ruleset writer; USER_REVIEW uses a dedicated V3 carrier bound to session, Readiness, ADC, HEAD, feedback and plan scope and enters the existing full evaluator; Setup PR and #64 each use independent exact-HEAD PR_MERGE decisions. The GitHub read verifier is a transport identity distinct from the pinned repository owner and PR author. It never supplies owner identity or approval authority. Final Delivery repeats User Review carrier and snapshot reads. Merge gates, durable intent and read-only recovery remain unchanged.
 
-`phase_rebaseline.py` validates the complete approved ADC pointer chain from the pinned baseline. The original V1 Intent/Applied pair remains the historical evidence for the first physical `ready -> requirements` label update and is checked against that pair even after the current pointer advances. Both publicly published V1 payloads include `executor_user_id`; validation requires it to match the stable GitHub User author and the paired Applied author to match the Intent author. A separate backward-compatibility form may omit the optional field; that form uses the stable GitHub User author and still requires the Applied author to match the Intent author. The two exact incomplete #63 ADC edges authorized by the current ADC use V3 pairs under DES-F01-018. All ordinary later ADC generations use V2 pairs linked to the immediately preceding Applied ID and payload digest. V2 `adopt_existing_requirements` binds the current Issue body digest and complete sorted labels, requires `requirements` and `kind:single`, and never calls the label writer. Before Applied is appended, the runtime re-reads full carrier history, current Issue state, and the approved ADC generation. A partial Intent recovers only by appending its exact matching Applied record. Gaps, stale pointers, body/label drift, duplicates, or altered history block; completed generations return read-only `NOOP`.
+**Status: RETIRED; historical design record only.** `phase_rebaseline.py` no longer exists as an active writer and MUST NOT be restored or invoked. This preserved #63 account describes its former validation of the approved ADC pointer chain from the pinned baseline. The original V1 Intent/Applied pair remains immutable evidence for the first physical `ready -> requirements` label update; active runtime does not replay the retired writer or traverse old ADC bodies. Both published V1 payloads recorded `executor_user_id`, checked against the stable GitHub User author and paired Applied author; the backward-compatible form could omit that optional field. The two incomplete #63 ADC edges were authorized by the then-current ADC and recorded through V3 pairs under DES-F01-018. Later ordinary ADC generations used V2 pairs linked to the preceding Applied ID and payload digest. V2 `adopt_existing_requirements` bound the Issue body digest and complete sorted labels, required `requirements` and `kind:single`, and made no label update. The historical runtime reread carrier history, Issue state, and ADC generation before Applied; interrupted Intent recovery appended only its exact matching Applied record. These details describe the retired route; active lifecycle paths use generic/current-only validation, and the immutable #63 journal remains historical evidence.
 
 For a new approved ADC publication, the shared `validate_approval_ready_adc` check is run from owner-plan preview, chat-confirmed commit, `publish_adc`, and direct CLI publication before the first write. It checks final title/header/status and, for a successor, exact equality between the candidate's declared predecessor Issue/comment/SHA and the currently verified approved pointer. It never rewrites bytes after approval. `parse_adc` and `verify_adc_generation` remain structural/history readers so a prior immutable approved pointer whose body contains draft-only text remains readable; draft publication is unchanged.
 
@@ -214,22 +293,172 @@ The child's result must bind the current repository, Issue, PR, approved ADC, HE
 <a id="des-f01-018"></a>
 ### 5.10 DES-F01-018 Exact Phase evidence recovery
 
-The V3 Phase receipt path is a one-time recovery for exactly the two approved #63 ADC edges enumerated by REQ-F01-018. V1 and V2 histories remain immutable and retain their original validation rules. Each V3 pair is chained to the immediately preceding Applied comment ID and canonical payload digest, and binds the exact predecessor/successor ADC IDs and digests, Issue body digest, complete sorted labels, operation, phases, and authenticated executor. The `execution -> requirements` edge may issue one label PUT only when the live phase is exactly `execution`; the following `requirements -> requirements` edge records the existing full label set and performs no label write. The current ADC generation and every later ordinary successor use V2. Before and after each append or label mutation, the runtime verifies exact Issue/ADC/history state. Lost responses are resolved by readback, never by replaying a confirmed label write; out-of-scope edges, gaps, mismatches, duplicates, or edits block.
+**Status: RETIRED; historical design record only.** This V3 Phase receipt path recorded the two former #63 ADC-edge recoveries listed in REQ-F01-018. Its records bound the predecessor/successor ADCs, prior Applied, Issue body, full labels, operation, phases, and executor; the first edge performed at most one `execution -> requirements` label update and the second adopted `requirements` without a write. The dedicated writer route is retired. Preserve its V1/V2/V3 bytes and #63 journal; active Phase lifecycle operations use generic/current-only readers and do not replay these edges or traverse old ADC bodies.
 
 <a id="des-f01-031"></a>
 ### 5.11 DES-F01-031 Generic ADC-authorized Phase rebaseline
 
-The ordinary restart path is separate from `phase_rebaseline.py`'s Issue #63 flow. `issue phase-restart ISSUE` verifies the exact current approved ADC and parses one canonical `PASES_PHASE_RESTART_AUTHORIZATION_V1` block outside code fences. It accepts only an open `kind:single` or `kind:child` Issue at `phase:execution`, with a matching current ExecutionBinding generation and the exact `execution -> requirements` declaration. No Issue number, SHA, title, or prose sentence is embedded in the generic policy.
+The former Issue #63-specific `phase_rebaseline.py` route is retired. The ordinary restart path remains generic: `issue phase-restart ISSUE` verifies the exact current approved ADC and parses one canonical `PASES_PHASE_RESTART_AUTHORIZATION_V1` block outside code fences. It accepts only an open `kind:single` or `kind:child` Issue at `phase:execution`, with a matching current ExecutionBinding generation and the exact `execution -> requirements` declaration. No Issue number, SHA, title, or prose sentence is embedded in the generic policy.
 
 The operation serializes canonical Intent and Applied comment records. Intent is persisted and read back before the final live-state recheck. The sole full-label update is permitted only while the complete label set still matches the planned before-state. Applied is written only after exact after-state readback. Each carrier is verified by complete direct/list/direct snapshots, stable GitHub User identity, exact Issue/repository URLs, immutable created/updated timestamp, and byte-identical body. Restart history discovery retains malformed/edited reserved marker candidates even when bounded comment punctuation/whitespace edits (including separated hyphens) change their first line; ordinary prose mentions outside a header are ignored. These candidates block rather than disappear from the journal. Lost responses are reconciled by reads and cannot cause a second update. There is no atomic GitHub ETag/CAS guarantee for the label endpoint; the workflow assumes one P-ASES writer and blocks on any observed competing state.
 
 An Applied record defines the active Phase generation for its exact ADC and Binding. Existing V1 phase decisions need no schema rewrite. While a restart Applied record is active, new phase receipts use `PASES_PHASE_DECISION_V2` and bind the Applied comment ID and exact body digest; V1 serialization stays byte-identical. The reader recognizes the reserved plain-text `PASES_PHASE_DECISION_V*` marker family, parses only canonical V1/V2 bodies, and verifies recognized history direct/list/direct against the authenticated GitHub User. A malformed edited header remains a history candidate and blocks the operation. Generation lookup compares the initial candidate IDs/bodies with the later verified history, blocking an edit or deletion between reads. With no restart marker, generation lookup parses every reserved Decision candidate before returning: malformed candidates and canonical V2 without an Applied predecessor block, while valid V1-only history preserves the pre-restart route. The current approved ADC, current Binding, and matching restart Applied record are revalidated at each later phase transition. Old decisions remain historical and cannot satisfy the restarted generation even when they name the same ADC. A completed restart replay is a NOOP only at its exact after-label snapshot or when an unbroken same-generation V2 chain explains the live labels. Each receipt in that chain is revalidated read-only against ADC-declared paths, authorized skip reasons, regular branch blobs and SHA-256 values at the receipt commit, and normal READY traceability constraints; linked documents for authorized skipped specification/design roles are fetched from that same historical commit, while executable sources are loaded only for current ADC requirement rows. Existing path, anchor, skip, allowlist, committed-blob, digest, and source checks remain authoritative; later working-tree state is not used to invent historical evidence. A later execution label also requires READY proof revalidation. For a later authorized restart, the predecessor is the newest valid Applied or Phase Decision event; a later decision therefore supersedes an older Applied event as the immediate predecessor. An incomplete restart Intent from any prior ADC generation blocks all further Phase operations. If no restart record exists for a normal execution, the ordinary ADC/Binding generation remains active. A later successor ADC requires its own authorized generation and cannot inherit the prior restart authority.
 
-The exact approved ADC is the only authorization for a single rebaseline. Intent/Applied receipts are technical records. The typed authorization marker is one-shot, current-pointer-bound, and has a fixed transition pair and `max_applications=1`; absent, duplicate, edited, stale, malformed, or mismatched markers block before writes. Issue #63 remains routed to its specialized V1/V2/V3 implementation unchanged.
+The exact approved ADC is the only authorization for a single rebaseline. Intent/Applied receipts are technical records. The typed authorization marker is one-shot, current-pointer-bound, and has a fixed transition pair and `max_applications=1`; absent, duplicate, edited, stale, malformed, or mismatched markers block before writes. The former Issue #63 `phase_rebaseline.py` writer is retired; sealed V1 adoption and all published V1/V2/V3 records remain immutable compatibility history. Current Phase operations use generic/current-only validation without Issue-number-specific routing.
+
+<a id="des-f01-038"></a>
+### 5.12 DES-F01-038 Historical Binding provenance
+
+Treat the missing old ExecutionBinding as an absent capability with a stable BLOCKED_BINDING_PROVENANCE_MISSING result. Preserve the five-generation digest only as an opaque historical reference with provenance UNVERIFIED. The epoch selector has its own schema and cannot insert a fabricated row into execution-binding.json.
+
+<a id="des-f01-039"></a>
+### 5.13 DES-F01-039 Single exact epoch authority
+
+Parse one exact authorization marker only after verifying the current approved ADC pointer and bytes. The marker pins repository/owner/Issue identity, body digest, predecessor ADC and Phase Applied, retired Intent digest, base, branch, reason, direction and one-use limit. All comparisons happen before any migration write.
+
+<a id="des-f01-040"></a>
+### 5.14 DES-F01-040 Separate append-only journal
+
+Store migration lineage in distinct V2 Intent and Applied Issue comments. The local epoch record and attachment reference that complete pair and do not replace it. The journal binds stable IDs, actor, ADC and marker, predecessor generation, retired V1 history, UNVERIFIED provenance, exact branch/base, label snapshots, unique epoch ID and exact body hashes.
+
+<a id="des-f01-041"></a>
+### 5.15 DES-F01-041 One-shot migration state machine
+
+The migration advances through preflight, Intent, one complete-label replacement, Applied, and local attachment. Each boundary has an exact readback. Only a fully paired journal can become ACTIVE; inspection never repairs a GitHub partial state.
+
+<a id="des-f01-042"></a>
+### 5.16 DES-F01-042 Current evidence selection
+
+After the approved epoch-3 rebaseline, the Issue #71 active selector verifies the complete `PASES_ISSUE_EXECUTION_EPOCH_V3` journal, current approved ADC, immutable attachment, Issue body/labels, branch and remote HEAD. The epoch-2 V2 journal remains immutable predecessor history and cannot satisfy the current selector. Phase evidence uses the active epoch-3 Applied ID/body digest as the Phase generation. PRBinding V4 and WorkCheckpoint V3 carry only the active `execution_epoch_sha256`; readiness verifies that bridge against the current epoch. Current-epoch PR ensure validates the exact standalone association mode declared by the requested body against the live PR and leaves PR metadata unchanged; Issue #71 retains its deferred-close `Refs #71` association. Generic Issues still use ExecutionBinding and generic Phase restart; Issue 63 retains its adopted-epoch selector. No selector falls back from an invalid Issue 71 epoch to V1 or epoch-2 history.
+
+<a id="des-f01-043"></a>
+### 5.17 DES-F01-043 Shared local eligibility guard
+
+One capability check guards every live Activation and administrative CLI and direct-runtime entrypoint. It checks known Cloud/hosted/CI/SSH/remote markers, requires interactive stdin and visible output, and asks the operator to confirm control of the local host. Authenticated owner identity and complete current Admin policy readback are checked through the isolated device client before a plan or apply. Local Codex, local Claude Code and owner-controlled VMs receive the same treatment; no agent name or missing marker proves locality. Cloud, hosted, CI, remote, noninteractive and unconfirmed contexts fail before writes. The operator statement remains an operational trust assumption, not machine attestation.
+
+<a id="des-f01-044"></a>
+### 5.18 DES-F01-044 Scoped device-auth Admin client
+
+The existing isolated-gh-device route creates a fresh private mode-0700 GH_CONFIG_DIR and strips all four ambient GitHub token variables from Admin children. The browser challenge uses the owner-controlled local interactive terminal; the saved normal gh login is never used as a fallback. Admin reads and writes use gh api through the existing GitHub boundary. There is no PAT, App, network-secret, ordinary credential, SDK, direct REST, or alternate writer fallback. Incomplete or denied reads stay unavailable.
+
+<a id="des-f01-045"></a>
+### 5.19 DES-F01-045 Separated policy and merge authority
+
+Keep ruleset_management.py::apply_ruleset_plan as the only Ruleset writer. A newly computed exact plan and separate RULESET_PLAN_APPLY decision are required before it runs; a separate exact-HEAD PR_MERGE decision is required before Setup PR merge. Neither ADC, migration, authentication, CI, nor review substitutes for these authorities. Missing chat provenance produces no approval-dependent write.
+
+<a id="des-f01-046"></a>
+### 5.20 DES-F01-046 Compatibility boundary
+
+The epoch path is isolated by exact repository and Issue number. It does not rewrite Issue 57 V1, Issue 63/PR 64, predecessor ADC/Binding/Phase history, or Issue 72/PR 73. Existing generic V1 binding and Issue 63 adoption tests remain regression gates.
+
+<a id="des-f01-047"></a>
+### 5.21 DES-F01-047 Retired first V1 migration
+
+Treat the first approved successor ADC and its incomplete V1 Intent as immutable retired history. The reader confirms their exact IDs and body digests but never completes, attaches, retries, deletes or selects them. The old branch is also preserved.
+
+<a id="des-f01-048"></a>
+### 5.22 DES-F01-048 Exact V2 marker contents
+
+The successor marker has an exact canonical field set and fixed subject values. Its digest is stored in the V2 journal and local epoch identity. A new ADC SHA or changed branch/base is not substituted during migration.
+
+<a id="des-f01-049"></a>
+### 5.23 DES-F01-049 V2 journal payload
+
+Intent and Applied are separately named schemas with canonical JSON. Applied names the exact Intent comment and body hash; all common subject fields are equal. Comment order, author, issue/repository URLs, list membership, timestamps, labels and exact body bytes are read back before activation.
+
+<a id="des-f01-050"></a>
+### 5.24 DES-F01-050 Partial-state recovery
+
+A partial journal or ambiguous label outcome is an absorbing blocked state for this authorization. The tool reports the exact observed stage and performs only reads. Recovery requires a separately approved successor contract; the caller cannot retry or force labels.
+
+<a id="des-f01-051"></a>
+### 5.25 DES-F01-051 Phase re-entry before product work
+
+After activation, issue fresh current-epoch requirements, specification, design and ready decisions in order while retaining the pinned Issue body. Only after Ready passes may product implementation begin. Old READY receipts have no current generation key and therefore cannot satisfy this sequence.
+
+<a id="des-f01-052"></a>
+### 5.26 DES-F01-052 Reuse existing Activation V2 machinery
+
+Issue 71 changes only the entry guard, authentication/readback semantics and current-epoch plumbing required by the approved contract. Continue through the existing Activation V2, Ruleset plan and setup PR components; do not fork their writer or weaken operation-specific approvals.
+
+<a id="des-f01-053"></a>
+### 5.27 DES-F01-053 Canonical artifact generation
+
+Specifications, design, Oracles, traceability, Skills, adapters and status are hand-authored in their owning trees. The three host packages remain independent projections, regenerated only with the repository distribution builder.
+
+<a id="des-f01-054"></a>
+### 5.28 DES-F01-054 Failure-oriented verification
+
+Test authorization parsing, journal integrity and each write boundary with injected failures and complete write-count assertions. Test both accepted local agents and VM execution plus hosted, remote and unknown denials through CLI and direct-runtime routes. Admin auth and permission failures must be tested with no Ruleset, PR or Activation write.
 
 <a id="des-wf-003"></a>
 <a id="des-wf-003-workspace-execution-flow"></a>
 <a id="5-des-wf-003-workspace-execution-flow"></a>
+<a id="des-f01-067"></a>
+<a id="des-f01-067-issue-71-epoch-3-phase-generation"></a>
+### 5.29 DES-F01-067 Issue #71 epoch-3 Phase generation
+
+A repository- and Issue-scoped bootstrap validates the typed authorization against the current ADC and immutable predecessor evidence, then uses one forward-only state machine: direct/list/direct preflight; one Intent; a second complete preflight; at most one complete-label replacement; label readback; one matching Applied record; and a canonical local epoch identity plus workspace attachment. Durable Issue comments remain the source of journal truth, while the local files attach that verified identity to this exact branch/worktree.
+
+The epoch-3 reader is the only active-generation selector for Issue #71. It checks the current approved ADC, exact repository/Issue identity and body, unique kind:single and phase labels, branch/base ancestry, canonical local files and attachment paths, and the immutable Intent/Applied chain. Phase receipt generation and restart lookup use the Applied comment ID and exact body digest. Legacy V1 Binding, epoch-2 records, and old READY receipts remain readable history but cannot satisfy the new generation. Ordinary Issues and Issue #63 continue through their existing independent readers.
+
+<a id="des-f01-090"></a>
+### 5.30 DES-F01-090 Successor ADC bootstrap and active Phase bridge
+
+**Historical design record (superseded):** DES-F01-090 through DES-F01-096 document the original Issue #71-specific V2 recovery and approved-ADC predecessor-chain implementation. Those runtime paths, including `phase_epoch_rebaseline.py` and `phase_rework.py`, and the historical chain test suite `tests/test_phase_rework.py` have been retired. Their statements below describe historical journal provenance, **not active verification requirements or available runtime APIs**. Immutable GitHub journals are preserved. For current operation, DES-F01-098, DES-F01-101, DES-F01-102, and DES-F01-105–108 are authoritative: the current approved ADC, direct active-epoch/Phase journal, generic rework lifecycle, and current PR/HEAD are checked without replaying an approved ADC history chain.
+
+`phase_epoch_rebaseline.py` reads the immutable epoch-3 files against origin ADC #6881591677, then verifies the full approved ADC successor chain before returning an active view. `Issue71ActiveExecutionEpoch` keeps the origin epoch digest and attachment unchanged while exposing the latest approved ADC pointer and active Phase Applied identity to existing work, PR, evidence, and readiness readers. `phase_rework.py` validates the exact V2 marker and bootstrap ancestry/path allowlist. Before writing the one-shot Intent attempt marker, the original V2 path recomputes exact-subject Readiness, rereads the complete Issue/ADC/owner/branch/remote/PR #75 identity, compares it with the payload, and confirms no User Review session exists. After Intent, it reuses the PASS Readiness already bound by that Intent and rereads the complete live identity; normal Readiness recomputation is blocked while the Intent is incomplete. The Recovery ADC path additionally checks the exact original Intent, its local attempt marker, the original Readiness bytes and subject, the full three-generation ADC chain, and one allowlisted descendant commit. Before code gates, `issue phase-rework` with no gate inputs performs only a local-only, create-once PRBinding V4 and WorkCheckpoint V3 append for the current Recovery ADC and exact HEAD. It verifies the existing open PR #75 identity, title/body digest, frozen base, remote refs, epoch digest, complete prior PRBinding chain, and checkpoint predecessor; ordinary `pr ensure` remains blocked while Intent is incomplete. A later recovery invocation requires the current binding before a label update or Applied write. Rebinding does not change PR metadata or Issue data. The Recovery path permits the label PUT only when labels remain at the exact before-state and the label-attempt marker is absent. The marker precedes the PUT; after-state reconciliation requires that exact marker and never sends a second PUT. One matching Applied record completes the generation. An incomplete Intent blocks ordinary Phase operations; a completed Applied remains active on valid descendant commits of the exact branch. Existing Issues and epoch-3 bytes retain their current reader paths.
+
+<a id="des-f01-091"></a>
+### 5.31 DES-F01-091 Pending phase-rework continuation
+
+The current Recovery ADC is parsed as a separate exact-byte authorization and chained to its exact predecessor, while the original V2 authorization is recovered from the approved history and remains the authority recorded in Intent #6888474848. The Recovery marker pins the one existing Intent ID/body digest, original Readiness and subject digests, local Intent-attempt digest, pre-recovery HEAD, branch, PR/base, owner/repository/Issue, epoch/Phase generation, full before/after labels, and exact recovery path allowlist. The live reader verifies exactly one descendant commit after the pinned pre-recovery HEAD plus the total bootstrap chain and its combined path policy.
+
+Recovery first validates the stored Intent against its original ADC authorization, validates the canonical original PASS Readiness file at its subject-addressed path, and compares the local Intent-attempt marker byte-for-byte with the pinned payload digest. The no-gate command route verifies the same live subject and appends one current-ADC V4 PRBinding and V3 checkpoint as local immutable records; retries reuse only byte-identical records. The gated continuation refuses to write labels or Applied until those records bind the exact current HEAD. With exact before-labels and no label-attempt marker, it writes the label marker, performs one full-label PUT, reads back the Issue, and appends the matching Applied record. If labels already equal the after-state, Recovery accepts only a matching existing label marker and completes Applied without a PUT. If labels remain before after a marker exists, or after-labels have no marker, it blocks. A lost/ambiguous response therefore permits only read-only reconciliation. No new Intent or post-Intent Readiness is produced.
+
+<a id="des-f01-092"></a>
+### 5.32 DES-F01-092 Applied timestamp reconciliation and Phase resumption
+
+The exact approved timestamp-recovery ADC #6890080277 follows Recovery ADC #6888665795 and adds one immutable authorization marker. The reader verifies the full four-generation approved chain, exact marker bytes, predecessor identity, pinned Issue #71 state, epoch, branch, PR #75, HEAD, labels, and local attempt records. The original rework Intent remains bound to ADC #6886911700; its existing Applied record remains unchanged.
+
+For this exact Applied record only, `applied_at` is the local event time and GitHub `created_at` is publication time. Both must be canonical UTC timestamps. The reader accepts `0 <= created_at - applied_at <= 300` seconds and rejects negative or larger differences. It additionally pins the exact Intent ID/body digest, Applied ID/body digest, both timestamps, and observed delta from the successor marker. Other records and Issues retain exact timestamp equality.
+
+The original bootstrap prefix through `4185a510054a2a8781659191c1a48178336f8571` is validated separately with the original ADC's bounded bootstrap allowlist. The Recovery commit remains one descendant of that boundary. The timestamp correction permits exactly one additional commit parented by `574d7970323840933c34c37e874ad1616d577a8a`; its paths must be in the exact successor allowlist. The complete branch therefore has exactly two descendants of the original Recovery base, with each segment checked against its own marker. Generated host mirrors come only from `python tools/build_dist.py`.
+
+With Applied already present, reconciliation verifies its exact bytes, the original Intent and Readiness, local label and Applied attempt markers, current labels, and PR subject. A no-gate invocation may append only a current-ADC PRBinding V4 and WorkCheckpoint V3 locally; it performs no GitHub writes. A second invocation with the current binding returns a read-only NOOP and does not recompute Readiness or write Issue labels/comments. It never repeats the transition.
+
+After reconciliation and exact-HEAD gates, fresh requirements, specification, design, and READY receipts bind the corrected HEAD and current active Phase generation. The ordinary Phase path then advances to execution before the inherited `solo_owner` User Review identity correction continues. PR merge, Admin policy, Ruleset, Activation, Issue #63, release, tag, and Issue-close operations remain separately gated.
+
+<a id="des-f01-093"></a>
+### 5.33 DES-F01-093 Exact continuation ADC reader and lineage
+
+`phase_rework.py` accepts the execution-receipt reader continuation only after the ADC reader verifies the complete nine-generation approved chain from #6886911700 through #6894441752. It separately validates the immutable traceability-only predecessor #6893385802, reader-continuation predecessor #6893557456, and exact current continuation marker, including canonical JSON, pinned marker bytes/digest, exact predecessor, Artifact impact paths, Issue/repository/owner, existing Intent/Applied, epoch, phase, labels, branch, frozen base, PR, starting HEAD, and allowlist. Earlier ADC generations remain independently pinned, and the generic Artifact impact path parser is unchanged.
+
+Lineage validation composes five independent one-commit segments after the pinned pre-recovery boundary: the existing Recovery commit, timestamp reconciliation commit, first reader-continuation commit, reader/traceability correction commit, and execution-receipt reader continuation. Each segment requires one direct parent, one exact endpoint, and only its own allowlisted paths. The original bootstrap prefix is still checked with the original bootstrap policy. A missing or duplicate marker, reordered/unapproved generation, changed Intent/Applied binding, invalid live identity, merge, extra descendant, wrong parent, or changed path blocks.
+
+The continuation preserves the original Intent and Applied journal. Its read-only reconciliation validates the existing pair and local attempt records; PRBinding/checkpoint rebinding remains local-only and create-once. REQ-F01-124 historically used `tests/test_phase_rework.py`, now retired. Current operation is covered by generic current-epoch and phase-rework lifecycle tests; the old ADC-chain assertions are not an active acceptance gate. Once the current binding and all exact-HEAD gates pass, publish/read back the fresh `design → ready` receipt and advance to READY. The normal execution advance then rebuilds the current READY proof before writing `phase:execution`; its successful result and complete Issue-state readback form the execution transition record. No separate execution Phase Decision comment is created. Stop at execution. No Admin, Activation, User Review identity implementation, PR merge, release, tag, Issue #63, or Issue-close operation is part of this continuation.
+
+<a id="des-f01-094"></a>
+### 5.34 DES-F01-094 Execution transition readback record
+
+`PASES_PHASE_DECISION_V1` is supported for specification, design, and ready. Execution has a different record: the normal `issue advance 71 execution` command revalidates the current READY proof immediately before the label write, returns `ADVANCED` after the write, and reads back the full Issue label state. Keep that command result with its READY proof reference and direct before/after Issue snapshots, timestamps, and digests. This is the verifiable `ready → execution` transition record; do not try to publish an execution-target Phase Decision comment.
+
+<a id="des-f01-095"></a>
+### 5.35 DES-F01-095 Exact Markdown predecessor parsing and successor chain
+
+The #6894441752 ADC predecessor header wraps the SHA-256 in one Markdown inline-code pair. The reader accepts exactly either 64 lowercase hex characters or one matched pair around those characters, while still comparing the exact predecessor comment ID and digest. It rejects unmatched or repeated delimiters, extra whitespace, punctuation, or altered identities. The current successor reader pins the ten-generation ADC chain and validates the new direct-child segment from `93477af0aefc22f5723c3de1e5fc7b8dade7ec21` independently after all earlier one-commit segments. Its marker binds the exact Issue, epoch, PR, journal, branch, base, start HEAD, and 15-path allowlist. Only after exact-head gates and zero-write Applied reconciliation pass does the existing design→ready→execution route continue.
+
+<a id="des-f01-096"></a>
+### 5.36 DES-F01-096 Generic approved history reader and successor segment
+
+D68: Parse the current approved authorization marker strictly. Treat every earlier ADC body as immutable provenance and validate it through the complete ordered pointer chain, exact comment ID, body digest and byte length, approved state, full body readback, and direct predecessor link. Do not interpret historical marker syntax.
+
+D69: The current marker carries the six still-effective authorization tuple digests. Compare them with the pinned implementation constants; historical markers cannot add, remove, or change authority.
+
+D70: Apply one history-validation rule to every earlier generation. The incomplete duplicate opener in ADC #6896448736 remains ordinary immutable body content and receives no suffix, comment-ID, or generation-specific parser exception.
+
+D71: Keep the complete commit lineage segmented. Validate every earlier segment independently, then require exactly one direct child of `d1704c125d4de49e84ffffceb14756c9cc555962` on the exact 15-path allowlist. All exact-head gates and read-only zero-write Applied reconciliation remain prerequisites for `design → ready → execution`.
+
 ## 6 DES-WF-003 Workspace execution flow
 
 ```text
@@ -247,13 +476,99 @@ approved Contract
 
 Issue and PR remain the user-facing identities. One implementation writer owns an execution; corrections reuse the same host workspace and binding, including its frozen base ref/SHA. On a new execution, native isolation is eligible only when the host can start the workspace at the exact selected base SHA; `auto` otherwise falls back to the current checkout and `required` blocks before edits. The host owns worktree creation, resume, access control, and cleanup. For Independent Review, the host must spawn and join a dedicated fresh native subagent and obtain its actual result. In `PASES_INDEPENDENT_REVIEW_CONTEXT_V2`, the child records `context_id`, every exact current requirement/checklist ID in `review_units`, evidence references for each unit, and typed C-finding blocking decisions. Its `provenance` string may contain compact canonical JSON for host `spawn_session_id`, `reviewer_id`, and `implementation_binding_id`. The parent checks every available identifier against host metadata and the current binding before passing the untouched artifact to `audit independent`; the CLI checks exact unit coverage and persists `PASES_INDEPENDENT_REVIEW_V3`, preserving the raw artifact digest and deriving implementation context from the binding. All available matching identifiers yield `HIGH` provenance confidence; any unavailable identifier yields `LIMITED`. Missing identifiers alone do not block a completed valid child review. The child authors its raw result; the parent does not edit findings, review units, verdict, context ID, or provenance. The runtime never shells out to another coding-agent binary, exposes a spawn API, creates raw automatic sibling worktrees, copies secrets, or routes work globally. A distinct context ID alone is not host provenance.
 
+Verification and Acceptance bind the current open, non-draft, same-repository PR and its exact HEAD for every Issue. Their common PR readback accepts the sole standalone `Closes #N` or `Refs #N` association without Issue-number-specific PR/branch exceptions; frozen branch/base constraints are checked by the active execution identity, PRBinding, and operation-specific gates, not a hardcoded Verification table. Acceptance derives upstream dependency blockers only from the current ADC `Dependencies` section, never from an Issue-number fallback. Absent declarations do not silently inject legacy dependency edges. Tests in `tests/test_verification_cli.py` cover arbitrary Issue/PR subjects, both association modes, invalid PR identity, and declared dependencies. Verification/Acceptance immutable result publication uses `cli._matching_immutable_evidence_comments`: stream the complete Issue comment range newest-first without materializing unrelated bodies, detect duplicate identical evidence bodies across pages, and verify the Issue comment count before reuse or POST. After a no-match, another count read immediately before POST rejects intervening comments; an ambiguous POST outcome triggers a fresh unique-body readback, never a blind retry. Without a durable evidence comment ID, no earlier Issue/ADC cutoff is assumed. `tests/test_immutable_evidence_comment_scan.py` covers multi-page scans, duplicate detection, empty histories, ambiguous POST and count drift.
+
 The host Skills and adapters own the single orchestration sequence; there is no persistent parallel phase state machine. After ADC approval/rebaseline and exact Binding, the host establishes the specification/design/Oracle artifacts and receipts, enters `ready` and `execution`, and implements at the exact current HEAD. While still in `execution`, it completes current Verification, Acceptance, Self-Audit, and a fresh Independent Review. Blocking A/B findings and reviewer-designated blocking C findings are fixed before phase advancement and require a new HEAD and new child review. Missing host identifiers lower provenance confidence but do not block an otherwise valid review. Only after every prerequisite passes does the host run `issue advance ... verification`, then `delivery readiness`, then `user-review start`. The runtime independently prevents ordinary single/child readiness PASS outside `verification`, except identical-session recomputation in `user-review`; it checks Issue phase before User Review creates local session or feedback evidence. User Review CLI kind is derived from the Issue's unique valid `kind:*` label when `--kind` is omitted; an explicit value must match, and malformed or duplicate kind labels block before writes. A matching session written before an interrupted Phase update is resumed by `sync` without changing `started_at`, followed by the ordinary Phase update/readback. `PENDING` with verified session, feedback snapshot, and `phase:user-review` is normal waiting, not failure or approval. Once `verification` is reached, the phase graph has no backward edge to `execution`; required code rework blocks for a separate decision.
+
+**Generic Owner authorization and completion contract (current):** Ruleset plans retain their own repository, repository-ID, owner-ID, Activation Issue, Required Checks and plan digest. The operator supplies the exact approval comment ID; the reader identifies the decision's carrier Issue from the direct GitHub comment's repository-scoped `issue_url`, then verifies the *entire* typed Owner decision against that Issue, owner and plan digest. Missing or mismatched approval cannot authorize an Admin write. The ordinary Authorization Plan for `RULESET_PLAN_APPLY` binds its decision Issue and target to the plan's configured Activation Issue; historical V2 plans with an owner decision on #63 remain readable only through their exact existing comment IDs, with no fallback search. Admin writes still require isolated local device credentials and repeated Ruleset/policy readback. The first-party Owner authorization repository/owner identity remains pinned in `owner_authorization.py`; changing repository-level ownership is not part of this migration.
+
+For ordinary `PR_MERGE` on a deferred-close `Refs #N` Issue, `owner_authorization.deferred_merge_details` binds the requested Issue/PR/HEAD and rejects competing close references in PR body, title, commits, GitHub closing-Issue metadata and Issue-side cross references. The exact plan contains its safe merge title/message and a one-shot merge attempt record. `delivery finalize` derives the Issue and PR from the command's exact subject, the Activation locator from the validated project profile, and only closes after a fresh ACTIVE V2 policy proof effective *after* PR merge. A durable Issue-close intent is created exclusively before the single PATCH; ambiguous closure is recovered only through direct/list/direct state readback and never retried. An unrelated Issue, altered plan or missing isolated Admin policy proof must not be treated as approved. The historical Issue #63/PR #64 deferred-merge helper remains a read-compatible adapter that preserves previously approved bytes, not a new authorization shortcut.
+
+For newly authorized execution-origin recovery, the generic `epoch_lifecycle.reset_execution_epoch` and `phase_rework_lifecycle.apply_phase_rework` consume current typed ADC authorization for any valid Issue; their post/label one-shot boundaries remain authoritative. The historical `execution_adoption.py` V1 plan and its exact Issue #63/PR #64/ADC hashes are sealed compatibility records, **not** a template for creating new V1 adoption records under arbitrary Issues. Generic Verification and work-status adopted-state checks use the persisted repository/Issue identity and exact ADC/PRBinding, never Issue-number-only shortcuts. This rejects the alternative of editing or reinterpreting V1 adoption histories to manufacture new owner approval or Binding provenance. A genuinely new adopted-epoch V2 schema, if required beyond typed generic epoch reset, needs separately reviewed requirements and an explicit owner-consent contract.
+
+**Historical Issue #63 / PR #64 exception; completed and sealed.** The following adoption and continuation paragraphs describe the completed exception only. Issue #63 is closed under the development exception, not normal P-ASES Final Delivery; do not replay these Issue-specific operations. Its unfinished Ruleset/Activation V2 work belongs to Issue #71.
 
 The one-time Issue #63 / PR #64 adoption is a separate prospective origin, not a repair of missing history. Bootstrap implementation is permitted before adoption; after the final bootstrap HEAD is pushed and exact-HEAD Required Checks pass, the host emits the full deterministic plan, obtains one V3 `EXECUTION_ADOPTION` Owner decision for that exact plan and PR HEAD, and calls the explicit apply/readback route. It records `historical_binding_provenance=UNVERIFIED`, preserves the selected base SHA separately from the observed PR start HEAD, and creates only an adopted epoch plus a physical workspace attachment and first PRBinding. The journal payload's canonical UTC `created_at` is captured before POST; GitHub's immutable carrier `created_at` and `updated_at` are separate persistence timestamps and need not be equal to the payload timestamp. An absent or invalid original tuple never becomes an ordinary `ExecutionBinding`. Before adoption, no ordinary Phase receipts, Verification, Acceptance, Self-Audit, Independent Review, Readiness, or User Review PASS may be produced. After adoption, the host resumes the usual requirements→specification→design→ready→execution lifecycle and all ordinary QA/Review/User Review gates. The exact adoption approval does not authorize User Review, Ruleset writes, Activation, or merge.
 
 The adopted epoch is the immutable execution origin, while the latest PRBinding is the generation-specific authority. For the single adopted #63/#64 execution, a new approved ADC must first form a complete forward chain from the epoch ADC and have its own completed V2 Phase pair. A dedicated `work adoption-refresh 63` then appends one PRBinding V3 preserving adoption ID, Issue, PR, frozen base and branch while binding the current ADC and exact current PR HEAD; its V2 checkpoint retains the original epoch SHA. Before that append, normal verification blocks as `ADC_REFRESH_REQUIRED`; before the current generation's Applied receipt it blocks as `ADC_REFRESH_PENDING_PHASE_REBASELINE`. The operation revalidates the immutable remote adoption history and all local/remote ancestry immediately before its create-only append. If only the checkpoint is absent on retry, it appends that one artifact; if both records exist, it is a zero-write NOOP. `work recover` never refreshes, and `pr ensure` can only append a same-current-generation HEAD row. No generic adoption journal or V1 Binding migration is introduced.
 
-Git cleanliness sees untracked content in the main checkout. Claude Code’s default `.claude/worktrees/` location is nested under that checkout, but host settings or `WorktreeCreate` hooks can place worktrees elsewhere. Project-owned ignore rules are therefore guidance and configuration, not runtime host-path inference or a universal preflight. This does not change host-owned worktree lifecycle or PR gates. If a local original binding is lost, an exact PR continuation by itself is not evidence for that original base, worktree, or initial HEAD. The current runtime blocks `work recover` without an authenticated binding. Only the distinct one-time Issue #63 / PR #64 adoption route above can create a prospective epoch after final-HEAD CI and a separate typed Owner decision; normal executions do not receive this exception. Durable remote anchors and workspace reattachment for ordinary new work remain a separate follow-up.
+Git cleanliness sees untracked content in the main checkout. Claude Code’s default `.claude/worktrees/` location is nested under that checkout, but host settings or `WorktreeCreate` hooks can place worktrees elsewhere. Project-owned ignore rules are therefore guidance and configuration, not runtime host-path inference or a universal preflight. This does not change host-owned worktree lifecycle or PR gates. If a local original binding is lost, an exact PR continuation by itself is not evidence for that original base, worktree, or initial HEAD. The current runtime blocks `work recover` without an authenticated binding. The distinct one-time Issue #63 / PR #64 adoption route above is historical and sealed; no new execution may invoke it. Durable remote anchors and workspace reattachment for ordinary new work remain a separate follow-up.
+
+<a id="des-f01-097"></a>
+<a id="537-des-f01-097-combined-phase-continuation-and-issue-71-user-review"></a>
+### 6.1 5.37 DES-F01-097 Combined Phase continuation and Issue #71 User Review
+
+The current ADC reader discovers the newest approved pointer, verifies its directly addressed ADC body and exact subject, and parses the typed current authorization marker. It does **not** traverse or validate the ordered historical ADC predecessor chain. Current PR/HEAD and any marker-derived commit boundaries are checked independently. Historical ADC bodies stay opaque and do not authorize current operations.
+
+The ADC declares structured Specification, Design, and Testing paths in the Artifact impact section. The strict generic phase-evidence reader parses those roles and paths; the combined ADC reader verifies the same exact section against the approved current contract. A prose-only or mismatched declaration fails before any receipt write.
+
+Historical Phase receipts are checked against their immutable ADC, Phase generation, source commit, authors, and document blobs. Replacement receipts separately bind the exact current Specification/Design bytes authorized by the current-document snapshot. The two snapshots may differ across generations; each must match its own exact subject.
+
+The generic solo_owner identity reader uses a dedicated GET-only client and the current approved ADC, without approved-history chain verification or Issue-number-specific routing. User Review and V3 authorization retain repository, Issue, PR, profile, verifier, HEAD, session, Readiness, feedback, actor, carrier, and direct-chat checks. The profile SHA is computed from UTF-8 bytes after normalizing CRLF pairs to LF, rejects bare CR, and never parses or reserializes JSON.
+
+<a id="des-f01-099"></a>
+<a id="63-539-des-f01-099-approved-historical-commit-segment-map"></a>
+### 6.2 6.3 5.39 DES-F01-099 Approved historical commit segment map
+
+The current approved ADC or operation marker supplies the start HEAD, exact parent rule, commit-count bound and changed-path allowlist. Validate only this current Git boundary and the live remote PR HEAD; do not replay approved-history commit segments or use historical ADC pointers as authorization. Subsequent Phase receipts, Independent Review and User Review remain separate current-subject gates. A complete Applied record returns read-only NOOP.
+
+<a id="des-f01-100"></a>
+<a id="64-540-des-f01-100-verification-phase-post-rework-label-validation"></a>
+### 6.3 6.4 5.40 DES-F01-100 Verification-phase post-rework label validation
+
+The active phase-rework reader uses the same recognized phase vocabulary as the ordinary single/child lifecycle, including `verification`. It requires one known `phase:*` label, the exact Issue kind, and the required enhancement label. The reader validates state only; it never changes Issue labels or creates a backward transition. Unknown or duplicate phase labels fail closed.
+
+<a id="des-f01-098"></a>
+<a id="62-538-des-f01-098-generic-historical-adc-predecessor-validation"></a>
+<a id="63-62-538-des-f01-098-generic-historical-adc-predecessor-validation"></a>
+### 6.4 6.3 6.2 5.38 DES-F01-098 Current ADC pointer and direct predecessor declaration
+
+`adc.verify_adc` resolves the newest current approved pointer using `GitHub.issue_comment_pages_newest` and reads its directly addressed ADC content. It validates exact Issue/repository identity, pointer state, SHA and UTF-8 byte length, with competing newest-pointer detection. Older pointer histories are retained but not scanned in normal current readers. At new ADC publication, an optional predecessor suffix is limited to canonical `(N bytes)` and must equal the directly observed current pointer byte length; no prior body is opened. The active lifecycle resolves typed authorization by marker/schema and observed Issue/PR/epoch fields, not by fixed Issue numbers.
+
+<a id="des-f01-101"></a>
+### 6.5 DES-F01-101 Batch the selected ADC journal range
+
+The current-only reader performs bounded newest-pointer discovery and direct retrieval of exactly the named current ADC comment. The old two-full-snapshot, per-historical-body batch validator is not called by active lifecycle routes. Mutable subjects are re-read before and after writes; stale or competing current pointers, malformed bodies, draft state and changed direct evidence fail closed. Intent/Applied journal duplication checks are independent of ADC history. A first epoch-reset write has no immutable origin comment that could bound prior attempts: `epoch_lifecycle._no_remote_epoch_journal` therefore streams all Issue comment pages newest-first, checking only the epoch-reset Intent/Applied schemas and retaining at most one page in memory; it stops immediately on a matching record. A changed Issue comment count before the Intent POST blocks. Do not replace this complete absence proof with a fixed recent-page limit or an unverified historical ADC cutoff.
+
+<a id="des-f01-102"></a>
+### 6.6 DES-F01-102 Append one V3 rework generation
+
+`phase_rework_lifecycle.py` consumes typed `PASES_PHASE_REWORK_AUTH_V1` from the current approved ADC. It checks the active epoch through `current_epoch.py`, current Issue/PR/HEAD and fresh PASS Readiness, then writes Intent, one-shot local attempt, at most one Phase label PUT, Applied and direct readback. Ambiguity prevents replay. A complete exact V3 pair is zero-write NOOP. Before any new V3 Intent, the remote anti-replay check scans newest-first Issue comment pages only down to the immutable epoch origin Applied comment. Any post-origin V3 Intent or Applied blocks, including an incomplete attempt; a missing origin, malformed page/comment or changed Issue comment count fails closed before POST. The second live Issue readback must retain the initial comment count. Pre-origin Issue comments and historical ADC chains are not traversed for this check. Old V2/V3 bodies remain immutable but are not searched as ADC authority. Any blocked attention, duplicate kind or stale subject blocks.
+
+<a id="des-f01-103"></a>
+### 6.7 DES-F01-103 Resolve continuation labels from the current Phase graph
+
+The ordinary Phase vocabulary and exact typed current ADC authorization determine valid Phase transitions for all Issues. Exactly one recognized kind and one Phase label are required, and any `attention:*` label blocks a new mutation. Historic continuation marker graphs and old ADC chains do not introduce additional allowed edges. PR/branch/HEAD and direct receipts are checked at every write boundary.
+
+<a id="des-f01-104"></a>
+### 6.8 DES-F01-104 Validate event and publication timestamps uniformly
+
+The phase-rework timestamp policy maps V2 and V3 Intent to their embedded `created_at` event and Applied to `applied_at`, then compares each event with its GitHub comment's server `created_at`. V2 records are read only through exact ID/SHA references in the current ADC marker; V3 details are checked from that marker and the post-origin journal. Strict UTC parsing and the inclusive 0..300 second window are shared across all four schemas; older ADC generations are never traversed. Existing V2/V3 records remain immutable; complete records are reconciled as a read-only NOOP, with no second append or label write.
+
+<a id="des-f01-105"></a>
+### 6.9 DES-F01-105 Resolve the immutable V3 origin independently
+
+The immutable epoch origin is canonical local execution-epoch and workspace-attachment data joined to a directly addressed origin Applied carrier, with its immutable Intent and active Phase Applied/Intent links. `current_epoch.read_current_epoch` checks exact schema, repository/Issue, hashes, frozen branch/base and live HEAD, then scans post-origin V3 Intent/Applied records through the origin. It returns a generation only for zero records or one complete, ordered, digest-matched pair. An unmatched Intent, duplicate, wrong epoch/owner/branch, order anomaly, missing origin or comment-count drift blocks Phase evidence, readiness and ordinary advance before writes. It does not enumerate an old approved ADC chain to find the origin. A complete current generation is read-only; partial or conflicted records never authorize blind retry.
+
+<a id="des-f01-106"></a>
+### 6.10 DES-F01-106 Bind one marker-derived continuation commit
+
+The current marker pins its start HEAD, current PR subject, and sorted path allowlist. Its follow-up parent must equal that start. Git verifies no descendant before implementation, then exactly one direct child with the exact parent, the pushed remote HEAD, and changed paths contained by the allowlist. Continuation readers derive accepted labels from the verified current ADC's phase_edges. At the child HEAD, receipt reissue binds committed documents and preserves historical receipts; supported edges proceed through execution and verification. Verification, Acceptance, two-stage Self-Audit, Independent Review, and Readiness are exact-subject gates. User Review begins once after Readiness PASS and remains PENDING.
+
+<a id="des-f01-107"></a>
+### 6.11 DES-F01-107 Parse generic current continuation markers
+
+A current typed marker is parsed by schema and verified against the latest approved ADC, current predecessor declaration, exact repository/Issue/epoch, start HEAD, sorted path list and any explicit checklist count. Historical marker versions remain unchanged but are not read to authorize a live operation. Unknown, stale, duplicate or non-canonical current markers and malformed path constraints block before mutation.
+
+<a id="des-f01-108"></a>
+### 6.12 DES-F01-108 Reuse command-local ADC history safely
+
+The outer command may reuse its one exact verified current ADC for nested readers on the same client, repository and Issue. There is no command-local historical approved-range cache on the current path and no full-history fallback on cache misses. Mutable labels, Issue/PR, branch/HEAD, direct operation journals and feedback are read live at their required boundaries. A pointer change or mutation invalidates the current proof.
+
+<a id="des-f01-109"></a>
+### 6.13 DES-F01-109 Bound GitHub API child processes
+
+`GitHub.request` supplies a finite timeout to every `gh api` subprocess. `subprocess.run` handles child termination and reaping on timeout; the adapter converts `TimeoutExpired` to a `GitHubError` containing only the HTTP method, validated endpoint, and configured timeout. It omits raw stderr, input payloads, and authentication environment data. The existing response parser and status handling run only after a completed child response.
 
 <a id="des-wf-004"></a>
 <a id="des-wf-004-failure-handling"></a>

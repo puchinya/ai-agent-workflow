@@ -18,7 +18,8 @@ sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases.adc import publish_adc
 from p_ases.cli import (
-    CLI_ADVANCE_TARGETS, CLIError, OwnerAuthorizationError, _audit_independent, _delivery_final,
+    CLI_ADVANCE_TARGETS, CLIError, OwnerAuthorizationError, _activation_v2_proof,
+    _audit_independent, _delivery_final,
     _owner_merge_gate, _parser, _work_command, main,
 )
 from p_ases.delivery import ReadinessResult
@@ -199,7 +200,8 @@ class PasesCLITests(unittest.TestCase):
             "repository": "puchinya/ai-agent-workflow", "issue_number": 63,
             "pr_number": 64, "pr_head_sha40": head,
         }
-        plan = {"target_issue_number": 63, "pr_number": 64, "pr_head_sha40": head}
+        plan = {"repository": "puchinya/ai-agent-workflow",
+                "target_issue_number": 63, "pr_number": 64, "pr_head_sha40": head}
         args = SimpleNamespace(
             delivery_plan=Path("plan.json"), readiness=Path("readiness.json"),
             verification=Path("verification.json"), acceptance=Path("acceptance.json"),
@@ -545,7 +547,17 @@ class PasesCLITests(unittest.TestCase):
             "owner_id": 3744776, "activation_issue_number": 57,
             "plan_sha256": "a" * 64, "diff": {"operation": "create"},
         }
-        fake_github = SimpleNamespace(repo="puchinya/ai-agent-workflow")
+        fake_github = SimpleNamespace(
+            repo="puchinya/ai-agent-workflow",
+            repository_metadata=lambda: {
+                "full_name": "puchinya/ai-agent-workflow", "id": 1401910271,
+                "owner": {"id": 3744776, "type": "User"},
+            },
+            issue_comment=lambda issue, comment_id: {
+                "id": comment_id,
+                "issue_url": "https://api.github.com/repos/puchinya/ai-agent-workflow/issues/63",
+            },
+        )
         with patch("p_ases.cli._runtime_root", return_value=ROOT), \
                 patch("p_ases.cli.discover_repository", return_value="puchinya/ai-agent-workflow"), \
                 patch("p_ases.cli.GitHub", return_value=fake_github), \
@@ -589,12 +601,148 @@ class PasesCLITests(unittest.TestCase):
         with patch("p_ases.cli._runtime_root", return_value=ROOT), \
                 patch("p_ases.cli.discover_repository", return_value="puchinya/ai-agent-workflow"), \
                 patch("p_ases.cli.GitHub", return_value=fake_github), \
+                patch("p_ases.cli.activation_setup_requires_admin", return_value=True), \
+                patch("p_ases.cli.temporary_admin_client", return_value=contextlib.nullcontext(fake_github)), \
                 patch("p_ases.cli.setup_consumer_activation", return_value=pending), \
                 patch("p_ases.cli._json") as emit:
             status = main(["delivery", "consumer-activation-setup", "--repo",
                            "puchinya/ai-agent-workflow", "--root", str(ROOT)])
         self.assertEqual(status, 2)
         self.assertEqual(emit.call_args.args[0], pending)
+
+    def test_v1_activation_setup_uses_ordinary_client_without_opening_admin_session(self):
+        fake_github = SimpleNamespace(repo="owner/consumer")
+        pending = {"status": "SETUP_PENDING"}
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch("p_ases.cli._runtime_root", return_value=Path(temporary)), \
+                patch("p_ases.cli.discover_repository", return_value="owner/consumer"), \
+                patch("p_ases.cli.GitHub", return_value=fake_github), \
+                patch("p_ases.cli.activation_setup_requires_admin", return_value=False), \
+                patch("p_ases.cli.temporary_admin_client", side_effect=AssertionError("V1 opened Admin")), \
+                patch("p_ases.cli.setup_consumer_activation", return_value=pending) as setup, \
+                patch("p_ases.cli._json"):
+            status = main(["delivery", "consumer-activation-setup", "--repo", "owner/consumer",
+                           "--root", temporary])
+        self.assertEqual(status, 2)
+        setup.assert_called_once_with(Path(temporary), fake_github)
+
+    def test_v2_activation_verify_keeps_journal_writes_on_ordinary_client(self):
+        ordinary = SimpleNamespace(repo="puchinya/ai-agent-workflow")
+        admin = SimpleNamespace(repo="puchinya/ai-agent-workflow")
+        record = SimpleNamespace(
+            activation_issue_number=57, activated_at="2026-11-14T00:00:00Z", sha256="a" * 64,
+            review_mode="solo_owner", required_check_runs=(object(),), schema_version=2,
+        )
+        def admin_context(_repository):
+            return contextlib.nullcontext(admin)
+
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch("p_ases.cli._runtime_root", return_value=Path(temporary)), \
+                patch("p_ases.cli.discover_repository", return_value="puchinya/ai-agent-workflow"), \
+                patch("p_ases.cli.GitHub", return_value=ordinary), \
+                patch("p_ases.cli.activation_pr_requires_admin", return_value=True), \
+                patch("p_ases.cli.temporary_admin_client", side_effect=admin_context), \
+                patch("p_ases.cli.verify_and_record_activation", return_value=(record, 900)) as verify, \
+                patch("p_ases.cli._json"):
+            status = main(["delivery", "consumer-activation-verify", "82", "--repo",
+                           "puchinya/ai-agent-workflow", "--root", temporary])
+        self.assertEqual(status, 0)
+        verify.assert_called_once_with(ordinary, 82, root=Path(temporary), policy_github=admin)
+
+    def test_v1_activation_verify_uses_ordinary_client_without_admin_session(self):
+        ordinary = SimpleNamespace(repo="owner/consumer")
+        record = SimpleNamespace(
+            activation_issue_number=71, activated_at="2026-11-14T00:00:00Z", sha256="b" * 64,
+            review_mode="external_reviewer", required_check_runs=(object(),), schema_version=1,
+        )
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch("p_ases.cli._runtime_root", return_value=Path(temporary)), \
+                patch("p_ases.cli.discover_repository", return_value="owner/consumer"), \
+                patch("p_ases.cli.GitHub", return_value=ordinary), \
+                patch("p_ases.cli.activation_pr_requires_admin", return_value=False), \
+                patch("p_ases.cli.temporary_admin_client", side_effect=AssertionError("V1 opened Admin")), \
+                patch("p_ases.cli.verify_and_record_activation", return_value=(record, 901)) as verify, \
+                patch("p_ases.cli._json"):
+            status = main(["delivery", "consumer-activation-verify", "82", "--repo", "owner/consumer",
+                           "--root", temporary])
+        self.assertEqual(status, 0)
+        verify.assert_called_once_with(ordinary, 82, root=Path(temporary))
+
+    def test_finalize_opens_admin_only_for_verified_v2_activation_history(self):
+        ordinary = SimpleNamespace(repo="puchinya/ai-agent-workflow")
+        ordinary.pull_request = lambda _number: {
+            "state": "closed", "merged": True, "body": "Implementation delivered.\n\nRefs #63",
+        }
+        admin = SimpleNamespace(repo="puchinya/ai-agent-workflow")
+        v1 = [(SimpleNamespace(schema_version=1), 100)]
+        v2 = [(SimpleNamespace(schema_version=2), 200)]
+        for history, expect_admin in ((v1, False), (v2, True)):
+            with self.subTest(expect_admin=expect_admin), tempfile.TemporaryDirectory() as temporary:
+                admin_context = contextlib.nullcontext(admin)
+                with patch("p_ases.cli._runtime_root", return_value=Path(temporary)), \
+                        patch("p_ases.cli.discover_repository", return_value="puchinya/ai-agent-workflow"), \
+                        patch("p_ases.cli.GitHub", return_value=ordinary), \
+                        patch("p_ases.cli.read_consumer_activation_history", return_value=history) as read_history, \
+                        patch("p_ases.cli.temporary_admin_client", return_value=admin_context) as open_admin, \
+                        patch("p_ases.cli._delivery_finalize", return_value=0) as finalize:
+                    status = main(["delivery", "finalize", "63", "64", "--repo",
+                                   "puchinya/ai-agent-workflow", "--root", temporary])
+                self.assertEqual(status, 0)
+                read_history.assert_called_once_with(ordinary, "puchinya/ai-agent-workflow", 57)
+                self.assertEqual(open_admin.called, expect_admin)
+                if expect_admin:
+                    self.assertIs(finalize.call_args.kwargs["policy_github"], admin)
+                else:
+                    self.assertNotIn("policy_github", finalize.call_args.kwargs)
+
+    def test_issue63_activation_proof_separates_historical_and_current_policy_readers(self):
+        repository = "puchinya/ai-agent-workflow"
+        main_sha = "c" * 40
+        profile_bytes = b'{"activation":{"issue_number":57},"final_delivery":{"review_mode":"solo_owner"}}\n'
+        policy_evidence = {
+            "ruleset_id": 7, "effective_policy_sha256": "d" * 64, "applied_record_id": 499,
+        }
+        ordinary = SimpleNamespace(
+            repo=repository,
+            repository_metadata=lambda: {"default_branch": "main"},
+            branch=lambda _branch: {"commit": {"sha": main_sha}},
+            regular_content_at_ref=lambda _path, _ref: profile_bytes,
+        )
+        admin = SimpleNamespace(repo=repository)
+        profile = SimpleNamespace(
+            activation_issue_number=57, final_delivery_review_mode="solo_owner",
+            required_checks=(("ci", 15368),),
+            required_check_policy=lambda: SimpleNamespace(sha256="e" * 64),
+        )
+        record = SimpleNamespace(
+            schema_version=2, activation_issue_number=57, repository=repository,
+            review_mode="solo_owner", ruleset_id=7, branch_policy_sha256="d" * 64,
+            ruleset_applied_record_id=499, adc_sha256="a" * 64, adc_comment_id=600,
+            activation_profile_sha256=hashlib.sha256(profile_bytes).hexdigest(),
+            activated_at="2026-11-14T00:00:00Z", payload=lambda: {"schema": "PASES_CONSUMER_ACTIVATION_V2"},
+        )
+        adc = SimpleNamespace(pointer=SimpleNamespace(
+            state="approved", sha256="a" * 64, comment_id=600,
+        ))
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch("p_ases.cli.read_consumer_activation_history",
+                      return_value=[(record, 601)]) as read_history, \
+                patch("p_ases.cli.load_profile", return_value=profile), \
+                patch("p_ases.cli.current_branch", return_value="main"), \
+                patch("p_ases.cli.worktree_clean", return_value=True), \
+                patch("p_ases.cli.head_sha40", return_value=main_sha), \
+                patch("p_ases.cli.verify_adc", return_value=adc), \
+                patch("p_ases.cli.require_local_activation_execution"), \
+                patch("p_ases.cli.require_isolated_device_admin_client") as require_admin, \
+                patch("p_ases.cli.read_verified_managed_policy", return_value=policy_evidence) as read_policy:
+            result = _activation_v2_proof(
+                Path(temporary), ordinary, repository, policy_github=admin,
+            )
+        self.assertEqual(result["status"], "ACTIVE")
+        read_history.assert_called_once_with(ordinary, repository, 57)
+        require_admin.assert_called_once_with(admin)
+        self.assertEqual(read_policy.call_count, 2)
+        self.assertTrue(all(call.args[0] is admin for call in read_policy.call_args_list))
 
     def test_advance_cli_excludes_readiness_approval_and_close_targets(self):
         self.assertNotIn("user-review", CLI_ADVANCE_TARGETS)
@@ -638,6 +786,14 @@ class PasesCLITests(unittest.TestCase):
             "issue", "phase-restart", "72", "--repo", "puchinya/ai-agent-workflow", "--root", str(ROOT),
         ])
         self.assertEqual((restart.namespace, restart.verb, restart.issue), ("issue", "phase-restart", 72))
+        rework = _parser().parse_args([
+            "issue", "phase-rework", "71", "--repo", "puchinya/ai-agent-workflow",
+            "--root", str(ROOT), "--plan", "plan.json", "--verification", "verification.json",
+            "--acceptance", "acceptance.json", "--self-audit", "self-audit.json",
+            "--independent-review", "independent-review.json",
+        ])
+        self.assertEqual((rework.namespace, rework.verb, rework.issue), ("issue", "phase-rework", 71))
+        self.assertEqual(rework.independent_review, Path("independent-review.json"))
 
     def test_phase_restart_cli_dispatches_to_generic_authorized_route(self):
         expected = {"status": "APPLIED", "issue": 72, "label_write_count": 1}
@@ -652,6 +808,56 @@ class PasesCLITests(unittest.TestCase):
             ])
         self.assertEqual(status, 0)
         restart.assert_called_once_with(github, ROOT.resolve(), 72)
+        make_github.assert_called_once_with(github.repo)
+        emit.assert_called_once_with(expected)
+
+    def test_phase_rebaseline_compatibility_command_uses_generic_restart(self):
+        github = SimpleNamespace(repo="owner/repo")
+        for issue_number in (63, 128):
+            expected = {"status": "NOOP", "issue": issue_number, "writes_performed": 0}
+            with self.subTest(issue=issue_number), \
+                    patch("p_ases.cli._repo_root", return_value=ROOT), \
+                    patch("p_ases.cli.discover_repository", return_value=github.repo), \
+                    patch("p_ases.cli.GitHub", return_value=github), \
+                    patch("p_ases.cli.restart_issue_phase", return_value=expected) as restart, \
+                    patch("p_ases.cli._json") as emit:
+                result = main([
+                    "issue", "phase-rebaseline", str(issue_number), "--repo", github.repo,
+                ])
+                self.assertEqual(result, 0)
+                restart.assert_called_once_with(github, ROOT.resolve(), issue_number)
+                emit.assert_called_once_with(expected)
+
+    def test_generic_epoch_reset_cli_routes_without_issue_allowlist(self):
+        expected = {"status": "NOOP", "issue": 128, "writes_performed": 0}
+        github = SimpleNamespace(repo="owner/repo")
+        for verb in ("epoch-reset", "phase-epoch-rebaseline"):
+            with self.subTest(verb=verb), \
+                    patch("p_ases.cli._repo_root", return_value=ROOT), \
+                    patch("p_ases.cli.discover_repository", return_value=github.repo), \
+                    patch("p_ases.cli.GitHub", return_value=github), \
+                    patch("p_ases.cli.reset_execution_epoch", return_value=expected) as reset, \
+                    patch("p_ases.cli._json") as emit:
+                status = main([
+                    "issue", verb, "128", "--repo", github.repo, "--root", str(ROOT),
+                ])
+                self.assertEqual(status, 0)
+                reset.assert_called_once_with(github, ROOT.resolve(), 128)
+                emit.assert_called_once_with(expected)
+
+    def test_phase_rework_cli_dispatches_to_generic_current_adc_route(self):
+        expected = {"status": "NOOP", "issue": 128, "writes_performed": 0}
+        github = SimpleNamespace(repo="owner/repo")
+        with patch("p_ases.cli._repo_root", return_value=ROOT), \
+                patch("p_ases.cli.discover_repository", return_value=github.repo), \
+                patch("p_ases.cli.GitHub", return_value=github) as make_github, \
+                patch("p_ases.cli.apply_phase_rework", return_value=expected) as rework, \
+                patch("p_ases.cli._json") as emit:
+            status = main([
+                "issue", "phase-rework", "128", "--repo", github.repo, "--root", str(ROOT),
+            ])
+        self.assertEqual(status, 0)
+        rework.assert_called_once_with(github, ROOT.resolve(), 128, readiness_factory=None)
         make_github.assert_called_once_with(github.repo)
         emit.assert_called_once_with(expected)
 
@@ -684,20 +890,27 @@ class PasesCLITests(unittest.TestCase):
         })
         refresh.assert_called_once()
 
-    def test_issue_63_approved_adc_publish_requires_exact_supersede_and_runs_phase_bootstrap(self):
+    def test_approved_adc_publish_does_not_implicitly_transition_phase(self):
         pointer = SimpleNamespace(comment_id=6228771810, sha256="a" * 64,
                                   byte_length=7, state="approved")
         predecessor = SimpleNamespace(comment_id=6228771805, sha256="b" * 64,
                                       byte_length=7, state="approved")
         decision = SimpleNamespace(comment_id=8123)
-        github = SimpleNamespace(repo="puchinya/ai-agent-workflow")
+        github = SimpleNamespace(
+            repo="puchinya/ai-agent-workflow",
+            repository_metadata=lambda: {
+                "id": 1401910271, "full_name": "puchinya/ai-agent-workflow",
+                "owner": {"id": 3744776, "type": "User"},
+            },
+        )
         output = io.StringIO()
         with patch("p_ases.cli.GitHub", return_value=github), \
                 patch("p_ases.cli.parse_adc", return_value=SimpleNamespace(sha256="a" * 64)), \
                 patch("p_ases.cli.read_verified_owner_decision", return_value=decision) as read_decision, \
                 patch("p_ases.cli.verify_adc", return_value=SimpleNamespace(pointer=predecessor)), \
                 patch("p_ases.cli.publish_adc", return_value=pointer) as publish, \
-                patch("p_ases.cli.rebaseline_issue_phase", return_value={"status": "APPLIED"}) as rebaseline, \
+                patch("p_ases.cli.restart_issue_phase", side_effect=AssertionError(
+                    "phase mutation must be explicit")) as rebaseline, \
                 contextlib.redirect_stdout(output):
             status = main([
                 "adc", "publish", "63", str(Path(__file__)),
@@ -705,7 +918,7 @@ class PasesCLITests(unittest.TestCase):
                 "--approval-comment-id", str(decision.comment_id),
             ])
         self.assertEqual(status, 0)
-        self.assertIn('"phase_rebaseline": {\n    "status": "APPLIED"', output.getvalue())
+        self.assertNotIn('"phase_rebaseline"', output.getvalue())
         read_decision.assert_called_once_with(
             github, issue_number=63, owner_id=3744776,
                 operation="ADC_SUPERSEDE", subject_sha256="a" * 64,
@@ -713,7 +926,36 @@ class PasesCLITests(unittest.TestCase):
         )
         publish.assert_called_once()
         self.assertIs(publish.call_args.kwargs["expected_current"], predecessor)
-        rebaseline.assert_called_once_with(github, 63)
+        rebaseline.assert_not_called()
+
+    def test_adc_supersede_approval_is_enforced_for_other_issue_numbers(self):
+        issue_number = 128
+        pointer = SimpleNamespace(comment_id=200, sha256="a" * 64,
+                                  byte_length=7, state="approved")
+        previous = SimpleNamespace(comment_id=199, sha256="b" * 64,
+                                   byte_length=7, state="approved")
+        github = SimpleNamespace(
+            repo="puchinya/ai-agent-workflow",
+            repository_metadata=lambda: {
+                "id": 1401910271, "full_name": "puchinya/ai-agent-workflow",
+                "owner": {"id": 3744776, "type": "User"},
+            },
+        )
+        decisions = SimpleNamespace(comment_id=1234)
+        with patch("p_ases.cli.GitHub", return_value=github), \
+                patch("p_ases.cli.parse_adc", return_value=SimpleNamespace(sha256="a" * 64)), \
+                patch("p_ases.cli.read_verified_owner_decision", return_value=decisions) as authorization, \
+                patch("p_ases.cli.verify_adc", return_value=SimpleNamespace(pointer=previous)), \
+                patch("p_ases.cli.publish_adc", return_value=pointer) as publisher, \
+                contextlib.redirect_stdout(io.StringIO()):
+            status = main([
+                "adc", "publish", str(issue_number), str(Path(__file__)),
+                "--repo", "puchinya/ai-agent-workflow", "--state", "approved",
+                "--supersede", "--approval-comment-id", str(decisions.comment_id),
+            ])
+        self.assertEqual(status, 0)
+        self.assertEqual(authorization.call_args.kwargs["issue_number"], issue_number)
+        self.assertEqual(publisher.call_args.args[1], issue_number)
 
     def test_issue_63_approved_adc_without_exact_supersede_is_pending_and_never_publishes(self):
         github = SimpleNamespace(repo="puchinya/ai-agent-workflow")

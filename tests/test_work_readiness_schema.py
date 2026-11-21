@@ -22,6 +22,10 @@ from p_ases.delivery import (
 )
 from p_ases.evidence_store import VerificationSubject
 from p_ases.execution import AdoptedExecutionEpoch, ExecutionBinding, binding_digest
+from p_ases.execution_adoption import adoption_path, attachment_path as adoption_attachment_path
+from p_ases.current_epoch import ActiveExecutionEpoch
+from p_ases.cli import CLIError, _identity_evidence_paths
+from p_ases.work import execution_binding_path
 from p_ases.verification import (
     GateResult, RequiredCheckPolicy, VerificationResult, evaluate_required_checks,
 )
@@ -32,6 +36,30 @@ HEAD = "b" * 40
 ADC_SHA = "c" * 64
 PLAN_SHA = "d" * 64
 
+
+def epoch3_identity() -> ActiveExecutionEpoch:
+    """Fixture for a generic V3 epoch, retaining the historical issue number."""
+    origin = {
+        "schema": "PASES_ISSUE_EXECUTION_EPOCH_V3",
+        "repository": "puchinya/ai-agent-workflow",
+        "issue_number": 71,
+        "issue_id": 6135294757,
+        "adc_comment_id": 6881591677,
+        "adc_sha256": "3c6b3ac28270357b57047dc5da0a2c1fbdbada269d55225ea33a656cd3076e17",
+        "base_ref": "main",
+        "base_sha40": "07481c4b451a81750a6c2e1a6a18bdfd4e3459c2",
+        "branch_ref": "pases/issue-71-local-activation-v2-phase-rebaseline-epoch-3",
+        "epoch_id": "1" * 64,
+        "historical_binding_provenance": "UNVERIFIED",
+        "sha256": "4" * 64,
+    }
+    return ActiveExecutionEpoch(
+        origin=origin,
+        adc_comment_id=origin["adc_comment_id"],
+        adc_sha256=origin["adc_sha256"],
+        applied_comment_id=6881839877,
+        applied_body_sha256="3" * 64,
+    ).validate()
 
 def setup(*, draft=False, fork=False, stale=False, unresolved=False):
     subject = VerificationSubject("octo/repo", 30, 55, 123, ADC_SHA, PLAN_SHA, "e" * 40)
@@ -93,6 +121,147 @@ def setup(*, draft=False, fork=False, stale=False, unresolved=False):
 
 
 class WorkReadinessSchemaTests(unittest.TestCase):
+    def test_issue71_requires_the_active_epoch3_identity_and_v4_prbinding_bridge(self):
+        repository = "puchinya/ai-agent-workflow"
+        epoch = epoch3_identity()
+        subject = VerificationSubject(repository, 71, 81, epoch.adc_comment_id, epoch.adc_sha256,
+                                      PLAN_SHA, "e" * 40)
+        binding = PRBinding(
+            repository, 71, epoch.adc_comment_id, epoch.adc_sha256, epoch.base_sha40,
+            epoch.branch_ref, 81, subject.pr_head_sha40, execution_epoch_sha256=epoch.sha256,
+        ).validate()
+        context = WorkContext(epoch, subject.pr_head_sha40, epoch.branch_ref, True, epoch.sha256).validate()
+        self.assertTrue(_identity_adc_matches_subject(epoch, binding, subject))
+        self.assertIsNone(context.execution_binding_sha256)
+        with self.assertRaisesRegex(ValueError, "not a normal ExecutionBinding"):
+            _ = context.execution_binding
+        self.assertFalse(_identity_adc_matches_subject(
+            epoch, PRBinding(
+                repository, 71, epoch.adc_comment_id, epoch.adc_sha256, epoch.base_sha40,
+                epoch.branch_ref, 81, subject.pr_head_sha40,
+            ).validate(), subject,
+        ))
+
+    def test_deferred_close_pr_association_is_not_issue_specific(self):
+        for issue_number in (63, 129):
+            subject = VerificationSubject("octo/repo", issue_number, 55, 123, ADC_SHA,
+                                          PLAN_SHA, "e" * 40)
+            pr = PRReadback(
+                repository="octo/repo", issue_number=issue_number, pr_number=55,
+                state="open", draft=False, base_ref="main", base_sha40=BASE,
+                head_ref="pases/work", head_sha40=subject.pr_head_sha40,
+                head_repository="octo/repo", closing_issue_number=issue_number,
+                close_on_merge=True,
+            )
+            binding = ExecutionBinding(
+                "octo/repo", issue_number, 123, ADC_SHA, "main", BASE,
+                "pases/work", str(Path(tempfile.gettempdir()) / "pases"), BASE,
+            ).validate()
+            context = WorkContext(binding, subject.pr_head_sha40, "pases/work",
+                                  True, binding_digest(binding)).validate()
+            pr_binding = PRBinding("octo/repo", issue_number, 123, ADC_SHA, BASE,
+                                   "pases/work", 55, subject.pr_head_sha40).validate()
+            result = evaluate_readiness(
+                subject=subject, pr=pr, pr_binding=pr_binding, work_context=context,
+                verification=None, acceptance=None, self_audit=None, required_item_ids=(),
+                independent_review=None, required_checks_sha256=None,
+            )
+            self.assertFalse(any("Issue #63 requires" in reason for reason in result.reasons))
+
+    def test_v1_binding_is_not_rejected_by_hardcoded_issue_number(self):
+        repository = "puchinya/ai-agent-workflow"
+        for issue_number in (71, 128):
+            subject = VerificationSubject(
+                repository, issue_number, 81, 6881591677,
+                "3c6b3ac28270357b57047dc5da0a2c1fbdbada269d55225ea33a656cd3076e17",
+                PLAN_SHA, "e" * 40,
+            )
+            binding = ExecutionBinding(
+                repository=repository, issue_number=issue_number,
+                adc_comment_id=subject.adc_comment_id, adc_sha256=subject.adc_sha256,
+                base_ref="main", base_sha="07481c4b451a81750a6c2e1a6a18bdfd4e3459c2",
+                work_directory=str(Path(tempfile.gettempdir()) / "pases-work"),
+                branch_ref="pases/work", initial_head_sha="07481c4b451a81750a6c2e1a6a18bdfd4e3459c2",
+            ).validate()
+            context = WorkContext(binding, subject.pr_head_sha40, binding.branch_ref, True,
+                                  binding_digest(binding)).validate()
+            pr_binding = PRBinding(
+                repository, issue_number, subject.adc_comment_id, subject.adc_sha256,
+                binding.base_sha, binding.branch_ref, 81, subject.pr_head_sha40,
+            ).validate()
+            self.assertTrue(_identity_adc_matches_subject(binding, pr_binding, subject))
+            result = evaluate_readiness(
+                subject=subject, pr=None, pr_binding=pr_binding, work_context=context,
+                verification=None, acceptance=None, self_audit=None, required_item_ids=(),
+                independent_review=None, required_checks_sha256=None,
+            )
+            self.assertEqual(result.status, "BLOCKED")
+            self.assertFalse(any("Issue #71 requires" in reason for reason in result.reasons))
+
+
+    def test_readiness_identity_evidence_refs_follow_validated_active_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            epoch = epoch3_identity()
+            epoch_paths = (
+                root / ".p_ases/state/71/execution-epoch.json",
+                root / ".p_ases/state/71/execution-epoch-attachment.json",
+            )
+            for path in epoch_paths:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("validated epoch evidence", encoding="utf-8")
+            self.assertEqual(_identity_evidence_paths(root, 71, epoch), epoch_paths)
+            self.assertFalse(execution_binding_path(root, 71).exists())
+            epoch_paths[1].unlink()
+            with self.assertRaisesRegex(CLIError, "evidence file is missing"):
+                _identity_evidence_paths(root, 71, epoch)
+            epoch_paths[1].write_text("validated epoch evidence", encoding="utf-8")
+
+            binding = ExecutionBinding(
+                repository="octo/repo", issue_number=30, adc_comment_id=123, adc_sha256=ADC_SHA,
+                base_ref="main", base_sha=BASE, work_directory=str(root),
+                branch_ref="pases/ordinary", initial_head_sha=BASE,
+            ).validate()
+            ordinary_path = execution_binding_path(root, 30)
+            ordinary_path.parent.mkdir(parents=True, exist_ok=True)
+            ordinary_path.write_text("validated binding", encoding="utf-8")
+            self.assertEqual(_identity_evidence_paths(root, 30, binding), (ordinary_path,))
+
+            adopted = AdoptedExecutionEpoch(
+                repository="puchinya/ai-agent-workflow", issue_number=63, adc_comment_id=100,
+                adc_sha256="1" * 64, pr_number=64, pr_author_user_id=3744776,
+                selected_base_ref="main", selected_base_sha40=BASE,
+                branch_ref="codex/issue-63-adoption", observed_start_head_sha40=HEAD,
+                adoption_id="2" * 64, plan_sha256="3" * 64, owner_decision_comment_id=1,
+                owner_authorization_plan_sha256="4" * 64, approval_scope_sha256="5" * 64,
+                intent_comment_id=2, applied_comment_id=3, intent_body_sha256="6" * 64,
+                applied_body_sha256="7" * 64, attachment_id="8" * 64,
+            ).validate()
+            adopted_paths = (adoption_path(root, 63), adoption_attachment_path(root, 63))
+            for path in adopted_paths:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("validated adopted epoch", encoding="utf-8")
+            self.assertEqual(_identity_evidence_paths(root, 63, adopted), adopted_paths)
+            adopted_paths[0].unlink()
+            with self.assertRaisesRegex(CLIError, "evidence file is missing"):
+                _identity_evidence_paths(root, 63, adopted)
+
+    def test_readiness_does_not_emit_or_accept_reconstructed_v1_binding_for_issue71(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            epoch = epoch3_identity()
+            for path in (
+                root / ".p_ases/state/71/execution-epoch.json",
+                root / ".p_ases/state/71/execution-epoch-attachment.json",
+            ):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("validated epoch evidence", encoding="utf-8")
+            legacy_path = execution_binding_path(root, 71)
+            legacy_path.parent.mkdir(parents=True, exist_ok=True)
+            legacy_path.write_text("reconstructed binding", encoding="utf-8")
+            with self.assertRaisesRegex(CLIError, "must not coexist with an ordinary V1 ExecutionBinding"):
+                _identity_evidence_paths(root, 71, epoch)
+
     def test_adopted_epoch_uses_current_prbinding_adc_without_mutating_origin(self):
         repository = "puchinya/ai-agent-workflow"
         origin_adc_sha = "1" * 64

@@ -17,13 +17,14 @@ from p_ases.delivery import ReadinessResult
 from p_ases.evidence_store import VerificationSubject
 from p_ases.github import GitHub, GitHubError, ReadOnlyGitHub
 from p_ases.phases import Attention, IssueKind, Phase
+from p_ases.profile import canonical_project_profile_sha256
 from p_ases.user_review import (
     FeedbackSnapshot, UserReviewError, UserReviewResult, UserReviewSession, UserReviewSubject,
     feedback_snapshot_path, review_session_path, write_review_session,
 )
 from p_ases.cli import (
     CLIError, _latest_review_snapshot, _parser, _read_only_github, _readiness_phase_blocker,
-    _review_phase_transition, _solo_owner_identity, _user_review_run,
+    _review_phase_transition, _solo_owner_identity, _user_review_owner_context, _user_review_run,
 )
 
 
@@ -139,6 +140,119 @@ class UserReviewCliRegressionTests(unittest.TestCase):
             _solo_owner_identity(reader, "puchinya/ai-agent-workflow", 63, 64, HEAD),
             (3744776, 3744776, 9881),
         )
+
+    def test_solo_owner_identity_uses_current_issue_and_pr_without_history(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / ".agent").mkdir()
+            profile_bytes = (ROOT / ".agent" / "project.json").read_bytes()
+            profile_path = root / ".agent" / "project.json"
+            crlf_profile_bytes = profile_bytes.replace(b"\r\n", b"\n").replace(
+                b"\n", b"\r\n",
+            )
+            self.assertEqual(
+                canonical_project_profile_sha256(profile_bytes),
+                canonical_project_profile_sha256(crlf_profile_bytes),
+            )
+            self.assertNotEqual(
+                canonical_project_profile_sha256(profile_bytes),
+                canonical_project_profile_sha256(profile_bytes + b" "),
+            )
+            profile_path.write_bytes(crlf_profile_bytes)
+            issue_body = "Exact current Issue body"
+            pr_body = "Refs #128"
+            branch_ref = "pases/issue-128-user-review"
+            reader = ReadOnlyGitHub("puchinya/ai-agent-workflow")
+            reader.verify_read_only_scope()
+            issue_numbers = []
+            reader.repository_metadata = lambda: {
+                "id": 1401910271, "full_name": "puchinya/ai-agent-workflow",
+                "owner": {"id": 3744776, "login": "puchinya", "type": "User"},
+            }
+
+            def read_issue(number):
+                issue_numbers.append(number)
+                if number != 128:
+                    raise AssertionError("User Review must read only its requested Issue")
+                return {
+                    "number": 128, "id": 128001, "state": "open", "pull_request": None,
+                    "repository_url": "https://api.github.com/repos/puchinya/ai-agent-workflow",
+                    "body": issue_body,
+                    "labels": [{"name": label} for label in
+                               ("enhancement", "kind:single", "phase:user-review")],
+                }
+
+            reader.issue = read_issue
+            reader.pull_request = lambda number: {
+                "number": number, "state": "open", "draft": False, "merged": False,
+                "merged_at": None, "title": "Test PR for Issue #128", "body": pr_body,
+                "head": {"sha": HEAD, "ref": branch_ref,
+                         "repo": {"id": 1401910271}},
+                "base": {"ref": "main", "sha": "b" * 40, "repo": {"id": 1401910271}},
+                "user": {"id": 3744776, "type": "User"},
+            }
+            reader.authenticated_user = lambda: {"id": 9881, "type": "User"}
+            verified = SimpleNamespace(
+                pointer=SimpleNamespace(
+                    comment_id=456,
+                    sha256="f" * 64,
+                    state="approved",
+                ),
+                contract=SimpleNamespace(
+                    sha256="f" * 64,
+                    content=b"current approved ADC bytes",
+                ),
+            )
+            with patch("p_ases.cli.verify_adc", return_value=verified):
+                self.assertEqual(
+                    _solo_owner_identity(reader, "puchinya/ai-agent-workflow", 128, 129, HEAD, root=root),
+                    (3744776, 3744776, 9881),
+                )
+                for invalid_profile in (
+                        profile_bytes.replace(b"\n", b"\r", 1),
+                        b"{malformed-json"):
+                    profile_path.write_bytes(invalid_profile)
+                    with self.assertRaisesRegex(CLIError, "project profile"):
+                        _solo_owner_identity(
+                            reader, "puchinya/ai-agent-workflow", 128, 129, HEAD, root=root,
+                        )
+            self.assertTrue(issue_numbers and all(item == 128 for item in issue_numbers))
+
+    def test_user_review_owner_context_produces_canonical_profile_digest(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / ".agent").mkdir()
+            profile_bytes = (ROOT / ".agent" / "project.json").read_bytes()
+            crlf_profile_bytes = profile_bytes.replace(b"\r\n", b"\n").replace(
+                b"\n", b"\r\n",
+            )
+            (root / ".agent" / "project.json").write_bytes(crlf_profile_bytes)
+            verification_subject = SimpleNamespace(
+                repository="puchinya/ai-agent-workflow", issue_number=128, pr_number=129,
+                pr_head_sha40=HEAD, adc_sha256="a" * 64,
+            )
+            subject = SimpleNamespace(
+                verification_subject=verification_subject, readiness_sha256="b" * 64,
+            )
+            session = SimpleNamespace(subject=subject, sha256="c" * 64)
+            readiness = SimpleNamespace(status="PASS", subject=verification_subject, sha256="b" * 64)
+            snapshot = SimpleNamespace(subject=subject, unresolved_thread_ids=(), events=())
+            current = SimpleNamespace(events=(), unresolved_thread_ids=())
+            args = SimpleNamespace(session=Path("session.json"), readiness=Path("readiness.json"),
+                                   feedback_snapshot=Path("feedback.json"))
+            with patch("p_ases.cli.read_review_session", return_value=session), \
+                    patch("p_ases.cli.read_readiness", return_value=readiness), \
+                    patch("p_ases.cli.read_feedback_snapshot", return_value=snapshot), \
+                    patch("p_ases.cli._solo_owner_identity", return_value=(3744776, 3744776, 9881)), \
+                    patch("p_ases.cli._review_payload_from_github", return_value=current):
+                result = _user_review_owner_context(
+                    args, "puchinya/ai-agent-workflow", root,
+                    ReadOnlyGitHub("puchinya/ai-agent-workflow"), issue_number=128,
+                )
+            self.assertEqual(
+                result["details"]["project_profile_sha256"],
+                canonical_project_profile_sha256(profile_bytes),
+            )
 
     def test_user_review_parser_leaves_kind_unset_unless_explicitly_requested(self):
         for verb in ("start", "sync", "status"):

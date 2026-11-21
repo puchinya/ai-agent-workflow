@@ -444,7 +444,6 @@ def _verify_target_pr(repository: str, issue_number: int, binding: PRBinding,
     base_repo = _nested(pr, "base", "repo", "full_name")
     head_repo = _nested(pr, "head", "repo", "full_name")
     if (pr.get("number") != binding.pr_number or pr.get("state") != "open" or pr.get("draft") is not False
-            or (issue_number == 63 and binding.pr_number != 64)
             or not isinstance(base_repo, str) or base_repo.casefold() != repository.casefold()
             or not isinstance(head_repo, str) or head_repo.casefold() != repository.casefold()
             or _nested(pr, "base", "sha") != current_base or _nested(pr, "base", "ref") != base_ref
@@ -457,8 +456,8 @@ def _verify_target_pr(repository: str, issue_number: int, binding: PRBinding,
         association = parse_issue_association(body, issue_number)
     except IssueAssociationError as exc:
         raise CurrentBaseError(f"target PR Issue association is invalid: {exc}") from exc
-    if association != ("deferred_close" if issue_number == 63 else "auto_close"):
-        raise CurrentBaseError("target PR Issue association mode differs from the delivery contract")
+    if association not in {"auto_close", "deferred_close"}:
+        raise CurrentBaseError("target PR has an unsupported Issue association mode")
 
 
 def _verify_git_transition(root: Path, frozen_base: str, current_base: str, original_head: str,

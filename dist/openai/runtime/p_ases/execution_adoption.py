@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .adc import ADCError, verify_adc, verify_adc_forward_generations
+from .adc import ADCError, verify_adc
 from .checkpoint import (
     CheckpointError, PRBinding, WorkCheckpoint, checkpoint_path, read_checkpoint,
     read_pr_binding, write_checkpoint, write_pr_binding,
@@ -39,10 +39,6 @@ from .owner_authorization import (
     create_authorization_plan,
 )
 from .path_safety import path_has_symlink
-from .phase_rebaseline import (
-    APPLIED_V2_SCHEMA, INTENT_V2_SCHEMA, PhaseRebaselineError,
-    _approved_generations, _read_history, _validate_generation_history,
-)
 from .profile import ProfileError, load_profile
 from .work import (
     WorkError, _checkpoint_files, execution_binding_path, latest_checkpoint, read_pr_binding_history,
@@ -52,6 +48,10 @@ from .work import (
 REPOSITORY = "puchinya/ai-agent-workflow"
 ISSUE_NUMBER = 63
 PR_NUMBER = 64
+INTENT_V2_SCHEMA = "PASES_PHASE_REBASE_INTENT_V2"
+APPLIED_V2_SCHEMA = "PASES_PHASE_REBASE_APPLIED_V2"
+INTENT_V3_SCHEMA = "PASES_PHASE_REBASE_INTENT_V3"
+APPLIED_V3_SCHEMA = "PASES_PHASE_REBASE_APPLIED_V3"
 PLAN_SCHEMA = "PASES_EXECUTION_ADOPTION_PLAN_V1"
 INTENT_SCHEMA = "PASES_EXECUTION_ADOPTION_INTENT_V1"
 APPLIED_SCHEMA = "PASES_EXECUTION_ADOPTION_APPLIED_V1"
@@ -74,20 +74,20 @@ def _positive(value: Any) -> bool:
 
 
 def adoption_path(root: Path, issue_number: int = ISSUE_NUMBER) -> Path:
-    if issue_number != ISSUE_NUMBER:
-        raise ExecutionAdoptionError("adoption is restricted to Issue #63")
+    if not _positive(issue_number):
+        raise ExecutionAdoptionError("adoption Issue number must be positive")
     return Path(root) / ".p_ases" / "state" / str(issue_number) / "execution-adoption.json"
 
 
 def attachment_path(root: Path, issue_number: int = ISSUE_NUMBER) -> Path:
-    if issue_number != ISSUE_NUMBER:
-        raise ExecutionAdoptionError("workspace adoption is restricted to Issue #63")
+    if not _positive(issue_number):
+        raise ExecutionAdoptionError("workspace attachment Issue number must be positive")
     return Path(root) / ".p_ases" / "state" / str(issue_number) / "workspace-attachment.json"
 
 
 def adoption_plan_path(root: Path, issue_number: int = ISSUE_NUMBER) -> Path:
-    if issue_number != ISSUE_NUMBER:
-        raise ExecutionAdoptionError("adoption plan storage is restricted to Issue #63")
+    if not _positive(issue_number):
+        raise ExecutionAdoptionError("adoption plan Issue number must be positive")
     return Path(root) / ".p_ases" / "state" / str(issue_number) / "execution-adoption-plan.json"
 
 
@@ -119,28 +119,23 @@ def _read_issue_phase(issue: dict[str, Any]) -> tuple[list[str], str, str]:
 
 
 def _phase_receipt_snapshot(github: Any, adc_comment_id: int, adc_sha256: str) -> dict[str, Any]:
+    """Bind adoption to current applied Phase receipt without historical ADC scans."""
     try:
-        chain = _approved_generations(github)
-        records = _read_history(github)
-        _v1_intent, _v1_applied, v2_pairs = _validate_generation_history(records, chain)
-    except (PhaseRebaselineError, ADCError) as exc:
-        raise ExecutionAdoptionError(f"Phase V2 history is invalid: {exc}") from exc
-    if not chain or chain[-1].pointer.comment_id != adc_comment_id or chain[-1].pointer.sha256 != adc_sha256:
-        raise ExecutionAdoptionError("Phase V2 history is not bound to the current approved ADC")
-    generation_index = len(chain) - 1
-    pair = v2_pairs.get(generation_index)
-    if pair is None or pair[1] is None:
-        raise ExecutionAdoptionError("current ADC generation has no completed Phase V2 rebaseline")
-    intent, applied = pair
-    if (intent.schema != INTENT_V2_SCHEMA or applied.schema != APPLIED_V2_SCHEMA
-            or intent.payload.get("operation") != "adopt_existing_requirements"
-            or intent.payload.get("to_phase") != "requirements"
-            or applied.payload.get("intent_comment_id") != intent.comment_id):
-        raise ExecutionAdoptionError("current Phase V2 receipts do not represent the completed requirements adoption")
+        current = verify_adc(github, ISSUE_NUMBER)
+    except ADCError as exc:
+        raise ExecutionAdoptionError(f"current adopted Phase ADC is invalid: {exc}") from exc
+    if (current.pointer.state != "approved"
+            or current.pointer.comment_id != adc_comment_id
+            or current.pointer.sha256 != adc_sha256):
+        raise ExecutionAdoptionError("adopted Phase receipt requires the current approved ADC")
+    receipt = _current_rebaseline_receipt(github, ISSUE_NUMBER, current)
+    if receipt is None or receipt["payload"].get("operation") != "adopt_existing_requirements" or (
+            receipt["payload"].get("to_phase") != "requirements"):
+        raise ExecutionAdoptionError("current ADC has no matching requirements-adoption Phase receipt")
     return {
-        "phase_intent_comment_id": intent.comment_id,
-        "phase_applied_comment_id": applied.comment_id,
-        "phase_applied_payload_sha256": hashlib.sha256(_canonical(applied.payload)).hexdigest(),
+        "phase_intent_comment_id": receipt["intent_comment_id"],
+        "phase_applied_comment_id": receipt["applied_comment_id"],
+        "phase_applied_payload_sha256": hashlib.sha256(_canonical(receipt["payload"])).hexdigest(),
     }
 
 
@@ -1192,45 +1187,107 @@ def append_adopted_pr_binding(github: Any, root: Path, *,
     ) | {"status": "PR_BINDING_CURRENT" if previous == new_binding else "PR_BINDING_ADVANCED"}
 
 
+def _current_rebaseline_receipt(github: Any, issue_number: int, current_adc: Any) -> dict[str, Any] | None:
+    """Read the current generation's Applied/Intent by direct ID, not an ADC chain."""
+    issue = github.issue(issue_number)
+    count = issue.get("comments")
+    if type(count) is int and count >= 0 and hasattr(github, "issue_comment_pages_newest"):
+        pages = github.issue_comment_pages_newest(issue_number, count)
+    else:
+        pages = (github.issue_comments(issue_number),)
+    for page in pages:
+        for row in reversed(page):
+            body = row.get("body") if isinstance(row, dict) else None
+            if not isinstance(body, str):
+                continue
+            first = body.split("\n", 1)[0]
+            if first not in (f"<!-- {APPLIED_V2_SCHEMA}", f"<!-- {APPLIED_V3_SCHEMA}"):
+                continue
+            raw = body.split("\n", 1)[1].removesuffix("\n-->")
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise ExecutionAdoptionError("current Phase Applied record is malformed") from exc
+            if (not isinstance(payload, dict) or payload.get("schema") not in (APPLIED_V2_SCHEMA, APPLIED_V3_SCHEMA)
+                    or payload.get("issue_number") != issue_number):
+                raise ExecutionAdoptionError("current Phase Applied record has inconsistent identity")
+            if (payload.get("successor_adc_comment_id") != current_adc.pointer.comment_id
+                    or payload.get("successor_adc_sha256") != current_adc.pointer.sha256):
+                continue
+            comment_id = row.get("id")
+            if type(comment_id) is not int or comment_id < 1:
+                raise ExecutionAdoptionError("current Phase Applied has no valid ID")
+            direct = github.issue_comment(issue_number, comment_id)
+            author = direct.get("user") if isinstance(direct, dict) else None
+            if (not isinstance(direct, dict) or direct.get("body") != body
+                    or direct.get("issue_url") != f"https://api.github.com/repos/{github.repo}/issues/{issue_number}"
+                    or direct.get("created_at") != direct.get("updated_at")
+                    or not isinstance(author, dict) or author.get("type") != "User"):
+                raise ExecutionAdoptionError("current Phase Applied carrier changed")
+            intent_id = payload.get("intent_comment_id")
+            intent_sha = payload.get("intent_sha256")
+            if (type(intent_id) is not int or intent_id < 1
+                    or not isinstance(intent_sha, str) or not SHA256.fullmatch(intent_sha)):
+                raise ExecutionAdoptionError("current Phase Applied has no valid Intent proof")
+            intent = github.issue_comment(issue_number, intent_id)
+            intent_body = intent.get("body") if isinstance(intent, dict) else None
+            expected_intent_schema = INTENT_V3_SCHEMA if payload["schema"] == APPLIED_V3_SCHEMA else INTENT_V2_SCHEMA
+            marker = f"<!-- {expected_intent_schema}\n"
+            if (not isinstance(intent_body, str) or not intent_body.startswith(marker)
+                    or not intent_body.endswith("\n-->")
+                    or intent.get("issue_url") != direct.get("issue_url")
+                    or intent.get("created_at") != intent.get("updated_at")):
+                raise ExecutionAdoptionError("current Phase Intent carrier does not match Applied")
+            intent_json = intent_body[len(marker):-len("\n-->")]
+            try:
+                intent_payload = json.loads(intent_json)
+            except json.JSONDecodeError as exc:
+                raise ExecutionAdoptionError("current Phase Intent JSON is malformed") from exc
+            if (not isinstance(intent_payload, dict)
+                    or json.dumps(intent_payload, sort_keys=True, separators=(",", ":"),
+                                  ensure_ascii=True) != intent_json
+                    or intent_payload.get("schema") != expected_intent_schema
+                    or intent_payload.get("successor_adc_comment_id") != current_adc.pointer.comment_id
+                    or intent_payload.get("successor_adc_sha256") != current_adc.pointer.sha256
+                    or hashlib.sha256(intent_json.encode("utf-8")).hexdigest() != intent_sha):
+                raise ExecutionAdoptionError("current Phase Intent payload does not match Applied")
+            return {
+                "intent_comment_id": intent_id,
+                "applied_comment_id": comment_id,
+                "payload": payload,
+            }
+    return None
+
+
+def _current_rebaseline_applied(github: Any, issue_number: int, current_adc: Any) -> bool:
+    return _current_rebaseline_receipt(github, issue_number, current_adc) is not None
+
+
 def _verify_adopted_effective_adc(github: Any, epoch: AdoptedExecutionEpoch, *,
                                   expected_adc_comment_id: int,
                                   expected_adc_sha256: str) -> tuple[Any, bool]:
-    """Verify the current pointer as an approved forward continuation of the immutable origin."""
+    """Select the current approved ADC without fetching any superseded ADC.
+
+    An older epoch remains provenance only. The current ADC is the sole source
+    of authorization, and each consuming write must be validated against it.
+    """
     try:
-        current = verify_adc(github, ISSUE_NUMBER)
-        if (current.pointer.comment_id != expected_adc_comment_id
-                or current.pointer.sha256 != expected_adc_sha256
-                or current.pointer.state != "approved"):
-            raise ExecutionAdoptionError("adopted execution does not match the current approved ADC pointer")
-        if (current.pointer.comment_id, current.pointer.sha256) == (epoch.adc_comment_id, epoch.adc_sha256):
-            return current, False
-        forward = verify_adc_forward_generations(
-            github, ISSUE_NUMBER, prior_comment_id=epoch.adc_comment_id,
-            prior_sha256=epoch.adc_sha256, current_comment_id=current.pointer.comment_id,
-            current_sha256=current.pointer.sha256,
-        )
-        if (len(forward) < 2 or forward[0].pointer.comment_id != epoch.adc_comment_id
-                or forward[0].pointer.sha256 != epoch.adc_sha256
-                or forward[-1].pointer != current.pointer):
-            raise ExecutionAdoptionError("current ADC is not a complete forward successor of the adopted epoch ADC")
-        generations = _approved_generations(github)
-        if (not generations or generations[-1].pointer != current.pointer
-                or not any(item.pointer.comment_id == epoch.adc_comment_id
-                           and item.pointer.sha256 == epoch.adc_sha256 for item in generations)):
-            raise ExecutionAdoptionError("current ADC is outside the verified #63 approved generation chain")
-        records = _read_history(github)
-        _v1_intent, _v1_applied, pairs = _validate_generation_history(records, generations)
-        generation_index = len(generations) - 1
-        current_pair = pairs.get(generation_index)
-        if current_pair is None or current_pair[1] is None:
-            raise ExecutionAdoptionError(
-                "ADC_REFRESH_PENDING_PHASE_REBASELINE: current ADC generation has no completed V2 Intent/Applied pair"
-            )
-        return current, True
+        current = verify_adc(github, epoch.issue_number)
     except ADCError as exc:
-        raise ExecutionAdoptionError(f"adopted current ADC forward-chain verification failed: {exc}") from exc
-    except PhaseRebaselineError as exc:
-        raise ExecutionAdoptionError(f"current ADC Phase generation is invalid: {exc}") from exc
+        raise ExecutionAdoptionError(f"current approved ADC verification failed: {exc}") from exc
+    if (current.pointer.comment_id != expected_adc_comment_id
+            or current.pointer.sha256 != expected_adc_sha256
+            or current.pointer.state != "approved"):
+        raise ExecutionAdoptionError("adopted execution does not match the current approved ADC pointer")
+    if current.pointer.comment_id == epoch.adc_comment_id:
+        if current.pointer.sha256 != epoch.adc_sha256:
+            raise ExecutionAdoptionError("current ADC identity conflicts with adopted origin")
+        return current, False
+    if current.pointer.comment_id < epoch.adc_comment_id:
+        raise ExecutionAdoptionError("current ADC predates the immutable adopted origin")
+    if not _current_rebaseline_applied(github, epoch.issue_number, current):
+        raise ExecutionAdoptionError("ADC_REFRESH_PENDING_PHASE_REBASELINE: current ADC has no applied Phase generation")
+    return current, True
 
 
 def verify_adopted_execution(
@@ -1370,19 +1427,8 @@ def verify_adopted_execution(
     if not binding_adc_matches:
         if not has_adc_successor:
             raise ExecutionAdoptionError("latest PRBinding ADC differs from the adopted epoch ADC")
-        try:
-            binding_to_current = verify_adc_forward_generations(
-                github, ISSUE_NUMBER,
-                prior_comment_id=latest_pr_binding.adc_comment_id,
-                prior_sha256=latest_pr_binding.adc_sha256,
-                current_comment_id=current_adc.pointer.comment_id,
-                current_sha256=current_adc.pointer.sha256,
-            )
-        except ADCError as exc:
-            raise ExecutionAdoptionError(f"latest PRBinding is not an ancestor of the effective ADC: {exc}") from exc
-        if (not binding_to_current or binding_to_current[0].pointer.comment_id != latest_pr_binding.adc_comment_id
-                or binding_to_current[-1].pointer != current_adc.pointer):
-            raise ExecutionAdoptionError("latest PRBinding ADC is not in the effective forward generation chain")
+        if latest_pr_binding.adc_comment_id >= current_adc.pointer.comment_id:
+            raise ExecutionAdoptionError("latest PRBinding ADC does not precede the current approved ADC")
         if not allow_adc_refresh_pending:
             raise ExecutionAdoptionError("ADC_REFRESH_REQUIRED: current approved ADC has not been bridged by PRBinding")
     head_binding_matches = latest_pr_binding.pr_head_sha40 == current_head

@@ -111,7 +111,8 @@ def activation_proof():
 
 def run_finalize(root: Path, github: FakeGitHub) -> dict:
     output = io.StringIO()
-    with contextlib.redirect_stdout(output):
+    with contextlib.redirect_stdout(output), \
+            patch("p_ases.cli.load_profile", return_value=SimpleNamespace(activation_issue_number=57)):
         status = _delivery_finalize(SimpleNamespace(issue=63, pr=64), REPOSITORY, root, github)
     value = json.loads(output.getvalue())
     value["exit_code"] = status
@@ -180,7 +181,7 @@ class DeferredIssueCloseTests(unittest.TestCase):
             github = FakeGitHub()
             active_history = [(SimpleNamespace(schema_version=2), 500)]
             with patch("p_ases.cli.read_consumer_activation_history", return_value=active_history), \
-                    patch("p_ases.cli._activation_v2_issue63_proof", return_value=activation_proof()):
+                    patch("p_ases.cli._activation_v2_proof", return_value=activation_proof()):
                 first = run_finalize(root, github)
                 second = run_finalize(root, github)
             self.assertEqual(first["status"], "FINALIZED")
