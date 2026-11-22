@@ -148,15 +148,13 @@ Each invalid case fails closed before hooks or unrelated mutation and reports it
 <a id="tst-wf-008-security-boundary"></a>
 ### 2.8 TST-WF-008 Security boundary
 
-**Setup and action:** Exercise invalid local paths and simulated API/process errors using fake transports. For a public Issue and PR, establish one legitimate approved ADC pointer, publication markers, and a pending User Review session. Inject newer comments from `none`/`read`/`triage` actors and an unallowlisted Bot, including a fully well-formed forged pointer and matching forged ADC body, a malformed `PASES_*` sentinel, a forged Owner/User Review decision, a `CHANGES_REQUESTED` pair, and an unresolved public PR question/thread. Repeat with an authorized `write` actor, an authorized Owner, revoked actor permissions, ambiguous/missing permission API responses, and an explicitly authorized App. Vary `author_association` independently from actual repository permissions.
+**Setup and action:** Exercise invalid local paths and simulated API/process errors using fake transports.
 
 <a id="ora-wf-008"></a>
 <a id="ora-wf-008-expected-result"></a>
 #### 2.8.1 ORA-WF-008 Expected result
 
 Paths cannot escape the repo, credentials are not printed, and no network/service fallback is introduced.
-
-Only verified authorized technical publishers supply control/evidence records; technical rights do not grant Owner-only approvals. An outsider's newer valid-looking or malformed carrier is ignored for workflow selection rather than overriding a legitimate ADC pointer or blocking its readback. Third-party questions, comments and threads remain visible but cannot change P-ASES Phase, attention, Readiness, or User Review result and cannot create a required feedback blocker. Valid records from authorized actors remain subject to exact identity, content, ordering, and approval checks. Malformed records from an authorized actor and uncertain/unavailable authorization checks fail closed with zero state-changing writes. Changing `author_association` without changing actual permissions never grants control authority. Historic immutable evidence is neither edited nor retroactively republished. Native GitHub-required review/merge restrictions are not bypassed.
 
 <a id="tst-wf-009"></a>
 <a id="tst-wf-009-phase-evidence-and-issue-phase-safety"></a>
