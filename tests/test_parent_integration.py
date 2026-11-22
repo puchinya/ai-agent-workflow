@@ -236,6 +236,7 @@ def parent_integration_github_fixture(
     child_adc_comment = {
         "id": child_adc_comment_id, "body": child_adc.decode("utf-8"),
         "issue_url": f"https://api.github.com/repos/{repository}/issues/31",
+        "user": {"id": 101, "login": "octo", "type": "User"},
     }
 
     def make_comment(comment_id, bundle):
@@ -321,7 +322,11 @@ def parent_integration_github_fixture(
 
         @staticmethod
         def repository_metadata():
-            return {"default_branch": "main"}
+            return {
+                "full_name": repository,
+                "owner": {"id": 101, "login": "octo", "type": "User"},
+                "default_branch": "main",
+            }
 
         def branch(self, branch):
             if branch != "main":

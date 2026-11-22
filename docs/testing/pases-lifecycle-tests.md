@@ -1048,12 +1048,12 @@ Current ADC reads are independent of superseded ADC-generation count. Changed cu
 <a id="tst-f01-104"></a>
 ### 2.68 TST-F01-104 V3 phase rework preserves V2 and is one-shot
 
-**Setup and action:** Supply the same current typed Phase rework authorization for a non-special Issue. Verify one V3 Intent/Applied and at most one labels PUT, exact direct readback and zero-write retry. Reject stale current ADC, epoch, HEAD, PR or Readiness; block any attention label, duplicate kind, missing evidence or ambiguous PUT without a retry. Preserve any old V2 data untouched. Seed more than one page of old pre-origin Issue/ADC comments and require that the journal scanner stops at the immutable epoch origin. A newer incomplete V3 Intent must block any POST; a missing origin or comment-count drift between preflight and Intent must block with zero writes. The scanner must never call the full Issue-history endpoint. Executable tests: `tests/test_phase_rework_lifecycle.py`.
+**Setup and action:** Supply the same current typed Phase rework authorization for a non-special Issue. Verify one V3 Intent/Applied and at most one labels PUT, exact direct readback and zero-write retry. Reject stale current ADC, epoch, HEAD, PR or Readiness; block any attention label, duplicate kind, missing evidence or ambiguous PUT without a retry. Include Issue #71 at its current `phase:execution` state with the approved ADC lacking `PASES_PHASE_REWORK_AUTH_V1`; require the missing typed authorization to stop before any comment POST or labels PUT, without interpreting PR association as authorization. Preserve any old V2 data untouched. Seed more than one page of old pre-origin Issue/ADC comments and require that the journal scanner stops at the immutable epoch origin. A newer incomplete V3 Intent must block any POST; a missing origin or comment-count drift between preflight and Intent must block with zero writes. The scanner must never call the full Issue-history endpoint. Executable tests: `tests/test_phase_rework_lifecycle.py`.
 
 <a id="ora-f01-104"></a>
 #### 2.68.1 ORA-F01-104 Expected result
 
-An issue-neutral current V3 operation writes once and a complete retry is NOOP. Older V1/V2 bodies remain immutable but do not authorize the current operation. Ambiguous, partial or invalid state never causes a duplicate POST or PUT.
+An issue-neutral current V3 operation writes once and a complete retry is NOOP. Issue #71 with no current typed rework authorization blocks before writes. Older V1/V2 bodies remain immutable but do not authorize the current operation. Ambiguous, partial or invalid state never causes a duplicate POST or PUT.
 
 <a id="tst-f01-105"></a>
 ### 2.69 TST-F01-105 Uniform V2 and V3 event/publication window

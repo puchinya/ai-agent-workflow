@@ -332,7 +332,7 @@ class GitHub:
         result = self.request("GET", f"{self.prefix}/collaborators/{quote(login, safe='')}/permission")
         user = result.get("user") if isinstance(result, dict) else None
         if (not isinstance(result, dict) or result.get("permission") not in
-                {"admin", "maintain", "write", "triage", "read"}
+                {"admin", "maintain", "write", "triage", "read", "none"}
                 or not isinstance(user, dict) or type(user.get("id")) is not int or user["id"] < 1
                 or not isinstance(user.get("login"), str) or user["login"].casefold() != login.casefold()
                 or user.get("type") != "User"):

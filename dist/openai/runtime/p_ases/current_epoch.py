@@ -365,7 +365,10 @@ def read_current_epoch(github: GitHub, root: Path, issue_number: int,
     if (not _repo_matches(origin.get("repository"), github.repo)
             or origin.get("issue_number") != issue_number or origin.get("epoch_id") != epoch["epoch_id"]
             or origin.get("adc_comment_id") != epoch["adc_comment_id"]
-            or origin.get("adc_sha256") != epoch["adc_sha256"]):
+            or origin.get("adc_sha256") != epoch["adc_sha256"]
+            or origin.get("base_ref") != epoch.get("base_ref")
+            or origin.get("base_sha40") != epoch.get("base_sha40")
+            or origin.get("branch_ref") != epoch.get("branch_ref")):
         raise CurrentEpochError("execution epoch origin Applied does not match the immutable origin")
     if (origin.get("intent_comment_id") != epoch["intent_comment_id"]
             or origin.get("intent_body_sha256") != epoch["intent_body_sha256"]):
@@ -378,7 +381,10 @@ def read_current_epoch(github: GitHub, root: Path, issue_number: int,
             or origin_intent.get("issue_number") != issue_number
             or origin_intent.get("epoch_id") != epoch["epoch_id"]
             or origin_intent.get("adc_comment_id") != epoch["adc_comment_id"]
-            or origin_intent.get("adc_sha256") != epoch["adc_sha256"]):
+            or origin_intent.get("adc_sha256") != epoch["adc_sha256"]
+            or origin_intent.get("base_ref") != epoch.get("base_ref")
+            or origin_intent.get("base_sha40") != epoch.get("base_sha40")
+            or origin_intent.get("branch_ref") != epoch.get("branch_ref")):
         raise CurrentEpochError("execution epoch origin Intent does not match its Applied")
     pinned = _validate_pinned_rework_timestamps(github, issue_number, current, owner_id)
     pinned_rework_ids = pinned[0] if pinned is not None else None

@@ -484,6 +484,95 @@ def _check_comment(comment: Any, repository: str, issue_number: int, comment_id:
     return comment
 
 
+def _repository_owner_id(github: GitHub) -> int:
+    try:
+        metadata = github.repository_metadata()
+    except GitHubError as exc:
+        raise ADCError(f"could not verify repository owner for ADC carrier: {exc}") from exc
+    owner = metadata.get("owner") if isinstance(metadata, dict) else None
+    expected_owner = github.repo.split("/", 1)[0]
+    if (not isinstance(metadata, dict)
+            or not isinstance(metadata.get("full_name"), str)
+            or metadata["full_name"].casefold() != github.repo.casefold()
+            or not isinstance(owner, dict) or type(owner.get("id")) is not int
+            or owner["id"] < 1 or owner.get("type") != "User"
+            or not isinstance(owner.get("login"), str)
+            or owner["login"].casefold() != expected_owner.casefold()):
+        raise ADCError("repository owner identity is incomplete or differs from the selected repository")
+    return owner["id"]
+
+
+def _comment_carrier_role(
+    github: GitHub, comment: Any, owner_id: int,
+    permission_cache: dict[str, tuple[int, str | None]] | None = None,
+) -> str | None:
+    """Return owner/publisher only for a currently authorized human commenter.
+
+    Known Bot/Organization accounts are nonparticipants until an explicit App
+    policy exists. Missing or contradictory identities and uncertain permission
+    lookups fail closed instead of treating author_association as authority.
+    """
+    author = comment.get("user") if isinstance(comment, dict) else None
+    if (not isinstance(author, dict) or type(author.get("id")) is not int or author["id"] < 1
+            or not isinstance(author.get("login"), str)
+            or not re.fullmatch(r"[A-Za-z0-9-]+(?:\[bot\])?", author["login"])
+            or not isinstance(author.get("type"), str)):
+        raise ADCError("ADC carrier commenter identity is missing or malformed")
+    if author["type"] != "User":
+        if author["type"] in {"Bot", "Organization"}:
+            return None
+        raise ADCError("ADC carrier commenter type is unknown")
+    if author["id"] == owner_id:
+        return "owner"
+
+    login_key = author["login"].casefold()
+    cached = permission_cache.get(login_key) if permission_cache is not None else None
+    if cached is not None:
+        cached_id, cached_role = cached
+        if cached_id != author["id"]:
+            raise ADCError("cached ADC commenter identity changed during readback")
+        return cached_role
+    try:
+        permission_row = github.collaborator_permission(author["login"])
+    except GitHubError as exc:
+        if exc.status_code == 404:
+            if permission_cache is not None:
+                permission_cache[login_key] = (author["id"], None)
+            return None
+        raise ADCError(f"could not verify ADC carrier commenter permission: {exc}") from exc
+    permission_user = permission_row.get("user") if isinstance(permission_row, dict) else None
+    permission = permission_row.get("permission") if isinstance(permission_row, dict) else None
+    if (permission not in {"none", "read", "triage", "write", "maintain", "admin"}
+            or not isinstance(permission_user, dict)
+            or type(permission_user.get("id")) is not int
+            or permission_user.get("id") != author["id"]
+            or not isinstance(permission_user.get("login"), str)
+            or permission_user["login"].casefold() != login_key
+            or permission_user.get("type") != "User"):
+        raise ADCError("collaborator permission response is incomplete or mismatched for ADC carrier")
+    role = "publisher" if permission in {"write", "maintain", "admin"} else None
+    if permission_cache is not None:
+        permission_cache[login_key] = (author["id"], role)
+    return role
+
+
+def _require_carrier_role(role: str | None, state: str, label: str) -> None:
+    if role is None:
+        raise ADCError(f"{label} author lacks verified current repository publishing permission")
+    if state == "approved" and role != "owner":
+        raise ADCError(f"approved {label} requires the repository Owner author")
+
+
+def _require_current_publisher(github: GitHub, state: str) -> None:
+    owner_id = _repository_owner_id(github)
+    try:
+        user = github.authenticated_user()
+    except GitHubError as exc:
+        raise ADCError(f"could not verify authenticated ADC publisher: {exc}") from exc
+    role = _comment_carrier_role(github, {"user": user}, owner_id)
+    _require_carrier_role(role, state, "ADC publication")
+
+
 def _latest_pointer_record(
     github: GitHub,
     issue_number: int,
@@ -584,12 +673,17 @@ def _publication_transaction(
         "-->"
     )
     try:
+        owner_id = _repository_owner_id(github)
+        permission_cache: dict[str, tuple[int, str | None]] = {}
         listed_comments = github.issue_comments(issue_number)
         same_operation: list[dict[str, Any]] = []
         for listed in listed_comments:
             if not isinstance(listed, dict) or not isinstance(listed.get("body"), str):
                 continue
             if not listed["body"].startswith(PUBLISH_TXN_SENTINEL):
+                continue
+            author_role = _comment_carrier_role(github, listed, owner_id, permission_cache)
+            if author_role is None:
                 continue
             listed_id = listed.get("id")
             if type(listed_id) is not int or listed_id < 1:
@@ -599,6 +693,7 @@ def _publication_transaction(
             if match is None:
                 raise ADCError("malformed ADC publication marker; refusing to publish")
             marker_operation_id, marker_predecessor, marker_sha, marker_bytes, marker_state = match.groups()
+            _require_carrier_role(author_role, marker_state, "ADC publication marker")
             computed_id = _publication_operation_id(
                 github.repo, issue_number, marker_predecessor, marker_sha, int(marker_bytes), marker_state,
             )
@@ -620,6 +715,7 @@ def _publication_transaction(
             if marker["body"] != marker_body:
                 raise ADCError("ADC publication marker does not match the requested operation")
         else:
+            _require_current_publisher(github, state)
             created = github.create_issue_comment(issue_number, marker_body)
             marker_id = created.get("id") if isinstance(created, dict) else None
             if type(marker_id) is not int or marker_id < 1:
@@ -627,6 +723,8 @@ def _publication_transaction(
         readback = _check_comment(
             github.issue_comment(issue_number, marker_id), github.repo, issue_number, marker_id,
         )
+        readback_role = _comment_carrier_role(github, readback, owner_id, permission_cache)
+        _require_carrier_role(readback_role, state, "ADC publication marker")
         if readback.get("body") != marker_body:
             raise ADCError("ADC publication marker readback does not match the requested operation")
         return operation_id, marker_id
@@ -641,9 +739,12 @@ def _find_reusable_comment(
     *,
     current_pointer: ADCPointer | None,
     transaction_marker_id: int,
+    state: str,
 ) -> int | None:
     """Find only a matching ADC created after this exact operation's marker."""
     matches: list[int] = []
+    owner_id = _repository_owner_id(github)
+    permission_cache: dict[str, tuple[int, str | None]] = {}
     for listed in github.issue_comments(issue_number):
         if not isinstance(listed, dict) or not isinstance(listed.get("body"), str):
             continue
@@ -651,15 +752,18 @@ def _find_reusable_comment(
         if listed_bytes != contract.content:
             continue
         comment_id = listed.get("id")
+        # Older exact matches are complete historical publications, not candidates
+        # for this operation's recovery and therefore not current control carriers.
+        if type(comment_id) is int and (comment_id <= transaction_marker_id
+                or (current_pointer is not None and comment_id == current_pointer.comment_id)):
+            continue
+        author_role = _comment_carrier_role(github, listed, owner_id, permission_cache)
+        if author_role is None:
+            continue
         if type(comment_id) is not int or comment_id < 1:
             raise ADCError("matching unpointed ADC comment has an invalid Comment ID")
-        # A permanent marker is written before this publication's ADC comment.
-        # Older exact matches are completed historical publications, not retry artifacts.
-        if comment_id <= transaction_marker_id:
-            continue
-        if current_pointer is not None and comment_id == current_pointer.comment_id:
-            continue
         _check_comment(listed, github.repo, issue_number, comment_id)
+        _require_carrier_role(author_role, state, "ADC comment")
         digest = hashlib.sha256(listed_bytes).hexdigest()
         if digest != contract.sha256 or len(listed_bytes) != contract.byte_length:
             raise ADCError("matching unpointed ADC comment does not match the exact submitted bytes")
@@ -726,6 +830,7 @@ def publish_adc(
         )
     if expected_current is not None and existing_pointer != expected_current:
         raise ADCError("current ADC pointer differs from the exact expected predecessor")
+    _require_current_publisher(github, state)
     try:
         body_text = data.decode("utf-8", errors="strict")
         operation_id, transaction_marker_id = _publication_transaction(
@@ -741,7 +846,7 @@ def publish_adc(
             raise ADCError("ADC pointer journal advanced during publication")
         comment_id = _find_reusable_comment(
             github, issue_number, contract, current_pointer=existing_pointer,
-            transaction_marker_id=transaction_marker_id,
+            transaction_marker_id=transaction_marker_id, state=state,
         )
         if comment_id is None:
             created = github.create_issue_comment(issue_number, body_text)
@@ -751,6 +856,10 @@ def publish_adc(
         named = _check_comment(
             github.issue_comment(issue_number, comment_id), github.repo, issue_number, comment_id,
         )
+        owner_id = _repository_owner_id(github)
+        permission_cache: dict[str, tuple[int, str | None]] = {}
+        named_role = _comment_carrier_role(github, named, owner_id, permission_cache)
+        _require_carrier_role(named_role, state, "ADC comment")
         if not isinstance(named.get("body"), str):
             raise ADCError("named ADC comment has no text body")
         readback = named["body"].encode("utf-8", errors="strict")
@@ -780,12 +889,18 @@ def publish_adc(
             if not isinstance(listed_body, str) or not listed_body.startswith(POINTER_RECORD_SENTINEL):
                 continue
             listed_id = listed.get("id")
+            pointer_role = _comment_carrier_role(
+                github, listed, owner_id, permission_cache,
+            )
+            if pointer_role is None:
+                continue
             if type(listed_id) is not int or listed_id < 1:
                 raise ADCError("ADC pointer record has an invalid Comment ID")
             _check_comment(listed, github.repo, issue_number, listed_id)
             match = _parse_pointer_record_body(listed_body, github.repo, issue_number)
             if match is None:
                 raise ADCError("malformed ADC pointer record; refusing to publish")
+            _require_carrier_role(pointer_role, match.group(6), "ADC pointer record")
             if match.group(1) == operation_id:
                 committed.append((listed_id, listed_body))
         if len(committed) > 1 and len({body for _comment_id, body in committed}) != 1:
@@ -802,6 +917,8 @@ def publish_adc(
         named_record = _check_comment(
             github.issue_comment(issue_number, record_id), github.repo, issue_number, record_id,
         )
+        pointer_role = _comment_carrier_role(github, named_record, owner_id, permission_cache)
+        _require_carrier_role(pointer_role, state, "ADC pointer record")
         if named_record.get("body") != record_body:
             raise ADCError("ADC pointer record readback does not match the requested publication")
         final = _check_issue(github.issue(issue_number), github.repo, issue_number)
@@ -838,10 +955,17 @@ def _latest_current_adc_pointer(
             pages = (github.issue_comments(issue_number),)
 
     selected: list[tuple[int, str, str, ADCPointer]] = []
+    owner_id: int | None = None
+    permission_cache: dict[str, tuple[int, str | None]] = {}
     for page in pages:
         for row in reversed(page):
             body = row.get("body") if isinstance(row, dict) else None
             if not isinstance(body, str) or not body.startswith(POINTER_RECORD_SENTINEL):
+                continue
+            if owner_id is None:
+                owner_id = _repository_owner_id(github)
+            author_role = _comment_carrier_role(github, row, owner_id, permission_cache)
+            if author_role is None:
                 continue
             record_id = row.get("id")
             if type(record_id) is not int or record_id < 1:
@@ -851,6 +975,7 @@ def _latest_current_adc_pointer(
             if match is None:
                 raise ADCError("current ADC pointer marker is malformed")
             operation, predecessor, adc_id, digest, byte_length, state = match.groups()
+            _require_carrier_role(author_role, state, "ADC pointer record")
             pointer = ADCPointer(int(adc_id), digest, int(byte_length), state)
             if (pointer.comment_id >= record_id or operation != _publication_operation_id(
                     github.repo, issue_number, predecessor, digest, pointer.byte_length, state)):
@@ -869,6 +994,17 @@ def _latest_current_adc_pointer(
         if (current[2] == previous[2]
                 and (current[1] != previous[1] or current[3] != previous[3])):
             raise ADCError("current ADC pointer contains competing publications from one predecessor")
+        if current[2] != str(previous[3].comment_id):
+            raise ADCError("current ADC pointer does not name the directly previous trusted generation")
+        if current[3].comment_id <= previous[3].comment_id:
+            raise ADCError("current ADC pointer generation is not strictly forward")
+    else:
+        legacy = parse_pointer(issue.get("body") or "")
+        expected_predecessor = "none" if legacy is None else str(legacy.comment_id)
+        if current[2] != expected_predecessor:
+            raise ADCError("current ADC pointer does not continue the legacy pointer")
+        if legacy is not None and current[3].comment_id <= legacy.comment_id:
+            raise ADCError("current ADC pointer generation is not strictly forward")
     return current[3], current[1], current[0]
 
 
@@ -882,6 +1018,9 @@ def verify_adc(github: GitHub, issue_number: int) -> VerifiedADC:
             raise ADCError("Issue has no Agent Development Contract pointer")
         named = github.issue_comment(issue_number, pointer.comment_id)
         comment = _check_comment(named, github.repo, issue_number, pointer.comment_id)
+        owner_id = _repository_owner_id(github)
+        comment_role = _comment_carrier_role(github, comment, owner_id)
+        _require_carrier_role(comment_role, pointer.state, "named ADC comment")
         issue_after = _check_issue(github.issue(issue_number), github.repo, issue_number)
         if (issue.get("body") != issue_after.get("body")
                 or issue.get("state") != issue_after.get("state")

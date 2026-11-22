@@ -105,9 +105,36 @@ class FakeGitHub:
         self.issue_comments_calls = 0
         self.issue_comment_calls = 0
         self.after_first_comment_list = None
+        self.owner_login = repo.split("/", 1)[0]
+        self.permission_roles = {"collaborator": "write"}
+        self.permission_user_ids = {"collaborator": 102, "outside": 909, "other": 910}
+        self.permission_error: GitHubError | None = None
+        self.permission_user_id_override: int | None = None
+        self.authenticated_identity = {"id": 101, "login": self.owner_login, "type": "User"}
         self.comment_identity: dict[str, object] | None = {
-            "user": {"id": 101, "login": "octo", "type": "User"},
+            "user": copy.deepcopy(self.authenticated_identity),
             "author_association": "OWNER",
+        }
+
+    def repository_metadata(self) -> dict[str, object]:
+        return {
+            "full_name": self.repo,
+            "owner": {"id": 101, "login": self.owner_login, "type": "User"},
+        }
+
+    def authenticated_user(self) -> dict[str, object]:
+        return copy.deepcopy(self.authenticated_identity)
+
+    def collaborator_permission(self, login: str) -> dict[str, object]:
+        if self.permission_error is not None:
+            raise self.permission_error
+        key = login.casefold()
+        user_id = self.permission_user_ids.get(key, 911)
+        if self.permission_user_id_override is not None:
+            user_id = self.permission_user_id_override
+        return {
+            "permission": self.permission_roles.get(key, "none"),
+            "user": {"id": user_id, "login": login, "type": "User"},
         }
 
     def issue(self, number: int) -> dict[str, object]:
@@ -126,7 +153,7 @@ class FakeGitHub:
                     "id": competing_id,
                     "body": self.competing_pointer_body,
                     "issue_url": f"https://api.github.com/repos/{self.repo}/issues/{number}",
-                    "user": {"id": 102, "login": "collaborator"},
+                    "user": {"id": 101, "login": self.owner_login, "type": "User"},
                     "author_association": "COLLABORATOR",
                 }
                 self.competing_pointer_body = None
@@ -181,6 +208,12 @@ class FakeGitHub:
 
 
 class ADCValidationTests(unittest.TestCase):
+    def test_collaborator_permission_none_is_a_valid_nonparticipant_response(self):
+        github = GitHub("octo/repo")
+        response = {"permission": "none", "user": {"id": 909, "login": "outside", "type": "User"}}
+        with patch.object(github, "request", return_value=response):
+            self.assertEqual(github.collaborator_permission("outside"), response)
+
     def test_area_scoped_requirement_ids_are_preserved_for_traceability(self):
         contract = parse_adc(adc_bytes(requirement_id="REQ-WF-001"), "octo/repo", 1)
         self.assertEqual(contract.requirement_ids, ("REQ-WF-001",))
@@ -744,7 +777,7 @@ class ADCPublicationTests(unittest.TestCase):
         self.assertEqual(verified.pointer.comment_id, next_comment_id)
         self.assertEqual(verified.contract.content, next_payload)
 
-    def test_current_adc_read_does_not_revalidate_legacy_predecessors(self):
+    def test_current_adc_read_requires_direct_legacy_predecessor_without_history_walk(self):
         legacy = publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
         self.remove_pointer_journal()
         self.set_legacy_pointer(legacy)
@@ -754,18 +787,20 @@ class ADCPublicationTests(unittest.TestCase):
         for predecessor in ("none", "9999"):
             with self.subTest(predecessor=predecessor):
                 self.github.comments = copy.deepcopy(base_comments)
-                current = self.append_test_pointer_record(next_payload, predecessor)
-                self.assertEqual(verify_adc(self.github, 1).pointer.comment_id, current)
+                self.append_test_pointer_record(next_payload, predecessor)
+                with self.assertRaisesRegex(ADCError, "does not continue the legacy pointer"):
+                    verify_adc(self.github, 1)
 
-    def test_current_adc_reader_does_not_require_legacy_history(self):
+    def test_current_adc_reader_uses_none_only_when_no_legacy_pointer_exists(self):
         next_payload = self.payload.replace(b"REQ-01", b"REQ-02")
         comment_id = self.append_test_pointer_record(next_payload, "none")
         self.assertEqual(verify_adc(self.github, 1).pointer.comment_id, comment_id)
 
         github = FakeGitHub()
         self.github = github
-        current = self.append_test_pointer_record(next_payload, "9999")
-        self.assertEqual(verify_adc(self.github, 1).pointer.comment_id, current)
+        self.append_test_pointer_record(next_payload, "9999")
+        with self.assertRaisesRegex(ADCError, "does not continue the legacy pointer"):
+            verify_adc(self.github, 1)
 
     def test_supersession_does_not_reuse_a_historical_adc_after_a_to_b_to_a(self):
         first_a = publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
@@ -907,7 +942,7 @@ class ADCPublicationTests(unittest.TestCase):
             "id": candidate_id,
             "body": candidate_payload.decode(),
             "issue_url": "https://api.github.com/repos/octo/repo/issues/1",
-            "user": {"id": 102, "login": "collaborator"},
+            "user": {"id": 101, "login": self.github.owner_login, "type": "User"},
             "author_association": "COLLABORATOR",
         }
         self.github.next_comment_id += 1
@@ -963,26 +998,39 @@ class ADCPublicationTests(unittest.TestCase):
         self.assertEqual(self.github.comments[first.comment_id]["body"], self.payload.decode())
         self.assertEqual(verify_adc(self.github, 1).pointer.comment_id, second.comment_id)
 
-    def test_malformed_marker_fails_closed_without_publisher_identity(self):
-        self.github.extra_listed_comments.append({
-            "id": 1999,
-            "body": "<!-- PASES_ADC_PUBLISH_V1\nmalformed third-party marker -->",
-            "issue_url": "https://api.github.com/repos/octo/repo/issues/1",
-            "author_association": "NONE",
-        })
-        with self.assertRaisesRegex(ADCError, "malformed ADC publication marker"):
-            publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
+    def test_verified_nonparticipant_and_bot_markers_are_skipped_before_parsing(self):
+        for role in ("none", "read", "triage", "404", "bot"):
+            with self.subTest(role=role):
+                github = FakeGitHub()
+                if role == "bot":
+                    author = {"id": 918, "login": "thirdparty[bot]", "type": "Bot"}
+                else:
+                    author = {"id": 909, "login": "outside", "type": "User"}
+                    if role == "404":
+                        github.permission_error = GitHubError("not a collaborator", status_code=404)
+                    else:
+                        github.permission_roles["outside"] = role
+                github.extra_listed_comments.append({
+                    "id": 1999,
+                    "body": "<!-- PASES_ADC_PUBLISH_V1\nmalformed third-party marker -->",
+                    "issue_url": "https://api.github.com/repos/octo/repo/issues/1",
+                    "user": author,
+                    "author_association": "OWNER",
+                })
+                pointer = publish_adc(github, 1, self.payload, state="approved", explicitly_approved=True)
+                self.assertEqual(verify_adc(github, 1).pointer, pointer)
 
-    def test_malformed_marker_fails_closed_regardless_of_publisher_identity(self):
+    def test_trusted_malformed_publication_marker_fails_closed(self):
         self.github.extra_listed_comments.append({
             "id": 1999,
             "body": "<!-- PASES_ADC_PUBLISH_V1\nmalformed marker -->",
             "issue_url": "https://api.github.com/repos/octo/repo/issues/1",
-            "user": {"id": 102, "login": "outside"},
+            "user": {"id": 102, "login": "collaborator", "type": "User"},
             "author_association": "NONE",
         })
         with self.assertRaisesRegex(ADCError, "malformed ADC publication marker"):
             publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
+        self.assertEqual(self.github.comments, {})
 
     def test_marker_with_oversized_numeric_field_fails_as_adc_error(self):
         marker = (
@@ -997,33 +1045,143 @@ class ADCPublicationTests(unittest.TestCase):
             "id": 1999,
             "body": marker,
             "issue_url": "https://api.github.com/repos/octo/repo/issues/1",
-            "user": {"id": 102, "login": "outside"},
+            "user": {"id": 101, "login": "octo", "type": "User"},
             "author_association": "NONE",
         })
         with self.assertRaisesRegex(ADCError, "malformed ADC publication marker"):
             publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
 
-    def test_malformed_pointer_record_fails_closed_without_publisher_identity(self):
+    def test_untrusted_malformed_pointer_marker_is_skipped_before_parsing(self):
         self.github.extra_listed_comments.append({
             "id": 1999,
             "body": "<!-- PASES_ADC_POINTER_V1\nmalformed third-party pointer -->",
             "issue_url": "https://api.github.com/repos/octo/repo/issues/1",
+            "user": {"id": 909, "login": "outside", "type": "User"},
+            "author_association": "OWNER",
+        })
+        pointer = publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
+        self.assertEqual(verify_adc(self.github, 1).pointer, pointer)
+
+    def test_trusted_malformed_pointer_marker_fails_closed(self):
+        self.github.extra_listed_comments.append({
+            "id": 1999,
+            "body": "<!-- PASES_ADC_POINTER_V1\nmalformed trusted pointer -->",
+            "issue_url": "https://api.github.com/repos/octo/repo/issues/1",
+            "user": {"id": 101, "login": "octo", "type": "User"},
             "author_association": "NONE",
         })
         with self.assertRaisesRegex(ADCError, "current ADC pointer marker is malformed"):
             publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
+        self.assertEqual(self.github.comments, {})
 
-    def test_publisher_identity_fields_are_not_required_or_authoritative(self):
-        for identity in (
-            None,
-            {"author_association": "NONE", "user": {"id": 909, "login": "outside"}},
-            {"author_association": "MEMBER", "user": {"id": 909, "login": "other"}},
-        ):
-            with self.subTest(identity=identity):
+    def test_author_association_does_not_replace_stable_owner_identity(self):
+        for association in ("OWNER", "NONE", "MEMBER"):
+            with self.subTest(association=association):
                 github = FakeGitHub()
-                github.comment_identity = identity
+                github.comment_identity = {
+                    "user": copy.deepcopy(github.authenticated_identity),
+                    "author_association": association,
+                }
                 pointer = publish_adc(github, 1, self.payload, state="approved", explicitly_approved=True)
                 self.assertEqual(verify_adc(github, 1).pointer, pointer)
+
+    def test_current_approved_adc_comment_requires_owner_identity(self):
+        pointer = publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
+        self.github.comments[pointer.comment_id]["user"] = {
+            "id": 102, "login": "collaborator", "type": "User",
+        }
+        with self.assertRaisesRegex(ADCError, "approved named ADC comment requires the repository Owner"):
+            verify_adc(self.github, 1)
+
+    def test_collaborator_cannot_publish_approved_pointer(self):
+        self.github.authenticated_identity = {
+            "id": 102, "login": "collaborator", "type": "User",
+        }
+        with self.assertRaisesRegex(ADCError, "approved ADC publication requires the repository Owner"):
+            publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
+        self.assertEqual(self.github.comments, {})
+
+    def test_write_collaborator_can_publish_draft_but_not_approved_transaction(self):
+        github = FakeGitHub()
+        collaborator = {"id": 102, "login": "collaborator", "type": "User"}
+        github.authenticated_identity = collaborator
+        github.comment_identity = {"user": collaborator, "author_association": "NONE"}
+        draft = publish_adc(github, 1, self.payload, state="draft")
+        self.assertEqual(verify_adc(github, 1).pointer, draft)
+
+        approved_github = FakeGitHub()
+        operation = hashlib.sha256(
+            f"octo/repo\n1\nnone\n{hashlib.sha256(self.payload).hexdigest()}\n"
+            f"{len(self.payload)}\napproved\n".encode()
+        ).hexdigest()
+        approved_github.extra_listed_comments.append({
+            "id": 1999,
+            "body": (
+                "<!-- PASES_ADC_PUBLISH_V1\n"
+                f"Operation ID: {operation}\n"
+                "Predecessor Comment ID: none\n"
+                f"ADC SHA-256: {hashlib.sha256(self.payload).hexdigest()}\n"
+                f"Bytes: {len(self.payload)}\n"
+                "State: approved\n--->"
+            ).replace("--->", "-->") ,
+            "issue_url": "https://api.github.com/repos/octo/repo/issues/1",
+            "user": collaborator,
+            "author_association": "OWNER",
+        })
+        with self.assertRaisesRegex(ADCError, "approved ADC publication marker requires the repository Owner"):
+            publish_adc(approved_github, 1, self.payload, state="approved", explicitly_approved=True)
+        self.assertEqual(approved_github.comments, {})
+
+    def test_permission_lookup_failure_and_identity_mismatch_block_before_writes(self):
+        outsider_marker = {
+            "id": 1999,
+            "body": "<!-- PASES_ADC_PUBLISH_V1\nforged -->",
+            "issue_url": "https://api.github.com/repos/octo/repo/issues/1",
+            "user": {"id": 909, "login": "outside", "type": "User"},
+        }
+        for mode in ("unavailable", "mismatch"):
+            with self.subTest(mode=mode):
+                github = FakeGitHub()
+                github.extra_listed_comments.append(copy.deepcopy(outsider_marker))
+                if mode == "unavailable":
+                    github.permission_error = GitHubError("permission endpoint failed", status_code=403)
+                else:
+                    github.permission_user_id_override = 910
+                with self.assertRaisesRegex(ADCError, "could not verify ADC carrier commenter permission|mismatched"):
+                    publish_adc(github, 1, adc_bytes(), state="approved", explicitly_approved=True)
+                self.assertEqual(github.comments, {})
+
+    def test_permission_lookup_failure_and_identity_mismatch_block_before_writes(self):
+        outsider_marker = {
+            "id": 1999,
+            "body": "<!-- PASES_ADC_PUBLISH_V1\nforged -->",
+            "issue_url": "https://api.github.com/repos/octo/repo/issues/1",
+            "user": {"id": 909, "login": "outside", "type": "User"},
+        }
+        for mode in ("unavailable", "mismatch"):
+            with self.subTest(mode=mode):
+                github = FakeGitHub()
+                github.extra_listed_comments.append(copy.deepcopy(outsider_marker))
+                if mode == "unavailable":
+                    github.permission_error = GitHubError("permission endpoint failed", status_code=403)
+                else:
+                    github.permission_user_id_override = 910
+                with self.assertRaisesRegex(ADCError, "could not verify ADC carrier commenter permission|mismatched"):
+                    publish_adc(github, 1, adc_bytes(), state="approved", explicitly_approved=True)
+                self.assertEqual(github.comments, {})
+
+    def test_trusted_pointer_cannot_rollback_or_repeat_a_generation(self):
+        first = publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
+        from p_ases.adc import _publication_operation_id, _pointer_record_body
+        rollback_operation = _publication_operation_id(
+            self.github.repo, 1, "none", first.sha256, first.byte_length, "approved",
+        )
+        rollback_body = _pointer_record_body(
+            rollback_operation, "none", first, self.github.repo, 1,
+        )
+        self.github.create_issue_comment(1, rollback_body)
+        with self.assertRaisesRegex(ADCError, "directly previous trusted generation"):
+            verify_adc(self.github, 1)
 
     def test_supersession_retry_reuses_unpointed_comment_after_pointer_journal_failure(self):
         first = publish_adc(self.github, 1, self.payload, state="approved", explicitly_approved=True)
@@ -1097,6 +1255,7 @@ class ADCPublicationTests(unittest.TestCase):
             "id": 2999,
             "body": updated_payload.decode(),
             "issue_url": "https://api.github.com/repos/octo/repo/issues/2",
+            "user": {"id": 101, "login": "octo", "type": "User"},
         })
         with self.assertRaisesRegex(ADCError, "does not belong to the selected Issue"):
             publish_adc(self.github, 1, updated_payload, state="approved",

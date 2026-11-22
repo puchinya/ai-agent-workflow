@@ -96,6 +96,16 @@ class FakeGitHub:
         self.fail_sub_issue_call: int | None = None
         self.label_definitions: dict[str, dict[str, str]] = {}
 
+    def repository_metadata(self) -> dict[str, object]:
+        return {
+            "full_name": self.repo,
+            "owner": {"id": 101, "login": "octo", "type": "User"},
+            "default_branch": "main",
+        }
+
+    def authenticated_user(self) -> dict[str, object]:
+        return {"id": 101, "login": "octo", "type": "User"}
+
     def issue(self, number: int) -> dict[str, object]:
         return copy.deepcopy(self.records[number])
 
@@ -140,7 +150,7 @@ class FakeGitHub:
             "id": comment_id,
             "body": body,
             "issue_url": f"https://api.github.com/repos/octo/repo/issues/{number}",
-            "user": {"id": 101, "login": "octo"},
+            "user": {"id": 101, "login": "octo", "type": "User"},
             "author_association": "OWNER",
         }
         self.comments[comment_id] = comment

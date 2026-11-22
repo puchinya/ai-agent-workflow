@@ -111,13 +111,15 @@ class CurrentEpochTests(unittest.TestCase):
         self.intent = carrier(ORIGIN_INTENT, {
             "repository": "demo/project", "issue_number": self.issue,
             "epoch_id": self.epoch["epoch_id"], "adc_comment_id": 21,
-            "adc_sha256": "a" * 64,
+            "adc_sha256": "a" * 64, "base_ref": "main", "base_sha40": "b" * 40,
+            "branch_ref": "feature/issue-24",
         }, self.issue, 40)
         self.epoch["intent_body_sha256"] = hashlib.sha256(self.intent["body"].encode()).hexdigest()
         self.origin = carrier(ORIGIN_APPLIED, {
             "repository": "demo/project", "issue_number": self.issue,
             "epoch_id": self.epoch["epoch_id"], "adc_comment_id": 21,
-            "adc_sha256": "a" * 64,
+            "adc_sha256": "a" * 64, "base_ref": "main", "base_sha40": "b" * 40,
+            "branch_ref": "feature/issue-24",
             "intent_comment_id": 40, "intent_body_sha256": self.epoch["intent_body_sha256"],
         }, self.issue, 41)
         self.epoch["applied_body_sha256"] = hashlib.sha256(self.origin["body"].encode()).hexdigest()
@@ -145,10 +147,97 @@ class CurrentEpochTests(unittest.TestCase):
         attachment.write_bytes(canonical(self.attachment))
 
     def read(self, github):
-        with patch("p_ases.current_epoch.current_branch", return_value="feature/issue-24"), \
+        with patch("p_ases.current_epoch.current_branch", return_value=self.epoch["branch_ref"]), \
                 patch("p_ases.current_epoch.head_sha40", return_value="c" * 40), \
                 patch("p_ases.current_epoch.is_ancestor", return_value=True):
             return read_current_epoch(github, self.root, self.issue, self.current_adc)
+
+    def _reseal_local_epoch(self):
+        payload = dict(self.epoch)
+        payload.pop("sha256", None)
+        self.epoch["sha256"] = hashlib.sha256(canonical(payload).rstrip(b"\n")).hexdigest()
+        self.attachment.update({
+            "base_ref": self.epoch["base_ref"],
+            "base_sha40": self.epoch["base_sha40"],
+            "branch_ref": self.epoch["branch_ref"],
+            "epoch_sha256": self.epoch["sha256"],
+            "intent_body_sha256": self.epoch["intent_body_sha256"],
+            "applied_body_sha256": self.epoch["applied_body_sha256"],
+        })
+        self.save()
+
+    def test_immutable_applied_pins_each_base_and_branch_identity_field(self):
+        original_epoch = copy.deepcopy(self.epoch)
+        original_attachment = copy.deepcopy(self.attachment)
+        expected_fields = {
+            "base_ref": "main", "base_sha40": "b" * 40,
+            "branch_ref": "feature/issue-24",
+        }
+        invalid_values = {"base_ref": 7, "base_sha40": 7, "branch_ref": ["feature/other"]}
+        for field in expected_fields:
+            for mutation in ("mismatch", "missing"):
+                with self.subTest(field=field, mutation=mutation):
+                    self.epoch = copy.deepcopy(original_epoch)
+                    self.attachment = copy.deepcopy(original_attachment)
+                    payload = {
+                        "repository": "demo/project", "issue_number": self.issue,
+                        "epoch_id": self.epoch["epoch_id"], "adc_comment_id": 21,
+                        "adc_sha256": "a" * 64, **expected_fields,
+                        "intent_comment_id": self.epoch["intent_comment_id"],
+                        "intent_body_sha256": self.epoch["intent_body_sha256"],
+                    }
+                    if mutation == "mismatch":
+                        payload[field] = invalid_values[field]
+                    else:
+                        payload.pop(field)
+                    mismatched_applied = carrier(ORIGIN_APPLIED, payload, self.issue, 41)
+                    self.epoch["applied_body_sha256"] = hashlib.sha256(
+                        mismatched_applied["body"].encode(),
+                    ).hexdigest()
+                    self._reseal_local_epoch()
+                    github = FakeGitHub(mismatched_applied, self.intent)
+                    with self.assertRaisesRegex(CurrentEpochError, "origin Applied does not match"):
+                        self.read(github)
+
+    def test_immutable_intent_pins_each_base_and_branch_identity_field(self):
+        original_epoch = copy.deepcopy(self.epoch)
+        original_attachment = copy.deepcopy(self.attachment)
+        local_fields = {
+            "base_ref": "main", "base_sha40": "b" * 40,
+            "branch_ref": "feature/issue-24",
+        }
+        invalid_values = {"base_ref": 7, "base_sha40": 7, "branch_ref": ["feature/other"]}
+        for field in local_fields:
+            for mutation in ("mismatch", "missing"):
+                with self.subTest(field=field, mutation=mutation):
+                    self.epoch = copy.deepcopy(original_epoch)
+                    self.attachment = copy.deepcopy(original_attachment)
+                    intent_payload = {
+                        "repository": "demo/project", "issue_number": self.issue,
+                        "epoch_id": self.epoch["epoch_id"], "adc_comment_id": 21,
+                        "adc_sha256": "a" * 64, **local_fields,
+                    }
+                    if mutation == "mismatch":
+                        intent_payload[field] = invalid_values[field]
+                    else:
+                        intent_payload.pop(field)
+                    mismatched_intent = carrier(ORIGIN_INTENT, intent_payload, self.issue, 40)
+                    intent_sha = hashlib.sha256(mismatched_intent["body"].encode()).hexdigest()
+                    applied_payload = {
+                        "repository": "demo/project", "issue_number": self.issue,
+                        "epoch_id": self.epoch["epoch_id"], "adc_comment_id": 21,
+                        "adc_sha256": "a" * 64, **local_fields,
+                        "intent_comment_id": 40, "intent_body_sha256": intent_sha,
+                    }
+                    matching_applied = carrier(ORIGIN_APPLIED, applied_payload, self.issue, 41)
+                    self.epoch["intent_body_sha256"] = intent_sha
+                    self.epoch["applied_body_sha256"] = hashlib.sha256(
+                        matching_applied["body"].encode(),
+                    ).hexdigest()
+                    self._reseal_local_epoch()
+                    github = FakeGitHub(matching_applied, mismatched_intent)
+                    with self.assertRaisesRegex(CurrentEpochError, "origin Intent does not match"):
+                        self.read(github)
 
     def test_no_historical_adc_or_full_issue_history_lookup(self):
         github = FakeGitHub(self.origin, self.intent)

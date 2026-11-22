@@ -141,7 +141,7 @@ def readiness():
 
 class GenericPhaseReworkTests(unittest.TestCase):
     @staticmethod
-    def _run(root, github, adc, factory=readiness):
+    def _run(root, github, adc, factory=readiness, issue_number=128):
         def current(_gh, _root, _issue, _verified=None):
             applies = [
                 row for row in github.records.values()
@@ -163,7 +163,7 @@ class GenericPhaseReworkTests(unittest.TestCase):
                 patch.object(epoch, "head_sha40", return_value="b" * 40), \
                 patch.object(epoch, "is_ancestor", return_value=True), \
                 patch.object(epoch, "worktree_clean", return_value=True):
-            return phase.apply_phase_rework(github, root, 128, readiness_factory=factory)
+            return phase.apply_phase_rework(github, root, issue_number, readiness_factory=factory)
 
     def test_generic_one_shot_rework_and_noop_after_new_adc(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -251,6 +251,18 @@ class GenericPhaseReworkTests(unittest.TestCase):
             root, github = Path(temporary), FakeGitHub()
             with self.assertRaisesRegex(phase.PhaseReworkLifecycleError, "typed Phase"):
                 self._run(root, github, verified())
+            self.assertEqual((github.post_count, github.label_writes), (0, 0))
+
+    def test_issue_71_without_phase_rework_marker_blocks_before_any_write(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, github = Path(temporary), FakeGitHub()
+            github.issue_number = 71
+            github.issue_row["number"] = 71
+            github.issue_row["labels"] = [
+                {"name": "kind:single"}, {"name": "phase:execution"},
+            ]
+            with self.assertRaisesRegex(phase.PhaseReworkLifecycleError, "typed Phase"):
+                self._run(root, github, verified(), issue_number=71)
             self.assertEqual((github.post_count, github.label_writes), (0, 0))
 
     def test_readiness_drift_blocks_before_intent(self):
