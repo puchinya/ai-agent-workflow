@@ -124,6 +124,7 @@ class AdminAuthenticationTests(unittest.TestCase):
         with self.local_environment(), self.allow_test_device_session(), patch.dict(os.environ, token_env), \
              patch("p_ases.admin_auth._secure_private_config", side_effect=self.secure_test_config), \
              patch("p_ases.admin_auth._require_private_device_config"), \
+             patch("p_ases.local_execution._require_private_device_config"), \
              patch("p_ases.admin_auth.subprocess.Popen", side_effect=fake_popen), \
              patch("p_ases.github.subprocess.run", side_effect=fake_api_run), \
              patch("p_ases.admin_auth.sys.stdout", Mock(isatty=lambda: True)):
@@ -177,6 +178,7 @@ class AdminAuthenticationTests(unittest.TestCase):
         ))
         with self.local_environment(), self.allow_test_device_session(), \
              patch("p_ases.admin_auth._secure_private_config", side_effect=self.secure_test_config), \
+             patch("p_ases.admin_auth._require_private_device_config"), \
              patch("p_ases.admin_auth.subprocess.Popen", side_effect=fake_popen), \
              patch("p_ases.github.subprocess.run", api), \
              patch("p_ases.admin_auth.sys.stdout", Mock(isatty=lambda: True)):
