@@ -2,7 +2,8 @@
 <!-- agent-doc-schema: 2 -->
 # Portable Workflow Specification
 
-- Status: Issue #63 is OPEN at `phase:requirements`. Current approved ADC comment #6471580482 has SHA-256 `22ec1585a11d9a791eaf9b0e89baf604775e5168b3f5844a290485a7aab5d218`; its Phase V2 Intent/Applied pair is #6472026312/#6472411402. The V3 recovery generations remain #6469356263/#6469538910 and #6469619562/#6470070164. PR #64 HEAD immediately before this documentation update was `5d1267f1ba436d3681ea261372aca6ea084a757e`; it had no current-head Independent Review V2, Readiness PASS, or User Review record. These changes require fresh exact-HEAD evidence.
+- Historical progress snapshot (before the later #63 exception close): Issue #63 was OPEN at `phase:requirements`. Its then-current ADC comment #6471580482 had SHA-256 `22ec1585a11d9a791eaf9b0e89baf604775e5168b3f5844a290485a7aab5d218`; its Phase V2 Intent/Applied pair was #6472026312/#6472411402. The V3 recovery generations were #6469356263/#6469538910 and #6469619562/#6470070164. PR #64 HEAD immediately before that documentation update was `5d1267f1ba436d3681ea261372aca6ea084a757e`; it had no current-head Independent Review V2, Readiness PASS, or User Review record. This is a retained historical snapshot, not the current Issue state.
+- Current reconciliation (2026-11-21): PR #64 is MERGED and Issue #63 is CLOSED under the one-time development exception. This was not normal P-ASES Final Delivery success. Ruleset and Activation V2 work remains with Issue #71.
 - Owning Issue: [Issue #7](https://github.com/puchinya/ai-agent-workflow/issues/7)
 - Related design: [Workflow design](../design/workflow-design.md)
 - Runtime contract: [Runtime specification](runtime-spec.md)
@@ -46,6 +47,102 @@
   - [9.19 REQ-F01-035 Active Phase generation](#919-req-f01-035-active-phase-generation)
   - [9.20 REQ-F01-036 Issue #63 compatibility](#920-req-f01-036-issue-63-compatibility)
   - [9.21 REQ-F01-037 ADC is the sole Phase restart approval](#921-req-f01-037-adc-is-the-sole-phase-restart-approval)
+  - [9.22 REQ-F01-038 Missing historical Binding provenance](#922-req-f01-038-missing-historical-binding-provenance)
+  - [9.23 REQ-F01-039 One-time epoch authorization](#923-req-f01-039-one-time-epoch-authorization)
+  - [9.24 REQ-F01-040 Append-only epoch journal](#924-req-f01-040-append-only-epoch-journal)
+  - [9.25 REQ-F01-041 One-shot epoch migration](#925-req-f01-041-one-shot-epoch-migration)
+  - [9.26 REQ-F01-042 Epoch-2 predecessor migration evidence](#926-req-f01-042-epoch-2-predecessor-migration-evidence)
+  - [9.27 REQ-F01-043 Agent-neutral local eligibility](#927-req-f01-043-agent-neutral-local-eligibility)
+  - [9.28 REQ-F01-044 Isolated device authentication and complete Admin readback](#928-req-f01-044-isolated-device-authentication-and-complete-admin-readback)
+  - [9.29 REQ-F01-045 Separated Ruleset and merge authority](#929-req-f01-045-separated-ruleset-and-merge-authority)
+  - [9.30 REQ-F01-046 Compatibility and epoch test coverage](#930-req-f01-046-compatibility-and-epoch-test-coverage)
+  - [9.31 REQ-F01-047 Retire the first V1 migration](#931-req-f01-047-retire-the-first-v1-migration)
+  - [9.32 REQ-F01-048 Exact V2 marker binding](#932-req-f01-048-exact-v2-marker-binding)
+  - [9.33 REQ-F01-049 Distinct V2 Intent and Applied records](#933-req-f01-049-distinct-v2-intent-and-applied-records)
+  - [9.34 REQ-F01-050 Partial migration is permanently non-retryable](#934-req-f01-050-partial-migration-is-permanently-non-retryable)
+  - [9.35 REQ-F01-051 Fresh Phase evidence before implementation](#935-req-f01-051-fresh-phase-evidence-before-implementation)
+  - [9.36 REQ-F01-052 Local Activation V2 implementation scope](#936-req-f01-052-local-activation-v2-implementation-scope)
+  - [9.37 REQ-F01-053 Synchronized artifacts and distributions](#937-req-f01-053-synchronized-artifacts-and-distributions)
+  - [9.38 REQ-F01-054 Required focused and regression tests](#938-req-f01-054-required-focused-and-regression-tests)
+  - [9.39 REQ-F01-067 Epoch-3 predecessor preservation](#939-req-f01-067-epoch-3-predecessor-preservation)
+  - [9.40 REQ-F01-068 Canonical Phase artifact impact](#940-req-f01-068-canonical-phase-artifact-impact)
+  - [9.41 REQ-F01-069 Frozen migration preflight](#941-req-f01-069-frozen-migration-preflight)
+  - [9.42 REQ-F01-070 Exact successor authorization](#942-req-f01-070-exact-successor-authorization)
+  - [9.43 REQ-F01-071 One-shot epoch-3 transition and recovery](#943-req-f01-071-one-shot-epoch-3-transition-and-recovery)
+  - [9.44 REQ-F01-072 Fresh Phase receipts before implementation](#944-req-f01-072-fresh-phase-receipts-before-implementation)
+  - [9.45 REQ-F01-073 Active identity in Readiness evidence](#945-req-f01-073-active-identity-in-readiness-evidence)
+  - [9.46 REQ-F01-074 Supersede the prior implementation PR](#946-req-f01-074-supersede-the-prior-implementation-pr)
+  - [9.47 REQ-F01-075 Inherited Activation and delivery gates](#947-req-f01-075-inherited-activation-and-delivery-gates)
+  - [9.48 REQ-F01-090 Preserve the current execution origin](#948-req-f01-090-preserve-the-current-execution-origin)
+  - [9.49 REQ-F01-091 Exact verification-rework authority](#949-req-f01-091-exact-verification-rework-authority)
+  - [9.50 REQ-F01-092 Bounded bootstrap commits](#950-req-f01-092-bounded-bootstrap-commits)
+  - [9.51 REQ-F01-093 Exact PR #75 subject](#951-req-f01-093-exact-pr-75-subject)
+  - [9.52 REQ-F01-094 Fresh exact-head delivery evidence](#952-req-f01-094-fresh-exact-head-delivery-evidence)
+  - [9.53 REQ-F01-095 One-shot verification-to-requirements rework](#953-req-f01-095-one-shot-verification-to-requirements-rework)
+  - [9.54 REQ-F01-096 Fresh Phase sequence before implementation](#954-req-f01-096-fresh-phase-sequence-before-implementation)
+  - [9.55 REQ-F01-097 Separate delivery and Admin gates](#955-req-f01-097-separate-delivery-and-admin-gates)
+  - [9.56 REQ-F01-098 Preserve the pending rework operation](#956-req-f01-098-preserve-the-pending-rework-operation)
+  - [9.57 REQ-F01-099 Bound the Recovery commit](#957-req-f01-099-bound-the-recovery-commit)
+  - [9.58 REQ-F01-100 Verify the successor Recovery authorization](#958-req-f01-100-verify-the-successor-recovery-authorization)
+  - [9.59 REQ-F01-101 Continue the exact pending Intent once](#959-req-f01-101-continue-the-exact-pending-intent-once)
+  - [9.60 REQ-F01-102 Cover Recovery and no-retry behavior](#960-req-f01-102-cover-recovery-and-no-retry-behavior)
+  - [9.61 REQ-F01-103 Require exact-HEAD Recovery gates](#961-req-f01-103-require-exact-head-recovery-gates)
+  - [9.62 REQ-F01-104 Resume the approved Phase sequence](#962-req-f01-104-resume-the-approved-phase-sequence)
+  - [9.63 REQ-F01-105 Preserve separate delivery and Admin gates](#963-req-f01-105-preserve-separate-delivery-and-admin-gates)
+  - [9.64 REQ-F01-106 Preserve the existing phase journal](#964-req-f01-106-preserve-the-existing-phase-journal)
+  - [9.65 REQ-F01-107 Bound Applied event and publication time](#965-req-f01-107-bound-applied-event-and-publication-time)
+  - [9.66 REQ-F01-108 Permit one timestamp-reader correction commit](#966-req-f01-108-permit-one-timestamp-reader-correction-commit)
+  - [9.67 REQ-F01-109 Verify the timestamp-recovery ADC successor](#967-req-f01-109-verify-the-timestamp-recovery-adc-successor)
+  - [9.68 REQ-F01-110 Test exact Applied reconciliation without writes](#968-req-f01-110-test-exact-applied-reconciliation-without-writes)
+  - [9.69 REQ-F01-111 Gate the exact follow-up HEAD](#969-req-f01-111-gate-the-exact-follow-up-head)
+  - [9.70 REQ-F01-112 Resume Phase evidence after reconciliation](#970-req-f01-112-resume-phase-evidence-after-reconciliation)
+  - [9.71 REQ-F01-113 Preserve separate authorization boundaries](#971-req-f01-113-preserve-separate-authorization-boundaries)
+  - [9.72 REQ-F01-120 Preserve the approved Issue #71 continuation subject](#972-req-f01-120-preserve-the-approved-issue-71-continuation-subject)
+  - [9.73 REQ-F01-121 Verify the exact continuation ADC chain and marker](#973-req-f01-121-verify-the-exact-continuation-adc-chain-and-marker)
+  - [9.74 REQ-F01-122 Bound the continuation commit lineage](#974-req-f01-122-bound-the-continuation-commit-lineage)
+  - [9.75 REQ-F01-123 Test authorization, lineage, and no-write behavior](#975-req-f01-123-test-authorization-lineage-and-no-write-behavior)
+  - [9.76 REQ-F01-124 Gate and bind the exact pushed HEAD](#976-req-f01-124-gate-and-bind-the-exact-pushed-head)
+  - [9.77 REQ-F01-125 Reconcile before issuing Phase evidence](#977-req-f01-125-reconcile-before-issuing-phase-evidence)
+  - [9.78 REQ-F01-126 Declare exact Phase artifact paths](#978-req-f01-126-declare-exact-phase-artifact-paths)
+  - [9.79 REQ-F01-127 Preserve operation boundaries](#979-req-f01-127-preserve-operation-boundaries)
+  - [9.80 REQ-F01-128 Preserve the exact reader-continuation subject](#980-req-f01-128-preserve-the-exact-reader-continuation-subject)
+  - [9.81 REQ-F01-129 Verify the exact approved ADC chain](#981-req-f01-129-verify-the-exact-approved-adc-chain)
+  - [9.82 REQ-F01-130 Bound the reader-continuation commit](#982-req-f01-130-bound-the-reader-continuation-commit)
+  - [9.83 REQ-F01-131 Repair executable-source traceability](#983-req-f01-131-repair-executable-source-traceability)
+  - [9.84 REQ-F01-132 Gate the exact HEAD and resume Phase transitions](#984-req-f01-132-gate-the-exact-head-and-resume-phase-transitions)
+  - [9.85 REQ-F01-133 Record the supported execution transition](#985-req-f01-133-record-the-supported-execution-transition)
+  - [9.86 REQ-F01-134 Parse the approved Markdown predecessor digest](#986-req-f01-134-parse-the-approved-markdown-predecessor-digest)
+  - [9.87 REQ-F01-135 Preserve exact ADC chain and commit segments](#987-req-f01-135-preserve-exact-adc-chain-and-commit-segments)
+  - [9.88 REQ-F01-136 Gate the corrected reader before Phase continuation](#988-req-f01-136-gate-the-corrected-reader-before-phase-continuation)
+  - [9.89 REQ-F01-137 Preserve the predecessor ADC as immutable history](#989-req-f01-137-preserve-the-predecessor-adc-as-immutable-history)
+  - [9.90 REQ-F01-138 Verify approved history without reading historical markers](#990-req-f01-138-verify-approved-history-without-reading-historical-markers)
+  - [9.91 REQ-F01-139 Gate approved-history continuation](#991-req-f01-139-gate-approved-history-continuation)
+  - [9.92 REQ-F01-140 Verify immutable approved ADC history](#992-req-f01-140-verify-immutable-approved-adc-history)
+  - [9.93 REQ-F01-141 Parse only the current ADC authorization](#993-req-f01-141-parse-only-the-current-adc-authorization)
+  - [9.94 REQ-F01-142 Preserve bounded continuation and delivery gates](#994-req-f01-142-preserve-bounded-continuation-and-delivery-gates)
+  - [9.95 REQ-F01-143 Validate the combined current ADC authorization](#995-req-f01-143-validate-the-combined-current-adc-authorization)
+  - [9.96 REQ-F01-144 Validate completed historical Phase receipts](#996-req-f01-144-validate-completed-historical-phase-receipts)
+  - [9.97 REQ-F01-145 Reissue only completed predecessor receipts](#997-req-f01-145-reissue-only-completed-predecessor-receipts)
+  - [9.98 REQ-F01-146 Make Phase receipt reconciliation idempotent](#998-req-f01-146-make-phase-receipt-reconciliation-idempotent)
+  - [9.99 REQ-F01-147 Gate the bounded continuation and advance normally](#999-req-f01-147-gate-the-bounded-continuation-and-advance-normally)
+  - [9.100 REQ-F01-148 Verify Issue #71 solo-owner identity](#9100-req-f01-148-verify-issue-71-solo-owner-identity)
+  - [9.101 REQ-F01-149 Bind the Issue #71 User Review plan](#9101-req-f01-149-bind-the-issue-71-user-review-plan)
+  - [9.102 REQ-F01-150 Preserve exact append-only User Review decisions](#9102-req-f01-150-preserve-exact-append-only-user-review-decisions)
+  - [9.103 REQ-F01-151 Start User Review and leave its decision pending](#9103-req-f01-151-start-user-review-and-leave-its-decision-pending)
+  - [9.104 REQ-F01-152 Enforce the authorization exclusions](#9104-req-f01-152-enforce-the-authorization-exclusions)
+  - [9.105 REQ-F01-165 Verify the current ADC and direct predecessor declaration](#9105-req-f01-165-verify-the-current-adc-and-direct-predecessor-declaration)
+  - [9.106 REQ-F01-166 Apply one strict history rule to every generation](#9106-req-f01-166-apply-one-strict-history-rule-to-every-generation)
+  - [9.107 REQ-F01-167 Verify authorized historical commit segments generically](#9107-req-f01-167-verify-authorized-historical-commit-segments-generically)
+  - [9.108 REQ-F01-170 Accept every valid post-rework phase label](#9108-req-f01-170-accept-every-valid-post-rework-phase-label)
+  - [9.109 REQ-F01-171 Batch current ADC pointer snapshots without weakening validation](#9109-req-f01-171-batch-current-adc-pointer-snapshots-without-weakening-validation)
+  - [9.110 REQ-F01-172 Preserve V2 and apply one exact V3 phase-rework generation](#9110-req-f01-172-preserve-v2-and-apply-one-exact-v3-phase-rework-generation)
+  - [9.111 REQ-F01-173 Apply one event/publication window to V2 and V3](#9111-req-f01-173-apply-one-eventpublication-window-to-v2-and-v3)
+  - [9.112 REQ-F01-174 Validate the immutable V3 origin and active pair](#9112-req-f01-174-validate-the-immutable-v3-origin-and-active-pair)
+  - [9.113 REQ-F01-175 Bound the successor commit and Phase continuation](#9113-req-f01-175-bound-the-successor-commit-and-phase-continuation)
+  - [9.114 REQ-F01-176 Reuse exact verified ADC ranges within one command](#9114-req-f01-176-reuse-exact-verified-adc-ranges-within-one-command)
+  - [9.115 REQ-F01-177 Bound GitHub API child execution](#9115-req-f01-177-bound-github-api-child-execution)
+  - [9.116 REQ-F01-178 Parse the current continuation marker by schema](#9116-req-f01-178-parse-the-current-continuation-marker-by-schema)
+  - [9.117 REQ-F01-179 Share history validation across nested lifecycle readers](#9117-req-f01-179-share-history-validation-across-nested-lifecycle-readers)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -81,6 +178,102 @@
 - [REQ-F01-035](#req-f01-035) — 9.19 REQ-F01-035 Active Phase generation
 - [REQ-F01-036](#req-f01-036) — 9.20 REQ-F01-036 Issue #63 compatibility
 - [REQ-F01-037](#req-f01-037) — 9.21 REQ-F01-037 ADC is the sole Phase restart approval
+- [REQ-F01-038](#req-f01-038) — 9.22 REQ-F01-038 Missing historical Binding provenance
+- [REQ-F01-039](#req-f01-039) — 9.23 REQ-F01-039 One-time epoch authorization
+- [REQ-F01-040](#req-f01-040) — 9.24 REQ-F01-040 Append-only epoch journal
+- [REQ-F01-041](#req-f01-041) — 9.25 REQ-F01-041 One-shot epoch migration
+- [REQ-F01-042](#req-f01-042) — 9.26 REQ-F01-042 Epoch-2 predecessor migration evidence
+- [REQ-F01-043](#req-f01-043) — 9.27 REQ-F01-043 Agent-neutral local eligibility
+- [REQ-F01-044](#req-f01-044) — 9.28 REQ-F01-044 Isolated device authentication and complete Admin readback
+- [REQ-F01-045](#req-f01-045) — 9.29 REQ-F01-045 Separated Ruleset and merge authority
+- [REQ-F01-046](#req-f01-046) — 9.30 REQ-F01-046 Compatibility and epoch test coverage
+- [REQ-F01-047](#req-f01-047) — 9.31 REQ-F01-047 Retire the first V1 migration
+- [REQ-F01-048](#req-f01-048) — 9.32 REQ-F01-048 Exact V2 marker binding
+- [REQ-F01-049](#req-f01-049) — 9.33 REQ-F01-049 Distinct V2 Intent and Applied records
+- [REQ-F01-050](#req-f01-050) — 9.34 REQ-F01-050 Partial migration is permanently non-retryable
+- [REQ-F01-051](#req-f01-051) — 9.35 REQ-F01-051 Fresh Phase evidence before implementation
+- [REQ-F01-052](#req-f01-052) — 9.36 REQ-F01-052 Local Activation V2 implementation scope
+- [REQ-F01-053](#req-f01-053) — 9.37 REQ-F01-053 Synchronized artifacts and distributions
+- [REQ-F01-054](#req-f01-054) — 9.38 REQ-F01-054 Required focused and regression tests
+- [REQ-F01-067](#req-f01-067) — 9.39 REQ-F01-067 Epoch-3 predecessor preservation
+- [REQ-F01-068](#req-f01-068) — 9.40 REQ-F01-068 Canonical Phase artifact impact
+- [REQ-F01-069](#req-f01-069) — 9.41 REQ-F01-069 Frozen migration preflight
+- [REQ-F01-070](#req-f01-070) — 9.42 REQ-F01-070 Exact successor authorization
+- [REQ-F01-071](#req-f01-071) — 9.43 REQ-F01-071 One-shot epoch-3 transition and recovery
+- [REQ-F01-072](#req-f01-072) — 9.44 REQ-F01-072 Fresh Phase receipts before implementation
+- [REQ-F01-073](#req-f01-073) — 9.45 REQ-F01-073 Active identity in Readiness evidence
+- [REQ-F01-074](#req-f01-074) — 9.46 REQ-F01-074 Supersede the prior implementation PR
+- [REQ-F01-075](#req-f01-075) — 9.47 REQ-F01-075 Inherited Activation and delivery gates
+- [REQ-F01-090](#req-f01-090) — 9.48 REQ-F01-090 Preserve the current execution origin
+- [REQ-F01-091](#req-f01-091) — 9.49 REQ-F01-091 Exact verification-rework authority
+- [REQ-F01-092](#req-f01-092) — 9.50 REQ-F01-092 Bounded bootstrap commits
+- [REQ-F01-093](#req-f01-093) — 9.51 REQ-F01-093 Exact PR #75 subject
+- [REQ-F01-094](#req-f01-094) — 9.52 REQ-F01-094 Fresh exact-head delivery evidence
+- [REQ-F01-095](#req-f01-095) — 9.53 REQ-F01-095 One-shot verification-to-requirements rework
+- [REQ-F01-096](#req-f01-096) — 9.54 REQ-F01-096 Fresh Phase sequence before implementation
+- [REQ-F01-097](#req-f01-097) — 9.55 REQ-F01-097 Separate delivery and Admin gates
+- [REQ-F01-098](#req-f01-098) — 9.56 REQ-F01-098 Preserve the pending rework operation
+- [REQ-F01-099](#req-f01-099) — 9.57 REQ-F01-099 Bound the Recovery commit
+- [REQ-F01-100](#req-f01-100) — 9.58 REQ-F01-100 Verify the successor Recovery authorization
+- [REQ-F01-101](#req-f01-101) — 9.59 REQ-F01-101 Continue the exact pending Intent once
+- [REQ-F01-102](#req-f01-102) — 9.60 REQ-F01-102 Cover Recovery and no-retry behavior
+- [REQ-F01-103](#req-f01-103) — 9.61 REQ-F01-103 Require exact-HEAD Recovery gates
+- [REQ-F01-104](#req-f01-104) — 9.62 REQ-F01-104 Resume the approved Phase sequence
+- [REQ-F01-105](#req-f01-105) — 9.63 REQ-F01-105 Preserve separate delivery and Admin gates
+- [REQ-F01-106](#req-f01-106) — 9.64 REQ-F01-106 Preserve the existing phase journal
+- [REQ-F01-107](#req-f01-107) — 9.65 REQ-F01-107 Bound Applied event and publication time
+- [REQ-F01-108](#req-f01-108) — 9.66 REQ-F01-108 Permit one timestamp-reader correction commit
+- [REQ-F01-109](#req-f01-109) — 9.67 REQ-F01-109 Verify the timestamp-recovery ADC successor
+- [REQ-F01-110](#req-f01-110) — 9.68 REQ-F01-110 Test exact Applied reconciliation without writes
+- [REQ-F01-111](#req-f01-111) — 9.69 REQ-F01-111 Gate the exact follow-up HEAD
+- [REQ-F01-112](#req-f01-112) — 9.70 REQ-F01-112 Resume Phase evidence after reconciliation
+- [REQ-F01-113](#req-f01-113) — 9.71 REQ-F01-113 Preserve separate authorization boundaries
+- [REQ-F01-120](#req-f01-120) — 9.72 REQ-F01-120 Preserve the approved Issue #71 continuation subject
+- [REQ-F01-121](#req-f01-121) — 9.73 REQ-F01-121 Verify the exact continuation ADC chain and marker
+- [REQ-F01-122](#req-f01-122) — 9.74 REQ-F01-122 Bound the continuation commit lineage
+- [REQ-F01-123](#req-f01-123) — 9.75 REQ-F01-123 Test authorization, lineage, and no-write behavior
+- [REQ-F01-124](#req-f01-124) — 9.76 REQ-F01-124 Gate and bind the exact pushed HEAD
+- [REQ-F01-125](#req-f01-125) — 9.77 REQ-F01-125 Reconcile before issuing Phase evidence
+- [REQ-F01-126](#req-f01-126) — 9.78 REQ-F01-126 Declare exact Phase artifact paths
+- [REQ-F01-127](#req-f01-127) — 9.79 REQ-F01-127 Preserve operation boundaries
+- [REQ-F01-128](#req-f01-128) — 9.80 REQ-F01-128 Preserve the exact reader-continuation subject
+- [REQ-F01-129](#req-f01-129) — 9.81 REQ-F01-129 Verify the exact approved ADC chain
+- [REQ-F01-130](#req-f01-130) — 9.82 REQ-F01-130 Bound the reader-continuation commit
+- [REQ-F01-131](#req-f01-131) — 9.83 REQ-F01-131 Repair executable-source traceability
+- [REQ-F01-132](#req-f01-132) — 9.84 REQ-F01-132 Gate the exact HEAD and resume Phase transitions
+- [REQ-F01-133](#req-f01-133) — 9.85 REQ-F01-133 Record the supported execution transition
+- [REQ-F01-134](#req-f01-134) — 9.86 REQ-F01-134 Parse the approved Markdown predecessor digest
+- [REQ-F01-135](#req-f01-135) — 9.87 REQ-F01-135 Preserve exact ADC chain and commit segments
+- [REQ-F01-136](#req-f01-136) — 9.88 REQ-F01-136 Gate the corrected reader before Phase continuation
+- [REQ-F01-137](#req-f01-137) — 9.89 REQ-F01-137 Preserve the predecessor ADC as immutable history
+- [REQ-F01-138](#req-f01-138) — 9.90 REQ-F01-138 Verify approved history without reading historical markers
+- [REQ-F01-139](#req-f01-139) — 9.91 REQ-F01-139 Gate approved-history continuation
+- [REQ-F01-140](#req-f01-140) — 9.92 REQ-F01-140 Verify immutable approved ADC history
+- [REQ-F01-141](#req-f01-141) — 9.93 REQ-F01-141 Parse only the current ADC authorization
+- [REQ-F01-142](#req-f01-142) — 9.94 REQ-F01-142 Preserve bounded continuation and delivery gates
+- [REQ-F01-143](#req-f01-143) — 9.95 REQ-F01-143 Validate the combined current ADC authorization
+- [REQ-F01-144](#req-f01-144) — 9.96 REQ-F01-144 Validate completed historical Phase receipts
+- [REQ-F01-145](#req-f01-145) — 9.97 REQ-F01-145 Reissue only completed predecessor receipts
+- [REQ-F01-146](#req-f01-146) — 9.98 REQ-F01-146 Make Phase receipt reconciliation idempotent
+- [REQ-F01-147](#req-f01-147) — 9.99 REQ-F01-147 Gate the bounded continuation and advance normally
+- [REQ-F01-148](#req-f01-148) — 9.100 REQ-F01-148 Verify Issue #71 solo-owner identity
+- [REQ-F01-149](#req-f01-149) — 9.101 REQ-F01-149 Bind the Issue #71 User Review plan
+- [REQ-F01-150](#req-f01-150) — 9.102 REQ-F01-150 Preserve exact append-only User Review decisions
+- [REQ-F01-151](#req-f01-151) — 9.103 REQ-F01-151 Start User Review and leave its decision pending
+- [REQ-F01-152](#req-f01-152) — 9.104 REQ-F01-152 Enforce the authorization exclusions
+- [REQ-F01-165](#req-f01-165) — 9.105 REQ-F01-165 Verify the current ADC and direct predecessor declaration
+- [REQ-F01-166](#req-f01-166) — 9.106 REQ-F01-166 Apply one strict history rule to every generation
+- [REQ-F01-167](#req-f01-167) — 9.107 REQ-F01-167 Verify authorized historical commit segments generically
+- [REQ-F01-170](#req-f01-170) — 9.108 REQ-F01-170 Accept every valid post-rework phase label
+- [REQ-F01-171](#req-f01-171) — 9.109 REQ-F01-171 Batch current ADC pointer snapshots without weakening validation
+- [REQ-F01-172](#req-f01-172) — 9.110 REQ-F01-172 Preserve V2 and apply one exact V3 phase-rework generation
+- [REQ-F01-173](#req-f01-173) — 9.111 REQ-F01-173 Apply one event/publication window to V2 and V3
+- [REQ-F01-174](#req-f01-174) — 9.112 REQ-F01-174 Validate the immutable V3 origin and active pair
+- [REQ-F01-175](#req-f01-175) — 9.113 REQ-F01-175 Bound the successor commit and Phase continuation
+- [REQ-F01-176](#req-f01-176) — 9.114 REQ-F01-176 Reuse exact verified ADC ranges within one command
+- [REQ-F01-177](#req-f01-177) — 9.115 REQ-F01-177 Bound GitHub API child execution
+- [REQ-F01-178](#req-f01-178) — 9.116 REQ-F01-178 Parse the current continuation marker by schema
+- [REQ-F01-179](#req-f01-179) — 9.117 REQ-F01-179 Share history validation across nested lifecycle readers
 <!-- heading-map:end -->
 
 
@@ -122,6 +315,8 @@ Every new durable work item records explicit specification, design, testing, and
 <a id="req-wf-002"></a>
 <a id="req-wf-002-host-managed-implementation-workspaces"></a>
 ### 3.2 REQ-WF-002 Host-managed implementation workspaces
+
+**Historical Issue #63 exception:** the one-time `EXECUTION_ADOPTION_V1` and Issue #63 adopted-epoch refresh paragraphs below record a completed, sealed route. Issue #63 is closed under the development exception; do not replay those Issue-specific writers. Preserve their immutable history. Remaining Ruleset/Activation V2 work belongs to Issue #71.
 
 Publishing, reviewing, or approving an Implementation Contract does not allocate a workspace. Execution of the approved Contract is the trigger. The normal user request remains “Implement this Contract”; the Skill reads the Schema 2 `workspace.isolation` policy before edits and lets the active host establish or reuse isolation.
 
@@ -254,6 +449,10 @@ The consumer's explicit project profile is the machine authority for components,
 
 The workflow never prints or stores credentials in contract payloads, logs, Skills, generated packages, or PR evidence. Local hooks are trusted explicit commands, not a sandbox. Network-backed operations fail closed on uncertain ownership, identity, authorization, or state.
 
+**Public Issue/PR participation and control-input trust boundary.** Public visibility and the ability to comment do not grant P-ASES control authority. Before any Issue/PR comment is consumed as an ADC pointer or publication marker, typed control/evidence record, phase/review instruction, or actionable/blocking User Review feedback, the reader MUST verify the actual GitHub actor and that actor's current repository permissions. Eligible technical-record publishers are the repository Owner and humans with verified repository permission `write`, `maintain`, or `admin`. A GitHub App is eligible only if an explicit repository policy authorizes its verified App ID, installation scope, and required permissions; arbitrary Bots are not eligible. `read`, `triage`, `none`, external users, unallowlisted Apps, and unknown actors have no P-ASES control authority. `author_association`, names mentioned in comment bodies, cryptographic digests, and comment formatting are not authorization evidence.
+
+Comments by *verified nonparticipants* remain publicly visible but MUST be excluded from workflow-control and blocking-feedback inputs, even when their content impersonates a valid or malformed `PASES_*` carrier, an ADC pointer, an Owner approval, or a User Review decision. Such comments MUST NOT select or invalidate the approved ADC, change or block Phase/Readiness, trigger attention, force a review transition, or hold User Review pending as required feedback. When a trusted publisher issues a malformed/contradictory control record, continue to fail closed rather than silently discard it. When actor identity/permission verification is unavailable or ambiguous, the dependent gate must fail closed without accepting that comment as authoritative or writing a state change. Technical publication permission never substitutes for an exact Owner-only approval, authenticated User Review decision, PR merge authorization, or native GitHub permission checks. Existing immutable historical evidence is preserved; new policy checks are applied to new control intake and current gate evaluation without rewriting older evidence.
+
 <a id="p-ases-migration-bootstrap-gates"></a>
 ## 7 P-ASES migration Bootstrap gates
 
@@ -291,7 +490,7 @@ P-ASES-DECISION: CHANGES_REQUESTED
 P-ASES-HEAD: <current full SHA-40>
 ```
 
-The authenticated current human must have authored the comment; an inline comment's `commit_id` must equal the named SHA. Quoted, extended, malformed, stale-head, bot, unauthorized, and natural-language comments do not trigger the execution transition. Other comments remain questions. Changes requested on the current scope return the same Issue and PR to execution; a separately triaged scope change returns to requirements. Questions, pending reviews, unresolved discussion threads, stale HEAD/ADC/Readiness, and incomplete API reads remain blockers.
+The authenticated current human must have authored the comment; an inline comment's `commit_id` must equal the named SHA. Quoted, extended, malformed, stale-head, bot, unauthorized, and natural-language comments do not trigger the execution transition. Other comments remain questions. Changes requested on the current scope return the same Issue and PR to execution; a separately triaged scope change returns to requirements. Questions and review feedback from verified workflow participants, applicable native GitHub review requirements, unresolved authorized-participant threads, stale HEAD/ADC/Readiness, and incomplete API reads remain blockers; comments and threads from verified nonparticipants are nonblocking P-ASES feedback. Native GitHub merge restrictions are still enforced separately.
 
 <a id="req-wf-010"></a>
 <a id="req-wf-010-parent-integration-and-final-delivery"></a>
@@ -366,7 +565,7 @@ Policy or locator changes require a new setup PR and merge, append a successor A
 <a id="req-f01-008"></a>
 ### 9.5 REQ-F01-008 Verified V2 Activation policy
 
-The public Consumer Activation setup action MUST orchestrate discovery, safe setup-branch preparation, exact policy planning, any required owner decision and isolated browser-device Admin continuation, effective-policy verification, setup-PR creation, and post-merge V2 recording as one resumable transaction. Admin login uses a private config and may use a runner-managed PTY; it does not require an owner-local TTY. It MUST NOT require the user to run an unrelated manual Ruleset preparation flow before Activation. Before a V2 setup PR exists, the committed setup-branch profile bytes and exact HEAD MUST be bound to the canonical policy plan. The PR marker and V2 record MUST bind the verified setup branch, Ruleset ID, applied-record ID, and effective-policy digest. If current policy differs from an existing immutable setup PR proposal, the runtime MUST prepare a new exact setup generation and plan; it MUST NOT rewrite the old proposal or mark its old policy evidence as current. Before recording V2, the runtime MUST verify the default branch's active effective protection and complete trusted Required Check `(context, App ID)` set, and repeat the readback immediately before publication. It MUST read the branch, effective rules, Ruleset details, and legacy branch-protection endpoint; an HTTP 403 or partial response is `UNAVAILABLE`, never evidence that protection is absent. The Activation result MUST include a complete mode-specific required-setting inventory using `VERIFIED`, `NEEDS_APPLY`, `UNSUPPORTED`, or `BLOCKED`; in `external_reviewer`, V1 does not require the solo-owner managed Ruleset, so its inventory reports that setting as `UNSUPPORTED` without treating it as unmet. It MUST NOT claim `ACTIVE` while a mode-required setting is unmet.
+The public Consumer Activation setup action MUST orchestrate discovery, safe setup-branch preparation, exact policy planning, any required owner decision and isolated device-auth Admin continuation, effective-policy verification, setup-PR creation, and post-merge V2 recording as one resumable transaction. Live Admin and Activation V2 operations MUST run only from an owner-controlled local interactive host (local Codex, local Claude Code, or owner-controlled local VM), pass the shared host-control guard, and use `isolated-gh-device`. Cloud, hosted, CI, remote, noninteractive, and unconfirmed contexts MUST block before live writes. The guard is an operational trust check, not cryptographic host attestation. The command MUST NOT require the user to run an unrelated manual Ruleset preparation flow before Activation. Before a V2 setup PR exists, the committed setup-branch profile bytes and exact HEAD MUST be bound to the canonical policy plan. The PR marker and V2 record MUST bind the verified setup branch, Ruleset ID, applied-record ID, and effective-policy digest. If current policy differs from an existing immutable setup PR proposal, the runtime MUST prepare a new exact setup generation and plan; it MUST NOT rewrite the old proposal or mark its old policy evidence as current. Before recording V2, the runtime MUST verify the default branch's active effective protection and complete trusted Required Check `(context, App ID)` set, and repeat the readback immediately before publication. It MUST read the branch, effective rules, Ruleset details, and legacy branch-protection endpoint; an HTTP 403 or partial response is `UNAVAILABLE`, never evidence that protection is absent. The Activation result MUST include a complete mode-specific required-setting inventory using `VERIFIED`, `NEEDS_APPLY`, `UNSUPPORTED`, or `BLOCKED`; in `external_reviewer`, V1 does not require the solo-owner managed Ruleset, so its inventory reports that setting as `UNSUPPORTED` without treating it as unmet. It MUST NOT claim `ACTIVE` while a mode-required setting is unmet.
 
 <a id="req-f01-009"></a>
 ### 9.6 REQ-F01-009 Approved Ruleset management
@@ -391,6 +590,8 @@ Validation of an existing Gate Selection MUST validate only the authenticated Ac
 <a id="req-f01-013"></a>
 ### 9.10 REQ-F01-013 Bootstrap and review gates
 
+**Status: HISTORICAL / SUPERSEDED for Issue #63.** PR #64 is merged and Issue #63 is closed under the one-time development exception, not normal P-ASES Final Delivery. The #63 merge and close sequence below is retained as audit history and must not be replayed. Unfinished Ruleset and Activation V2 work belongs to Issue #71.
+
 Issue #63 MUST complete implementation first, then separately formalize the exact successor ADC and its generation-scoped Phase evidence. Before PR #64 merges, its current-HEAD CI, independent review, User Review, Final Delivery, and separate exact-HEAD `PR_MERGE` decision MUST pass. Final Delivery MUST evaluate current P-ASES evidence (including exact HEAD, approved ADC/Binding/Phase, Verification, Acceptance, Self-Audit, fresh Independent Review, User Review, trusted Required Checks, PR identity, and mergeability) without reading or requiring a Ruleset or effective policy. For `solo_owner`, it emits `PASES_FINAL_DELIVERY_V3` with `review_mode=solo_owner`, null `branch_protection_sha256`, and only the P-ASES evidence it actually verified; existing V1/V2 payload and digest semantics remain unchanged. Final Delivery readiness is not merge authorization. GitHub applies its own branch and merge constraints at merge time; a rejection or ambiguous response blocks or enters read-only recovery, without bypass or a second merge request. Because Activation is post-merge work, only PR #64 uses one standalone `Refs #63` line, not a GitHub auto-closing association; ordinary PRs retain standalone `Closes #N` and GitHub's normal auto-close behavior. The shared closer detector MUST recognize GitHub's case-insensitive `close`/`closes`/`closed`, `fix`/`fixes`/`fixed`, and `resolve`/`resolves`/`resolved` keywords, with an optional colon and either `#N` or `OWNER/REPO#N`. Repository-qualified references are normalized case-insensitively before Issue identity is compared; a same-number reference to a different repository is not the same Issue. The #64 merge preflight MUST read the complete PR body, all commit messages, the planned merge message, GitHub `closingIssuesReferences`, and Issue cross-reference metadata; any auto-close relation, closer token, or incomplete read blocks the merge. Immediately after merge, Issue #63 MUST read back OPEN. The Setup PR for Consumer Activation V2 has its own exact-HEAD review and merge decision and is performed after PR #64. Only a fully verified V2 `ACTIVE` record and effective policy whose `created_at` is later than the PR #64 merge allow the finalizer to close #63 with one durable close intent and GitHub API write. If Activation or policy verification fails, #63 stays OPEN. All Ruleset discovery, plan/apply, ownership evidence, and effective-policy verification needed for Activation occur in the post-merge Consumer Activation flow; they are not pre-merge PR #64 gates.
 
 The typed Activation-owned current-base transition remains narrow for any supported workflow where Activation precedes a PR merge. It MUST preserve the original `ExecutionBinding`, V1 `PRBinding`, and frozen base bytes, and accepts only a create-only record proving frozen base A is an ancestor and the first parent of the exact Activation V2 setup merge B; the V2 record and setup PR identities agree; the setup PR and A..B change only `.agent/project.json`; current main and PR base equal B; the profile bytes at B and exact PR HEAD match the Activation profile digest; and the target code patch is unchanged across A→B. The latest PRBinding generation references this evidence. `pr ensure`, Readiness, and Final Delivery apply the same live verification. Ordinary or unknown main advancement, wrong setup PR/merge SHA, profile mismatch, missing evidence, or a different PR/repository/Issue blocks; generic base drift is never accepted. In the Issue #63 two-stage order, Activation occurs after PR #64 merges, so a later Activation base advance is not a prerequisite or substitute for #64's pre-merge base checks.
@@ -398,14 +599,16 @@ The typed Activation-owned current-base transition remains narrow for any suppor
 <a id="req-f01-014"></a>
 ### 9.11 REQ-F01-014 Activation-scoped temporary admin authentication
 
-Only `delivery consumer-activation-admin-plan` and `delivery consumer-activation-admin-apply` may request temporary administrator authentication. Each command uses a separate child-process session. The standard mode is `isolated-gh-device`: run `gh auth login --hostname github.com --web --git-protocol https --insecure-storage` in a new private mode-0700 `GH_CONFIG_DIR`, with ambient `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, and `GITHUB_ENTERPRISE_TOKEN` removed from the login and later Admin API child environments. A runner-managed PTY may display the device URL/code; the owner completes browser authentication without opening an owner-local terminal. If the runner cannot show the challenge or provide that PTY, stop with `ADMIN_DEVICE_LOGIN_UNAVAILABLE`. Never use the normal `gh` configuration as a fallback.
+Only `delivery consumer-activation-admin-plan` and `delivery consumer-activation-admin-apply` may request temporary administrator authentication. Each command uses a separate child-process session. `isolated-gh-device` is the only supported mode: run `gh auth login --hostname github.com --web --git-protocol https --insecure-storage` from the confirmed local interactive terminal in a new private mode-0700 `GH_CONFIG_DIR`, with ambient `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, and `GITHUB_ENTERPRISE_TOKEN` removed from the login and later Admin API child environments. Verify the authenticated human owner and repository Admin permission before complete policy reads. If local confirmation, device authentication, owner identity, or any policy source is unavailable or incomplete, stop as `UNAVAILABLE/BLOCKED`; never use normal `gh` configuration, PAT, App, Network-secret, SDK, direct REST, or another writer as a fallback.
 
-`pat` remains an explicit, nonstandard legacy fallback requiring a trusted owner-local TTY and `getpass`; it has only the permissions required by the existing Activation/Admin path. PAT use and browser device authentication are authentication only, not approval. Clear the child credential/config in `finally`; deleting the private directory does not revoke the GitHub OAuth grant. Normal `GH_CONFIG_DIR`, token variables, and ordinary `gh` commands remain unchanged. Do not expose credentials in logs, arguments, JSON, artifacts, or chat. Same-OS-user subprocesses are not a strong sandbox.
+Device authentication is authentication only, not approval. Clear the private device config in `finally`; deleting that directory does not revoke the GitHub OAuth grant. Normal `GH_CONFIG_DIR`, token variables, and ordinary `gh` commands remain unchanged. Do not expose credentials in logs, arguments, JSON, artifacts, or chat. Same-OS-user subprocesses are not a strong sandbox.
 
 Before any Ruleset action, the selected Admin client MUST verify the authenticated stable user ID equals the configured repository owner ID, repository ID and owner login match, `permissions.admin=true`, collaborator permission is `admin`, and branch protection, Ruleset inventory, and effective branch rules are fully readable. A 403 or incomplete read is unavailable, never evidence of absent protection. Admin-plan is read-only against GitHub and writes a canonical local plan only when blocker-free; Admin-apply revalidates that exact plan and the independent operation approval before using the existing durable-intent/single-writer/readback path. Ruleset verification remains part of the resumable Activation transaction. GitHub API calls in P-ASES use only `gh` through `runtime/p_ases/github.py`; request JSON is passed on stdin with `gh api --input -`.
 
 <a id="req-f01-015"></a>
 ### 9.12 REQ-F01-015 Owner-authorized decisions and separated operations
+
+**Historical Issue #63 Phase journal:** the Issue #63-specific V1/V2/V3 rebaseline rules below describe immutable records and a retired writer. Issue #63 is closed. Do not append, reinterpret, or replay its specialized Phase journal; current Issue work follows the generic current-ADC routes.
 
 For self-authored `solo_owner` User Review, `evaluate_user_review` receives the validated session, full feedback snapshot, pinned `repository_owner_user_id`, fresh `pr_author_user_id`, independent `authenticated_verifier_user_id`, policy-derived `allowed_human_user_ids`, and typed V1, V2, or V3 User Review evidence. Repository ID `1401910271` and owner User ID `3744776` are pinned independently of the authenticated read-only verifier. Fresh repository metadata and PR author data must match those pins; comment actor ID must match the pinned owner. The read-only verifier is a transport identity and may differ from the owner; it is never approval evidence or the owner allowlist. A PR author's formal `APPROVED` review is never accepted in `solo_owner` mode.
 
@@ -429,7 +632,9 @@ No child result, failed or unknown spawn/join, same-context reviewer identity, s
 <a id="req-f01-018"></a>
 ### 9.14 REQ-F01-018 Exact Phase evidence recovery
 
-For Issue #63 only, the current approved ADC authorizes `PASES_PHASE_REBASE_INTENT_V3` / `PASES_PHASE_REBASE_APPLIED_V3` for exactly two incomplete historical ADC edges: #6271832228 (SHA-256 `221e62a86a5b682237948abec1ee287d24d3808a9ad4fa22960be2c869fdcd05`) → #6468215907 (SHA-256 `6b2ab1c83aead86efe602b700bdfd33807d1675a56089a6a3ffc29175e2b601a`), then #6468215907 → #6469056354 (SHA-256 `f03465611fda6df485b323beab212f132cb9df2145827d46d0f0525445584efe`). Preserve all V1 and V2 records and bytes. The first V3 edge records and, only if the complete current label state is exactly `phase:execution`, performs at most one label update to `phase:requirements`. The second edge adopts existing `phase:requirements`, records identical before/after labels, and performs zero label updates. Each V3 Intent and Applied record binds the exact ADC predecessor/successor IDs and SHA-256 values, immediately preceding Applied ID and payload digest, Issue body digest, full sorted label state, operation/phases, and authenticated executor. Every mutation is followed by exact readback. Exact retries are read-only; an interrupted write may append only its matching Applied record after proving whether the one permitted label update already took effect. Any other ADC edge, phase, label change, history gap, edited/deleted record, duplicate, actor mismatch, or uncertain API result blocks without a repeated label write. After both exact recovery generations, ordinary later ADC generations use V2.
+**Status: RETIRED; historical record only.** This section preserves the former Issue #63 ADC-edge recovery contract for audit. The `runtime/p_ases/phase_rebaseline.py` writer is retired and MUST NOT be restored or invoked. The published #63 journal and merged PR #64 remain unchanged; active lifecycle operations use generic/current-only readers, while sealed V1 adoption remains a separate compatibility path. Issue #63 was later closed under the one-time development exception, not through ordinary P-ASES Final Delivery; the unfinished Ruleset/Activation V2 work was handed to Issue #71. The exact details below describe what the historical ADC authorized and are not current authority.
+
+At the time, Issue #63's approved ADC authorized `PASES_PHASE_REBASE_INTENT_V3` / `PASES_PHASE_REBASE_APPLIED_V3` for exactly two incomplete historical ADC edges: #6271832228 (SHA-256 `221e62a86a5b682237948abec1ee287d24d3808a9ad4fa22960be2c869fdcd05`) → #6468215907 (SHA-256 `6b2ab1c83aead86efe602b700bdfd33807d1675a56089a6a3ffc29175e2b601a`), then #6468215907 → #6469056354 (SHA-256 `f03465611fda6df485b323beab212f132cb9df2145827d46d0f0525445584efe`). Preserve all V1 and V2 records and bytes. The historical first V3 edge recorded and, only when the complete label state was exactly `phase:execution`, performed at most one label update to `phase:requirements`. The historical second edge adopted existing `phase:requirements`, recorded identical before/after labels, and performed zero label updates. Each V3 Intent and Applied record binds the exact ADC predecessor/successor IDs and SHA-256 values, immediately preceding Applied ID and payload digest, Issue body digest, full sorted label state, operation/phases, and authenticated executor. Every mutation is followed by exact readback. Exact retries are read-only; an interrupted write may append only its matching Applied record after proving whether the one permitted label update already took effect. Any other ADC edge, phase, label change, history gap, edited/deleted record, duplicate, actor mismatch, or uncertain API result blocks without a repeated label write. After both exact recovery generations, ordinary later ADC generations use V2.
 
 <a id="req-f01-031"></a>
 ### 9.15 REQ-F01-031 Generic Phase restart authorization
@@ -439,7 +644,7 @@ The current approved ADC may contain one strict marker block `<!-- PASES_PHASE_R
 <a id="req-f01-032"></a>
 ### 9.16 REQ-F01-032 Eligible Issue and Binding
 
-The generic restart accepts only an open non-PR ordinary Issue with exactly one kind label in `{kind:single, kind:child}`, exactly one `phase:execution`, and a fully verified current ExecutionBinding. Repository/Issue IDs, current approved ADC pointer/SHA, frozen base, dedicated branch, worktree, initial HEAD, and Binding generation must all match. Read every label and full ADC/Binding/Phase history before a write. Missing, stale, edited, duplicate, mismatched, incomplete, 401/403/404, 429, or 5xx reads block with zero GitHub writes. Issue #63 remains on its existing specialized path.
+The generic restart accepts only an open non-PR ordinary Issue with exactly one kind label in `{kind:single, kind:child}`, exactly one `phase:execution`, and a fully verified current ExecutionBinding. Repository/Issue IDs, current approved ADC pointer/SHA, frozen base, dedicated branch, worktree, initial HEAD, and Binding generation must all match. Read every live label and directly referenced current operation record before a write; do not traverse historical ADC or full Binding/Phase generations as a fallback. Missing, stale, edited, duplicate, mismatched, incomplete, 401/403/404, 429, or 5xx reads block with zero GitHub writes. The former Issue #63-specific `phase_rebaseline.py` writer is retired; sealed V1 adoption compatibility and immutable #63 history are preserved.
 
 <a id="req-f01-033"></a>
 ### 9.17 REQ-F01-033 Append-only Phase restart records
@@ -459,9 +664,495 @@ The exact Applied record starts the new active Phase generation, bound to the cu
 <a id="req-f01-036"></a>
 ### 9.20 REQ-F01-036 Issue #63 compatibility
 
-Keep Issue #63's specialized phase-rebaseline implementation, ADC/Owner checks, V1/V2/V3 receipt readers, and recovery semantics unchanged. The generic command rejects Issue #63 and never routes it through the ordinary path. Do not change PR #64, Activation Issue #57 V1, or Issue #63 history.
+**Status: RETIRED; historical requirement text retained for lineage.** The former Issue #63-specific `phase_rebaseline.py` writer and specialized active route are retired. Preserve sealed V1 adoption compatibility and all published #63/#64 records as immutable history. Current active Phase operations use generic/current-only readers; the generic phase-restart compatibility alias has no Issue-number-specific routing, and closed #63 fails the ordinary live-state preflight.
 
 <a id="req-f01-037"></a>
 ### 9.21 REQ-F01-037 ADC is the sole Phase restart approval
 
 The exact approved ADC and its single valid typed authorization are the sole approval for this one phase reset. No separate Owner plan, terminal input, approval comment, or chat confirmation is required. Intent/Applied comments are technical records, not approval. This authority cannot be reused for Ruleset, Activation, review, merge, or Issue closure.
+
+<a id="req-f01-038"></a>
+### 9.22 REQ-F01-038 Missing historical Binding provenance
+
+When the original ExecutionBinding bytes are unavailable, report BLOCKED_BINDING_PROVENANCE_MISSING and keep the reported five-generation digest as an opaque historical reference. Its provenance remains UNVERIFIED. Never reconstruct, relabel, append to, or overwrite that history, and never synthesize a V1 ExecutionBinding or describe this epoch as a sixth Binding generation.
+
+<a id="req-f01-039"></a>
+### 9.23 REQ-F01-039 One-time epoch authorization
+
+Only the exact approved successor ADC authorization marker may create a prospective Issue #71 execution epoch. Bind the current approved ADC bytes, repository and owner IDs, Issue identity and body digest, predecessor ADC and active Phase generation, retired Intent, selected base and branch, transition, reason, and max_applications=1. Missing, changed, duplicate, stale, or reordered values block before a write.
+
+<a id="req-f01-040"></a>
+### 9.24 REQ-F01-040 Append-only epoch journal
+
+Record a distinct canonical V2 Intent and matching Applied comment. Bind stable repository and Issue IDs, authenticated owner actor, current ADC pointer and marker digest, predecessor Phase generation, retired V1 Intent identity and digest, UNVERIFIED Binding provenance, exact base and branch, complete before/after labels, unique epoch ID, timestamps, and exact Intent digest. GitHub is the durable journal; local state is only a verified attachment for that epoch.
+
+<a id="req-f01-041"></a>
+### 9.25 REQ-F01-041 One-shot epoch migration
+
+After complete direct/list/direct readback, establish the dedicated branch and workspace at the exact authorized base, append one Intent, make at most one complete-label replacement from phase:ready to phase:requirements, verify the full Issue snapshot, and append one matching Applied record. An interruption, timeout, duplicate, or mismatch is read-only recovery; never resend an ambiguous label update or append a duplicate record.
+
+<a id="req-f01-042"></a>
+### 9.26 REQ-F01-042 Epoch-2 predecessor migration evidence
+
+A complete V2 Intent/Applied pair and verified workspace attachment established the current execution epoch during the original epoch-2 migration. Following the approved epoch-3 rebaseline, that V2 pair is immutable predecessor history; it cannot establish the current Issue #71 generation. Current Phase, readiness, verification, review, PR, and delivery readers bind to the active epoch-3 identity and accept only its current evidence. Earlier Phase receipts and V1 history remain immutable and readable as history but cannot yield current-epoch PASS. Missing, stale, duplicated, edited, or mismatched epoch state fails closed.
+
+The Issue #71 PR bridge stores the active digest in `PASES_PR_BINDING_V4.execution_epoch_sha256`; its work checkpoint stores it in `PASES_WORK_CHECKPOINT_V3.execution_epoch_sha256`. Neither schema may also carry an ExecutionBinding V1 or Issue #63 adoption identity. Ordinary V1 and adopted PRBinding/checkpoint bytes remain unchanged. `work base`, `work branch`, `work bind`, and `work recover` cannot create or reconstruct the Issue #71 epoch; the dedicated epoch reader is authoritative. PR #75 uses the single deferred-close association `Refs #71`; current-epoch PR ensure must validate the association mode from its requested body, require the same mode on direct PR readback, and leave PR metadata unchanged.
+
+<a id="req-f01-043"></a>
+### 9.27 REQ-F01-043 Agent-neutral local eligibility
+
+One shared eligibility guard at CLI and direct-runtime live-operation entrypoints admits owner-controlled local interactive Codex, Claude Code, and owner-controlled local VMs with identical semantics. It requires an interactive owner-controlled host, operator confirmation, authenticated owner identity, and complete current Admin readback. Known hosted, Cloud, CI, remote, noninteractive, and unknown-control contexts are rejected before live writes. Agent identity and absence of a Cloud marker are not proof of locality; owner control is an operational assumption, not cryptographic host attestation.
+
+<a id="req-f01-044"></a>
+### 9.28 REQ-F01-044 Isolated device authentication and complete Admin readback
+
+Live Admin access uses only isolated-gh-device and gh api with a fresh private mode-0700 GH_CONFIG_DIR. Remove GH_TOKEN, GITHUB_TOKEN, GH_ENTERPRISE_TOKEN, and GITHUB_ENTERPRISE_TOKEN from Admin children. Never fall back to ordinary credentials, PAT, App tokens, network secrets, SDKs, direct REST clients, or a second writer. Repeat complete local policy readback before any proposed plan or apply. 401, 403, 429, 5xx, malformed, incomplete, or identity-mismatched reads remain UNAVAILABLE/BLOCKED; a legacy-protection 404 is NOT_CONFIGURED only after all required repository, identity, branch, effective-rule, and Ruleset reads are complete and consistent.
+
+<a id="req-f01-045"></a>
+### 9.29 REQ-F01-045 Separated Ruleset and merge authority
+
+**Historical Issue #63 outcome:** Issue #63 was closed under the one-time development exception before V2 Activation. Its unfinished Ruleset/Activation V2 work was handed to Issue #71. Do not treat #63 as open or invoke its former finalizer.
+
+ruleset_management.py::apply_ruleset_plan remains the sole Ruleset writer. Applying a Ruleset requires separate exact-plan RULESET_PLAN_APPLY authority for the recomputed current plan and complete before/after readback. Setup PR merge requires separate exact-HEAD PR_MERGE authority. ADC approval, authentication, Issue edits, epoch creation, CI, and code review authorize neither operation. Missing chat user-role provenance yields CHAT_PROVENANCE_UNAVAILABLE and zero approval-dependent writes. Keep Issue #71 open until Activation V2 is ACTIVE and all post-activation and time-order checks pass; Issue #63 remains closed.
+
+<a id="req-f01-046"></a>
+### 9.30 REQ-F01-046 Compatibility and epoch test coverage
+
+Issue #63 and PR #64 are preserved as immutable compatibility history. Regression coverage may read and validate their records, but must not replay the retired Issue #63 writers or perform new Issue #63 operations.
+
+Preserve Issue #57 V1, Issue #63 and PR #64 history, predecessor ADC/Binding/Phase comments, and Issue #72/PR #73 byte-for-byte and behavior-for-behavior. Cover epoch authorization, journaling and recovery; active-reader isolation; local Codex/Claude parity and local VM acceptance; hosted, CI, remote, and unknown-context refusal; direct-runtime enforcement; device-auth separation; Admin 401/403/404/429/5xx and partial reads; stale plans; separate approvals; and zero writes on every blocked path.
+
+<a id="req-f01-047"></a>
+### 9.31 REQ-F01-047 Retire the first V1 migration
+
+Preserve the first successor ADC, its exact incomplete Intent, dedicated branch, predecessor ADC/Phase/Binding records, Issue #57 V1, Issue #63, PR #64, and Issue #72/PR #73 unchanged. The incomplete V1 Intent is retired history: never edit, delete, retry, complete, attach, or select it as the current epoch.
+
+<a id="req-f01-048"></a>
+### 9.32 REQ-F01-048 Exact V2 marker binding
+
+The sole new migration authority is the exact PASES_EXECUTION_EPOCH_AUTHORIZATION_V2 marker in the current approved ADC. It binds the predecessor ADC, retired Intent and body digest, active Phase Applied and digest, repository/owner/Issue identities, exact Issue body digest, base ref/SHA, dedicated branch, reason, ready-to-requirements transition, and max_applications=1. Any missing, changed, duplicate, stale, or reordered field blocks before writes.
+
+<a id="req-f01-049"></a>
+### 9.33 REQ-F01-049 Distinct V2 Intent and Applied records
+
+The V2 journal binds the current ADC marker digest, stable repository and Issue IDs, owner actor, predecessor Phase generation, retired V1 Intent, old Binding provenance UNVERIFIED, exact base and branch, complete labels, unique epoch ID, canonical timestamps, and exact Intent body digest. V1 and V2 journals remain distinct, and ExecutionBinding V1 is never mutated.
+
+<a id="req-f01-050"></a>
+### 9.34 REQ-F01-050 Partial migration is permanently non-retryable
+
+Create the authorized epoch-2 branch and workspace from the exact base, then perform the one authorized Intent/label/Applied sequence. On interruption or ambiguous outcome, recovery is read-only. Any partial V2 result stays blocked and requires a separately approved successor ADC that defines the next safe action.
+
+<a id="req-f01-051"></a>
+### 9.35 REQ-F01-051 Fresh Phase evidence before implementation
+
+Keep the Issue body unchanged through the migration and fresh requirements, specification, design, and ready Phase receipts so the pinned body digest remains valid. Establish the new epoch before issuing any current-epoch Phase PASS. Retired V1 Intent and predecessor READY/PASS receipts remain history and cannot produce current-epoch PASS.
+
+<a id="req-f01-052"></a>
+### 9.36 REQ-F01-052 Local Activation V2 implementation scope
+
+After the new epoch and Phase sequence pass, implement the inherited Issue #71 local Activation V2 contract, including common CLI and direct-runtime locality enforcement, local Codex and Claude Code parity, isolated device authentication, and Admin readback failure semantics. Reuse the merged Activation V2 implementation and sole Ruleset writer. Require separate exact-plan RULESET_PLAN_APPLY and exact-HEAD PR_MERGE authority; do not add a provenance bypass.
+
+<a id="req-f01-053"></a>
+### 9.37 REQ-F01-053 Synchronized artifacts and distributions
+
+Update the affected specifications, design, test Oracles and traceability, applicable workflow Skills, all three adapter READMEs, and Issue status evidence. Generate dist outputs only through python tools/build_dist.py. Keep the OpenAI, Claude, and Antigravity host packages independent.
+
+<a id="req-f01-054"></a>
+### 9.38 REQ-F01-054 Required focused and regression tests
+
+Cover retired V1 handling, exact V2 marker and journal validation, active-reader isolation, one successful transition, failure after each V2 write boundary, local Codex/Claude parity, local VM acceptance, Cloud/hosted/CI/unknown refusal, direct-runtime enforcement, authentication separation, Admin read failures, separated approval gates, and zero writes on every blocked path.
+
+<a id="req-f01-067"></a>
+### 9.39 REQ-F01-067 Epoch-3 predecessor preservation
+
+Preserve every predecessor ADC, Binding, epoch, Phase receipt, Issue comment, and PR #74 byte-for-byte. The historical Binding remains UNVERIFIED; the epoch-3 execution identity is a distinct forward generation and never claims to restore or extend that Binding. Only the exact current approved successor ADC pointer and verified epoch-3 Intent/Applied pair and attachment can establish the active generation.
+
+<a id="req-f01-068"></a>
+### 9.40 REQ-F01-068 Canonical Phase artifact impact
+
+The approved successor ADC must parse exactly one Specification row for docs/specs/workflow-spec.md and docs/specs/runtime-spec.md, one Design row for docs/design/workflow-design.md, and one Testing row for docs/testing/pases-lifecycle-tests.md, docs/testing/runtime-tests.md, and docs/testing/traceability.md. Commit these final bytes before issuing fresh Phase receipts. Other impacted runtime, tests, Skills, adapters, status evidence, and generated distribution files remain within the inherited contract but do not change the Phase artifact-role rows.
+
+<a id="req-f01-069"></a>
+### 9.41 REQ-F01-069 Frozen migration preflight
+
+Before the one-time migration, verify the exact approved ADC and predecessor chain, complete Issue body and labels, pinned repository/Issue/owner IDs, old epoch and READY evidence, deviation and blocker records, PR #74 head, main@07481c4b451a81750a6c2e1a6a18bdfd4e3459c2, and the existing clean local epoch-3 branch at that base with no remote branch. Drift, missing evidence, or incomplete reads block before a journal or label write. Do not recreate, reset, commit, or push the branch as part of this migration preflight.
+
+<a id="req-f01-070"></a>
+### 9.42 REQ-F01-070 Exact successor authorization
+
+Only the unique canonical PASES_ISSUE_PHASE_EPOCH_REBASE_AUTHORIZATION_V1 marker in the current approved ADC authorizes the epoch-3 transition. Its exact typed payload binds the approved predecessor and successor ADCs, repository/Issue/owner, Issue body, predecessor epoch and phase generation, old READY receipt, deviation and blocker, PR head, base and local branch, complete before/after labels, transition, and one-application limit. Missing, duplicate, reordered, edited, stale, or mismatched evidence blocks without writes.
+
+<a id="req-f01-071"></a>
+### 9.43 REQ-F01-071 One-shot epoch-3 transition and recovery
+
+Append and verify one immutable Intent, perform at most one complete-label replacement from the exact phase:ready state to phase:requirements, append one matching Applied record, and verify the local epoch identity and workspace attachment. Read direct/list/direct comment evidence and full Issue labels. Ambiguous Intent, label, or Applied writes are reconciled only through read-only readback; a persistent attempt marker prevents a second POST or PUT. Preserve older migration records as history and never reconstruct the V1 Binding.
+
+<a id="req-f01-072"></a>
+### 9.44 REQ-F01-072 Fresh Phase receipts before implementation
+
+Commit the final specification, design, and test-oracle documents before reissuing requirements → specification → design → ready receipts under the epoch-3 generation. The READY receipt must validate the current document bytes and traceability at the exact pushed branch HEAD. Only after READY passes may Issue #71 advance normally to phase:execution. PR #74 product/runtime/test changes and its A/P2 fix are carried only after that transition; its old Phase, Binding, checkpoint, readiness, and delivery evidence remain historical.
+
+<a id="req-f01-073"></a>
+### 9.45 REQ-F01-073 Active identity in Readiness evidence
+
+Readiness evidence references must be derived from the fully validated active execution identity. Issue #71 uses its epoch file and verified workspace attachment, ordinary Issues use only their validated V1 Binding, and Issue #63 uses its adopted-epoch evidence. Every emitted identity path must exist and be the active validated source. Issue #71 must not report the retired missing execution-binding.json path.
+
+<a id="req-f01-074"></a>
+### 9.46 REQ-F01-074 Supersede the prior implementation PR
+
+Keep PR #74 open and unchanged until one replacement, non-draft Issue #71 PR from epoch 3 is fully verified. Then update PR #74's body to identify the replacement and close PR #74 as superseded. Do not merge either PR without separate explicit owner authorization for that exact PR at its current HEAD.
+
+<a id="req-f01-075"></a>
+### 9.47 REQ-F01-075 Inherited Activation and delivery gates
+
+All inherited Issue #71 local Codex/Claude Code Admin authentication, complete current policy readback, separate exact Ruleset, Setup PR merge, and Activation approvals remain in force. Issue #63 protections and all inherited tests, documentation, review, CI, and delivery gates remain unchanged. A 403 or incomplete policy read is unavailable evidence, never proof that protection is absent. No Ruleset write, Setup PR merge, Activation, Issue #63 closure, PR merge, release, tag push, or parent activation occurs without its separate exact authorization.
+
+<a id="req-f01-090"></a>
+### 9.48 REQ-F01-090 Preserve the current execution origin
+
+Keep the approved ADC chain, Issue #71 body, epoch-3 origin identity and attachment, historical Binding, branch/worktree, PR #74, and prior evidence unchanged. The epoch remains rooted at ADC #6881591677 and must be verified through the complete approved successor chain. Keep Issue #71 open.
+
+<a id="req-f01-091"></a>
+### 9.49 REQ-F01-091 Exact verification-rework authority
+
+Only the canonical `PASES_ISSUE_VERIFICATION_REWORK_AUTHORIZATION_V2` marker in the exact approved successor ADC may authorize this transition. It binds predecessor ADC #6886911700, immutable epoch origin and Phase generation, pre-bootstrap branch/PR baseline, full Issue state, and the bootstrap path allowlist. The predecessor V1 marker remains immutable history and cannot authorize rework.
+
+<a id="req-f01-092"></a>
+### 9.50 REQ-F01-092 Bounded bootstrap commits
+
+Permit one to three descendant commits from pre-bootstrap HEAD `b781ddf1bd6eb5067e87f269da4b1306341e682d`; every changed path must be in the exact successor ADC allowlist. The complete local worktree must be clean after commits. Bootstrap must not change User Review identity, profile review mode, Activation, PR #74, or Issue #63 behavior.
+
+<a id="req-f01-093"></a>
+### 9.51 REQ-F01-093 Exact PR #75 subject
+
+Push only the authorized bootstrap commits to existing PR #75. Before evidence collection and rework, require the PR open and non-draft, based on `main@07481c4b451a81750a6c2e1a6a18bdfd4e3459c2`, with its HEAD equal to the exact local bootstrap HEAD. Re-read local, remote, and GitHub identities immediately before the Intent and label update.
+
+<a id="req-f01-094"></a>
+### 9.52 REQ-F01-094 Fresh exact-head delivery evidence
+
+After the bootstrap push, produce fresh Verification, Acceptance, Self-Audit, Independent Review, Required CI, and Review Readiness at the exact pushed HEAD under the current approved ADC. Bind the rework Intent to the actual ADC pointer, bootstrap/PR HEAD, fresh Readiness digest, epoch origin, active Phase generation, Issue body/labels, owner, and repository identities. The earlier Readiness digest is historical only. Any stale gate or identity mismatch blocks before writes.
+
+<a id="req-f01-095"></a>
+### 9.53 REQ-F01-095 One-shot verification-to-requirements rework
+
+Use one append-only Intent, at most one full-label replacement from the exact verification state to requirements, and one matching Applied record. Verify direct/list/direct comment history and full Issue state. Never retry an ambiguous write. Applied becomes the active Phase generation while epoch 3 and its attachment remain unchanged.
+
+<a id="req-f01-096"></a>
+### 9.54 REQ-F01-096 Fresh Phase sequence before implementation
+
+At the same bootstrap HEAD, publish fresh requirements → specification → design → READY receipts under the new active Phase generation. Only after READY passes may Issue #71 advance normally to execution and receive the Issue #71-only `solo_owner` User Review identity correction. Preserve Issue #63 behavior. Run final exact-head evidence, CI, Readiness, and User Review required by the inherited contract.
+
+<a id="req-f01-097"></a>
+### 9.55 REQ-F01-097 Separate delivery and Admin gates
+
+Keep all other inherited delivery gates unchanged. PR merge requires separate owner authorization for exact current PR #75 HEAD. This ADC does not authorize Admin policy changes, Ruleset or Setup PR writes, Activation, release, tag, Issue #63, or Issue-close writes.
+
+<a id="req-f01-098"></a>
+### 9.56 REQ-F01-098 Preserve the pending rework operation
+
+Keep Issue #71, its body and OPEN state, approved ADC history, epoch-3 origin, active Phase generation, branch/worktree, PR #74 and PR #75, original pre-Intent PASS Readiness, pending Intent #6888474848, and all historical records unchanged. Recovery must bind the exact existing Intent and must not post another Intent.
+
+<a id="req-f01-099"></a>
+### 9.57 REQ-F01-099 Bound the Recovery commit
+
+Permit at most one Recovery commit descended from `4185a510054a2a8781659191c1a48178336f8571`. Require every changed path to be in the Recovery ADC's exact 16-path allowlist. Generate the three distribution mirrors only with `python tools/build_dist.py`. Require a clean worktree and equal local/remote HEADs before any Issue write.
+
+<a id="req-f01-100"></a>
+### 9.58 REQ-F01-100 Verify the successor Recovery authorization
+
+Validate the exact approved ADC #6888665795 and its exact-byte Recovery marker, the complete approved ADC chain, the exact pending Intent comment/body digest, the original ADC identity in that Intent, the recorded original Readiness bytes and subject, and the local Intent attempt marker. Recheck repository, owner, Issue, epoch, Phase generation, frozen base, PR #75, branch, and current HEAD before a write. Before Recovery code gates, append a V4 PRBinding and V3 checkpoint for the current Recovery ADC and exact Recovery HEAD through the P-ASES recovery command. Preserve PR #75 title/body bytes; the ordinary PR ensure path stays blocked while Intent is incomplete.
+
+<a id="req-f01-101"></a>
+### 9.59 REQ-F01-101 Continue the exact pending Intent once
+
+When the exact pending Intent exists, labels equal the exact before-state, and no label-attempt marker exists, reuse only the exact pre-Intent PASS Readiness bound by the Intent. Do not recompute Readiness after Intent. Write the label-attempt marker before the only complete-label PUT, read back the exact after-state, and append one matching Applied record. A prior marker forbids another PUT. Ambiguous outcomes permit read-only reconciliation only.
+
+<a id="req-f01-102"></a>
+### 9.60 REQ-F01-102 Cover Recovery and no-retry behavior
+
+Test Recovery marker and chain validation, original Intent and Readiness reuse, absence of post-Intent Readiness recomputation, before-label continuation with no marker, marker-present no-retry, after-label Applied recovery, and wrong Intent, Readiness, ADC, HEAD, PR, owner or labels. Run focused tests and the full inherited verification suite at the Recovery HEAD.
+
+<a id="req-f01-103"></a>
+### 9.61 REQ-F01-103 Require exact-HEAD Recovery gates
+
+At the Recovery HEAD, require compileall, the full unit suite, documentation validation and formatting, generated distribution check and validation, specification/design/oracle traceability, all 16-Skill acceptance checks, whitespace validation, all configured Required Checks, a fresh Self-Audit, and a fresh native Independent Review. The V4 PRBinding and V3 checkpoint must bridge the Recovery ADC, immutable epoch-3 identity, frozen PR #75, and Recovery HEAD before these gates are evaluated. The existing original PASS Readiness remains the sole Readiness authorizing Intent #6888474848; do not claim a new PASS Readiness while rework is incomplete.
+
+<a id="req-f01-104"></a>
+### 9.62 REQ-F01-104 Resume the approved Phase sequence
+
+Only after Applied is read back, publish fresh requirements → specification → design → READY receipts at the exact Recovery HEAD and new active Phase generation, then advance normally to execution. Only then implement the inherited Issue #71 `solo_owner` User Review identity correction. Preserve Issue #63 behavior.
+
+<a id="req-f01-105"></a>
+### 9.63 REQ-F01-105 Preserve separate delivery and Admin gates
+
+Keep PR #75 open and unmerged, preserving its title and body. Admin policy and Activation remain blocked until complete owner-controlled Admin policy readback and separate approvals. Merge, Activation, release, tag, Issue #63, and Issue-close operations retain their separate authorization gates.
+
+<a id="req-f01-106"></a>
+### 9.64 REQ-F01-106 Preserve the existing phase journal
+
+Preserve Issue #71's body and open state, the approved ADC chain, epoch, branch, PR #75, Intent #6888474848, Applied #6889965335, local attempt markers, and all historical records. Do not edit or duplicate either journal comment.
+
+<a id="req-f01-107"></a>
+### 9.65 REQ-F01-107 Bound Applied event and publication time
+
+For the exact Issue #71 phase-rework Applied record, parse `applied_at` and GitHub `created_at` as strict UTC. Treat `applied_at` as the local event time and `created_at` as publication time. Accept only when `0 <= created_at - applied_at <= 300` seconds. Reject future event times, larger differences, malformed timestamps, or any mismatch in the exact Applied identity and fields. Do not change timestamp rules for other Issues or record types.
+
+<a id="req-f01-108"></a>
+### 9.66 REQ-F01-108 Permit one timestamp-reader correction commit
+
+Permit exactly one follow-up commit parented by `574d7970323840933c34c37e874ad1616d577a8a`, with every changed path in the exact timestamp-recovery marker allowlist. Validate the original bootstrap prefix through `4185a510054a2a8781659191c1a48178336f8571` using the original ADC's bootstrap bound, then validate the Recovery and timestamp follow-up commits against their separate exact markers. Together with the existing Recovery commit, the branch has exactly two descendants of `4185a510054a2a8781659191c1a48178336f8571`. Generate distribution mirrors only with `python tools/build_dist.py`.
+
+<a id="req-f01-109"></a>
+### 9.67 REQ-F01-109 Verify the timestamp-recovery ADC successor
+
+Validate the exact successor ADC #6890080277, its predecessor #6888665795, exact marker, complete approved ADC chain, and existing Intent/Applied records. Preserve the existing epoch and all exact Issue, owner, ADC, branch, PR, base, HEAD, labels, and local attempt-marker checks. Generic phase semantics and other Issues remain unchanged.
+
+<a id="req-f01-110"></a>
+### 9.68 REQ-F01-110 Test exact Applied reconciliation without writes
+
+Cover timestamp equality, the observed three-second difference, the inclusive 300-second limit, over-limit and future values, malformed timestamps, wrong Applied comment ID/body digest, wrong Intent, and no-write reconciliation. Reconciliation performs no Issue label or comment write.
+
+<a id="req-f01-111"></a>
+### 9.69 REQ-F01-111 Gate the exact follow-up HEAD
+
+At the single follow-up commit HEAD, require compileall, the full unit suite, documentation validation and formatting, generated distribution check and validation, specification/design/test-oracle traceability, all 16-Skill acceptance checks, whitespace validation, configured GitHub Required Checks, a fresh Self-Audit, and a fresh native Independent Review. Rebind PR #75 with P-ASES at that HEAD. Preserve the PR title, body, base, open state, and unmerged state.
+
+<a id="req-f01-112"></a>
+### 9.70 REQ-F01-112 Resume Phase evidence after reconciliation
+
+After read-only reconciliation confirms the exact existing Applied record and current binding, issue fresh requirements → specification → design → READY receipts at the corrected HEAD and active Phase generation, then advance normally to execution. Only then continue the inherited Issue #71 `solo_owner` User Review identity correction. Preserve Issue #63 behavior.
+
+<a id="req-f01-113"></a>
+### 9.71 REQ-F01-113 Preserve separate authorization boundaries
+
+Do not create duplicate Intent or Applied comments, another backward Phase transition, PR merge, Admin policy or Ruleset operation, Setup PR, Activation, release, tag, Issue #63 write, or Issue close.
+
+<a id="req-f01-120"></a>
+### 9.72 REQ-F01-120 Preserve the approved Issue #71 continuation subject
+
+Preserve the OPEN Issue #71 body and approved ADC history, epoch-3 identity and attachment, execution identity, branch/worktree, frozen base, PR #75, current labels, and existing Intent #6888474848 and Applied #6889965335. Treat those Intent/Applied records and all earlier ADC generations as immutable history. Do not edit, duplicate, restore, or roll back them.
+
+<a id="req-f01-121"></a>
+### 9.73 REQ-F01-121 Verify the exact continuation ADC chain and marker
+
+Accept the continuation only when the approved chain is exactly #6886911700 → #6887429739 → #6888665795 → #6890080277 → #6891800412 → #6891926625 with the pinned SHA-256 values. Validate the exact current canonical continuation marker, its 2,155-byte digest, predecessor, repository/Issue/owner, epoch, phase, labels, branch, base, PR, HEAD, Intent/Applied IDs and digests, and exact path allowlist. Reject missing, duplicate, reordered, unapproved, edited, stale, or mismatched generations.
+
+<a id="req-f01-122"></a>
+### 9.74 REQ-F01-122 Bound the continuation commit lineage
+
+Permit exactly one continuation commit whose sole parent is `cb02a9fccfb988300dff82c5ad2ccfe946cd4dd3`. Preserve the existing recovery and timestamp-reconciliation commits as separate one-commit segments after `4185a510054a2a8781659191c1a48178336f8571`; validate each segment against its own exact allowlist. Reject merge commits, unexpected parents, extra descendants, and paths outside the continuation allowlist. Generate mirrors only with `python tools/build_dist.py`.
+
+<a id="req-f01-123"></a>
+### 9.75 REQ-F01-123 Test authorization, lineage, and no-write behavior
+
+Cover the six-generation ADC chain, canonical marker and artifact declarations, wrong/missing/duplicate marker, wrong identity, changed Intent/Applied tuple, invalid branch/base/HEAD, wrong parent, extra descendant, and outside-allowlist change. Prove that exact existing Applied reconciliation is a read-only NOOP with zero Issue comment or label writes. Keep timestamp boundary and prior no-write regressions.
+
+<a id="req-f01-124"></a>
+### 9.76 REQ-F01-124 Gate and bind the exact pushed HEAD
+
+At the one pushed continuation HEAD, require compileall, full unit tests, documentation validation and formatting, generated distribution check and validation, specification/design/test-oracle traceability, all 16-Skill acceptance checks, whitespace validation, configured Required Checks, fresh Self-Audit, and fresh native Independent Review. Rebind PR #75 through P-ASES at that HEAD. Keep its title, body, base, open state, and unmerged state unchanged.
+
+<a id="req-f01-125"></a>
+### 9.77 REQ-F01-125 Reconcile before issuing Phase evidence
+
+After current ADC, binding, commit lineage, local marker, and live PR checks pass, reconcile the existing Intent/Applied pair read-only and require NOOP with zero Issue writes. Only then publish and verify fresh requirements → specification → design → READY receipts at the exact HEAD, applying each adjacent P-ASES phase transition only after its receipt and complete labels are verified. Stop at execution.
+
+<a id="req-f01-126"></a>
+### 9.78 REQ-F01-126 Declare exact Phase artifact paths
+
+Declare Specification as `docs/specs/workflow-spec.md`, Design as `docs/design/workflow-design.md`, and Testing as `docs/testing/pases-lifecycle-tests.md` plus `docs/testing/traceability.md`, with each path inside inline code so sentence punctuation is outside the path. Confirm committed blob bytes match the local regular files. Do not change the generic document path parser or create substitute files.
+
+<a id="req-f01-127"></a>
+### 9.79 REQ-F01-127 Preserve operation boundaries
+
+Do not add an Intent/Applied or recovery marker, move phases backward, merge PR #75, change Admin policy or Rulesets, create a Setup PR, run Activation, implement User Review identity, release, push tags, write Issue #63, or close Issue #71.
+
+<a id="req-f01-128"></a>
+### 9.80 REQ-F01-128 Preserve the exact reader-continuation subject
+
+Preserve Issue #71 OPEN and its exact body, the complete approved ADC history, active epoch and execution identity, branch and frozen base, PR #75 metadata, existing rework Intent/Applied, current phase labels before continuation, and completed requirements→specification and specification→design receipts as immutable history.
+
+<a id="req-f01-129"></a>
+### 9.81 REQ-F01-129 Verify the exact approved ADC chain
+
+Accept the current approved reader-continuation ADC only after verifying every generation in the exact approved chain, every predecessor digest, canonical marker bytes and fields, and the pinned Issue, owner, epoch, branch, PR/base, Intent, Applied, phase, labels, and HEAD identities. Reject missing, duplicate, reordered, edited, unapproved, stale, or mismatched generations.
+
+<a id="req-f01-130"></a>
+### 9.82 REQ-F01-130 Bound the reader-continuation commit
+
+Preserve the validated continuation through `b31cca21da15e18d0e1665827621700f7d774d0a`, then permit exactly one direct-child commit with the marker's exact 15-path allowlist. Reject merges, wrong parents, extra commits, outside paths, and any later descendant. Generate distribution mirrors only with `python tools/build_dist.py`.
+
+<a id="req-f01-131"></a>
+### 9.83 REQ-F01-131 Repair executable-source traceability
+
+Add `../../tests/test_phase_rework.py` to the REQ-F01-124 traceability row while preserving its existing links. Add complete traceability rows for REQ-F01-128 through REQ-F01-132, each with exactly one linked Specification, Design, Oracle, and Test plus at least one repository-contained executable test source.
+
+<a id="req-f01-132"></a>
+### 9.84 REQ-F01-132 Gate the exact HEAD and resume Phase transitions
+
+At the one exact pushed HEAD, pass every required local and hosted verification gate, fresh exact-subject Verification/Acceptance/Self-Audit/Independent Review, and P-ASES PRBinding. Reconcile the existing Applied record read-only with a zero-write NOOP. Then publish and verify the fresh design→ready receipt, advance to READY, and use the supported execution transition evidence defined by REQ-F01-133. Keep Issue #71 OPEN and PR #75 OPEN/non-draft/unmerged; stop at execution.
+
+<a id="req-f01-133"></a>
+### 9.85 REQ-F01-133 Record the supported execution transition
+
+The `ready → execution` transition uses the ordinary `issue advance 71 execution` operation at the exact current subject. Before changing the label, it revalidates the current READY proof; after the label write, it returns success and reads back the complete Issue state with `phase:execution`. Preserve the command result, READY proof reference, pre-write and post-write Issue snapshots, and their exact timestamps and digests as the transition record. Do not require or publish a distinct execution-target `PASES_PHASE_DECISION_V1` comment.
+
+<a id="req-f01-134"></a>
+### 9.86 REQ-F01-134 Parse the approved Markdown predecessor digest
+
+For the approved execution-receipt reader ADC #6894441752, validate the predecessor comment ID and exact 64-character lowercase SHA-256. Accept either the bare digest or exactly one matched pair of Markdown inline-code delimiters around it. Reject unmatched or repeated delimiters, whitespace or punctuation drift, wrong IDs, wrong digests, and malformed declarations.
+
+<a id="req-f01-135"></a>
+### 9.87 REQ-F01-135 Preserve exact ADC chain and commit segments
+
+Validate the exact ten-generation approved ADC chain through the current successor. Preserve every existing one-commit segment through `93477af0aefc22f5723c3de1e5fc7b8dade7ec21`, then permit exactly one direct-child commit on its exact 15-path allowlist. Reject reordered or unapproved generations, stale identities, merges, wrong parents, extra descendants, and changed paths before any Issue write.
+
+<a id="req-f01-136"></a>
+### 9.88 REQ-F01-136 Gate the corrected reader before Phase continuation
+
+At the exact pushed HEAD, require every local and hosted gate, fresh exact-subject Verification, Acceptance, Self-Audit, native Independent Review, and PRBinding before reconciling the existing Applied record. Reconciliation must be a read-only zero-write `NOOP`. Then publish/read back the fresh `design → ready` receipt, advance to READY, and use the ordinary execution advance with complete READY-proof validation and complete Issue-state readback. Leave Issue #71 OPEN and PR #75 OPEN/non-draft/unmerged at completion.
+
+<a id="req-f01-137"></a>
+### 9.89 REQ-F01-137 Preserve the predecessor ADC as immutable history
+
+ADC #6896448736 contains an incomplete duplicate marker opener at end-of-file. Preserve that body as immutable history. Do not parse or normalize its marker text, and do not create a special suffix rule. Verify this generation through the same approved pointer, exact body digest and length, order, and predecessor-link checks used for every historical ADC.
+
+<a id="req-f01-138"></a>
+### 9.90 REQ-F01-138 Verify approved history without reading historical markers
+
+Read the current approved authorization marker for the ordered history identities. Verify each earlier generation by approved comment ID, exact body SHA-256 and byte length, approved state, full body readback, and predecessor link. Reject missing, reordered, duplicated, unapproved, changed, extra, or incorrectly linked generations. Preserve each earlier commit segment independently, including the one-child segment from `93477af0aefc22f5723c3de1e5fc7b8dade7ec21` to `d1704c125d4de49e84ffffceb14756c9cc555962`.
+
+<a id="req-f01-139"></a>
+### 9.91 REQ-F01-139 Gate approved-history continuation
+
+At the exact pushed HEAD, require all local and hosted gates, fresh exact-subject Verification/Acceptance/Self-Audit/native Independent Review, and current PRBinding before read-only zero-write Applied reconciliation. Then publish/read back `design → ready`, advance to READY, and run the normal execution advance with complete READY-proof validation and full Issue-state readback. Leave Issue #71 OPEN and PR #75 OPEN/non-draft/unmerged.
+
+<a id="req-f01-140"></a>
+### 9.92 REQ-F01-140 Verify immutable approved ADC history
+
+Verify every prior ADC generation using the complete ordered approved pointer chain, exact comment IDs, exact body SHA-256 values, byte lengths, approved states, and exact body readback. Require every predecessor header to link to the immediately preceding ID and SHA-256. Parse only the exact `Predecessor ADC: Issue #71 comment #ID, SHA-256 hash` form; accept either a bare digest or one matched inline-code pair and zero or two trailing Markdown hardbreak spaces. Pin the initial boundary to #6886739124 / `9c28ac5098565f74ffb5a74ece39a5a92c1264d793c2542b12e5d2efabc8c007`. Never parse historical markers to infer authority. Reject missing, duplicated, reordered, unapproved, changed, or extra generations.
+
+<a id="req-f01-141"></a>
+### 9.93 REQ-F01-141 Parse only the current ADC authorization
+
+Read the one current authorization marker from the live approved pointer after verifying the pointer's exact comment, body bytes, SHA-256, approved state, the complete ordered history, and every immediate predecessor link. Bind the marker to the repository, owner, Issue/body, epoch, active Phase generation, Intent/Applied, branch, frozen base, PR, current start HEAD, immediate predecessor, authorization digests, current-document snapshot, and exact follow-up path allowlist. Require the Artifact impact roles and paths to be accepted by the generic phase-evidence parser and agree with the current marker. Historical ADC bodies remain opaque and never grant current authority. Normative behavior derives current generation values from the verified marker; it does not pin a predecessor ID, history count, HEAD, or path count from a prior generation.
+
+<a id="req-f01-142"></a>
+### 9.94 REQ-F01-142 Preserve bounded continuation and delivery gates
+
+Validate every existing commit segment independently, then permit only the bounded direct-child segment from the current marker's start HEAD with exactly its allowlisted changed paths. Require all fresh exact-HEAD local and hosted gates, Verification, Acceptance, Self-Audit, native Independent Review, PRBinding/checkpoint, and read-only zero-write Applied reconciliation before phase writes. Reconcile only already-completed predecessor receipts, publish and read back the current ready receipt, and use supported phase transitions with fresh exact-subject evidence. Keep the Issue open and the PR open, non-draft, and unmerged unless a separate authorization permits otherwise.
+
+<a id="req-f01-143"></a>
+### 9.95 REQ-F01-143 Validate the combined current ADC authorization
+
+Verify the current approved pointer and complete ordered history by exact comment IDs, UTF-8 byte lengths, body SHA-256 values, approved states, body readbacks, and immediate predecessor links. Parse exactly one strict canonical current marker and bind repository, owner, Issue/body, epoch, active Phase generation, Intent/Applied, branch, frozen base, PR metadata, start HEAD, immediate predecessor, all carried/new authorization digests, current-document snapshot digests, profile, and exact allowlist. Require the current Artifact impact section to use a generic Specification/Design/Testing or supported canonical path-list form that the phase-evidence reader accepts. Reject duplicates, unknown or missing fields, noncanonical JSON, stale identity, altered history, artifact mismatch, or any other mismatch before writes. Never parse historical markers.
+
+<a id="req-f01-144"></a>
+### 9.96 REQ-F01-144 Validate completed historical Phase receipts
+
+Read the pinned requirements→specification and specification→design receipts by exact comment IDs and full body SHA-256. Require their authenticated owner author, approved source ADC #6891926625 in the verified chain, current active Phase generation, exact Issue/branch/source commit, and document bytes from the historical commit. Read each direct/list/direct. Never parse a historical ADC marker or alter an old receipt.
+
+<a id="req-f01-145"></a>
+### 9.97 REQ-F01-145 Reissue only completed predecessor receipts
+
+Before design→ready evidence is published, validate the pinned historical receipts, then prepare current-generation requirements→specification and specification→design receipts from the current approved ADC, unchanged active Phase generation, exact pushed HEAD, and the exact Specification/Design path and SHA-256 pairs in the current marker's current-document snapshot authorization. Each current document must match its authorized digest at that pushed HEAD; historical document bytes are checked only at their historical commit. Reissue only the two already-completed edges. Do not create an uncompleted edge, alter labels, or fabricate history.
+
+<a id="req-f01-146"></a>
+### 9.98 REQ-F01-146 Make Phase receipt reconciliation idempotent
+
+Validate historical inputs and precompute every new receipt body before the first POST. Reuse one unique exact existing body. Recover an ambiguous POST only through exact direct/list/direct readback and never retry it. Duplicates, conflicting bodies, historical drift, identity drift, changed artifacts, or any preflight failure block before writes. A partial append resumes only by reusing its exact previously prepared body.
+
+<a id="req-f01-147"></a>
+### 9.99 REQ-F01-147 Gate the bounded continuation and advance normally
+
+Preserve all validated history and permit exactly one direct-child commit from the current marker's exact start HEAD on only its path allowlist. At the new exact pushed HEAD require every local and hosted gate, fresh exact-subject Verification, Acceptance, Self-Audit, native Independent Review, PRBinding/checkpoint, and read-only zero-write Applied NOOP before phase writes. Reconcile only previously completed edges, publish/read back the current ready proof, then use supported ordinary transitions through execution, verification, and user-review with fresh exact-subject evidence. Do not substitute CI or test results for P-ASES evidence.
+
+<a id="req-f01-148"></a>
+### 9.100 REQ-F01-148 Verify Issue #71 solo-owner identity
+
+In solo_owner mode, use the dedicated GET-only GitHub client to verify repository, owner, Issue, PR, current approved ADC pointer and complete chain, exact project profile, and verifier identity. Bind all checks to the ADC pointer returned by the live verification and the authorization resolved from that exact current chain; do not pin the consumer to an older ADC ID/SHA. Require the exact authorized Issue/PR/branch/base/HEAD and owner identity before User Review or phase writes. Preserve Issue #63 behavior and keep Issue #71 routes from reading or writing Issue #63. For the Issue #71 profile binding, calculate SHA-256 from UTF-8 file bytes after replacing CRLF pairs with LF; reject bare CR bytes and do not parse or reserialize JSON for hashing, so Windows checkouts with core.autocrlf=true retain the pinned Git-blob identity.
+
+<a id="req-f01-149"></a>
+### 9.101 REQ-F01-149 Bind the Issue #71 User Review plan
+
+The Issue #71 `USER_REVIEW` plan binds the exact repository, Issue, PR, HEAD, ADC SHA, Readiness SHA, immutable session SHA, full pre-decision feedback SHA, profile SHA, owner ID, and independent verifier ID. Accept this plan only for Issue #71 and PR #75 under the current combined ADC. Require the existing in-process direct same-conversation user-role confirmation; CLI input, environment variables, files, copied plans, and assistant text are not consent. A confirmed action may publish one V3 decision carrier only to Issue #71 with direct/list/direct readback. This route makes no Issue #63 reads or writes.
+
+<a id="req-f01-150"></a>
+### 9.102 REQ-F01-150 Preserve exact append-only User Review decisions
+
+Keep User Review decision history append-only and bound to one exact session. Reject stale session, Readiness, ADC, HEAD, changed feedback, unresolved threads, non-owner actor, wrong decision carrier, duplicate decision, ambiguous body, or failed readback. Never retry an ambiguous POST. Preserve Issue #63 User Review V1/V2/V3 behavior.
+
+<a id="req-f01-151"></a>
+### 9.103 REQ-F01-151 Start User Review and leave its decision pending
+
+After exact current-head Verification, Acceptance, audits, PRBinding, and READY proof, use the ordinary Issue #71 User Review start path only from `phase:verification` with current Readiness PASS. Persist and read back the immutable session and complete feedback snapshot, then leave Issue #71 at `phase:user-review`. A pending result may establish the session but must never create an approval, change requirements, or bypass feedback checks. The human decision is a separate action bound to that exact session.
+
+<a id="req-f01-152"></a>
+### 9.104 REQ-F01-152 Enforce the authorization exclusions
+
+This continuation authorizes no Issue #63 operation, Admin or Ruleset operation, Setup PR, Activation, PR merge, release, tag push, or Issue close. A 403 or empty Rulesets result is not proof of absent protection. Keep the Admin policy readback BLOCKED until a complete verified read succeeds.
+
+<a id="req-f01-165"></a>
+### 9.105 REQ-F01-165 Verify the current ADC and direct predecessor declaration
+
+**Current-only normative precedence:** Live commands MUST validate the newest approved ADC pointer and its directly named current ADC comment (Issue identity, body, SHA-256, byte length and approval state). They MUST NOT traverse or revalidate superseded ADC pointers, bodies or predecessor declarations, including during Phase evidence. Earlier historical-validation requirements describe retained archival records, not runtime authorization checks. Historical records remain unmodified. At new publication, an explicit predecessor declaration is checked against the observed direct current pointer without opening its body. Its optional suffix is accepted only in the canonical form `(N bytes)` and only when `N` equals that pointer's `byte_length`; arbitrary suffixes are malformed. A suffix without the direct current pointer blocks. No historical ADC body is fetched and no predecessor chain is traversed.
+
+<a id="req-f01-166"></a>
+### 9.106 REQ-F01-166 Apply one strict history rule to every generation
+
+Apply the same current-only rule to every repository and Issue, with no comment-ID or Issue-number exceptions. Changed, stale, missing, draft, competing or malformed current pointers and bodies block before mutation. Mutable Issue, labels, PR, branch, HEAD and operation journals are reread at the defined boundaries. Current operations MUST NOT call `verify_adc_generation` or `verify_adc_forward_generations` or require the completeness of older ADC history.
+
+<a id="req-f01-167"></a>
+### 9.107 REQ-F01-167 Verify authorized historical commit segments generically
+
+Only the current operation's authorized base, branch, exact start/HEAD, sole-parent rule where applicable, and changed-path allowlist govern its Git boundary. Validate these live and fail closed on unexpected descendants, merge parents, path drift or remote HEAD drift. A historic commit-segment map or its relationship to old ADC pointers MUST NOT be recomputed to authorize a new write. This rule is generic for all Issues.
+
+<a id="req-f01-170"></a>
+### 9.108 REQ-F01-170 Accept every valid post-rework phase label
+
+A completed active phase-rework generation is read-only valid across ordinary recognized lifecycle phase labels, including verification. Require exactly one `kind:*` and one `phase:*` label; duplicate, unknown and conflicting labels fail closed. An `attention:*` label blocks new phase mutation. A successful read does not itself authorize changing labels.
+
+<a id="req-f01-171"></a>
+### 9.109 REQ-F01-171 Batch current ADC pointer snapshots without weakening validation
+
+The current ADC verifier MUST select the newest pointer through bounded newest-first comment-page discovery and verify only its directly named current comment. It MUST NOT perform complete before/after Issue-comment history sweeps or double-read every historical ADC. Competing current pointer publication, wrong SHA/length or mutable current-identity drift blocks. Operation-specific append-only Intent/Applied duplicate checks remain separate; they are not permission to revalidate ADC history.
+
+<a id="req-f01-172"></a>
+### 9.110 REQ-F01-172 Preserve V2 and apply one exact V3 phase-rework generation
+
+Every Issue with a current approved `PASES_PHASE_REWORK_AUTH_V1` may append one exact V3 verification-to-requirements Intent/Applied pair bound to its current epoch, ADC, PR, branch, frozen base, HEAD, exact labels and fresh PASS Readiness. Old V1/V2 records remain immutable, not current authority. The order is preflight, Intent with one-shot attempt, at most one label PUT, Applied and direct readback. A complete exact retry is NOOP; partial, ambiguous, duplicate, stale, attention-blocked or mismatched state never triggers a second write.
+
+<a id="req-f01-173"></a>
+### 9.111 REQ-F01-173 Apply one event/publication window to V2 and V3
+
+When the current approved Issue #71 ADC authorizes `PASES_ISSUE_PHASE_EVENT_PUBLICATION_WINDOW_V1`, validate all V2 and V3 phase-rework Intent and Applied records using their schema-specific event fields and the GitHub comment's server `created_at`. Both values MUST be canonical UTC timestamps ending in `Z`; comment publication time minus the embedded event time MUST be within the inclusive range 0..300 seconds. Preserve all existing record bytes and treat a complete pair as read-only reconciliation; do not rewrite records or issue another Intent, Applied, or label update.
+
+<a id="req-f01-174"></a>
+### 9.112 REQ-F01-174 Validate the immutable V3 origin and active pair
+
+The immutable V3 origin is verified from canonical local epoch/attachment state and its directly addressed origin Applied carrier. Newest-first post-origin comment reads collect both V3 Intent and Applied records through that immutable origin. The reader returns a Phase generation only when there are no rework records or exactly one ordered, complete, matching Intent/Applied pair. An unmatched Intent (including one newer than a prior Applied), duplicate, wrong epoch/owner/branch, body-digest mismatch, order anomaly, missing origin, malformed page or comment-count drift blocks before Phase evidence, readiness, or ordinary Phase advance can write. Bind repository, Issue, owner, frozen base, branch and epoch hashes to the current subject. Do not search approved predecessor ADC history for the origin. A complete matching active generation is read-only; no blocked state may trigger a repeated POST or label update.
+
+<a id="req-f01-175"></a>
+### 9.113 REQ-F01-175 Bound the successor commit and Phase continuation
+
+An approved current marker MAY specify an exact start HEAD, direct parent, at most one changed commit, a sorted path allowlist and supported phase edges. Use that current marker only, together with live PR/branch/HEAD and direct current evidence. Preserve sequential Verification, Acceptance, Self-Audit, Independent Review and Readiness gates; a User Review session starts only after current PASS at verification and remains pending without explicit user approval. No historical ADC or unrelated Issue supplies authority.
+
+<a id="req-f01-176"></a>
+### 9.114 REQ-F01-176 Reuse exact verified ADC ranges within one command
+
+Nested readers may reuse an exactly verified **current** ADC for the same GitHub client, normalized repository, Issue and pointer. A current pointer change or write invalidates that proof. Mutable Issue, PR, labels, HEAD and journal readback is not cached. Do not populate or refresh a cache by validating prior ADC ranges, and do not hide a historic validator behind a cache miss.
+
+<a id="req-f01-177"></a>
+### 9.115 REQ-F01-177 Bound GitHub API child execution
+
+Every `gh api` child started by `runtime/p_ases/github.py` MUST have a finite 30-second timeout. Timeout handling MUST terminate and reap the child, raise a sanitized `GitHubError` that identifies the HTTP operation and timeout, and exclude credentials, authorization headers, request payloads, and raw stderr from errors or output. Existing status-code extraction, response validation, and no-blind-retry behavior remain in force.
+
+<a id="req-f01-178"></a>
+### 9.116 REQ-F01-178 Parse the current continuation marker by schema
+
+The current approved ADC's marker is parsed by its declared schema, not by a hard-coded Issue number, comment ID, digest, historical predecessor or commit list. Its exact current subject, changed-path allowlist and checklist obligations must be internally consistent. Historic marker versions remain immutable bytes and are never reopened or interpreted as current authority. Malformed, unknown or ambiguous current markers block before writes. This marker-schema rule is consistent with REQ-F01-165 current-only validation. The earlier historical `(N bytes)` chain wording in ADC #6979392757 is superseded for this Issue/PR by the owner correction recorded in [Issue comment #7056348899](https://github.com/puchinya/ai-agent-workflow/issues/71#issuecomment-7056348899): an optional suffix on a newly published ADC is checked only against the directly observed current predecessor pointer byte length; no historical ADC body or chain is read.
+
+<a id="req-f01-179"></a>
+### 9.117 REQ-F01-179 Share history validation across nested lifecycle readers
+
+Active issue advancement, Phase evidence, current epoch, phase rework, PRBinding, owner authorization and delivery paths MUST use current-only ADC validation. They MUST NOT call historical ADC generation or forward-chain verification as a fallback or require historical commit ancestry. Directly referenced operation Intent, Applied, receipt, feedback and one-shot journal evidence retain exact readback and anti-replay semantics. No old ADC or prior owner decision is silently promoted to a current approval.

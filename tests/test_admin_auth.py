@@ -19,9 +19,15 @@ from p_ases.admin_auth import (  # noqa: E402
     temporary_admin_client,
 )
 from p_ases.github import GitHub
+from p_ases.local_execution import (
+    LocalExecutionError, require_isolated_device_admin_client,
+)
 
 
 class AdminAuthenticationTests(unittest.TestCase):
+    def allow_test_device_session(self):
+        return patch("p_ases.admin_auth.require_local_activation_execution")
+
     def local_environment(self):
         return patch.dict(os.environ, {
             "CODEX_ENVIRONMENT_ID": "", "CODEX_EXEC_SERVER_REMOTE_BASE_URL": "",
@@ -59,7 +65,8 @@ class AdminAuthenticationTests(unittest.TestCase):
             config_dir = Path(parent) / "private-config"
             config_dir.mkdir()
             login = Mock(side_effect=AssertionError("login must not start without private config"))
-            with patch("p_ases.admin_auth.tempfile.mkdtemp", return_value=str(config_dir)), \
+            with self.allow_test_device_session(), \
+                 patch("p_ases.admin_auth.tempfile.mkdtemp", return_value=str(config_dir)), \
                  patch("p_ases.admin_auth._secure_private_config", side_effect=AdminAuthError(
                      "ADMIN_DEVICE_LOGIN_UNAVAILABLE: private config permissions unavailable")), \
                  patch("p_ases.admin_auth.subprocess.Popen", login), \
@@ -73,58 +80,28 @@ class AdminAuthenticationTests(unittest.TestCase):
             self.assertFalse(config_dir.exists())
             login.assert_not_called()
 
-    def test_non_tty_blocks_before_getpass_or_api_call(self):
-        prompt = Mock(side_effect=AssertionError("credential prompt must not run"))
+    def test_non_tty_blocks_before_device_login_or_api_call(self):
         factory = Mock(side_effect=AssertionError("API client must not be created"))
         with self.local_environment(), self.assertRaises(AdminAuthError):
             with temporary_admin_client(
                 "puchinya/ai-agent-workflow", stdin=Mock(isatty=lambda: False),
-                getpass_fn=prompt, github_factory=factory,
+                github_factory=factory,
             ):
                 self.fail("non-TTY admin session must not yield")
-        prompt.assert_not_called()
         factory.assert_not_called()
 
-    def test_temporary_credential_reaches_only_active_gh_api_child(self):
-        token = "marker-admin-token"
-        child_environments: list[dict[str, str]] = []
-
-        def fake_run(argv, **kwargs):
-            child_environments.append(dict(kwargs["env"]))
-            stdout = '{"data":{}}' if "graphql" in argv else "{}"
-            return Mock(returncode=0, stdout=stdout, stderr="")
-
-        parent_auth = {
-            "GH_TOKEN": "ambient-gh", "GITHUB_TOKEN": "ambient-github",
-            "GH_ENTERPRISE_TOKEN": "ambient-enterprise-gh",
-            "GITHUB_ENTERPRISE_TOKEN": "ambient-enterprise-github",
-        }
-        with self.local_environment(), patch.dict(os.environ, parent_auth), \
-             patch("p_ases.github.subprocess.run", side_effect=fake_run):
-            parent_before = {key: os.environ.get(key) for key in parent_auth}
+    def test_pat_and_credential_fallback_are_disabled(self):
+        factory = Mock(side_effect=AssertionError("unsupported auth must not create a client"))
+        self.assertEqual(ADMIN_AUTH_MODES, ("isolated-gh-device",))
+        with self.assertRaisesRegex(AdminAuthError, "only isolated-gh-device"):
             with temporary_admin_client(
-                "puchinya/ai-agent-workflow", auth_mode="pat", stdin=Mock(isatty=lambda: True),
-                getpass_fn=lambda _prompt: token, github_factory=GitHub,
-            ) as github:
-                github.request("GET", "user")
-                github._graphql("query { viewer { login } }", {})
-                self.assertEqual({key: os.environ.get(key) for key in parent_auth}, parent_before)
-
-            GitHub("puchinya/ai-agent-workflow").request("GET", "user")
-
-        self.assertEqual(child_environments[0].get("GH_TOKEN"), token)
-        self.assertNotIn("GITHUB_TOKEN", child_environments[0])
-        self.assertNotIn("GH_ENTERPRISE_TOKEN", child_environments[0])
-        self.assertNotIn("GITHUB_ENTERPRISE_TOKEN", child_environments[0])
-        self.assertEqual(child_environments[1].get("GH_TOKEN"), token)
-        self.assertNotIn("GITHUB_TOKEN", child_environments[1])
-        self.assertNotIn("GH_ENTERPRISE_TOKEN", child_environments[1])
-        self.assertNotIn("GITHUB_ENTERPRISE_TOKEN", child_environments[1])
-        self.assertNotIn(token, child_environments[2].values())
-        self.assertNotIn(token, repr(github))
+                "puchinya/ai-agent-workflow", auth_mode="pat", github_factory=factory,
+            ):
+                self.fail("PAT authentication must not yield")
+        factory.assert_not_called()
 
     def test_device_mode_uses_one_private_config_for_gh_children(self):
-        self.assertEqual(ADMIN_AUTH_MODES, ("pat", "isolated-gh-device"))
+        self.assertEqual(ADMIN_AUTH_MODES, ("isolated-gh-device",))
         token_env = {
             "GH_TOKEN": "ambient-gh", "GITHUB_TOKEN": "ambient-github",
             "GH_ENTERPRISE_TOKEN": "ambient-enterprise-gh",
@@ -139,11 +116,15 @@ class AdminAuthenticationTests(unittest.TestCase):
 
         def fake_api_run(argv, **kwargs):
             calls.append((list(argv), dict(kwargs["env"]), kwargs.get("stdin")))
-            stdout = '{"data":{}}' if "graphql" in argv else "{}"
+            stdout = ('{"data":{}}' if "graphql" in argv else
+                      '{"id":3744776,"login":"puchinya","type":"User"}'
+                      if argv[-1] == "user" else "{}")
             return Mock(returncode=0, stdout=stdout, stderr="")
 
-        with self.local_environment(), patch.dict(os.environ, token_env), \
+        with self.local_environment(), self.allow_test_device_session(), patch.dict(os.environ, token_env), \
              patch("p_ases.admin_auth._secure_private_config", side_effect=self.secure_test_config), \
+             patch("p_ases.admin_auth._require_private_device_config"), \
+             patch("p_ases.local_execution._require_private_device_config"), \
              patch("p_ases.admin_auth.subprocess.Popen", side_effect=fake_popen), \
              patch("p_ases.github.subprocess.run", side_effect=fake_api_run), \
              patch("p_ases.admin_auth.sys.stdout", Mock(isatty=lambda: True)):
@@ -157,17 +138,21 @@ class AdminAuthenticationTests(unittest.TestCase):
                 if os.name == "posix":
                     self.assertEqual(stat.S_IMODE(config_dir.stat().st_mode), 0o700)
                 self.assertEqual(github._admin_config_dir, str(config_dir))
+                require_isolated_device_admin_client(github)
                 github.request("GET", "user")
                 github._graphql("query { viewer { login } }", {})
                 self.assertEqual(calls[1][0], ["gh", "api", "--method", "GET", "user"])
                 self.assertEqual(calls[1][1]["GH_CONFIG_DIR"], str(config_dir))
-                self.assertEqual(calls[2][0], ["gh", "api", "graphql", "--input", "-"])
+                self.assertEqual(calls[2][0], ["gh", "api", "--method", "GET", "user"])
                 self.assertEqual(calls[2][1]["GH_CONFIG_DIR"], str(config_dir))
+                self.assertEqual(calls[3][0], ["gh", "api", "graphql", "--input", "-"])
+                self.assertEqual(calls[3][1]["GH_CONFIG_DIR"], str(config_dir))
                 self.assertEqual({key: os.environ.get(key) for key in token_env}, parent_before)
                 for _name in ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"):
                     self.assertNotIn(_name, calls[0][1])
                     self.assertNotIn(_name, calls[1][1])
                     self.assertNotIn(_name, calls[2][1])
+                    self.assertNotIn(_name, calls[3][1])
                 self.assertNotIn("--token", calls[0][0])
                 self.assertEqual(calls[0][0], [
                     "gh", "auth", "login", "--hostname", "github.com", "--web",
@@ -176,53 +161,80 @@ class AdminAuthenticationTests(unittest.TestCase):
                 self.assertIsNotNone(calls[0][2])
             self.assertFalse(config_dir.exists())
             self.assertIsNone(github._admin_config_dir)
+            with self.assertRaisesRegex(
+                    LocalExecutionError, "outside its verified device session"):
+                require_isolated_device_admin_client(github)
             self.assertEqual({key: os.environ.get(key) for key in token_env}, parent_before)
 
+    def test_wrong_authenticated_owner_never_enters_device_session(self):
+        config_dirs = []
+
+        def fake_popen(_argv, **kwargs):
+            config_dirs.append(Path(kwargs["env"]["GH_CONFIG_DIR"]))
+            return self.fake_process()
+
+        api = Mock(return_value=Mock(
+            returncode=0, stdout='{"id":42,"login":"other","type":"User"}', stderr="",
+        ))
+        with self.local_environment(), self.allow_test_device_session(), \
+             patch("p_ases.admin_auth._secure_private_config", side_effect=self.secure_test_config), \
+             patch("p_ases.admin_auth._require_private_device_config"), \
+             patch("p_ases.admin_auth.subprocess.Popen", side_effect=fake_popen), \
+             patch("p_ases.github.subprocess.run", api), \
+             patch("p_ases.admin_auth.sys.stdout", Mock(isatty=lambda: True)):
+            with self.assertRaisesRegex(AdminAuthError, "not the repository owner"):
+                with temporary_admin_client(
+                    "puchinya/ai-agent-workflow",
+                    stdin=Mock(isatty=lambda: True), github_factory=GitHub,
+                ):
+                    self.fail("a non-owner device identity must not become an Admin session")
+        api.assert_called_once()
+        self.assertEqual(len(config_dirs), 1)
+        self.assertFalse(config_dirs[0].exists())
+
+    def test_nonprivate_device_config_blocks_before_owner_read(self):
+        api = Mock(side_effect=AssertionError("owner read must not run"))
+        with self.local_environment(), self.allow_test_device_session(), \
+             patch("p_ases.admin_auth._secure_private_config", side_effect=self.secure_test_config), \
+             patch("p_ases.admin_auth._require_private_device_config",
+                   side_effect=LocalExecutionError(
+                       "ADMIN_DEVICE_AUTH_REQUIRED: GH_CONFIG_DIR must be private mode 0700")), \
+             patch("p_ases.admin_auth.subprocess.Popen", return_value=self.fake_process()), \
+             patch("p_ases.github.subprocess.run", api), \
+             patch("p_ases.admin_auth.sys.stdout", Mock(isatty=lambda: True)):
+            with self.assertRaisesRegex(AdminAuthError, "private mode 0700"):
+                with temporary_admin_client(
+                    "puchinya/ai-agent-workflow",
+                    stdin=Mock(isatty=lambda: True), github_factory=GitHub,
+                ):
+                    self.fail("a nonprivate device config must not become an Admin session")
+        api.assert_not_called()
+
     def test_cloud_device_flow_blocks_before_tty_or_login(self):
-        prompt = Mock(side_effect=AssertionError("device mode must not request PAT"))
         factory = Mock(side_effect=AssertionError("Cloud device mode must not create a client"))
         run = Mock(side_effect=AssertionError("Cloud device mode must not launch gh"))
         with patch.dict(os.environ, {"CODEX_CLOUD": "1"}), \
              patch("p_ases.admin_auth.subprocess.Popen", run):
-            with self.assertRaisesRegex(AdminAuthError, "ADMIN_DEVICE_LOGIN_UNAVAILABLE"):
+            with self.assertRaisesRegex(AdminAuthError, "REMOTE_OR_HOSTED_CONTEXT"):
                 with temporary_admin_client(
                     "puchinya/ai-agent-workflow", auth_mode="isolated-gh-device",
-                    stdin=Mock(isatty=lambda: False), getpass_fn=prompt, github_factory=factory,
+                    stdin=Mock(isatty=lambda: False), github_factory=factory,
                 ):
                     self.fail("Cloud device flow must not yield")
-        prompt.assert_not_called()
         factory.assert_not_called()
         run.assert_not_called()
 
-    def test_cloud_device_auth_uses_private_child_for_read_only_identity_when_tty_exists(self):
-        calls = []
-
-        def fake_popen(argv, **kwargs):
-            calls.append((list(argv), dict(kwargs["env"])))
-            return self.fake_process()
-
-        def fake_api_run(argv, **kwargs):
-            calls.append((list(argv), dict(kwargs["env"])))
-            return Mock(returncode=0, stdout='{"id":3744776,"type":"User"}', stderr="")
-
-        with patch.dict(os.environ, {
-            "CODEX_CLOUD": "1", "GH_TOKEN": "ambient-gh", "GITHUB_TOKEN": "ambient-github",
-        }), patch("p_ases.admin_auth._secure_private_config", side_effect=self.secure_test_config), \
-             patch("p_ases.admin_auth.subprocess.Popen", side_effect=fake_popen), \
-             patch("p_ases.github.subprocess.run", side_effect=fake_api_run), \
-             patch("p_ases.admin_auth.sys.stdout", Mock(isatty=lambda: True)):
-            with temporary_admin_client(
-                "puchinya/ai-agent-workflow", auth_mode="isolated-gh-device",
-                stdin=Mock(isatty=lambda: True), github_factory=GitHub,
-            ) as github:
-                self.assertEqual(github.request("GET", "user"), {"id": 3744776, "type": "User"})
-                config_dir = Path(github._admin_config_dir)
-                self.assertEqual(len(calls), 2)
-                self.assertEqual(calls[1][0], ["gh", "api", "--method", "GET", "user"])
-                self.assertEqual(calls[1][1]["GH_CONFIG_DIR"], str(config_dir))
-                self.assertNotIn("GH_TOKEN", calls[1][1])
-                self.assertNotIn("GITHUB_TOKEN", calls[1][1])
-            self.assertFalse(config_dir.exists())
+    def test_cloud_device_auth_is_blocked_even_with_interactive_stdin(self):
+        run = Mock(side_effect=AssertionError("Cloud device mode must not launch gh"))
+        with patch.dict(os.environ, {"CODEX_CLOUD": "1"}), \
+             patch("p_ases.admin_auth.subprocess.Popen", run), \
+             patch("p_ases.admin_auth.sys.stdin", Mock(isatty=lambda: True)), \
+             patch("p_ases.admin_auth.sys.stdout", Mock(isatty=lambda: True)), \
+             patch("p_ases.admin_auth.sys.stderr", Mock(isatty=lambda: True)):
+            with self.assertRaisesRegex(AdminAuthError, "REMOTE_OR_HOSTED_CONTEXT"):
+                with temporary_admin_client("puchinya/ai-agent-workflow", github_factory=GitHub):
+                    self.fail("Cloud device flow must not yield")
+        run.assert_not_called()
 
     def test_device_login_failure_and_interruptions_remove_private_config(self):
         def keyboard_process(_calls):
@@ -258,7 +270,9 @@ class AdminAuthenticationTests(unittest.TestCase):
                     processes.append(process)
                     return process
 
-                with patch("p_ases.admin_auth._secure_private_config", side_effect=self.secure_test_config), \
+                with self.allow_test_device_session(), \
+                     patch("p_ases.admin_auth._secure_private_config", side_effect=self.secure_test_config), \
+                     patch("p_ases.admin_auth._require_private_device_config"), \
                      patch("p_ases.admin_auth.subprocess.Popen", side_effect=fake_popen), \
                      patch("p_ases.admin_auth.sys.stdout", Mock(isatty=lambda: True)):
                     with self.assertRaisesRegex(AdminAuthError, "ADMIN_DEVICE_LOGIN_UNAVAILABLE"):
@@ -284,11 +298,20 @@ class AdminAuthenticationTests(unittest.TestCase):
             calls.append((list(argv), dict(kwargs["env"])))
             return self.fake_process()
 
-        with self.local_environment(), patch.dict(os.environ, {"GH_TOKEN": "ambient-gh"}), \
+        api_calls = [0]
+
+        def fake_api_run(_argv, **_kwargs):
+            api_calls[0] += 1
+            if api_calls[0] == 1:
+                return Mock(returncode=0, stdout='{"id":3744776,"login":"puchinya","type":"User"}', stderr="")
+            return Mock(returncode=1, stdout="", stderr="HTTP 403")
+
+        with self.local_environment(), self.allow_test_device_session(), \
+             patch.dict(os.environ, {"GH_TOKEN": "ambient-gh"}), \
              patch("p_ases.admin_auth._secure_private_config", side_effect=self.secure_test_config), \
+             patch("p_ases.admin_auth._require_private_device_config"), \
              patch("p_ases.admin_auth.subprocess.Popen", side_effect=fake_popen), \
-             patch("p_ases.github.subprocess.run", return_value=Mock(
-                 returncode=1, stdout="", stderr="HTTP 403")), \
+             patch("p_ases.github.subprocess.run", side_effect=fake_api_run), \
              patch("p_ases.admin_auth.sys.stdout", Mock(isatty=lambda: True)):
             with temporary_admin_client(
                 "puchinya/ai-agent-workflow", auth_mode="isolated-gh-device",

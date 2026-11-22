@@ -256,38 +256,26 @@ class ExecutionAdoptionTests(unittest.TestCase):
             }
         return root, github, epoch, old_binding, current_adc, current_head, verified
 
-    def test_current_approved_successor_waits_for_its_own_v2_applied(self):
+    def test_current_approved_successor_requires_current_applied_without_adc_history(self):
         epoch = _epoch()
-        origin = SimpleNamespace(pointer=SimpleNamespace(comment_id=6248703643, sha256=epoch.adc_sha256))
-        successor_pointer = SimpleNamespace(comment_id=70000, sha256="9" * 64)
         current = SimpleNamespace(pointer=SimpleNamespace(
-            comment_id=successor_pointer.comment_id, sha256=successor_pointer.sha256, state="approved",
+            comment_id=7000000000, sha256="9" * 64, state="approved",
         ))
-        successor = SimpleNamespace(pointer=current.pointer)
         with patch("p_ases.execution_adoption.verify_adc", return_value=current), \
-                patch("p_ases.execution_adoption.verify_adc_forward_generations",
-                      return_value=(origin, successor)), \
-                patch("p_ases.execution_adoption._approved_generations", return_value=(origin, successor)), \
-                patch("p_ases.execution_adoption._read_history", return_value=()), \
-                patch("p_ases.execution_adoption._validate_generation_history",
-                      return_value=(None, None, {})):
+                patch("p_ases.execution_adoption._current_rebaseline_applied", return_value=False) as applied:
             with self.assertRaisesRegex(ExecutionAdoptionError, "ADC_REFRESH_PENDING_PHASE_REBASELINE"):
                 _verify_adopted_effective_adc(
-                    FakeGitHub(), epoch, expected_adc_comment_id=70000, expected_adc_sha256="9" * 64,
+                    FakeGitHub(), epoch, expected_adc_comment_id=7000000000, expected_adc_sha256="9" * 64,
                 )
-        applied_pair = (SimpleNamespace(comment_id=70001), SimpleNamespace(comment_id=70002))
+            applied.assert_called_once()
         with patch("p_ases.execution_adoption.verify_adc", return_value=current), \
-                patch("p_ases.execution_adoption.verify_adc_forward_generations",
-                      return_value=(origin, successor)), \
-                patch("p_ases.execution_adoption._approved_generations", return_value=(origin, successor)), \
-                patch("p_ases.execution_adoption._read_history", return_value=()), \
-                patch("p_ases.execution_adoption._validate_generation_history",
-                      return_value=(None, None, {1: applied_pair})):
+                patch("p_ases.execution_adoption._current_rebaseline_applied", return_value=True) as applied:
             effective, refreshed = _verify_adopted_effective_adc(
-                FakeGitHub(), epoch, expected_adc_comment_id=70000, expected_adc_sha256="9" * 64,
+                FakeGitHub(), epoch, expected_adc_comment_id=7000000000, expected_adc_sha256="9" * 64,
             )
-        self.assertIs(effective, current)
-        self.assertTrue(refreshed)
+            self.assertIs(effective, current)
+            self.assertTrue(refreshed)
+            applied.assert_called_once()
 
     def test_adoption_refresh_appends_one_v3_binding_and_checkpoint_then_noops(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -407,13 +395,15 @@ class ExecutionAdoptionTests(unittest.TestCase):
         with self.assertRaisesRegex(ExecutionError, "unverified historical provenance"):
             AdoptedExecutionEpoch.from_bytes(raw)
 
-    def test_adopted_epoch_rejects_other_issue_pr_and_missing_pr_author(self):
-        with self.assertRaisesRegex(ExecutionError, "restricted"):
-            _epoch().__class__(**{**_epoch().__dict__, "issue_number": 62}).validate()
-        with self.assertRaisesRegex(ExecutionError, "restricted"):
-            _epoch().__class__(**{**_epoch().__dict__, "pr_number": 65}).validate()
-        with self.assertRaisesRegex(ExecutionError, "restricted"):
-            _epoch().__class__(**{**_epoch().__dict__, "pr_author_user_id": 0}).validate()
+    def test_adopted_epoch_is_generic_and_rejects_invalid_subject_fields(self):
+        epoch = _epoch()
+        other_subject = epoch.__class__(**{**epoch.__dict__, "issue_number": 62,
+                                            "pr_number": 65, "repository": "another/repo"}).validate()
+        self.assertNotEqual(epoch.sha256, other_subject.sha256)
+        for field, value in (("issue_number", 0), ("pr_number", 0),
+                             ("pr_author_user_id", 0), ("repository", "invalid")):
+            with self.subTest(field=field), self.assertRaisesRegex(ExecutionError, "identity is invalid"):
+                epoch.__class__(**{**epoch.__dict__, field: value}).validate()
 
     def test_workspace_attachment_is_local_and_strict(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -426,7 +416,7 @@ class ExecutionAdoptionTests(unittest.TestCase):
             with self.assertRaisesRegex(ExecutionError, "absolute"):
                 WorkspaceAttachment(**{**attachment.__dict__, "work_directory": "relative"}).validate()
 
-    def test_adopted_prbinding_v3_is_restricted_to_the_one_time_issue_and_pr(self):
+    def test_adopted_prbinding_v3_schema_is_issue_agnostic(self):
         binding = PRBinding(
             repository=REPOSITORY, issue_number=63, adc_comment_id=6248703643,
             adc_sha256="a" * 64, base_sha40="b" * 40,
@@ -434,10 +424,14 @@ class ExecutionAdoptionTests(unittest.TestCase):
             adoption_id="d" * 64,
         ).validate()
         self.assertEqual(binding.payload()["schema"], "PASES_PR_BINDING_V3")
-        with self.assertRaisesRegex(CheckpointError, "restricted"):
-            PRBinding(**{**binding.__dict__, "issue_number": 62}).validate()
-        with self.assertRaisesRegex(CheckpointError, "restricted"):
-            PRBinding(**{**binding.__dict__, "pr_number": 65}).validate()
+        other_subject = PRBinding(**{**binding.__dict__, "issue_number": 62,
+                                     "pr_number": 65, "repository": "another/repo"}).validate()
+        self.assertEqual(other_subject.payload()["schema"], "PASES_PR_BINDING_V3")
+        self.assertNotEqual(binding.sha256, other_subject.sha256)
+        with self.assertRaisesRegex(CheckpointError, "invalid digest"):
+            PRBinding(**{**binding.__dict__, "adoption_id": "invalid"}).validate()
+        with self.assertRaisesRegex(CheckpointError, "mutually exclusive"):
+            PRBinding(**{**binding.__dict__, "execution_epoch_sha256": "e" * 64}).validate()
 
     def test_plan_digest_binds_exact_scope_author_ci_and_deterministic_operation_id(self):
         plan = _adoption_plan()

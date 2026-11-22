@@ -266,8 +266,7 @@ class PhaseRestartTests(unittest.TestCase):
         self.temporary.cleanup()
 
     def run_restart(self):
-        with patch("p_ases.phase_restart.verify_adc", return_value=self.verified), \
-                patch("p_ases.phase_restart.verify_adc_generation", return_value=self.verified):
+        with patch("p_ases.phase_restart.verify_adc", return_value=self.verified):
             return restart_issue_phase(self.github, self.root, self.issue_number)
 
     def phase_decision(self, *, v2_generation: tuple[int, str] | None = None,
@@ -427,8 +426,7 @@ class PhaseRestartTests(unittest.TestCase):
             {row["name"] for row in self.github.issue_row["labels"]},
             {"enhancement", "kind:single", "phase:requirements"},
         )
-        with patch("p_ases.phase_restart.verify_adc", return_value=self.verified), \
-                patch("p_ases.phase_restart.verify_adc_generation", return_value=self.verified):
+        with patch("p_ases.phase_restart.verify_adc", return_value=self.verified):
             generation = current_phase_generation(self.github, self.root, self.issue_number, self.verified)
         self.assertEqual(generation.comment_id, result["applied_comment_id"])
         self.assertEqual(generation.sha256, result["phase_generation_sha256"])
@@ -901,11 +899,7 @@ class PhaseRestartTests(unittest.TestCase):
             self.binding.work_directory, self.binding.initial_head_sha,
         )
         write_binding(execution_binding_path(self.root, self.issue_number), successor_binding)
-        verify_generation = lambda _github, _issue, comment_id, _sha, state: (
-            old_verified if comment_id == 50 else successor
-        )
-        with patch("p_ases.phase_restart.verify_adc", return_value=successor), \
-                patch("p_ases.phase_restart.verify_adc_generation", side_effect=verify_generation):
+        with patch("p_ases.phase_restart.verify_adc", return_value=successor):
             with self.assertRaisesRegex(PhaseRestartError, "prior-ADC"):
                 restart_issue_phase(self.github, self.root, self.issue_number)
             with self.assertRaisesRegex(PhaseRestartError, "prior-ADC"):
@@ -928,8 +922,7 @@ class PhaseRestartTests(unittest.TestCase):
             self.binding.work_directory, self.binding.initial_head_sha,
         )
         write_binding(execution_binding_path(self.root, self.issue_number), successor_binding)
-        with patch("p_ases.phase_restart.verify_adc_generation", return_value=self.verified):
-            generation = current_phase_generation(self.github, self.root, self.issue_number, successor)
+        generation = current_phase_generation(self.github, self.root, self.issue_number, successor)
         self.assertIsNone(generation)
 
     def test_current_adc_without_marker_cannot_restart(self):
@@ -973,7 +966,7 @@ class PhaseRestartTests(unittest.TestCase):
         self.assertEqual(self.github.label_writes, 0)
         self.assertEqual(len(self.github.comments), 1)
 
-    def test_wrong_phase_kind_missing_binding_and_issue63_fail_closed(self):
+    def test_wrong_phase_kind_missing_binding_and_mismatched_issue_fail_closed(self):
         self.github.issue_row["labels"] = [{"name": "kind:single"}, {"name": "phase:requirements"}]
         with self.assertRaisesRegex(PhaseRestartError, "phase:execution"):
             self.run_restart()
@@ -987,7 +980,7 @@ class PhaseRestartTests(unittest.TestCase):
             self.run_restart()
         self.assertEqual(self.github.label_writes, 0)
         with patch("p_ases.phase_restart.verify_adc", return_value=self.verified):
-            with self.assertRaisesRegex(PhaseRestartError, "Issue #63"):
+            with self.assertRaisesRegex(PhaseRestartError, "exact open non-PR Issue"):
                 restart_issue_phase(self.github, self.root, 63)
         self.assertEqual(self.github.label_writes, 0)
 

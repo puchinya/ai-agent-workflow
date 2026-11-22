@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import hashlib
 import os
@@ -9,7 +10,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
@@ -19,10 +20,13 @@ from p_ases.owner_authorization import (
     capture_direct_chat_confirmation, create_authorization_plan, resume_authorization,
     issue63_deferred_merge_details, read_authorization_plan, write_authorization_plan,
 )
+from p_ases import owner_authorization as owner_module
+from p_ases.admin_auth import AdminAuthError
 from p_ases.github import GitHubError
 from p_ases.cli import (_create_merge_attempt, _merge_readback, _perform_authorized_merge,
                         _owner_authorization_plan_command, _publish_owner_approved_adc)
-from p_ases.consumer_activation import verify_setup_pr_ready_to_merge
+from p_ases.consumer_activation import ConsumerActivationError, verify_setup_pr_ready_to_merge
+from p_ases.ruleset_management import RulesetManagementError
 
 
 REPOSITORY = "puchinya/ai-agent-workflow"
@@ -30,6 +34,34 @@ REPOSITORY_ID = 1401910271
 OWNER_ID = 3744776
 SUBJECT_SHA = "a" * 64
 PLAN_HEAD = "b" * 40
+
+
+def issue71_user_review_plan() -> dict[str, object]:
+    payload: dict[str, object] = {
+        "schema": owner_module.PLAN_SCHEMA,
+        "repository": REPOSITORY,
+        "repository_id": REPOSITORY_ID,
+        "owner_id": OWNER_ID,
+        "issue_number": 71,
+        "operation": "USER_REVIEW",
+        "subject_sha256": "1" * 64,
+        "pr_number": 75,
+        "pr_head_sha40": PLAN_HEAD,
+        "target_issue_number": None,
+        "source_head_sha40": "2" * 40,
+        "details": {
+            "review_session_sha256": "3" * 64,
+            "readiness_sha256": "4" * 64,
+            "adc_sha256": "5" * 64,
+            "pr_head_sha40": PLAN_HEAD,
+            "feedback_sha256": "6" * 64,
+            "project_profile_sha256": owner_module.canonical_project_profile_sha256((ROOT / ".agent" / "project.json").read_bytes()),
+            "verifier_user_id": 9881,
+        },
+    }
+    payload["approval_scope_sha256"] = owner_module._approval_scope_sha256(payload)
+    payload["plan_sha256"] = hashlib.sha256(owner_module._canonical(payload)).hexdigest()
+    return owner_module._validate_plan(payload)
 
 
 def adoption_plan_payload() -> dict[str, object]:
@@ -195,7 +227,7 @@ class OwnerAuthorizationTests(unittest.TestCase):
     def test_adc_plan_preview_rejects_draft_candidate_before_plan_creation(self):
         args = SimpleNamespace(
             operation="ADC_SUPERSEDE", subject_file=ROOT / "docs/contracts/issue-63-successor-adc-draft.md",
-            ruleset_plan=None, pr=None, head=None, target_issue=None, output=ROOT / "plan.json",
+            ruleset_plan=None, pr=None, head=None, target_issue=63, output=ROOT / "plan.json",
         )
         predecessor = SimpleNamespace(pointer=SimpleNamespace(
             state="approved", comment_id=6244160653,
@@ -475,7 +507,7 @@ class OwnerAuthorizationTests(unittest.TestCase):
             details = issue63_deferred_merge_details(
                 github, pr_number=64, pr_head_sha40="d" * 40,
             )
-            plan = {"plan_sha256": "f" * 64, "source_head_sha40": PLAN_HEAD,
+            plan = {"repository": REPOSITORY, "owner_id": OWNER_ID, "plan_sha256": "f" * 64, "source_head_sha40": PLAN_HEAD,
                     "target_issue_number": 63, "pr_number": 64, "pr_head_sha40": "d" * 40,
                     "details": details}
             decision = {"status": "AUTHORIZED", "operation": "PR_MERGE",
@@ -528,7 +560,7 @@ class OwnerAuthorizationTests(unittest.TestCase):
                     github, pr_number=64, pr_head_sha40="d" * 40,
                 )
                 github.commit_rows[0]["commit"]["message"] = message
-                plan = {"plan_sha256": "a" * 64, "source_head_sha40": PLAN_HEAD,
+                plan = {"repository": REPOSITORY, "owner_id": OWNER_ID, "plan_sha256": "a" * 64, "source_head_sha40": PLAN_HEAD,
                         "target_issue_number": 63, "pr_number": 64, "pr_head_sha40": "d" * 40,
                         "details": details}
                 decision = {"status": "AUTHORIZED", "operation": "PR_MERGE",
@@ -550,7 +582,7 @@ class OwnerAuthorizationTests(unittest.TestCase):
         github.pr.update({"state": "closed", "merged": True, "merge_commit_sha": "e" * 40,
                           "merged_by": {"id": OWNER_ID, "type": "User"}})
         github.commit_details = lambda _sha: {"message": "Resolves: #63"}
-        plan = {"target_issue_number": 63, "pr_number": 64, "pr_head_sha40": "d" * 40,
+        plan = {"repository": REPOSITORY, "owner_id": OWNER_ID, "target_issue_number": 63, "pr_number": 64, "pr_head_sha40": "d" * 40,
                 "details": details}
         with self.assertRaisesRegex(OwnerAuthorizationError, "merged PR commit message contains"):
             _merge_readback(github, plan)
@@ -593,7 +625,7 @@ class OwnerAuthorizationTests(unittest.TestCase):
                 target_issue_number=63, pr_number=65, pr_head_sha40="d" * 40,
             )
 
-    def test_adc_local_commit_dispatches_exact_publication_then_phase_rebaseline(self):
+    def test_adc_local_commit_dispatches_publication_without_implicit_phase_transition(self):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / "successor.md"
             source.write_bytes(b"exact successor bytes\n")
@@ -609,7 +641,7 @@ class OwnerAuthorizationTests(unittest.TestCase):
                 decision=SimpleNamespace(schema="PASES_OWNER_DECISION_V3",
                                          evidence_channel="chat_confirmed_gh_v1"),
             )
-            plan = {"subject_sha256": contract.sha256, "plan_sha256": "a" * 64,
+            plan = {"owner_id": OWNER_ID, "repository_id": REPOSITORY_ID, "issue_number": 63, "subject_sha256": contract.sha256, "plan_sha256": "a" * 64,
                     "approval_scope_sha256": "d" * 64,
                     "details": {"predecessor_comment_id": 12, "predecessor_sha256": "b" * 64,
                                 "predecessor_byte_length": 1200, "predecessor_state": "approved"}}
@@ -620,17 +652,18 @@ class OwnerAuthorizationTests(unittest.TestCase):
                     patch("p_ases.cli.read_verified_owner_decision", return_value=verified_decision), \
                     patch("p_ases.cli.verify_adc", side_effect=[previous, published]), \
                     patch("p_ases.cli.publish_adc", return_value=published_pointer) as publish, \
-                    patch("p_ases.cli.rebaseline_issue_phase", return_value={"status": "APPLIED"}) as rebaseline:
+                    patch("p_ases.cli.restart_issue_phase", side_effect=AssertionError(
+                        "ADC publication must not advance a Phase")) as rebaseline:
                 result = _publish_owner_approved_adc(args, REPOSITORY, FakeGitHub(), plan, decision)
             self.assertEqual(result["status"], "PUBLISHED")
-            self.assertEqual(result["phase_rebaseline"], {"status": "APPLIED"})
+            self.assertNotIn("phase_rebaseline", result)
             self.assertEqual(publish.call_args.kwargs["state"], "approved")
             self.assertIs(publish.call_args.kwargs["expected_current"], previous.pointer)
             preflight.assert_called_once_with(
                 source.read_bytes(), REPOSITORY, 63,
                 current_pointer=previous.pointer, check_current_pointer=True,
             )
-            rebaseline.assert_called_once()
+            rebaseline.assert_not_called()
 
     def test_lost_merge_response_never_retries_while_pr_remains_open(self):
         from unittest.mock import patch
@@ -739,34 +772,138 @@ class OwnerAuthorizationTests(unittest.TestCase):
                 return []
 
         github = SetupGitHub()
-        verified_adc = SimpleNamespace(pointer=SimpleNamespace(sha256="a" * 64),
-                                       contract=SimpleNamespace(content=b"adc"))
+        admin = SimpleNamespace(repo=REPOSITORY)
+        verified_adc = SimpleNamespace(pointer=SimpleNamespace(
+            comment_id=17, sha256="a" * 64, state="approved",
+        ), contract=SimpleNamespace(content=b"adc"))
+        policy_read = Mock(return_value={
+            "ruleset_id": 4, "applied_record_id": 18, "effective_policy_sha256": "c" * 64,
+        })
         with patch("p_ases.consumer_activation._decode", side_effect=lambda *_a, **_k: github.payload), \
                 patch("p_ases.consumer_activation._check_setup_pr", return_value=github.pr), \
                 patch("p_ases.consumer_activation.read_consumer_activation_history", return_value=[]), \
-                patch("p_ases.consumer_activation.verify_adc_generation", return_value=verified_adc), \
+                patch("p_ases.consumer_activation.verify_adc_generation",
+                      side_effect=AssertionError("current setup preflight traversed ADC history")), \
                 patch("p_ases.consumer_activation.verify_adc", return_value=verified_adc), \
                 patch("p_ases.consumer_activation._validate_profile_bytes",
                       return_value=({"final_delivery": {"review_mode": "solo_owner"}}, (("ci", 15368),))), \
-                patch("p_ases.consumer_activation.read_verified_managed_policy", return_value={
-                    "ruleset_id": 4, "applied_record_id": 18, "effective_policy_sha256": "c" * 64,
-                }):
-            result = verify_setup_pr_ready_to_merge(github, 72)
+                patch("p_ases.consumer_activation.require_local_activation_execution"), \
+                patch("p_ases.consumer_activation.require_isolated_device_admin_client"), \
+                patch("p_ases.consumer_activation.read_verified_managed_policy", policy_read):
+            result = verify_setup_pr_ready_to_merge(github, 72, policy_github=admin)
         self.assertEqual(result["status"], "READY")
         self.assertEqual(result["reviewer_ids"], [OWNER_ID + 1])
+        self.assertEqual(policy_read.call_count, 2)
+        self.assertTrue(all(call.args[0] is admin for call in policy_read.call_args_list))
+
+        with patch("p_ases.consumer_activation.require_local_activation_execution"), \
+                self.assertRaisesRegex(ConsumerActivationError, "ADMIN_DEVICE_AUTH_REQUIRED"):
+            verify_setup_pr_ready_to_merge(github, 72)
+
+        for name, policy_result, message in (
+            ("403", RulesetManagementError("403 Resource not accessible by integration"), "403"),
+            ("stale", {"ruleset_id": 4, "applied_record_id": 18,
+                        "effective_policy_sha256": "d" * 64}, "policy binding is stale"),
+        ):
+            with self.subTest(policy_failure=name), \
+                    patch("p_ases.consumer_activation._decode", side_effect=lambda *_a, **_k: github.payload), \
+                    patch("p_ases.consumer_activation._check_setup_pr", return_value=github.pr), \
+                    patch("p_ases.consumer_activation.read_consumer_activation_history", return_value=[]), \
+                    patch("p_ases.consumer_activation.verify_adc_generation",
+                      side_effect=AssertionError("current setup preflight traversed ADC history")), \
+                    patch("p_ases.consumer_activation.verify_adc", return_value=verified_adc), \
+                    patch("p_ases.consumer_activation._validate_profile_bytes",
+                          return_value=({"final_delivery": {"review_mode": "solo_owner"}}, (("ci", 15368),))), \
+                    patch("p_ases.consumer_activation.require_local_activation_execution"), \
+                    patch("p_ases.consumer_activation.require_isolated_device_admin_client"), \
+                    patch("p_ases.consumer_activation.read_verified_managed_policy",
+                          side_effect=policy_result if isinstance(policy_result, Exception) else None,
+                          return_value=None if isinstance(policy_result, Exception) else policy_result):
+                with self.assertRaisesRegex(ConsumerActivationError, message):
+                    verify_setup_pr_ready_to_merge(github, 72, policy_github=admin)
+
         github.pull_reviews = lambda _number: []
         with patch("p_ases.consumer_activation._decode", side_effect=lambda *_a, **_k: github.payload), \
                 patch("p_ases.consumer_activation._check_setup_pr", return_value=github.pr), \
                 patch("p_ases.consumer_activation.read_consumer_activation_history", return_value=[]), \
-                patch("p_ases.consumer_activation.verify_adc_generation", return_value=verified_adc), \
+                patch("p_ases.consumer_activation.verify_adc_generation",
+                      side_effect=AssertionError("current setup preflight traversed ADC history")), \
                 patch("p_ases.consumer_activation.verify_adc", return_value=verified_adc), \
                 patch("p_ases.consumer_activation._validate_profile_bytes",
                       return_value=({"final_delivery": {"review_mode": "solo_owner"}}, (("ci", 15368),))), \
+                patch("p_ases.consumer_activation.require_local_activation_execution"), \
+                patch("p_ases.consumer_activation.require_isolated_device_admin_client"), \
                 patch("p_ases.consumer_activation.read_verified_managed_policy", return_value={
                     "ruleset_id": 4, "applied_record_id": 18, "effective_policy_sha256": "c" * 64,
                 }):
             with self.assertRaisesRegex(ValueError, "independent human approval"):
-                verify_setup_pr_ready_to_merge(github, 72)
+                verify_setup_pr_ready_to_merge(github, 72, policy_github=admin)
+
+    def test_setup_pr_merge_uses_admin_only_for_policy_and_ordinary_client_for_merge(self):
+        head = "c" * 40
+        ordinary = SimpleNamespace(
+            repo=REPOSITORY,
+            pull_request=Mock(return_value={"state": "open", "merged": False,
+                                            "head": {"sha": head}}),
+            merge_pull_request=Mock(),
+        )
+        admin = SimpleNamespace(repo=REPOSITORY)
+        plan = {"plan_sha256": "f" * 64, "source_head_sha40": PLAN_HEAD,
+                "target_issue_number": 57, "pr_number": 72, "pr_head_sha40": head,
+                "details": {"target_issue_number": 57}}
+        decision = {"status": "AUTHORIZED", "operation": "PR_MERGE",
+                    "evidence_type": "PASES_OWNER_DECISION_V3",
+                    "evidence_channel": "chat_confirmed_gh_v1", "chat_signature": False,
+                    "owner_decision_comment_id": 123}
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch("p_ases.cli.temporary_admin_client", return_value=contextlib.nullcontext(admin)) as open_admin, \
+                patch("p_ases.cli.verify_setup_pr_ready_to_merge", return_value={"status": "READY"}) as verify, \
+                patch("p_ases.cli._merge_readback", return_value={
+                    "pr_number": 72, "head_sha40": head, "merge_commit_sha40": "e" * 40,
+                    "merged_by_id": OWNER_ID,
+                }):
+            result = _perform_authorized_merge(object(), Path(temporary), ordinary, plan, decision)
+        self.assertEqual(result["status"], "MERGED")
+        open_admin.assert_called_once_with(REPOSITORY)
+        verify.assert_called_once_with(ordinary, 72, policy_github=admin)
+        ordinary.merge_pull_request.assert_called_once_with(72, head)
+
+    def test_setup_pr_policy_failures_block_before_merge_api_call(self):
+        head = "c" * 40
+        plan = {"plan_sha256": "e" * 64, "source_head_sha40": PLAN_HEAD,
+                "target_issue_number": 57, "pr_number": 72, "pr_head_sha40": head,
+                "details": {"target_issue_number": 57}}
+        decision = {"status": "AUTHORIZED", "operation": "PR_MERGE",
+                    "evidence_type": "PASES_OWNER_DECISION_V3",
+                    "evidence_channel": "chat_confirmed_gh_v1", "chat_signature": False,
+                    "owner_decision_comment_id": 123}
+        cases = (
+            ("missing device session", AdminAuthError("ADMIN_DEVICE_LOGIN_UNAVAILABLE"), None,
+             OwnerAuthorizationError, "isolated device Admin policy read"),
+            ("policy 403", None, ConsumerActivationError("Activation effective policy is not VERIFIED: 403"),
+             ConsumerActivationError, "403"),
+            ("stale effective policy", None, ConsumerActivationError("policy binding is stale"),
+             ConsumerActivationError, "stale"),
+        )
+        for name, admin_error, policy_error, expected_error, message in cases:
+            with self.subTest(blocker=name), tempfile.TemporaryDirectory() as temporary:
+                ordinary = SimpleNamespace(
+                    repo=REPOSITORY,
+                    pull_request=Mock(return_value={"state": "open", "merged": False,
+                                                    "head": {"sha": head}}),
+                    merge_pull_request=Mock(),
+                )
+                admin = SimpleNamespace(repo=REPOSITORY)
+                context = (contextlib.nullcontext(admin) if admin_error is None else None)
+                with patch("p_ases.cli.temporary_admin_client",
+                           side_effect=admin_error if admin_error is not None else None,
+                           return_value=context), \
+                        patch("p_ases.cli.verify_setup_pr_ready_to_merge",
+                              side_effect=policy_error if policy_error is not None else None,
+                              return_value={"status": "READY"}):
+                    with self.assertRaisesRegex(expected_error, message):
+                        _perform_authorized_merge(object(), Path(temporary), ordinary, plan, decision)
+                ordinary.merge_pull_request.assert_not_called()
 
     def test_authenticated_wrong_owner_is_zero_write(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -859,6 +996,162 @@ class OwnerAuthorizationTests(unittest.TestCase):
                 with self.assertRaises(OwnerAuthorizationError):
                     authorize_plan(stale, root, path, stdin=TTY(), input_fn=lambda _prompt: "")
             self.assertEqual(stale.writes, [])
+
+    def test_adc_supersede_plan_supports_arbitrary_issue_without_legacy_owner_carrier(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            github = FakeGitHub()
+            github.comments[128] = []
+            with patch("p_ases.owner_authorization.worktree_clean", return_value=True), \
+                    patch("p_ases.owner_authorization.head_sha40", return_value=PLAN_HEAD):
+                plan = create_authorization_plan(
+                    github, root, operation="ADC_SUPERSEDE", subject_sha256=SUBJECT_SHA,
+                    issue_number=128,
+                    details={"predecessor_comment_id": 123,
+                             "predecessor_sha256": "b" * 64,
+                             "predecessor_byte_length": 400,
+                             "predecessor_state": "approved"},
+                )
+            self.assertEqual(plan["issue_number"], 128)
+            self.assertEqual(owner_module._validate_plan(plan), plan)
+            history = owner_module._read_history(github, 128)
+            self.assertEqual(history, ())
+            self.assertEqual(github.writes, [])
+
+    def test_issue71_user_review_plan_binds_profile_and_pr75(self):
+        plan = issue71_user_review_plan()
+        self.assertEqual((plan["issue_number"], plan["pr_number"]), (71, 75))
+        self.assertEqual(owner_module._validate_plan(plan), plan)
+
+        altered = dict(plan)
+        altered["details"] = {**plan["details"], "project_profile_sha256": "0" * 63}
+        unsigned = {key: value for key, value in altered.items()
+                    if key not in {"approval_scope_sha256", "plan_sha256"}}
+        altered["approval_scope_sha256"] = owner_module._approval_scope_sha256(unsigned)
+        unsigned["approval_scope_sha256"] = altered["approval_scope_sha256"]
+        altered["plan_sha256"] = hashlib.sha256(owner_module._canonical(unsigned)).hexdigest()
+        with self.assertRaisesRegex(OwnerAuthorizationError, "User Review authorization plan details are invalid"):
+            owner_module._validate_plan(altered)
+
+    def test_user_review_subject_is_generic_and_uses_only_current_adc(self):
+        issue_number, pr_number = 128, 257
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / ".agent").mkdir()
+            (root / ".agent" / "project.json").write_bytes(
+                (ROOT / ".agent" / "project.json").read_bytes()
+            )
+            reads = []
+            reader = SimpleNamespace(repo=REPOSITORY)
+            reader.repository_metadata = lambda: {"id": REPOSITORY_ID}
+            def issue(number):
+                reads.append(number)
+                return {"number": issue_number, "state": "open", "pull_request": None,
+                        "repository_url": f"https://api.github.com/repos/{REPOSITORY}",
+                        "labels": [{"name": "kind:single"}, {"name": "phase:user-review"}]}
+            reader.issue = issue
+            reader.pull_request = lambda number: {
+                "number": pr_number, "state": "open", "draft": False, "merged": False,
+                "merged_at": None, "body": f"Closes #{issue_number}",
+                "head": {"sha": PLAN_HEAD, "repo": {"id": REPOSITORY_ID}},
+                "base": {"repo": {"id": REPOSITORY_ID}},
+                "user": {"id": OWNER_ID, "type": "User"},
+            }
+            reader.authenticated_user = lambda: {"id": 9881, "type": "User"}
+            current = SimpleNamespace(
+                pointer=SimpleNamespace(state="approved"),
+                contract=SimpleNamespace(sha256="5" * 64),
+            )
+            details = {
+                "review_session_sha256": "1" * 64,
+                "readiness_sha256": "2" * 64,
+                "adc_sha256": "5" * 64,
+                "pr_head_sha40": PLAN_HEAD,
+                "feedback_sha256": "3" * 64,
+                "project_profile_sha256": owner_module.canonical_project_profile_sha256(
+                    (root / ".agent" / "project.json").read_bytes()
+                ),
+                "verifier_user_id": 9881,
+            }
+            with patch("p_ases.adc.verify_adc", return_value=current), patch(
+                    "p_ases.owner_authorization.load_profile",
+                    return_value=SimpleNamespace(final_delivery_review_mode="solo_owner")):
+                owner_module._validate_user_review_subject(
+                    reader, root, issue_number=issue_number, pr_number=pr_number,
+                    pr_head_sha40=PLAN_HEAD, details=details,
+                )
+                self.assertEqual(reads, [issue_number])
+                with self.assertRaisesRegex(OwnerAuthorizationError, "approved current ADC"):
+                    owner_module._validate_user_review_subject(
+                        reader, root, issue_number=issue_number, pr_number=pr_number,
+                        pr_head_sha40=PLAN_HEAD,
+                        details={**details, "adc_sha256": "a" * 64},
+                    )
+                with self.assertRaisesRegex(OwnerAuthorizationError, "independent verifier"):
+                    owner_module._validate_user_review_subject(
+                        reader, root, issue_number=issue_number, pr_number=pr_number,
+                        pr_head_sha40=PLAN_HEAD,
+                        details={**details, "verifier_user_id": 9999},
+                    )
+            self.assertEqual(reads, [issue_number, issue_number])
+
+    def test_issue71_v3_confirmation_publishes_only_to_issue71(self):
+        plan = issue71_user_review_plan()
+        grant = capture_direct_chat_confirmation(
+            plan, response="承認する", user_role="user", same_conversation=True,
+        )
+        with self.assertRaisesRegex(OwnerAuthorizationError, "CHAT_PROVENANCE_UNAVAILABLE"):
+            capture_direct_chat_confirmation(
+                plan, response="承認する", user_role="user", same_conversation=False,
+            )
+        session = SimpleNamespace(
+            sha256=plan["details"]["review_session_sha256"],
+            subject=SimpleNamespace(readiness_sha256=plan["details"]["readiness_sha256"]),
+        )
+        context = {
+            "session": session,
+            "subject_sha256": plan["subject_sha256"],
+            "details": plan["details"],
+        }
+
+        class ChatGitHub:
+            repo = REPOSITORY
+
+            def __init__(self):
+                self.issue_reads: list[int] = []
+
+            def authenticated_user(self):
+                return {"type": "User", "id": OWNER_ID, "login": "puchinya"}
+
+            def issue(self, number):
+                self.issue_reads.append(number)
+                raise AssertionError("Issue #71 V3 chat path must not read an owner-decision carrier Issue")
+
+        github = ChatGitHub()
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch("p_ases.owner_authorization.worktree_clean", return_value=True), \
+                patch("p_ases.owner_authorization.head_sha40", return_value=plan["source_head_sha40"]), \
+                patch("p_ases.owner_authorization.create_authorization_plan", return_value=plan), \
+                patch("p_ases.user_review_relay.publish_chat_confirmed_user_review_decision",
+                      return_value=SimpleNamespace(comment_id=808, evidence_type="PASES_USER_REVIEW_DECISION_V3",
+                                                   evidence_channel="chat_confirmed_gh_v1")) as publish:
+            result = authorize_chat_confirmed_plan(
+                github, Path(temporary), plan, grant, user_review_context=context,
+                source_validator=lambda: context,
+            )
+        self.assertEqual(result["operation"], "USER_REVIEW")
+        self.assertEqual(result["owner_decision_comment_id"], 808)
+        self.assertEqual(github.issue_reads, [])
+        self.assertEqual(publish.call_args.kwargs["issue_number"], 71)
+
+    def test_issue71_user_review_cannot_use_owner_local_v2(self):
+        plan = issue71_user_review_plan()
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "plan.json"
+            write_authorization_plan(path, plan)
+            with patch("p_ases.owner_authorization._check_owner_local_tty"):
+                with self.assertRaisesRegex(OwnerAuthorizationError, "owner-local V2 is disabled"):
+                    authorize_plan(FakeGitHub(), Path(temporary), path)
 
 
 if __name__ == "__main__":

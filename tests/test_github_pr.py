@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
+from unittest.mock import patch
 
 ROOT = __import__("pathlib").Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
@@ -22,6 +27,77 @@ class FakeGitHub(GitHub):
 
 
 class GitHubPRAdapterTests(unittest.TestCase):
+    def test_api_transport_uses_a_finite_timeout_and_sanitizes_timeout_errors(self):
+        github = GitHub("owner/repo")
+        with patch("p_ases.github.subprocess.run",
+                   side_effect=subprocess.TimeoutExpired(["gh", "api"], 30)) as run:
+            with self.assertRaisesRegex(GitHubError, "POST repos/owner/repo/issues timed out after 30 seconds") as raised:
+                github.request("POST", "repos/owner/repo/issues", {"body": "private payload marker"})
+        self.assertEqual(run.call_args.kwargs["timeout"], 30)
+        self.assertNotIn("private payload marker", str(raised.exception))
+        self.assertNotIn("TimeoutExpired", str(raised.exception))
+
+    def test_graphql_uses_the_finite_timeout_and_sanitizes_timeout_diagnostics(self):
+        github = GitHub("owner/repo")
+        query = "query PRIVATE_GRAPHQL_QUERY_MARKER { viewer { login } }"
+        variables = {"token": "private-variable-secret", "marker": "private-payload-marker"}
+        timeout = subprocess.TimeoutExpired(
+            ["gh", "api", "graphql"], 30, output="private-stdout-marker",
+            stderr="private-stderr-marker",
+        )
+        with patch("p_ases.github.subprocess.run", side_effect=timeout) as run:
+            with self.assertRaisesRegex(GitHubError, "GraphQL operation timed out after 30 seconds") as raised:
+                github._graphql(query, variables)
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_args.kwargs["timeout"], 30)
+        message = str(raised.exception)
+        for private in (
+                "PRIVATE_GRAPHQL_QUERY_MARKER", "private-variable-secret", "private-payload-marker",
+                "private-stdout-marker", "private-stderr-marker", "TimeoutExpired"):
+            self.assertNotIn(private, message)
+        self.assertIsNone(raised.exception.__cause__)
+
+    def test_subprocess_run_terminates_and_reaps_a_timed_out_child(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            pid_file = Path(temporary) / "child.pid"
+            code = (
+                "import os,pathlib,sys,time; "
+                "pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(30)"
+            )
+            with self.assertRaises(subprocess.TimeoutExpired):
+                subprocess.run(
+                    [sys.executable, "-c", code, str(pid_file)],
+                    check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=0.5,
+                )
+            child_pid = int(pid_file.read_text())
+            with self.assertRaises(OSError):
+                os.kill(child_pid, 0)
+
+    def test_current_adc_reader_fetches_newest_comment_pages_without_full_pagination(self):
+        newest = [{"id": 101, "body": "recent"}]
+        oldest = [{"id": identifier, "body": "old"} for identifier in range(1, 101)]
+        github = FakeGitHub((newest, oldest))
+        pages = github.issue_comment_pages_newest(7, 101)
+        self.assertEqual(list(pages), [newest, oldest])
+        self.assertEqual(
+            [call[1] for call in github.calls],
+            ["repos/owner/repo/issues/7/comments?per_page=100&page=2",
+             "repos/owner/repo/issues/7/comments?per_page=100&page=1"],
+        )
+        with self.assertRaisesRegex(GitHubError, "comment count"):
+            list(github.issue_comment_pages_newest(7, -1))
+
+    def test_current_adc_reader_rejects_short_comment_page(self):
+        github = FakeGitHub(([{"id": 101, "body": "recent"}], [{"id": 1, "body": "old"}]))
+        with self.assertRaisesRegex(GitHubError, "incomplete"):
+            list(github.issue_comment_pages_newest(7, 101))
+
+    def test_current_adc_reader_rejects_nonascending_page_ids(self):
+        rows = [{"id": 101 - offset, "body": "comment"} for offset in range(100)]
+        github = FakeGitHub(([{"id": 201, "body": "recent"}], rows))
+        with self.assertRaisesRegex(GitHubError, "order or IDs"):
+            list(github.issue_comment_pages_newest(7, 101))
+
     def test_pr_search_paginates_exact_refs_and_closed_state(self):
         row = {"number": 42}
         github = FakeGitHub(([row],))

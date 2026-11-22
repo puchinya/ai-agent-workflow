@@ -19,16 +19,21 @@ from typing import Any
 from .adc import (
     ADCError, adc_forward_generation_session, parse_adc, publish_adc,
     refresh_adc_forward_generation_session, restore_adc, validate_approval_ready_adc,
-    verify_adc, verify_adc_generation,
+    verify_adc,
 )
 from .admin_auth import AdminAuthError, temporary_admin_client
+from .local_execution import (
+    LocalExecutionError, require_isolated_device_admin_client, require_local_activation_execution,
+)
 from .owner_authorization import (
     OwnerAuthorizationError, authorize_chat_confirmed_plan, authorize_plan, create_authorization_plan,
-    issue63_deferred_merge_details, read_authorization_plan, resume_authorization, write_authorization_plan,
+    deferred_merge_details, issue63_deferred_merge_details, read_authorization_plan,
+    resume_authorization, write_authorization_plan,
 )
 from .owner_authorization import capture_direct_chat_confirmation
 from .consumer_activation import (
-    ConsumerActivationError, activation_checkpoint_path, activation_setting_inventory, read_activation_checkpoint,
+    ConsumerActivationError, activation_checkpoint_path, activation_setup_requires_admin,
+    activation_pr_requires_admin, activation_setting_inventory, read_activation_checkpoint,
     read_consumer_activation_history, verify_setup_pr_ready_to_merge, write_activation_checkpoint,
     setup_consumer_activation, verify_and_record_activation,
 )
@@ -41,11 +46,13 @@ from .document_format import DocumentFormatError, format_tree
 from .documents import DocumentError, validate_documents
 from .github import GitHub, GitHubError, ReadOnlyGitHub
 from .execution import (
-    AdoptedExecutionEpoch, ExecutionError, ExecutionIdentity, binding_digest,
-    execution_identity_base, execution_identity_context_id, execution_identity_digest, read_binding,
+    AdoptedExecutionEpoch, ExecutionBinding, ExecutionError, ExecutionIdentity, binding_digest,
+    execution_identity_base, execution_identity_context_id, execution_identity_digest,
+    is_execution_epoch, read_binding,
 )
 from .execution_adoption import (
-    ExecutionAdoptionError, adoption_path, append_adopted_pr_binding, apply_adoption, build_adoption_plan,
+    ExecutionAdoptionError, adoption_path, attachment_path as adoption_attachment_path,
+    append_adopted_pr_binding, apply_adoption, build_adoption_plan,
     read_execution_identity, refresh_adopted_pr_binding, verify_adopted_execution,
     read_adoption_plan, write_adoption_plan,
 )
@@ -55,7 +62,7 @@ from .current_base import (
     verify_current_base_advance,
 )
 from .context import WorkContext
-from .profile import ProfileError, load_profile
+from .profile import ProfileError, canonical_project_profile_sha256, load_profile
 from .gate_policy import (
     BOOTSTRAP_COHORT, BOOTSTRAP_ISSUES, BOOTSTRAP_POLICY, BOOTSTRAP_REPOSITORY,
     BootstrapResult, BootstrapSubject, GateSelection,
@@ -67,7 +74,7 @@ from .gate_policy import (
     validate_bootstrap_pr_identity,
 )
 from .work import (
-    WorkError, bind_work, ensure_branch, ensure_pull_request, execution_binding_path,
+    WorkError, bind_work, ensure_branch, ensure_epoch_pull_request, ensure_pull_request, execution_binding_path,
     closing_issue_references, parse_issue_association,
     pr_binding_path, recover_work,
 )
@@ -106,6 +113,11 @@ from .phase_evidence import (
     verify_phase_evidence,
 )
 from .phase_restart import PhaseRestartError, restart_issue_phase
+from .epoch_lifecycle import EpochLifecycleError, reset_execution_epoch
+from .current_epoch import (
+    CurrentEpochError, epoch_paths as current_epoch_paths, read_current_epoch,
+)
+from .phase_rework_lifecycle import PhaseReworkLifecycleError, apply_phase_rework
 from .oracle_trace import (
     OracleDefinition, OracleTraceError, TestDefinition, validate_plan_oracles,
     validate_plan_tests,
@@ -169,7 +181,6 @@ from .user_review import (
     write_parent_review_session, write_review_session,
 )
 from .owner_consent import OwnerDecisionError, read_verified_owner_decision
-from .phase_rebaseline import PhaseRebaselineError, rebaseline_issue_phase
 from .user_review_relay import (
     UserReviewDecisionHistory, UserReviewRelayApproval, UserReviewRelayError,
     has_user_review_decision_marker, verify_user_review_decision_history,
@@ -195,11 +206,6 @@ CLI_ADVANCE_TARGETS = tuple(
     phase.value for phase in Phase if phase not in {Phase.USER_REVIEW, Phase.CLOSED}
 )
 
-# The approved stacked-PR contract for this repository's Verification issue.
-ISSUE_PR_REFS = {
-    29: ("pases/adc-core", "pases/verification"),
-    31: ("main", "pases/user-review-integration"),
-}
 def _json(value: Any) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2))
 
@@ -470,17 +476,12 @@ def _readback_current_pr(github: GitHub, subject: VerificationSubject) -> dict[s
         raise CLIError("current PR is closed, draft, forked, cross-repository, or has incomplete base/head identity")
     if head_sha != subject.pr_head_sha40:
         raise CLIError("Verification subject HEAD differs from the current GitHub PR HEAD")
-    expected_refs = ISSUE_PR_REFS.get(subject.issue_number)
-    if expected_refs is not None and (base_ref, head_ref) != expected_refs:
-        raise CLIError("current PR base/head branches do not match the approved Issue branch contract")
     if not isinstance(body, str):
         raise CLIError("current PR body is missing; Issue closing association cannot be verified")
     try:
         association_mode = parse_issue_association(body, subject.issue_number)
     except WorkError as exc:
         raise CLIError(f"current PR Issue association is invalid: {exc}") from exc
-    if subject.issue_number == 63 and (subject.pr_number != 64 or association_mode != "deferred_close"):
-        raise CLIError("Issue #63 deferred delivery requires existing PR #64 with standalone Refs #63")
     return {
         "number": subject.pr_number,
         "state": "open",
@@ -509,25 +510,58 @@ def _result_comment(kind: str, value: dict[str, Any]) -> str:
     return f"<!-- {marker} -->\n\n```json\n{payload}\n```"
 
 
-def _publish_once(github: GitHub, issue_number: int, body: str) -> int:
-    def find() -> list[dict[str, Any]]:
-        rows = [item for item in github.issue_comments(issue_number) if item.get("body") == body]
-        if len(rows) > 1:
-            raise CLIError("identical immutable evidence comments are duplicated")
-        return rows
+def _matching_immutable_evidence_comments(
+        github: GitHub, issue_number: int, body: str) -> tuple[list[dict[str, Any]], int]:
+    """Check immutable evidence uniqueness without materializing Issue history.
 
-    existing = find()
+    Before publishing there is no trusted direct comment ID, so the complete
+    Issue comment range is required to prove that no identical body exists.
+    A moving or incomplete snapshot must never authorize another POST.
+    """
+    issue = github.issue(issue_number)
+    count = issue.get("comments") if isinstance(issue, dict) and issue.get("number") == issue_number else None
+    if type(count) is not int or count < 0:
+        raise CLIError("immutable evidence scan requires a valid current Issue comment count")
+    matches: list[dict[str, Any]] = []
+    seen = 0
+    for page in github.issue_comment_pages_newest(issue_number, count):
+        if not isinstance(page, list):
+            raise CLIError("immutable evidence comment page is malformed")
+        for row in page:
+            if (not isinstance(row, dict) or type(row.get("id")) is not int or row["id"] < 1
+                    or not isinstance(row.get("body"), str)):
+                raise CLIError("immutable evidence comment is malformed")
+            seen += 1
+            if row["body"] == body:
+                matches.append(row)
+                if len(matches) > 1:
+                    raise CLIError("identical immutable evidence comments are duplicated")
+    if seen != count:
+        raise CLIError("immutable evidence comment page count differs from Issue snapshot")
+    latest = github.issue(issue_number)
+    if (not isinstance(latest, dict) or latest.get("number") != issue_number
+            or latest.get("comments") != count):
+        raise CLIError("Issue comment count changed during immutable evidence scan")
+    return matches, count
+
+
+def _publish_once(github: GitHub, issue_number: int, body: str) -> int:
+    existing, count = _matching_immutable_evidence_comments(github, issue_number, body)
     if existing:
-        comment_id = existing[0].get("id")
+        comment_id = existing[0]["id"]
     else:
+        # A concurrent comment after the completed scan cannot be treated as
+        # proof that the original no-match result still holds.
+        if github.issue(issue_number).get("comments") != count:
+            raise CLIError("Issue comments changed before immutable evidence publication")
         try:
             created = github.create_issue_comment(issue_number, body)
             comment_id = created["id"]
         except GitHubError:
-            recovered = find()
+            recovered, _ = _matching_immutable_evidence_comments(github, issue_number, body)
             if len(recovered) != 1:
                 raise
-            comment_id = recovered[0].get("id")
+            comment_id = recovered[0]["id"]
     if type(comment_id) is not int or comment_id < 1:
         raise CLIError("GitHub comment readback has an invalid Comment ID")
     readback = github.issue_comment(issue_number, comment_id)
@@ -538,19 +572,14 @@ def _publish_once(github: GitHub, issue_number: int, body: str) -> int:
 
 
 def _exact_published(github: GitHub, issue_number: int, body: str) -> int | None:
-    matches = [item for item in github.issue_comments(issue_number) if item.get("body") == body]
-    if len(matches) > 1:
-        raise CLIError("identical immutable evidence comments are duplicated")
+    matches, _ = _matching_immutable_evidence_comments(github, issue_number, body)
     if not matches:
         return None
-    comment_id = matches[0].get("id")
-    if type(comment_id) is not int or comment_id < 1:
-        raise CLIError("published evidence Comment ID is invalid")
+    comment_id = matches[0]["id"]
     readback = github.issue_comment(issue_number, comment_id)
     if readback.get("body") != body:
         raise CLIError("published evidence comment changed during readback")
     return comment_id
-
 
 def _blocked_result(reasons: list[str] | tuple[str, ...], subject: VerificationSubject | None = None) -> int:
     _json({"status": "BLOCKED", "subject": None if subject is None else subject.as_dict(),
@@ -780,15 +809,6 @@ def _unaccepted_dependencies(github: GitHub, contract: Any) -> tuple[str, ...]:
     except (KeyError, ValueError):
         text = ""
     numbers = sorted({int(value) for value in _ISSUE_REF.findall(text)})
-    if not numbers and getattr(contract, "issue_number", None) == 29:
-        # The approved #29 ADC fixes #27/#28 as its upstream dependencies.
-        numbers = [27, 28]
-    elif not numbers and getattr(contract, "issue_number", None) == 30:
-        # The approved #30 ADC fixes #27/#29 as its upstream dependencies.
-        numbers = [27, 29]
-    if getattr(contract, "issue_number", None) == 30:
-        # #28 is an explicit transitive blocker through #29 until formal Oracle acceptance.
-        numbers = sorted(set(numbers) | {28})
     pending: list[str] = []
     for number in numbers:
         try:
@@ -1007,28 +1027,50 @@ def _context_show(issue_number: int, repository: str, root: Path, github: GitHub
         return 2
 
     binding_path = execution_binding_path(root, issue_number)
+    epoch_file, attachment_file = current_epoch_paths(root, issue_number)
+    if (epoch_file.exists() or epoch_file.is_symlink()
+            or attachment_file.exists() or attachment_file.is_symlink()):
+        try:
+            epoch = read_current_epoch(github, root, issue_number, verified)
+        except (CurrentEpochError, GitHubError, GitError, OSError, ValueError) as exc:
+            _json({"status": "EPOCH_INVALID", "issue": issue_number, "repository": repository,
+                   "binding_status": "INVALID", "reason": str(exc)})
+            return 2
+        _json({"status": "ACTIVE_EPOCH", "issue": issue_number, "repository": repository,
+               "issue_state": "open", "adc_status": "APPROVED",
+               "adc_comment_id": epoch.adc_comment_id, "adc_sha256": epoch.adc_sha256,
+               "binding_status": "ACTIVE_EXECUTION_EPOCH",
+               "execution_identity_sha256": epoch.sha256, "epoch_id": epoch.epoch_id,
+               "historical_binding_provenance": epoch.historical_binding_provenance,
+               "frozen_context": {"base_ref": epoch.base_ref, "base_sha": epoch.base_sha40,
+                                  "branch_ref": epoch.branch_ref,
+                                  "workspace_attachment": str(attachment_file)}})
+        return 0
     if path_has_symlink(binding_path):
         _json({"status": "BINDING_INVALID", "issue": issue_number, "repository": repository,
                "issue_state": "open", "adc_status": "APPROVED", "binding_status": "INVALID",
                "reason": "ExecutionBinding path traverses a symbolic link"})
         return 2
-    if not binding_path.is_file() and issue_number == 63 and repository.casefold() == "puchinya/ai-agent-workflow":
-        adoption_path = root / ".p_ases" / "state" / "63" / "execution-adoption.json"
-        attachment_path = root / ".p_ases" / "state" / "63" / "workspace-attachment.json"
-        if adoption_path.exists() or adoption_path.is_symlink() or attachment_path.exists() or attachment_path.is_symlink():
+    if not binding_path.is_file():
+        adopted_file = adoption_path(root, issue_number)
+        attached_file = adoption_attachment_path(root, issue_number)
+        if (adopted_file.exists() or adopted_file.is_symlink()
+                or attached_file.exists() or attached_file.is_symlink()):
             try:
                 identity = read_execution_identity(
                     github, root, adc_comment_id=verified.pointer.comment_id,
                     adc_sha256=verified.pointer.sha256,
                 )
-                if not isinstance(identity, AdoptedExecutionEpoch):
-                    raise ExecutionAdoptionError("adoption artifacts resolved to a non-adopted identity")
+                if (not isinstance(identity, AdoptedExecutionEpoch)
+                        or identity.repository.casefold() != repository.casefold()
+                        or identity.issue_number != issue_number):
+                    raise ExecutionAdoptionError("adoption artifacts do not bind the current repository/Issue")
             except (ExecutionAdoptionError, ExecutionError, OSError, ValueError) as exc:
                 _json({"status": "ADOPTION_INVALID", "issue": issue_number, "repository": repository,
                        "issue_state": "open", "adc_status": "APPROVED", "binding_status": "INVALID",
                        "reason": str(exc)})
                 return 2
-            attachment = root / ".p_ases" / "state" / "63" / "workspace-attachment.json"
+            attachment = attached_file
             _json({"status": "ADOPTED", "issue": issue_number, "repository": repository,
                    "issue_state": "open", "adc_status": "APPROVED",
                    "adc_comment_id": verified.pointer.comment_id, "adc_sha256": verified.pointer.sha256,
@@ -1097,8 +1139,17 @@ def _approved_issue_adc(github: GitHub, issue_number: int, repository: str) -> t
 
 def _read_execution_identity(github: GitHub, root: Path, repository: str,
                              issue_number: int, verified_adc: Any) -> ExecutionIdentity:
-    """Read the ordinary V1 binding or the explicitly discriminated #63 epoch."""
-    if (issue_number == 63 and repository.casefold() == "puchinya/ai-agent-workflow"):
+    """Select a validated execution identity from persisted state, not Issue numbers."""
+    epoch_file, attachment_file = current_epoch_paths(root, issue_number)
+    if (epoch_file.exists() or epoch_file.is_symlink()
+            or attachment_file.exists() or attachment_file.is_symlink()):
+        try:
+            return read_current_epoch(github, root, issue_number, verified_adc)
+        except (CurrentEpochError, GitHubError, OSError, ValueError) as exc:
+            raise CLIError(f"current execution epoch readback failed: {exc}") from exc
+    adoption_file, adoption_attachment = adoption_path(root, issue_number), adoption_attachment_path(root, issue_number)
+    if (adoption_file.exists() or adoption_file.is_symlink()
+            or adoption_attachment.exists() or adoption_attachment.is_symlink()):
         try:
             return read_execution_identity(
                 github, root, adc_comment_id=verified_adc.pointer.comment_id,
@@ -1112,20 +1163,55 @@ def _read_execution_identity(github: GitHub, root: Path, repository: str,
         raise CLIError(f"immutable ExecutionBinding readback failed: {exc}") from exc
 
 
+def _identity_evidence_paths(root: Path, issue_number: int, identity: ExecutionIdentity) -> tuple[Path, ...]:
+    """Cite exactly the currently validated identity files, regardless of Issue ID."""
+    if is_execution_epoch(identity):
+        identity.validate()
+        paths = current_epoch_paths(root, issue_number)
+        retired_binding = execution_binding_path(root, issue_number)
+        if retired_binding.exists() or retired_binding.is_symlink():
+            raise CLIError("active epoch must not coexist with an ordinary V1 ExecutionBinding")
+    elif isinstance(identity, AdoptedExecutionEpoch):
+        identity.validate()
+        paths = (adoption_path(root, issue_number), adoption_attachment_path(root, issue_number))
+    elif isinstance(identity, ExecutionBinding):
+        identity.validate()
+        paths = (execution_binding_path(root, issue_number),)
+    else:
+        raise CLIError("Readiness cannot cite an unsupported execution identity")
+    if identity.issue_number != issue_number:
+        raise CLIError("execution identity evidence belongs to a different Issue")
+    for path in paths:
+        if path_has_symlink(path) or not path.is_file():
+            raise CLIError("validated execution identity evidence file is missing or unsafe")
+    return tuple(paths)
+
+
 def _require_current_adopted_generation(github: GitHub, root: Path, repository: str,
                                         issue_number: int, verified_adc: Any) -> None:
-    """Prevent #63 exact-subject evidence until the adopted epoch has its current ADC bridge."""
-    if (issue_number != 63 or repository.casefold() != "puchinya/ai-agent-workflow"
-            or not (adoption_path(root).exists() or adoption_path(root).is_symlink())):
+    """Guard a legacy adopted identity by its persisted subject, not Issue number.
+
+    New Issues use the generic typed ExecutionEpoch lifecycle. A historical V1
+    adoption is inspected only if its immutable state is present, and it must
+    resolve to this exact repository/Issue and an ADC/HEAD-bound PRBinding.
+    """
+    adopted = adoption_path(root, issue_number)
+    attachment = adoption_attachment_path(root, issue_number)
+    if not (adopted.exists() or adopted.is_symlink()
+            or attachment.exists() or attachment.is_symlink()):
         return
     identity = _read_execution_identity(github, root, repository, issue_number, verified_adc)
-    if not isinstance(identity, AdoptedExecutionEpoch):
-        raise CLIError("Issue #63 adopted execution did not resolve to its immutable epoch")
+    if (not isinstance(identity, AdoptedExecutionEpoch)
+            or identity.repository.casefold() != repository.casefold()
+            or identity.issue_number != issue_number):
+        raise CLIError("adopted execution state does not resolve to its exact repository/Issue")
     try:
         current_binding = read_pr_binding(pr_binding_path(root, issue_number, github=github))
     except (CheckpointError, WorkError, OSError) as exc:
         raise CLIError(f"current adopted PRBinding readback failed: {exc}") from exc
-    if (current_binding.adoption_id != identity.adoption_id
+    if (current_binding.repository.casefold() != repository.casefold()
+            or current_binding.issue_number != issue_number
+            or current_binding.adoption_id != identity.adoption_id
             or current_binding.adc_comment_id != verified_adc.pointer.comment_id
             or current_binding.adc_sha256 != verified_adc.pointer.sha256
             or current_binding.pr_number != identity.pr_number
@@ -1164,6 +1250,11 @@ def _work_command(args: argparse.Namespace, repository: str, root: Path, github:
             args.issue != 63 or repository.casefold() != "puchinya/ai-agent-workflow"):
         raise CLIError("adoption refresh is restricted to puchinya/ai-agent-workflow Issue #63")
     _issue, verified = _approved_issue_adc(github, args.issue, repository)
+    epoch_file, epoch_attachment = current_epoch_paths(root, args.issue)
+    if ((epoch_file.exists() or epoch_file.is_symlink()
+            or epoch_attachment.exists() or epoch_attachment.is_symlink())
+            and args.verb in {"base", "branch", "bind", "recover"}):
+        raise CLIError("ordinary work commands cannot replace an existing execution epoch")
     if args.verb == "adoption-refresh":
         result = refresh_adopted_pr_binding(
             github, root, expected_adc_comment_id=verified.pointer.comment_id,
@@ -1285,9 +1376,172 @@ def _work_command(args: argparse.Namespace, repository: str, root: Path, github:
     return _work_json(result, args.issue, repository)
 
 
+def _advance_issue_with_adc_session(
+    args: argparse.Namespace, repository: str, github: GitHub,
+) -> int:
+    issue = github.issue(args.issue)
+    if issue.get("state") != "open" or issue.get("pull_request") is not None:
+        raise CLIError("Issue advance requires an open Issue, not a pull request")
+    label_rows = issue.get("labels")
+    if not isinstance(label_rows, list) or any(not isinstance(item, dict) for item in label_rows):
+        raise CLIError("Issue label readback is invalid")
+    labels = [item.get("name") for item in label_rows]
+    if any(not isinstance(label, str) for label in labels):
+        raise CLIError("Issue label readback contains an invalid name")
+    phase = parse_phase_labels(labels)
+    attention = parse_attention_labels(labels)
+    skip_reasons = _phase_skip_reasons(args.skip_phase)
+    kind = IssueKind(args.kind)
+    bootstrap = (repository.casefold() == BOOTSTRAP_REPOSITORY.casefold()
+                 and args.issue in PHASE_EVIDENCE_BOOTSTRAP_ISSUES)
+    kind_labels = [label.removeprefix("kind:") for label in labels if label.startswith("kind:")]
+    if not bootstrap and (len(kind_labels) != 1 or kind_labels[0] != kind.value):
+        raise CLIError("--kind must match the Issue's unique verified kind:* label")
+    if bootstrap and kind_labels and (len(kind_labels) != 1 or kind_labels[0] != kind.value):
+        raise CLIError("Bootstrap Issue kind label conflicts with --kind")
+    target = Phase(args.target)
+    evidence_required = (not bootstrap and kind in {IssueKind.SINGLE, IssueKind.CHILD}
+                         and target in {Phase.SPECIFICATION, Phase.DESIGN, Phase.READY})
+    ordinary_issue = (not bootstrap and kind in {IssueKind.SINGLE, IssueKind.CHILD})
+    root: Path | None = None
+    approved_adc = None
+    ordinary_context = None
+    if ordinary_issue:
+        if args.root is None:
+            raise CLIError("ordinary Issue phase transitions require --root for Activation and ADC verification")
+        root = _repo_root(str(args.root)).resolve()
+        ordinary_context = verify_ordinary_issue_context(
+            github, root, args.issue, kind,
+            require_binding=target in {Phase.EXECUTION, Phase.VERIFICATION},
+        )
+        approved_adc = ordinary_context.verified_adc
+        if target is Phase.EXECUTION:
+            verify_ready_preparation(
+                github, root, args.issue, kind, verified_context=ordinary_context,
+            )
+    if evidence_required:
+        if args.phase_evidence_comment_id is None:
+            raise CLIError("specification, design, and ready transitions require --phase-evidence-comment-id")
+        verify_phase_evidence(github, root, args.issue, args.phase_evidence_comment_id,
+                              phase, target, skip_reasons)
+    graph_validated = False
+    if kind is IssueKind.PARENT and phase is Phase.REQUIREMENTS and target is Phase.READY:
+        validate_native_issue_graph(github, args.issue)
+        graph_validated = True
+    next_state = advance(PhaseState(args.issue, kind, phase, attention), target,
+                         skip_reasons=skip_reasons, issue_graph_validated=graph_validated)
+    kept = [label for label in labels if not label.startswith(("phase:", "attention:"))]
+    kept.append(f"phase:{next_state.phase.value}")
+    kept.extend(f"attention:{item.value}" for item in sorted(next_state.attention, key=lambda x: x.value))
+    if ordinary_issue and root is not None:
+        latest_context = verify_ordinary_issue_context(
+            github, root, args.issue, kind,
+            require_binding=target in {Phase.EXECUTION, Phase.VERIFICATION},
+        )
+        latest_adc = latest_context.verified_adc
+        if (approved_adc is None or latest_adc.pointer != approved_adc.pointer
+                or latest_adc.contract.sha256 != approved_adc.contract.sha256):
+            raise CLIError("approved ADC pointer or generation changed before the phase label write")
+        if target is Phase.EXECUTION:
+            verify_ready_preparation(
+                github, root, args.issue, kind, verified_context=latest_context,
+            )
+    if evidence_required and root is not None:
+        verify_phase_evidence(github, root, args.issue, args.phase_evidence_comment_id,
+                              phase, target, skip_reasons)
+    latest = github.issue(args.issue)
+    if (latest.get("number") != args.issue or latest.get("state") != "open"
+            or latest.get("pull_request") is not None or latest.get("labels") != label_rows
+            or latest.get("body") != issue.get("body")
+            or latest.get("repository_url") != issue.get("repository_url")):
+        raise CLIError("Issue state changed before the phase label write")
+    write_error: GitHubError | None = None
+    refresh_adc_forward_generation_session(github, args.issue)
+    try:
+        github.replace_issue_labels(args.issue, kept)
+    except GitHubError as exc:
+        # The same complete readback is required after both a normal response
+        # and a lost/failed response; the exception alone cannot establish whether
+        # GitHub applied the PUT.
+        write_error = exc
+    refresh_adc_forward_generation_session(github, args.issue)
+    try:
+        final_issue = github.issue(args.issue)
+        _validate_issue_advance_readback(
+            final_issue, original_issue=issue, repository=repository,
+            issue_number=args.issue, expected_labels=kept, kind=kind,
+            target=next_state.phase, attention=next_state.attention,
+            ordinary=ordinary_issue,
+        )
+        if ordinary_issue and root is not None:
+            final_context = verify_ordinary_issue_context(
+                github, root, args.issue, kind,
+                require_binding=target in {Phase.EXECUTION, Phase.VERIFICATION},
+            )
+            final_adc = final_context.verified_adc
+            _validate_issue_advance_readback(
+                final_context.issue, original_issue=issue, repository=repository,
+                issue_number=args.issue, expected_labels=kept, kind=kind,
+                target=next_state.phase, attention=next_state.attention,
+                ordinary=True,
+            )
+            if (approved_adc is None or final_adc.pointer != approved_adc.pointer
+                    or final_adc.contract.sha256 != approved_adc.contract.sha256):
+                raise CLIError("approved ADC pointer or generation changed after the phase label write")
+    except (ADCError, GitHubError, PhaseEvidenceError, CLIError, OSError, UnicodeError, ValueError) as exc:
+        raise CLIError(
+            f"BLOCKED after phase label write: {exc}; the label PUT may already have applied; "
+            "no automatic rollback or retry was attempted"
+        ) from (write_error or exc)
+    _json({"status": "ADVANCED", "issue": args.issue, "from": phase.value,
+           "to": next_state.phase.value, "attention": sorted(x.value for x in next_state.attention)})
+    return 0
+
 def _pr_ensure(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
+    return _pr_ensure_with_history_session(args, repository, root, github)
+
+
+def _pr_ensure_with_history_session(
+    args: argparse.Namespace, repository: str, root: Path, github: GitHub,
+) -> int:
     _issue, verified = _approved_issue_adc(github, args.issue, repository)
     binding_path = execution_binding_path(root, args.issue)
+    epoch_file, epoch_attachment = current_epoch_paths(root, args.issue)
+    if (epoch_file.exists() or epoch_file.is_symlink()
+            or epoch_attachment.exists() or epoch_attachment.is_symlink()):
+        try:
+            epoch = read_current_epoch(github, root, args.issue, verified)
+        except (CurrentEpochError, GitHubError, OSError, ValueError) as exc:
+            raise CLIError(f"active execution epoch readback failed: {exc}") from exc
+        if (epoch.adc_comment_id != verified.pointer.comment_id
+                or epoch.adc_sha256 != verified.pointer.sha256):
+            raise CLIError("active execution epoch differs from the current approved ADC")
+        body = _safe_file_bytes(args.body_file, "PR body file", root=root).decode("utf-8", errors="strict")
+        result = ensure_epoch_pull_request(
+            root, github, repository=repository, issue_number=args.issue, execution_epoch=epoch,
+            branch_ref=args.branch_ref, base_ref=args.base_ref, title=args.title, body=body,
+        )
+        binding_history_path = pr_binding_path(root, args.issue, github=github)
+        refresh_adc_forward_generation_session(github, args.issue)
+        current = verify_adc(github, args.issue)
+        if current.pointer != verified.pointer:
+            raise CLIError("ADC pointer changed during epoch PR ensure; no newer binding was written")
+        if (not worktree_clean(root) or current_branch(root) != args.branch_ref
+                or head_sha40(root) != result.binding.pr_head_sha40
+                or remote_branch_sha(root, args.branch_ref) != result.binding.pr_head_sha40):
+            raise CLIError("worktree or remote branch changed during final epoch PR readback")
+        pull = result.pull_request
+        _json({"status": "PR_READY", "repository": repository, "issue": args.issue,
+               "pr": pull.get("number"), "url": pull.get("html_url"), "state": pull.get("state"),
+               "draft": pull.get("draft"), "base_ref": args.base_ref,
+               "base_sha40": pull.get("base", {}).get("sha"), "frozen_base_sha40": epoch.base_sha40,
+               "head_ref": args.branch_ref, "head_sha40": result.binding.pr_head_sha40,
+               "execution_epoch_sha256": epoch.sha256, "pr_binding_sha256": result.binding.sha256,
+               "checkpoint_path": str(result.checkpoint_path), "checkpoint_sha256": result.checkpoint_sha256,
+               "reused": result.reused, "reasons": [],
+               "evidence_refs": [*(str(path) for path in current_epoch_paths(root, args.issue)),
+                                 str(binding_history_path), str(result.checkpoint_path)]})
+        return 0
     if (args.issue == 63 and repository.casefold() == "puchinya/ai-agent-workflow"
             and not binding_path.exists()
             and (adoption_path(root).exists() or adoption_path(root).is_symlink())):
@@ -1532,8 +1786,6 @@ def _readback_readiness_pr(github: GitHub, repository: str, issue_number: int,
         association_mode = parse_issue_association(body, issue_number)
     except WorkError as exc:
         raise CLIError(f"PR Issue association is invalid: {exc}") from exc
-    if issue_number == 63 and (pr_number != 64 or association_mode != "deferred_close"):
-        raise CLIError("Issue #63 deferred delivery requires existing PR #64 with standalone Refs #63")
     if (not isinstance(base, dict) or not isinstance(head, dict)
             or not isinstance(base_repo, dict) or not isinstance(head_repo, dict)
             or not isinstance(base_repo.get("full_name"), str)
@@ -1558,6 +1810,13 @@ def _current_base_evidence_for_pr(root: Path, github: GitHub, repository: str,
     _base_ref, frozen_base_sha = execution_identity_base(execution_binding)
     base = raw_pr.get("base") if isinstance(raw_pr, dict) else None
     current_base = base.get("sha") if isinstance(base, dict) else None
+    if is_execution_epoch(execution_binding):
+        if (pr_binding.execution_epoch_sha256 != execution_binding.sha256
+                or pr_binding.base_sha40 != frozen_base_sha or current_base != frozen_base_sha
+                or pr_binding.current_base_sha40 is not None
+                or pr_binding.current_base_advance_sha256 is not None):
+            raise CLIError("PR is not anchored to its active execution epoch and exact frozen base")
+        return None
     if (current_base == frozen_base_sha and pr_binding.current_base_sha40 is None
             and pr_binding.current_base_advance_sha256 is None):
         return None
@@ -1946,18 +2205,27 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
 
     pr_binding = None
     binding: ExecutionIdentity | None = None
+    identity_evidence_paths: tuple[Path, ...] = ()
     binding_path = execution_binding_path(root, args.issue)
     try:
         binding = _read_execution_identity(github, root, repository, args.issue, verified_adc)
         pr_binding = read_pr_binding(pr_binding_path(root, args.issue, github=github))
         if binding.repository != repository or binding.issue_number != args.issue:
             raise CLIError("execution identity repository/Issue does not match")
+        identity_evidence_paths = _identity_evidence_paths(root, args.issue, binding)
         if isinstance(binding, AdoptedExecutionEpoch):
             if (pr_binding.adoption_id != binding.adoption_id
                     or pr_binding.adc_comment_id != (None if verified_adc is None else verified_adc.pointer.comment_id)
                     or pr_binding.adc_sha256 != (None if verified_adc is None else verified_adc.pointer.sha256)):
                 blockers.append("adopted epoch lacks a current-generation PRBinding bridge")
-        elif (binding.adc_comment_id != (None if verified_adc is None else verified_adc.pointer.comment_id)
+        elif is_execution_epoch(binding):
+            if (pr_binding.execution_epoch_sha256 != binding.sha256
+                    or pr_binding.adoption_id is not None
+                    or pr_binding.adc_comment_id != (None if verified_adc is None else verified_adc.pointer.comment_id)
+                    or pr_binding.adc_sha256 != (None if verified_adc is None else verified_adc.pointer.sha256)):
+                blockers.append("PRBinding does not bridge the active execution epoch identity")
+        elif (pr_binding.execution_epoch_sha256 is not None
+              or binding.adc_comment_id != (None if verified_adc is None else verified_adc.pointer.comment_id)
               or binding.adc_sha256 != (None if verified_adc is None else verified_adc.pointer.sha256)):
             blockers.append("ExecutionBinding belongs to a stale ADC pointer")
     except (ExecutionError, CheckpointError, CLIError, OSError) as exc:
@@ -2243,7 +2511,7 @@ def _delivery_readiness(args: argparse.Namespace, repository: str, root: Path, g
            "reasons": list(result.reasons),
            "evidence_refs": [str(path), str(args.plan), str(args.verification), str(args.acceptance),
                              str(args.self_audit), str(args.independent_review),
-                             str(execution_binding_path(root, args.issue)),
+                             *(str(identity_path) for identity_path in identity_evidence_paths),
                              str(pr_binding_path(root, args.issue, github=github)),
                              *([str(current_base_advance_path(root, args.issue))]
                                if current_base_evidence is not None else []), *published_refs]})
@@ -2316,24 +2584,43 @@ def _read_review_record(path: Path) -> tuple[UserReviewSubject, UserReviewResult
     return result.subject, result, value["snapshot_sha256"]
 
 
-_ISSUE63_REPOSITORY_ID = 1401910271
-_ISSUE63_OWNER_ID = 3744776
+def _ruleset_operation_plan(
+        github: GitHub, plan_path: Path,
+        approval_comment_id: int | None = None) -> tuple[dict[str, Any], int | None]:
+    """Bind Ruleset apply to exact plan identity and its authenticated owner decision.
 
-
-def _ruleset_operation_plan(github: GitHub, plan_path: Path) -> tuple[dict[str, Any], int | None]:
-    """Require the separate exact-plan owner decision before any Ruleset write path."""
+    The approval's carrier Issue comes from the direct GitHub comment's
+    repository-scoped issue_url, never from a fixed migration Issue number.
+    """
     plan = read_ruleset_plan(plan_path)
-    if (github.repo.casefold() != "puchinya/ai-agent-workflow"
-            or plan["repository_id"] != _ISSUE63_REPOSITORY_ID
-            or plan["owner_id"] != _ISSUE63_OWNER_ID or plan["activation_issue_number"] != 57):
-        raise CLIError("Ruleset owner relay is configured only for the approved #63 repository/Activation Issue")
+    metadata = github.repository_metadata()
+    owner = metadata.get("owner") if isinstance(metadata, dict) else None
+    if (plan["repository"].casefold() != github.repo.casefold()
+            or not isinstance(metadata, dict)
+            or not isinstance(metadata.get("full_name"), str)
+            or metadata["full_name"].casefold() != github.repo.casefold()
+            or metadata.get("id") != plan["repository_id"]
+            or not isinstance(owner, dict) or owner.get("type") != "User"
+            or owner.get("id") != plan["owner_id"]):
+        raise CLIError("Ruleset plan repository and owner differ from the live GitHub identity")
     if plan["diff"]["operation"] == "noop":
         return plan, None
+    if type(approval_comment_id) is not int or approval_comment_id < 1:
+        raise OwnerDecisionError("missing exact owner operation/subject approval comment ID")
+    carrier = github.issue_comment(plan["activation_issue_number"], approval_comment_id)
+    expected_prefix = f"https://api.github.com/repos/{github.repo}/issues/"
+    url = carrier.get("issue_url") if isinstance(carrier, dict) else None
+    if (not isinstance(url, str) or not url.startswith(expected_prefix)
+            or re.fullmatch(r"[1-9][0-9]*", url[len(expected_prefix):]) is None):
+        raise OwnerDecisionError("Ruleset approval carrier does not belong to a repository Issue")
+    owner_issue_number = int(url[len(expected_prefix):])
     verified = read_verified_owner_decision(
-        github, issue_number=63, owner_id=_ISSUE63_OWNER_ID,
+        github, issue_number=owner_issue_number, owner_id=plan["owner_id"],
         operation="RULESET_PLAN_APPLY", subject_sha256=plan["plan_sha256"],
-        repository_id=_ISSUE63_REPOSITORY_ID,
+        repository_id=plan["repository_id"],
     )
+    if verified.comment_id != approval_comment_id:
+        raise OwnerDecisionError("Ruleset owner decision differs from the exact approval carrier")
     if (verified.decision.schema in {"PASES_OWNER_DECISION_V2", "PASES_OWNER_DECISION_V3"}
             and verified.decision.operation_plan_sha256 != plan["plan_sha256"]):
         raise OwnerDecisionError("owner-local RULESET_PLAN_APPLY decision is bound to another plan")
@@ -2341,7 +2628,8 @@ def _ruleset_operation_plan(github: GitHub, plan_path: Path) -> tuple[dict[str, 
 
 
 def _user_review_owner_context(args: argparse.Namespace, repository: str,
-                               github: GitHub) -> dict[str, Any]:
+                               root: Path, github: GitHub, *, issue_number: int = 63
+                               ) -> dict[str, Any]:
     github = _read_only_github(github)
     if args.session is None or args.readiness is None or args.feedback_snapshot is None:
         raise OwnerAuthorizationError(
@@ -2353,13 +2641,15 @@ def _user_review_owner_context(args: argparse.Namespace, repository: str,
     subject = session.subject
     verification_subject = subject.verification_subject
     if (verification_subject.repository != repository
-            or verification_subject.issue_number != 63 or snapshot.subject != subject
+            or verification_subject.issue_number != issue_number or snapshot.subject != subject
             or readiness.status != "PASS" or readiness.subject != verification_subject
             or readiness.sha256 != subject.readiness_sha256
             or snapshot.unresolved_thread_ids):
         raise OwnerAuthorizationError("User Review session, Readiness, feedback snapshot, or Issue identity is stale")
-    _solo_owner_identity(github, repository, 63, verification_subject.pr_number,
-                         verification_subject.pr_head_sha40)
+    owner_id, pr_author_id, verifier_id = _solo_owner_identity(
+        github, repository, issue_number, verification_subject.pr_number,
+        verification_subject.pr_head_sha40, root=root,
+    )
     observed_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
     current = _review_payload_from_github(github, subject, observed_at=observed_at)
     if (current.events != snapshot.events
@@ -2373,13 +2663,26 @@ def _user_review_owner_context(args: argparse.Namespace, repository: str,
         "feedback_sha256": feedback_digest(current.events),
     }
     subject_sha256 = hashlib.sha256(_canonical({
-        "repository": repository, "issue_number": 63,
+        "repository": repository, "issue_number": issue_number,
+        "pr_number": verification_subject.pr_number, **details,
+    })).hexdigest()
+    details = {
+        **details,
+        "project_profile_sha256": canonical_project_profile_sha256(
+            (root / ".agent" / "project.json").read_bytes()
+        ),
+        "verifier_user_id": verifier_id,
+    }
+    subject_sha256 = hashlib.sha256(_canonical({
+        "repository": repository, "issue_number": issue_number,
         "pr_number": verification_subject.pr_number, **details,
     })).hexdigest()
     return {"session": session, "readiness": readiness, "snapshot": snapshot,
             "details": details, "subject_sha256": subject_sha256,
             "pr_number": verification_subject.pr_number,
-            "pr_head_sha40": verification_subject.pr_head_sha40}
+            "pr_head_sha40": verification_subject.pr_head_sha40,
+            "owner_id": owner_id, "pr_author_id": pr_author_id,
+            "verifier_id": verifier_id, "issue_number": issue_number}
 
 
 def _owner_authorization_plan_command(args: argparse.Namespace, repository: str,
@@ -2396,19 +2699,22 @@ def _owner_authorization_plan_command(args: argparse.Namespace, repository: str,
         if path.is_symlink() or not path.is_file():
             raise OwnerAuthorizationError("ADC successor source must be a regular file")
         raw = path.read_bytes()
-        adc = parse_adc(raw, repository, 63)
+        target_adc_issue = getattr(args, "target_issue", None)
+        if type(target_adc_issue) is not int or target_adc_issue < 1:
+            raise OwnerAuthorizationError("ADC_SUPERSEDE requires --target-issue")
+        adc = parse_adc(raw, repository, target_adc_issue)
         subject_sha256 = hashlib.sha256(raw).hexdigest()
-        if adc.issue_number != 63:
-            raise OwnerAuthorizationError("ADC successor source is not for Issue #63")
+        if adc.issue_number != target_adc_issue:
+            raise OwnerAuthorizationError("ADC successor source is not for the requested Issue")
         try:
-            predecessor = verify_adc(github, 63).pointer
+            predecessor = verify_adc(github, target_adc_issue).pointer
         except ADCError as exc:
             raise OwnerAuthorizationError("ADC_SUPERSEDE requires the current approved predecessor") from exc
         if predecessor.state != "approved":
             raise OwnerAuthorizationError("ADC_SUPERSEDE requires the current approved predecessor")
         try:
             validate_approval_ready_adc(
-                raw, repository, 63, current_pointer=predecessor, check_current_pointer=True,
+                raw, repository, target_adc_issue, current_pointer=predecessor, check_current_pointer=True,
             )
         except ADCError as exc:
             raise OwnerAuthorizationError(f"ADC_SUPERSEDE candidate is not approval-ready: {exc}") from exc
@@ -2423,30 +2729,46 @@ def _owner_authorization_plan_command(args: argparse.Namespace, repository: str,
             raise OwnerAuthorizationError("RULESET_PLAN_APPLY plan requires --ruleset-plan")
         ruleset = read_ruleset_plan(args.ruleset_plan)
         if (ruleset.get("blockers") or ruleset.get("diff", {}).get("operation") == "noop"
-                or ruleset.get("activation_issue_number") != 57):
-            raise OwnerAuthorizationError("Ruleset approval is only for a blocker-free write plan bound to Activation #57")
+                or type(ruleset.get("activation_issue_number")) is not int
+                or ruleset["activation_issue_number"] < 1):
+            raise OwnerAuthorizationError("Ruleset approval requires a blocker-free plan bound to an Activation Issue")
         subject_sha256 = ruleset.get("plan_sha256")
         if not isinstance(subject_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", subject_sha256):
             raise OwnerAuthorizationError("Ruleset plan digest is invalid")
-        target_issue = 57
-        details = {"activation_issue_number": 57}
+        target_issue = ruleset["activation_issue_number"]
+        details = {"activation_issue_number": target_issue}
     elif operation == "USER_REVIEW":
         if args.subject_file is not None or args.ruleset_plan is not None:
             raise OwnerAuthorizationError("USER_REVIEW plan does not accept ADC or Ruleset source files")
-        context = _user_review_owner_context(args, repository, github)
+        requested_issue = getattr(args, "target_issue", None)
+        if args.session is None:
+            raise OwnerAuthorizationError("USER_REVIEW requires --session")
+        subject_issue = read_review_session(args.session).subject.verification_subject.issue_number
+        if requested_issue is not None and requested_issue != subject_issue:
+            raise OwnerAuthorizationError("USER_REVIEW target differs from the session Issue")
+        plan_issue = subject_issue
+        context = _user_review_owner_context(
+            args, repository, root, github, issue_number=plan_issue,
+        )
         subject_sha256 = context["subject_sha256"]
         pr_number, pr_head = context["pr_number"], context["pr_head_sha40"]
         details = context["details"]
+        target_issue = None
     elif operation == "PR_MERGE":
         if (args.subject_file is not None or args.ruleset_plan is not None
                 or args.pr is None or args.head is None or args.target_issue is None):
             raise OwnerAuthorizationError("PR_MERGE plan requires --pr, --head, and --target-issue")
         pr_number, pr_head, target_issue = args.pr, args.head, args.target_issue
-        details = (issue63_deferred_merge_details(github, pr_number=pr_number, pr_head_sha40=pr_head)
-                   if target_issue == 63 else {"target_issue_number": target_issue})
+        details = (
+            {"target_issue_number": target_issue} if target_issue == 57 else
+            issue63_deferred_merge_details(github, pr_number=pr_number, pr_head_sha40=pr_head)
+            if target_issue == 63 else
+            deferred_merge_details(github, issue_number=target_issue,
+                                   pr_number=pr_number, pr_head_sha40=pr_head)
+        )
         subject_value = {"repository": repository, "target_issue_number": target_issue,
                          "pr_number": pr_number, "pr_head_sha40": pr_head}
-        if target_issue == 63:
+        if target_issue != 57:
             subject_value["details"] = details
         subject_sha256 = hashlib.sha256(_canonical(subject_value)).hexdigest()
     elif operation == "EXECUTION_ADOPTION":
@@ -2466,13 +2788,17 @@ def _owner_authorization_plan_command(args: argparse.Namespace, repository: str,
         raise OwnerAuthorizationError("unsupported owner authorization operation")
     plan = create_authorization_plan(
         github, root, operation=operation, subject_sha256=subject_sha256,
-        issue_number=63, target_issue_number=target_issue,
+        issue_number=(plan_issue if operation == "USER_REVIEW" else
+                      target_adc_issue if operation == "ADC_SUPERSEDE" else
+                      target_issue if operation == "RULESET_PLAN_APPLY" else
+                      target_issue if operation == "PR_MERGE" and target_issue != 57 else 63),
+        target_issue_number=target_issue,
         pr_number=pr_number, pr_head_sha40=pr_head, details=details,
     )
     write_authorization_plan(args.output, plan)
     _json({"status": "PLANNED", "operation": operation, "output": str(args.output),
            "subject_sha256": subject_sha256, "plan_sha256": plan["plan_sha256"],
-           "repository": repository, "issue": 63, "target_issue": target_issue,
+           "repository": repository, "issue": plan["issue_number"], "target_issue": target_issue,
            "pr": pr_number, "head": pr_head, "chat_signature": False})
     return 0
 
@@ -2484,11 +2810,11 @@ def _validate_owner_authorization_source(args: argparse.Namespace, plan: dict[st
         if path is None or path.is_symlink() or not path.is_file():
             raise OwnerAuthorizationError("ADC_SUPERSEDE commit requires the same regular --subject-file")
         raw = path.read_bytes()
-        parsed = parse_adc(raw, repository, 63)
-        if parsed.issue_number != 63 or hashlib.sha256(raw).hexdigest() != plan["subject_sha256"]:
+        parsed = parse_adc(raw, repository, plan["issue_number"])
+        if parsed.issue_number != plan["issue_number"] or hashlib.sha256(raw).hexdigest() != plan["subject_sha256"]:
             raise OwnerAuthorizationError("ADC source bytes differ from the exact authorization plan")
         try:
-            predecessor = verify_adc(github, 63).pointer
+            predecessor = verify_adc(github, plan["issue_number"]).pointer
         except ADCError as exc:
             raise OwnerAuthorizationError("current approved ADC predecessor is unavailable") from exc
         expected_predecessor = plan["details"]
@@ -2499,7 +2825,7 @@ def _validate_owner_authorization_source(args: argparse.Namespace, plan: dict[st
             raise OwnerAuthorizationError("current approved ADC predecessor changed after plan creation")
         try:
             validate_approval_ready_adc(
-                raw, repository, 63, current_pointer=predecessor, check_current_pointer=True,
+                raw, repository, plan["issue_number"], current_pointer=predecessor, check_current_pointer=True,
             )
         except ADCError as exc:
             raise OwnerAuthorizationError(f"ADC_SUPERSEDE candidate is not approval-ready: {exc}") from exc
@@ -2513,18 +2839,28 @@ def _validate_owner_authorization_source(args: argparse.Namespace, plan: dict[st
             raise OwnerAuthorizationError("Ruleset plan changed or no longer requires an approved write")
     elif plan["operation"] == "PR_MERGE":
         target = plan["target_issue_number"]
-        details = (issue63_deferred_merge_details(
-            github, pr_number=plan["pr_number"], pr_head_sha40=plan["pr_head_sha40"],
-        ) if target == 63 else {"target_issue_number": target})
+        details = (
+            {"target_issue_number": target} if target == 57 else
+            issue63_deferred_merge_details(
+                github, pr_number=plan["pr_number"], pr_head_sha40=plan["pr_head_sha40"],
+            ) if target == 63 else
+            deferred_merge_details(
+                github, issue_number=target, pr_number=plan["pr_number"],
+                pr_head_sha40=plan["pr_head_sha40"],
+            )
+        )
         expected_value = {"repository": repository, "target_issue_number": target,
                           "pr_number": plan["pr_number"], "pr_head_sha40": plan["pr_head_sha40"]}
-        if target == 63:
+        if target != 57:
             expected_value["details"] = details
         expected = hashlib.sha256(_canonical(expected_value)).hexdigest()
         if expected != plan["subject_sha256"] or details != plan["details"]:
             raise OwnerAuthorizationError("PR merge subject digest differs from the exact target PR")
     elif plan["operation"] == "USER_REVIEW":
-        context = _user_review_owner_context(args, repository, github)
+        context = _user_review_owner_context(
+            args, repository, args.root or _runtime_root(args), github,
+            issue_number=plan["issue_number"],
+        )
         if (context["subject_sha256"] != plan["subject_sha256"]
                 or context["details"] != plan["details"]
                 or context["pr_number"] != plan["pr_number"]
@@ -2603,20 +2939,20 @@ def execute_current_chat_confirmed_adoption(
 
 def _publish_owner_approved_adc(args: argparse.Namespace, repository: str, github: GitHub,
                                 plan: dict[str, Any], decision: dict[str, Any]) -> dict[str, Any]:
-    """Dispatch exact local ADC approval through the existing ADC and phase writers."""
+    """Publish an exact owner-approved ADC without implicit Phase mutations."""
     if args.subject_file is None or args.subject_file.is_symlink() or not args.subject_file.is_file():
         raise OwnerAuthorizationError("ADC_SUPERSEDE commit requires the same regular --subject-file")
     if repository.casefold() != "puchinya/ai-agent-workflow":
-        raise OwnerAuthorizationError("ADC_SUPERSEDE dispatch is fixed to the approved Issue #63 repository")
+        raise OwnerAuthorizationError("ADC_SUPERSEDE dispatch requires the configured repository")
     data = args.subject_file.read_bytes()
-    contract = parse_adc(data, repository, 63)
+    contract = parse_adc(data, repository, plan["issue_number"])
     if contract.sha256 != plan["subject_sha256"]:
         raise OwnerAuthorizationError("successor ADC bytes changed after owner authorization")
     try:
         verified_decision = read_verified_owner_decision(
-            github, issue_number=63, owner_id=_ISSUE63_OWNER_ID,
+            github, issue_number=plan["issue_number"], owner_id=plan["owner_id"],
             operation="ADC_SUPERSEDE", subject_sha256=contract.sha256,
-            expected_plan_sha256=plan["plan_sha256"], repository_id=_ISSUE63_REPOSITORY_ID,
+            expected_plan_sha256=plan["plan_sha256"], repository_id=plan["repository_id"],
             expected_approval_scope_sha256=plan["approval_scope_sha256"],
             expected_schema="PASES_OWNER_DECISION_V3",
         )
@@ -2627,7 +2963,7 @@ def _publish_owner_approved_adc(args: argparse.Namespace, repository: str, githu
             or verified_decision.decision.evidence_channel != "chat_confirmed_gh_v1"):
         raise OwnerAuthorizationError("ADC publication requires this exact chat-confirmed V3 decision")
     try:
-        current = verify_adc(github, 63)
+        current = verify_adc(github, plan["issue_number"])
         if current.pointer.state != "approved":
             raise ADCError("ADC supersession requires the exact current approved predecessor")
         predecessor = plan["details"]
@@ -2637,33 +2973,23 @@ def _publish_owner_approved_adc(args: argparse.Namespace, repository: str, githu
                 or current.pointer.state != predecessor.get("predecessor_state")):
             raise ADCError("current approved predecessor differs from the scope approved in chat")
         validate_approval_ready_adc(
-            data, repository, 63, current_pointer=current.pointer, check_current_pointer=True,
+            data, repository, plan["issue_number"], current_pointer=current.pointer, check_current_pointer=True,
         )
         pointer = publish_adc(
-            github, 63, data, state="approved", explicitly_approved=True,
+            github, plan["issue_number"], data, state="approved", explicitly_approved=True,
             supersede=True, expected_current=current.pointer,
         )
-        published = verify_adc(github, 63)
+        published = verify_adc(github, plan["issue_number"])
         if (published.pointer != pointer or published.pointer.sha256 != contract.sha256
                 or published.pointer.state != "approved" or published.contract.content != data):
             raise ADCError("approved successor ADC did not pass exact pointer and byte readback")
     except ADCError as exc:
         raise OwnerAuthorizationError(f"approved successor ADC publication failed: {exc}") from exc
-    try:
-        phase_result = rebaseline_issue_phase(github, 63)
-    except PhaseRebaselineError as exc:
-        status = ("BLOCKED_PERMISSION" if str(exc).startswith("BLOCKED_PERMISSION:")
-                  else "ADC_PUBLISHED_PHASE_BLOCKED")
-        return {"status": status, "operation": "ADC_SUPERSEDE",
-                "owner_decision_comment_id": verified_decision.comment_id,
-                "adc_comment_id": published.pointer.comment_id,
-                "adc_sha256": published.pointer.sha256,
-                "reasons": [str(exc)]}
     return {"status": "PUBLISHED", "operation": "ADC_SUPERSEDE",
             "owner_decision_comment_id": verified_decision.comment_id,
             "adc_comment_id": published.pointer.comment_id,
             "adc_sha256": published.pointer.sha256,
-            "state": published.pointer.state, "phase_rebaseline": phase_result}
+            "state": published.pointer.state}
 
 
 def _merge_attempt_path(root: Path, plan_sha256: str) -> Path:
@@ -2713,28 +3039,32 @@ def _merge_readback(github: GitHub, plan: dict[str, Any]) -> dict[str, Any]:
     if (pr.get("number") != plan["pr_number"] or pr.get("merged") is not True
             or pr.get("state") != "closed" or not isinstance(head, dict)
             or head.get("sha") != plan["pr_head_sha40"]
-            or not isinstance(head_repo, dict) or head_repo.get("full_name") != "puchinya/ai-agent-workflow"
-            or not isinstance(base_repo, dict) or base_repo.get("full_name") != "puchinya/ai-agent-workflow"
+            or not isinstance(head_repo, dict) or str(head_repo.get("full_name", "")).casefold() != plan["repository"].casefold()
+            or not isinstance(base_repo, dict) or str(base_repo.get("full_name", "")).casefold() != plan["repository"].casefold()
             or not isinstance(pr.get("merge_commit_sha"), str)
             or not re.fullmatch(r"[0-9a-f]{40}", pr["merge_commit_sha"])
-            or not isinstance(merger, dict) or merger.get("id") != _ISSUE63_OWNER_ID
+            or not isinstance(merger, dict) or merger.get("id") != plan["owner_id"]
             or merger.get("type") != "User"):
         raise OwnerAuthorizationError("PR merge readback does not prove the exact owner-merged HEAD")
     body = pr.get("body")
-    if plan["target_issue_number"] == 63:
-        try:
-            details = issue63_deferred_merge_details(
+    if plan["target_issue_number"] != 57:
+        details = (
+            issue63_deferred_merge_details(
                 github, pr_number=plan["pr_number"], pr_head_sha40=plan["pr_head_sha40"],
                 allow_merged=True,
+            ) if plan["target_issue_number"] == 63 else
+            deferred_merge_details(
+                github, issue_number=plan["target_issue_number"],
+                pr_number=plan["pr_number"], pr_head_sha40=plan["pr_head_sha40"],
+                allow_merged=True,
             )
-        except OwnerAuthorizationError:
-            raise
+        )
         if details != plan["details"]:
             raise OwnerAuthorizationError("merged implementation PR association or merge plan differs from approval")
-        issue = github.issue(63)
-        if (issue.get("number") != 63 or issue.get("state") != "open"
-                or issue.get("repository_url") != "https://api.github.com/repos/puchinya/ai-agent-workflow"):
-            raise OwnerAuthorizationError("Issue #63 did not remain open after deferred-close PR merge")
+        issue = github.issue(plan["target_issue_number"])
+        if (issue.get("number") != plan["target_issue_number"] or issue.get("state") != "open"
+                or issue.get("repository_url") != f"https://api.github.com/repos/{plan['repository']}"):
+            raise OwnerAuthorizationError("deferred-close Issue did not remain open after PR merge")
         merge_commit = github.commit_details(pr["merge_commit_sha"])
         merge_message = merge_commit.get("message")
         if not isinstance(merge_message, str) or closing_issue_references(merge_message):
@@ -2749,27 +3079,30 @@ def _merge_readback(github: GitHub, plan: dict[str, Any]) -> dict[str, Any]:
             raise OwnerAuthorizationError("merged Activation Setup PR does not bind Issue #57")
     return {"pr_number": plan["pr_number"], "head_sha40": plan["pr_head_sha40"],
             "merge_commit_sha40": pr["merge_commit_sha"], "merged_by_id": merger["id"],
-            "issue_state": "open" if plan["target_issue_number"] == 63 else None}
+            "issue_state": "open" if plan["target_issue_number"] != 57 else None}
 
 
 def _owner_merge_gate(args: argparse.Namespace, root: Path, github: GitHub,
-                      plan: dict[str, Any]) -> dict[str, Any]:
+                      plan: dict[str, Any], *,
+                      policy_github: GitHub | None = None) -> dict[str, Any]:
     if plan["target_issue_number"] == 57:
-        return verify_setup_pr_ready_to_merge(github, plan["pr_number"])
+        return verify_setup_pr_ready_to_merge(
+            github, plan["pr_number"], policy_github=policy_github,
+        )
     required = ("readiness", "delivery_plan", "verification", "acceptance", "self_audit",
                 "independent_review", "user_review_record")
     missing = [f"--{name.replace('_', '-')}" for name in required if getattr(args, name, None) is None]
     if missing:
-        raise OwnerAuthorizationError("PR #64 merge requires fresh Final Delivery evidence: " + ", ".join(missing))
+        raise OwnerAuthorizationError("deferred-close PR merge requires fresh Final Delivery evidence: " + ", ".join(missing))
     final_args = argparse.Namespace(
-        issue=63, pr=plan["pr_number"], head=plan["pr_head_sha40"],
+        issue=plan["target_issue_number"], pr=plan["pr_number"], head=plan["pr_head_sha40"],
         plan=args.delivery_plan, readiness=args.readiness, verification=args.verification,
         acceptance=args.acceptance, self_audit=args.self_audit,
         independent_review=args.independent_review, user_review_record=args.user_review_record,
     )
     output = io.StringIO()
     with contextlib.redirect_stdout(output):
-        exit_code = _delivery_final(final_args, "puchinya/ai-agent-workflow", root, github)
+        exit_code = _delivery_final(final_args, plan["repository"], root, github)
     try:
         final = json.loads(output.getvalue())
     except json.JSONDecodeError as exc:
@@ -2800,12 +3133,12 @@ def _owner_merge_gate(args: argparse.Namespace, root: Path, github: GitHub,
             or final.get("merge_authorized") is not False
             or not final_policy_shape_ok
             or not isinstance(final.get("subject"), dict)
-            or final["subject"].get("repository") != "puchinya/ai-agent-workflow"
-            or final["subject"].get("issue_number") != 63
+            or final["subject"].get("repository") != plan["repository"]
+            or final["subject"].get("issue_number") != plan["target_issue_number"]
             or final["subject"].get("pr_number") != plan["pr_number"]
             or final["subject"].get("pr_head_sha40") != plan["pr_head_sha40"]
             or final.get("blockers")):
-        raise OwnerAuthorizationError("PR #64 Final Delivery gates are not PASS for this exact merge plan")
+        raise OwnerAuthorizationError("deferred-close Final Delivery gates are not PASS for this exact merge plan")
     return {"status": final["status"], "final_delivery_sha256": final.get("final_delivery_sha256"),
             "final_delivery_schema": final_schema,
             "subject": final["subject"]}
@@ -2846,13 +3179,30 @@ def _perform_authorized_merge(args: argparse.Namespace, root: Path, github: GitH
                                          if plan["target_issue_number"] == 63 else "MERGED_READBACK"), **merged,
                 "merge_request_repeated": False, "recovered_from_intent": True}
 
-    gates = _owner_merge_gate(args, root, github, plan)
-    if plan["target_issue_number"] == 63:
-        live_details = issue63_deferred_merge_details(
-            github, pr_number=plan["pr_number"], pr_head_sha40=plan["pr_head_sha40"],
+    if plan["target_issue_number"] == 57:
+        try:
+            with temporary_admin_client(github.repo) as policy_github:
+                gates = _owner_merge_gate(
+                    args, root, github, plan, policy_github=policy_github,
+                )
+        except AdminAuthError as exc:
+            raise OwnerAuthorizationError(
+                f"Setup PR merge requires isolated device Admin policy read: {exc}"
+            ) from exc
+    else:
+        gates = _owner_merge_gate(args, root, github, plan)
+    if plan["target_issue_number"] != 57:
+        live_details = (
+            issue63_deferred_merge_details(
+                github, pr_number=plan["pr_number"], pr_head_sha40=plan["pr_head_sha40"],
+            ) if plan["target_issue_number"] == 63 else
+            deferred_merge_details(
+                github, issue_number=plan["target_issue_number"],
+                pr_number=plan["pr_number"], pr_head_sha40=plan["pr_head_sha40"],
+            )
         )
         if live_details != plan["details"]:
-            raise OwnerAuthorizationError("Issue #63 close association, commits, or planned message changed before merge")
+            raise OwnerAuthorizationError("deferred-close Issue association, commits or planned message changed before merge")
     current = github.pull_request(plan["pr_number"])
     head = current.get("head") if isinstance(current, dict) else None
     if (current.get("state") != "open" or current.get("merged") is True
@@ -2868,7 +3218,7 @@ def _perform_authorized_merge(args: argparse.Namespace, root: Path, github: GitH
     _create_merge_attempt(path, intent, root=root)
     response_error: GitHubError | None = None
     try:
-        if plan["target_issue_number"] == 63:
+        if plan["target_issue_number"] != 57:
             github.merge_pull_request(
                 plan["pr_number"], plan["pr_head_sha40"],
                 commit_title=plan["details"]["merge_commit_title"],
@@ -2936,16 +3286,24 @@ def _owner_authorization_resume_command(args: argparse.Namespace, repository: st
             or session.subject.readiness_sha256 != details["readiness_sha256"]
             or readiness.status != "PASS" or readiness.sha256 != details["readiness_sha256"]
             or verification_subject.repository != repository
-            or verification_subject.issue_number != 63
+            or verification_subject.issue_number != plan["issue_number"]
             or verification_subject.pr_number != plan["pr_number"]
             or verification_subject.pr_head_sha40 != details["pr_head_sha40"]
             or verification_subject.adc_sha256 != details["adc_sha256"]):
         raise OwnerAuthorizationError("User Review recovery session or Readiness differs from the plan")
+    read_github = _read_only_github(github)
     owner_id, pr_author_id, verifier_id = _solo_owner_identity(
-        github, repository, 63, plan["pr_number"], details["pr_head_sha40"],
+        read_github, repository, plan["issue_number"], plan["pr_number"],
+        details["pr_head_sha40"], root=root,
     )
+    if ("project_profile_sha256" in details and (
+            details["project_profile_sha256"] != canonical_project_profile_sha256(
+                (root / ".agent" / "project.json").read_bytes()
+            )
+            or details.get("verifier_user_id") != verifier_id)):
+        raise OwnerAuthorizationError("User Review profile or independent verifier differs from the exact plan")
     approval = _read_user_review_relay_approval(
-        github, session=session, readiness=readiness, owner_id=owner_id, verifier_id=verifier_id,
+        read_github, session=session, readiness=readiness, owner_id=owner_id, verifier_id=verifier_id,
         feedback_sha256=details["feedback_sha256"], plan_sha256=plan["plan_sha256"],
         approval_scope_sha256=plan["approval_scope_sha256"],
     )
@@ -2961,7 +3319,7 @@ def _owner_authorization_resume_command(args: argparse.Namespace, repository: st
                "reasons": ["exact chat-confirmed User Review scope is missing or stale"]})
         return 2
     observed_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-    fresh = _review_payload_from_github(github, session.subject, observed_at=observed_at)
+    fresh = _review_payload_from_github(read_github, session.subject, observed_at=observed_at)
     prior_events = [event for event in fresh.events
                     if not (event.channel == "issue-comment" and event.event_id == str(approval.comment_id))]
     if (fresh.unresolved_thread_ids
@@ -3024,38 +3382,83 @@ def _verify_ruleset_noop(github: GitHub, plan: dict[str, Any]) -> dict[str, Any]
 
 
 def _solo_owner_identity(github: ReadOnlyGitHub, repository: str, issue_number: int,
-                         pr_number: int, expected_head_sha40: str) -> tuple[int, int, int]:
-    """Read configured owner, fresh PR author and independent read-only principal."""
+                         pr_number: int, expected_head_sha40: str, *,
+                         root: Path | None = None) -> tuple[int, int, int]:
+    """Read current solo-owner identity from a generic Issue/PR subject."""
     if type(github) is not ReadOnlyGitHub:
         raise CLIError("User Review verifier must use the dedicated read-only GitHub client")
     try:
         github.verify_read_only_scope()
     except GitHubError as exc:
         raise CLIError("User Review read-only verifier route is not positively verified") from exc
-    if repository.casefold() != "puchinya/ai-agent-workflow" or issue_number != 63:
-        raise CLIError("solo_owner identity is only configured for puchinya/ai-agent-workflow Issue #63")
+    if (type(issue_number) is not int or issue_number < 1
+            or type(pr_number) is not int or pr_number < 1
+            or not isinstance(expected_head_sha40, str)
+            or re.fullmatch(r"[0-9a-f]{40}", expected_head_sha40) is None):
+        raise CLIError("solo_owner Issue, PR or HEAD identity is malformed")
     metadata = github.repository_metadata()
     owner = metadata.get("owner") if isinstance(metadata, dict) else None
-    full_name = metadata.get("full_name") if isinstance(metadata, dict) else None
-    owner_login = owner.get("login") if isinstance(owner, dict) else None
-    if (not isinstance(metadata, dict) or metadata.get("id") != _ISSUE63_REPOSITORY_ID
-            or not isinstance(full_name, str) or full_name.casefold() != repository.casefold()
+    name = metadata.get("full_name") if isinstance(metadata, dict) else None
+    owner_id = owner.get("id") if isinstance(owner, dict) else None
+    if (not isinstance(name, str) or name.casefold() != repository.casefold()
             or not isinstance(owner, dict) or owner.get("type") != "User"
-            or owner.get("id") != _ISSUE63_OWNER_ID or not isinstance(owner_login, str)
-            or owner_login.casefold() != "puchinya"):
-        raise CLIError("fresh repository metadata differs from the configured Issue #63 owner identity")
+            or type(owner_id) is not int or owner_id < 1):
+        raise CLIError("solo_owner requires verified user-owned repository metadata")
     pr = github.pull_request(pr_number)
     head = pr.get("head") if isinstance(pr, dict) else None
     author = pr.get("user") if isinstance(pr, dict) else None
     if (not isinstance(head, dict) or head.get("sha") != expected_head_sha40
             or not isinstance(author, dict) or author.get("type") != "User"
-            or author.get("id") != _ISSUE63_OWNER_ID):
-        raise CLIError("fresh PR author or HEAD differs from the configured solo_owner identity")
+            or author.get("id") != owner_id):
+        raise CLIError("solo_owner requires a current PR HEAD authored by its repository owner")
+    if root is not None:
+        root = Path(root)
+        profile_path = root / ".agent" / "project.json"
+        if (root.is_symlink() or not root.is_dir() or path_has_symlink(profile_path, root=root)
+                or not profile_path.is_file()):
+            raise CLIError("solo_owner project profile must be a regular file in the repository root")
+        try:
+            canonical_project_profile_sha256(profile_path.read_bytes())
+            profile = load_profile(root)
+        except (OSError, ProfileError) as exc:
+            raise CLIError(f"solo_owner project profile is invalid: {exc}") from exc
+        if profile.final_delivery_review_mode != "solo_owner":
+            raise CLIError("solo_owner project profile does not enable solo_owner")
+        try:
+            current_adc = verify_adc(github, issue_number)
+        except (ADCError, GitHubError) as exc:
+            raise CLIError(f"solo_owner current ADC readback failed: {exc}") from exc
+        if current_adc.pointer.state != "approved":
+            raise CLIError("solo_owner requires the current approved ADC")
+        issue = github.issue(issue_number)
+        labels = issue.get("labels") if isinstance(issue, dict) else None
+        names = [row.get("name") for row in labels] if isinstance(labels, list) else []
+        if (not isinstance(issue, dict) or issue.get("number") != issue_number
+                or issue.get("state") != "open" or issue.get("pull_request") is not None
+                or issue.get("repository_url") != f"https://api.github.com/repos/{repository}"
+                or not isinstance(labels, list) or not names
+                or any(not isinstance(item, str) for item in names)
+                or len(names) != len(set(names))
+                or len([item for item in names if item.startswith("kind:")]) != 1
+                or len([item for item in names if item.startswith("phase:")]) != 1
+                or not any(item in {"phase:verification", "phase:user-review"} for item in names)):
+            raise CLIError("solo_owner Issue identity or review phase is invalid")
+        base = pr.get("base") if isinstance(pr, dict) else None
+        head_repo = head.get("repo")
+        base_repo = base.get("repo") if isinstance(base, dict) else None
+        if (pr.get("number") != pr_number or pr.get("state") != "open"
+                or pr.get("draft") is not False or pr.get("merged_at") is not None
+                or pr.get("merged") is True or not isinstance(base, dict)
+                or not isinstance(head_repo, dict) or head_repo.get("id") != metadata.get("id")
+                or not isinstance(base_repo, dict) or base_repo.get("id") != metadata.get("id")):
+            raise CLIError("solo_owner requires the exact current open same-repository PR")
+        if parse_issue_association(pr.get("body"), issue_number) not in {"auto_close", "deferred_close"}:
+            raise CLIError("solo_owner PR does not explicitly associate its Issue")
     verifier = github.authenticated_user()
-    verifier_id = verifier.get("id")
+    verifier_id = verifier.get("id") if isinstance(verifier, dict) else None
     if type(verifier_id) is not int or verifier_id < 1:
         raise CLIError("read-only GitHub verifier principal is unavailable")
-    return _ISSUE63_OWNER_ID, author["id"], verifier_id
+    return owner_id, author["id"], verifier_id
 
 
 def _read_user_review_relay_approval(
@@ -3229,7 +3632,7 @@ def _user_review_run(args: argparse.Namespace, repository: str, root: Path, gith
         review_mode = profile.final_delivery_review_mode
         if review_mode == "solo_owner":
             owner_id, pr_author_id, verifier_id = _solo_owner_identity(
-                github, repository, args.issue, args.pr, args.head,
+                github, repository, args.issue, args.pr, args.head, root=root,
             )
             allowed_user_ids = (owner_id,)
         else:
@@ -3307,7 +3710,7 @@ def _user_review_run(args: argparse.Namespace, repository: str, root: Path, gith
         current_readiness = read_readiness(args.readiness)
         if review_mode == "solo_owner":
             current_owner_id, current_author_id, current_verifier_id = _solo_owner_identity(
-                github, repository, args.issue, args.pr, args.head,
+                github, repository, args.issue, args.pr, args.head, root=root,
             )
             second_relay_approval = _read_user_review_relay_approval(
                 github, session=session, readiness=current_readiness,
@@ -3403,7 +3806,9 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
         )
         review_mode = profile.final_delivery_review_mode
         if review_mode == "solo_owner":
-            identity = _solo_owner_identity(github, repository, args.issue, args.pr, args.head)
+            identity = _solo_owner_identity(
+                github, repository, args.issue, args.pr, args.head, root=root,
+            )
             owner_id, pr_author_id, verifier_id = identity
             allowed_user_ids = (owner_id,)
         else:
@@ -3522,7 +3927,9 @@ def _delivery_final(args: argparse.Namespace, repository: str, root: Path, githu
         final_feedback = _review_payload_from_github(github, fresh_subject, observed_at=final_observed)
         final_feedback = merge_feedback_history(previous, final_feedback)
         if review_mode == "solo_owner":
-            final_identity = _solo_owner_identity(github, repository, args.issue, args.pr, args.head)
+            final_identity = _solo_owner_identity(
+                github, repository, args.issue, args.pr, args.head, root=root,
+            )
             final_relay_approval = _read_user_review_relay_approval(
                 github, session=final_session, readiness=final_readiness,
                 owner_id=final_identity[0], verifier_id=final_identity[2],
@@ -3637,16 +4044,29 @@ def _create_issue_close_intent(path: Path, payload: dict[str, Any], *, root: Pat
         raise CLIError("Issue close intent failed exact readback; no close retry is permitted")
 
 
-def _activation_v2_issue63_proof(root: Path, github: GitHub, repository: str) -> dict[str, Any] | None:
+def _activation_v2_proof(root: Path, github: GitHub, repository: str, *,
+                                 policy_github: GitHub | None = None) -> dict[str, Any] | None:
     """Return fresh ACTIVE V2 and policy proof, or None while Activation is not active."""
-    history = read_consumer_activation_history(github, repository, 57)
+    profile = load_profile(root)
+    activation_issue = profile.activation_issue_number
+    if type(activation_issue) is not int or activation_issue < 1:
+        raise CLIError("Activation V2 requires a configured positive Activation Issue")
+    history = read_consumer_activation_history(github, repository, activation_issue)
     if not history or history[-1][0].schema_version != 2:
         return None
+    try:
+        require_local_activation_execution()
+        if policy_github is None:
+            raise LocalExecutionError("ADMIN_DEVICE_AUTH_REQUIRED: Activation V2 needs isolated-gh-device")
+        require_isolated_device_admin_client(policy_github)
+    except LocalExecutionError as exc:
+        raise CLIError(str(exc)) from exc
+    if policy_github.repo.casefold() != github.repo.casefold():
+        raise CLIError("Activation policy reader targets a different repository")
     record, record_id = history[-1]
-    profile = load_profile(root)
-    if (repository.casefold() != "puchinya/ai-agent-workflow" or profile.activation_issue_number != 57
+    if (repository.casefold() != github.repo.casefold()
             or profile.final_delivery_review_mode != "solo_owner"
-            or record.activation_issue_number != 57 or record.repository.casefold() != repository.casefold()
+            or record.activation_issue_number != activation_issue or record.repository.casefold() != repository.casefold()
             or record.review_mode != "solo_owner" or record.ruleset_id is None
             or record.branch_policy_sha256 is None or record.ruleset_applied_record_id is None):
         raise CLIError("latest Activation record is not the configured Consumer Activation V2")
@@ -3667,12 +4087,12 @@ def _activation_v2_issue63_proof(root: Path, github: GitHub, repository: str) ->
     profile_bytes = github.regular_content_at_ref(".agent/project.json", main_sha)
     if hashlib.sha256(profile_bytes).hexdigest() != record.activation_profile_sha256:
         raise CLIError("current main profile differs from the ACTIVE V2 Activation record")
-    current_adc = verify_adc(github, 57)
+    current_adc = verify_adc(github, activation_issue)
     if (current_adc.pointer.state != "approved" or current_adc.pointer.sha256 != record.adc_sha256
             or current_adc.pointer.comment_id != record.adc_comment_id):
         raise CLIError("current approved Activation ADC differs from the ACTIVE V2 record")
-    first = read_verified_managed_policy(github, default_branch, checks, "solo_owner", 57)
-    second = read_verified_managed_policy(github, default_branch, checks, "solo_owner", 57)
+    first = read_verified_managed_policy(policy_github, default_branch, checks, "solo_owner", activation_issue)
+    second = read_verified_managed_policy(policy_github, default_branch, checks, "solo_owner", activation_issue)
     if (first != second or first.get("ruleset_id") != record.ruleset_id
             or first.get("effective_policy_sha256") != record.branch_policy_sha256
             or first.get("applied_record_id") != record.ruleset_applied_record_id):
@@ -3689,7 +4109,8 @@ def _activation_v2_issue63_proof(root: Path, github: GitHub, repository: str) ->
     }
 
 
-def _delivery_finalize(args: argparse.Namespace, repository: str, root: Path, github: GitHub) -> int:
+def _delivery_finalize(args: argparse.Namespace, repository: str, root: Path, github: GitHub, *,
+                       policy_github: GitHub | None = None) -> int:
     try:
         pr = github.pull_request(args.pr)
         issue = github.issue(args.issue)
@@ -3705,15 +4126,14 @@ def _delivery_finalize(args: argparse.Namespace, repository: str, root: Path, gi
         except WorkError as exc:
             association_mode = None
             reasons.append(f"PR Issue association is invalid: {exc}")
-        if args.issue == 63 and (args.pr != 64 or association_mode != "deferred_close"):
-            reasons.append("Issue #63 requires PR #64 with one standalone Refs #63 association")
-        if association_mode == "deferred_close" and args.issue == 63 and pr.get("merged") is True:
+        if association_mode == "deferred_close" and pr.get("merged") is True:
             raw_head = pr.get("head")
             current_pr_head = raw_head.get("sha") if isinstance(raw_head, dict) else None
             if not isinstance(current_pr_head, str):
                 raise CLIError("merged deferred-close PR HEAD is unavailable")
-            planned = issue63_deferred_merge_details(
-                github, pr_number=args.pr, pr_head_sha40=current_pr_head,
+            planned = deferred_merge_details(
+                github, issue_number=args.issue,
+                pr_number=args.pr, pr_head_sha40=current_pr_head,
                 allow_merged=True,
             )
             if planned.get("association_mode") != "deferred_close":
@@ -3735,19 +4155,23 @@ def _delivery_finalize(args: argparse.Namespace, repository: str, root: Path, gi
                 reasons.append("GitHub has not auto-closed the Issue after merge")
             close_status = "FINALIZED" if not reasons else "BLOCKED"
         elif association_mode == "deferred_close":
-            if args.issue != 63 or args.pr != 64:
-                reasons.append("deferred-close finalization is configured only for Issue #63 and PR #64")
             if not reasons:
-                history = read_consumer_activation_history(github, repository, 57)
+                profile = load_profile(root)
+                activation_issue = profile.activation_issue_number
+                if type(activation_issue) is not int or activation_issue < 1:
+                    raise CLIError("deferred-close requires a configured positive Activation Issue")
+                history = read_consumer_activation_history(github, repository, activation_issue)
                 if not history or history[-1][0].schema_version != 2:
-                    close_intent_path = _issue_close_intent_path(root, 63, merge_sha)
+                    close_intent_path = _issue_close_intent_path(root, args.issue, merge_sha)
                     if issue.get("state") == "closed" or close_intent_path.exists() or close_intent_path.is_symlink():
                         close_status = "BLOCKED"
-                        reasons.append("Issue #63 closure exists without a current verified Activation V2 proof")
+                        reasons.append("Issue closure exists without a current verified Activation V2 proof")
                     else:
                         close_status = "MERGED_AWAITING_ISSUE_COMPLETION"
                 else:
-                    activation_proof = _activation_v2_issue63_proof(root, github, repository)
+                    activation_proof = _activation_v2_proof(
+                        root, github, repository, policy_github=policy_github,
+                    )
                     if activation_proof is None:
                         close_status = "MERGED_AWAITING_ISSUE_COMPLETION"
                     else:
@@ -3757,12 +4181,12 @@ def _delivery_finalize(args: argparse.Namespace, repository: str, root: Path, gi
                         except (KeyError, TypeError, ValueError) as exc:
                             raise CLIError("PR merge or Activation V2 effective timestamp is invalid") from exc
                         if merged_at.tzinfo is None or activated_at.tzinfo is None or activated_at <= merged_at:
-                            reasons.append("Activation V2 must become ACTIVE after PR #64 merge")
+                            reasons.append("Activation V2 must become ACTIVE after the deferred-close PR merge")
                             close_status = "BLOCKED"
                         else:
                             intent = {
                                 "schema": "PASES_DEFERRED_ISSUE_CLOSE_INTENT_V1",
-                                "repository": repository, "issue_number": 63, "pr_number": 64,
+                                "repository": repository, "issue_number": args.issue, "pr_number": args.pr,
                                 "pr_merge_sha40": merge_sha,
                                 "activation_record_id": activation_proof["activation_record_id"],
                                 "activation_record_sha256": activation_proof["activation_record_sha256"],
@@ -3772,8 +4196,8 @@ def _delivery_finalize(args: argparse.Namespace, repository: str, root: Path, gi
                                 "default_branch": activation_proof["default_branch"],
                                 "default_branch_sha40": activation_proof["default_branch_sha40"],
                             }
-                            intent_path = _issue_close_intent_path(root, 63, merge_sha)
-                            issue_before = _issue_state_triplet(github, 63, repository)[0]
+                            intent_path = _issue_close_intent_path(root, args.issue, merge_sha)
+                            issue_before = _issue_state_triplet(github, args.issue, repository)[0]
                             if intent_path.exists() or intent_path.is_symlink():
                                 existing = _read_json(intent_path, "Issue close intent", root=root)
                                 if existing != intent:
@@ -3785,16 +4209,16 @@ def _delivery_finalize(args: argparse.Namespace, repository: str, root: Path, gi
                                     reasons.append("Issue close intent exists but Issue remains open; recovery is read-only and no retry is permitted")
                             else:
                                 if issue_before.get("state") == "closed":
-                                    raise CLIError("Issue #63 closed before this verified P-ASES completion path")
+                                    raise CLIError("deferred-close Issue closed before this verified completion path")
                                 if issue_before.get("state") != "open":
-                                    raise CLIError("Issue #63 was not open immediately before deferred close")
+                                    raise CLIError("deferred-close Issue was not open immediately before the close attempt")
                                 _create_issue_close_intent(intent_path, intent, root=root)
                                 close_error: GitHubError | None = None
                                 try:
-                                    github.close_issue(63)
+                                    github.close_issue(args.issue)
                                 except GitHubError as exc:
                                     close_error = exc
-                                issue_after = _issue_state_triplet(github, 63, repository)[0]
+                                issue_after = _issue_state_triplet(github, args.issue, repository)[0]
                                 if issue_after.get("state") == "closed" and isinstance(issue_after.get("closed_at"), str):
                                     close_status = "FINALIZED"
                                 else:
@@ -3811,7 +4235,7 @@ def _delivery_finalize(args: argparse.Namespace, repository: str, root: Path, gi
                  "reasons": reasons, "issue_state": github.issue(args.issue).get("state"),
                  "association_mode": association_mode,
                  "activation_v2": activation_proof,
-                 "note": ("Issue #63 remains open until post-merge Activation V2 and effective policy verify"
+                 "note": ("deferred-close Issue remains open until post-merge Activation V2 and effective policy verify"
                           if status == "MERGED_AWAITING_ISSUE_COMPLETION" else
                           "deferred Issue closure uses one durable close intent and read-only recovery")}
         _json(value)
@@ -4377,7 +4801,7 @@ def _parser() -> argparse.ArgumentParser:
     publish.add_argument("--state", choices=("draft", "approved"), default="draft")
     publish.add_argument("--supersede", action="store_true")
     publish.add_argument("--approval-comment-id", type=_positive_number,
-                         help="exact PASES_OWNER_DECISION_V1 ADC_SUPERSEDE comment ID for Issue #63")
+                         help="exact owner ADC_SUPERSEDE decision comment ID for the target Issue")
     verify = adc_commands.add_parser("verify")
     verify.add_argument("issue", type=_positive_number)
     verify.add_argument("--repo", help="repository owner/name; defaults to origin")
@@ -4391,7 +4815,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     issue_commands = issue.add_subparsers(dest="verb", required=True)
     phase_rebaseline = issue_commands.add_parser(
-        "phase-rebaseline", help="apply/recover the approved-ADC-backed Issue #63 phase bootstrap"
+        "phase-rebaseline", help="compatibility alias for generic current-ADC phase restart"
     )
     phase_rebaseline.add_argument("issue", type=_positive_number)
     phase_rebaseline.add_argument("--repo", help="repository owner/name; defaults to origin")
@@ -4402,6 +4826,31 @@ def _parser() -> argparse.ArgumentParser:
     phase_restart.add_argument("--repo", help="repository owner/name; defaults to origin")
     phase_restart.add_argument("--root", type=Path, required=True,
                                 help="bound Issue worktree containing its current ExecutionBinding history")
+    phase_epoch_rebaseline = issue_commands.add_parser(
+        "phase-epoch-rebaseline", aliases=["epoch-reset"],
+        help="apply/recover a current-ADC-authorized execution epoch reset"
+    )
+    phase_epoch_rebaseline.add_argument("issue", type=_positive_number)
+    phase_epoch_rebaseline.add_argument("--repo", help="repository owner/name; defaults to origin")
+    phase_epoch_rebaseline.add_argument("--root", type=Path, required=True,
+                                        help="the exact authorized Issue worktree")
+    phase_rework = issue_commands.add_parser(
+        "phase-rework", help="apply/recover a current-ADC-authorized verification rework"
+    )
+    phase_rework.add_argument("issue", type=_positive_number)
+    phase_rework.add_argument("--repo", help="repository owner/name; defaults to origin")
+    phase_rework.add_argument("--root", type=Path, required=True,
+                              help="the exact authorized Issue worktree")
+    phase_rework.add_argument("--plan", type=Path,
+                              help="fresh current-subject Verification Plan input")
+    phase_rework.add_argument("--verification", type=Path,
+                              help="fresh current-subject Verification result")
+    phase_rework.add_argument("--acceptance", type=Path,
+                              help="fresh current-subject Acceptance result")
+    phase_rework.add_argument("--self-audit", dest="self_audit", type=Path,
+                              help="fresh current-subject Self-Audit")
+    phase_rework.add_argument("--independent-review", dest="independent_review", type=Path,
+                              help="fresh current-subject Independent Review")
     validate_plan = issue_commands.add_parser("validate-split")
     validate_plan.add_argument("plan", type=Path)
     validate_plan.add_argument("--repo", help="repository owner/name; defaults to origin")
@@ -4661,18 +5110,18 @@ def _parser() -> argparse.ArgumentParser:
     owner_resume.add_argument("--repo", help="repository owner/name; defaults to origin")
     owner_resume.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
     admin_plan = delivery_commands.add_parser(
-        "consumer-activation-admin-plan", help="create a Ruleset plan with isolated browser device auth")
+        "consumer-activation-admin-plan", help="create a Ruleset plan with local isolated device auth")
     admin_plan.add_argument("--output", required=True, type=Path)
-    admin_plan.add_argument("--auth-mode", choices=("pat", "isolated-gh-device"), default="isolated-gh-device",
-                             help="isolated browser device auth; pat is a nonstandard owner-local fallback")
+    admin_plan.add_argument("--auth-mode", choices=("isolated-gh-device",), default="isolated-gh-device",
+                             help="the only supported mode is isolated browser device authentication")
     admin_plan.add_argument("--repo", help="repository owner/name; defaults to origin")
     admin_plan.add_argument("--root", type=Path, help="repository root; defaults to current checkout")
     admin_apply = delivery_commands.add_parser(
-        "consumer-activation-admin-apply", help="apply an exact-approved Ruleset plan with isolated browser device auth")
+        "consumer-activation-admin-apply", help="apply an exact-approved Ruleset plan with local isolated device auth")
     admin_apply.add_argument("--plan", required=True, type=Path)
     admin_apply.add_argument("--approval-comment-id", type=_positive_number)
-    admin_apply.add_argument("--auth-mode", choices=("pat", "isolated-gh-device"), default="isolated-gh-device",
-                             help="isolated browser device auth; pat is a nonstandard owner-local fallback")
+    admin_apply.add_argument("--auth-mode", choices=("isolated-gh-device",), default="isolated-gh-device",
+                             help="the only supported mode is isolated browser device authentication")
     admin_apply.add_argument("--repo", help="repository owner/name; defaults to origin")
     admin_apply.add_argument("--root", type=Path, help="repository root; defaults to current checkout")
     bootstrap = delivery_commands.add_parser("bootstrap-check", help="evaluate the separate migration Bootstrap gate")
@@ -4804,7 +5253,11 @@ def main(argv: list[str] | None = None) -> int:
                 return _delivery_gate_policy(args, repository, root, github)
             if args.verb == "consumer-activation-setup":
                 try:
-                    result = setup_consumer_activation(root, github)
+                    if activation_setup_requires_admin(root):
+                        with temporary_admin_client(repository) as admin:
+                            result = setup_consumer_activation(root, github, policy_github=admin)
+                    else:
+                        result = setup_consumer_activation(root, github)
                     _json(result)
                     return 0 if result.get("status") == "ACTIVE" else 2
                 except ConsumerActivationError as exc:
@@ -4827,7 +5280,13 @@ def main(argv: list[str] | None = None) -> int:
                 try:
                     if discover_repository(root).casefold() != repository.casefold():
                         raise ConsumerActivationError("GitHub repository does not match the active workspace origin")
-                    record, comment_id = verify_and_record_activation(github, args.pr, root=root)
+                    if activation_pr_requires_admin(github, args.pr):
+                        with temporary_admin_client(repository) as admin:
+                            record, comment_id = verify_and_record_activation(
+                                github, args.pr, root=root, policy_github=admin,
+                            )
+                    else:
+                        record, comment_id = verify_and_record_activation(github, args.pr, root=root)
                     _json({"status": "ACTIVATED", "repository": repository,
                            "issue": record.activation_issue_number, "pr": args.pr,
                            "activation_comment_id": comment_id, "activated_at": record.activated_at,
@@ -4844,7 +5303,7 @@ def main(argv: list[str] | None = None) -> int:
                     authorized_plan_sha: str | None = None
                     if args.verb == "consumer-activation-admin-apply":
                         try:
-                            plan, _decision_id = _ruleset_operation_plan(github, args.plan)
+                            plan, _decision_id = _ruleset_operation_plan(github, args.plan, args.approval_comment_id)
                         except OwnerDecisionError as exc:
                             if "missing exact owner operation/subject" in str(exc):
                                 _json({"status": "PENDING_APPROVAL", "stage": "AWAIT_OWNER_POLICY_DECISION",
@@ -4971,14 +5430,16 @@ def main(argv: list[str] | None = None) -> int:
                     return _blocked_result((str(exc),))
             if args.verb == "consumer-activation-preflight":
                 try:
-                    result = ruleset_preflight(root, github)
+                    with temporary_admin_client(repository) as admin:
+                        result = ruleset_preflight(root, admin)
                     _json(result)
                     return 0 if not result["blockers"] else 2
                 except RulesetManagementError as exc:
                     return _blocked_result((str(exc),))
             if args.verb == "consumer-activation-ruleset-plan":
                 try:
-                    plan = build_ruleset_plan(root, github)
+                    with temporary_admin_client(repository) as admin:
+                        plan = build_ruleset_plan(root, admin)
                     if plan["blockers"]:
                         _json({"status": "BLOCKED", "blockers": plan["blockers"],
                                "plan_sha256": plan["plan_sha256"], "plan": plan})
@@ -4991,9 +5452,10 @@ def main(argv: list[str] | None = None) -> int:
                     return _blocked_result((str(exc),))
             if args.verb == "consumer-activation-ruleset-apply":
                 try:
-                    plan, _decision_id = _ruleset_operation_plan(github, args.plan)
+                    plan, _decision_id = _ruleset_operation_plan(github, args.plan, args.approval_comment_id)
                     if plan["diff"]["operation"] == "noop":
-                        policy = _verify_ruleset_noop(github, plan)
+                        with temporary_admin_client(repository) as admin:
+                            policy = _verify_ruleset_noop(admin, plan)
                         _json({"status": "VERIFIED", "operation": "NOOP", "plan_sha256": plan["plan_sha256"],
                                "ruleset_id": policy["ruleset_id"],
                                "applied_record_id": policy["applied_record_id"],
@@ -5001,7 +5463,7 @@ def main(argv: list[str] | None = None) -> int:
                         return 0
                     _json({"status": "ADMIN_AUTH_REQUIRED", "stage": "APPLY_AND_READBACK",
                            "plan_sha256": plan["plan_sha256"],
-                           "next_permitted_step": "Run consumer-activation-admin-apply with isolated browser device authentication; a runner-managed PTY must display the challenge."})
+                           "next_permitted_step": "Run consumer-activation-admin-apply from an owner-controlled local interactive terminal with isolated-gh-device after fresh Admin and policy readback."})
                     return 2
                 except OwnerDecisionError as exc:
                     if "missing exact owner operation/subject" in str(exc):
@@ -5019,6 +5481,32 @@ def main(argv: list[str] | None = None) -> int:
             if args.verb == "final":
                 return _delivery_final(args, repository, root, github)
             if args.verb == "finalize":
+                if args.issue == 63 and args.pr == 64:
+                    eligible_deferred_close = False
+                    try:
+                        candidate_pr = github.pull_request(args.pr)
+                        candidate_mode = parse_issue_association(candidate_pr.get("body"), args.issue)
+                        eligible_deferred_close = (
+                            candidate_pr.get("state") == "closed"
+                            and candidate_pr.get("merged") is True
+                            and candidate_mode == "deferred_close"
+                        )
+                    except (GitHubError, WorkError, CLIError):
+                        pass
+                    if eligible_deferred_close:
+                        try:
+                            activation_history = read_consumer_activation_history(github, repository, 57)
+                        except (ConsumerActivationError, GitHubError):
+                            # Let the finalizer emit its normal blocked result from the
+                            # authoritative read; no Admin session is opened on failure.
+                            return _delivery_finalize(args, repository, root, github)
+                    else:
+                        activation_history = []
+                    if activation_history and activation_history[-1][0].schema_version == 2:
+                        with temporary_admin_client(repository) as admin:
+                            return _delivery_finalize(
+                                args, repository, root, github, policy_github=admin,
+                            )
                 return _delivery_finalize(args, repository, root, github)
             if args.verb == "parent":
                 return _delivery_parent(args, repository, root, github)
@@ -5081,20 +5569,27 @@ def main(argv: list[str] | None = None) -> int:
             if args.verb == "publish":
                 data = args.source.read_bytes()
                 expected_current = None
-                issue63_target = (args.issue == 63
-                                  and repository.casefold() == "puchinya/ai-agent-workflow")
-                if issue63_target and args.state == "approved":
+                requires_owner_decision = args.state == "approved" and args.supersede
+                if requires_owner_decision:
                     if args.approval_comment_id is None:
                         _json({"status": "PENDING_APPROVAL", "issue": args.issue,
                                "operation": "ADC_SUPERSEDE",
                                "reasons": ["an exact ADC_SUPERSEDE decision comment ID is required"]})
                         return 2
                     contract = parse_adc(data, repository, args.issue)
+                    metadata = github.repository_metadata()
+                    owner = metadata.get("owner") if isinstance(metadata, dict) else None
+                    owner_id = owner.get("id") if isinstance(owner, dict) else None
+                    repository_id = metadata.get("id") if isinstance(metadata, dict) else None
+                    if (type(owner_id) is not int or owner_id < 1 or owner.get("type") != "User"
+                            or type(repository_id) is not int or repository_id < 1
+                            or metadata.get("full_name", "").casefold() != repository.casefold()):
+                        raise CLIError("ADC supersession requires a verified user-owned repository")
                     try:
                         decision = read_verified_owner_decision(
-                            github, issue_number=args.issue, owner_id=3744776,
+                            github, issue_number=args.issue, owner_id=owner_id,
                             operation="ADC_SUPERSEDE", subject_sha256=contract.sha256,
-                            repository_id=_ISSUE63_REPOSITORY_ID,
+                            repository_id=repository_id,
                         )
                     except OwnerDecisionError as exc:
                         if "missing exact owner operation/subject" in str(exc):
@@ -5115,21 +5610,9 @@ def main(argv: list[str] | None = None) -> int:
                                       explicitly_approved=(args.state == "approved"),
                                       supersede=args.supersede,
                                       expected_current=expected_current)
-                phase_result = None
-                if issue63_target and pointer.state == "approved":
-                    try:
-                        phase_result = rebaseline_issue_phase(github, args.issue)
-                    except PhaseRebaselineError as exc:
-                        status = ("BLOCKED_PERMISSION" if str(exc).startswith("BLOCKED_PERMISSION:")
-                                  else "ADC_PUBLISHED_PHASE_BLOCKED")
-                        _json({"status": status, "issue": args.issue,
-                               "comment_id": pointer.comment_id, "adc_sha256": pointer.sha256,
-                               "byte_length": pointer.byte_length, "state": pointer.state,
-                               "reasons": [str(exc)]})
-                        return 2
                 _json({"status": "PUBLISHED", "issue": args.issue, "comment_id": pointer.comment_id,
                        "adc_sha256": pointer.sha256, "byte_length": pointer.byte_length,
-                       "state": pointer.state, "phase_rebaseline": phase_result})
+                       "state": pointer.state})
                 return 0
             if args.verb == "verify":
                 verified = verify_adc(github, args.issue)
@@ -5146,26 +5629,71 @@ def main(argv: list[str] | None = None) -> int:
                    "byte_length": verified.pointer.byte_length})
             return 0
 
-        if args.verb == "phase-rebaseline":
-            github = GitHub(repository)
-            try:
-                result = rebaseline_issue_phase(github, args.issue)
-                _json(result)
-                return 0
-            except PhaseRebaselineError as exc:
-                if str(exc).startswith("BLOCKED_PERMISSION:"):
-                    _json({"status": "BLOCKED_PERMISSION", "issue": args.issue,
-                           "reasons": [str(exc)]})
-                    return 2
-                return _blocked_result((str(exc),))
-
-        if args.verb == "phase-restart":
-            root = _repo_root(str(args.root)).resolve()
+        if args.verb in {"phase-rebaseline", "phase-restart"}:
+            root = _runtime_root(args)
             try:
                 result = restart_issue_phase(GitHub(repository), root, args.issue)
                 _json(result)
                 return 0
             except PhaseRestartError as exc:
+                return _blocked_result((str(exc),))
+
+        if args.verb in {"phase-epoch-rebaseline", "epoch-reset"}:
+            root = _repo_root(str(args.root)).resolve()
+            try:
+                result = reset_execution_epoch(GitHub(repository), root, args.issue)
+                _json(result)
+                return 0
+            except EpochLifecycleError as exc:
+                return _blocked_result((str(exc),))
+
+        if args.verb == "phase-rework":
+            root = _repo_root(str(args.root)).resolve()
+            github = GitHub(repository)
+            input_paths = (args.plan, args.verification, args.acceptance,
+                           args.self_audit, args.independent_review)
+            if any(path is not None for path in input_paths) and not all(
+                    path is not None for path in input_paths):
+                return _blocked_result(("provide all five fresh evidence inputs together",))
+
+            def readiness_factory():
+                if any(path is None for path in input_paths):
+                    raise CLIError("first phase-rework application requires all five fresh evidence inputs")
+                current_binding = read_pr_binding(pr_binding_path(root, args.issue, github=github))
+                if (current_binding.repository.casefold() != repository.casefold()
+                        or current_binding.issue_number != args.issue
+                        or current_binding.pr_head_sha40 != head_sha40(root)):
+                    raise CLIError("phase rework Readiness requires the exact current PRBinding")
+                readiness_args = argparse.Namespace(
+                    issue=args.issue, pr=current_binding.pr_number, head=head_sha40(root), plan=args.plan,
+                    verification=args.verification, acceptance=args.acceptance,
+                    self_audit=args.self_audit, independent_review=args.independent_review,
+                )
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    exit_code = _delivery_readiness(readiness_args, repository, root, github)
+                if exit_code != 0:
+                    raise CLIError("fresh exact-subject Review Readiness did not PASS")
+                report = json.loads(output.getvalue())
+                if (not isinstance(report, dict) or report.get("status") != "PASS"
+                        or not isinstance(report.get("path"), str)):
+                    raise CLIError("fresh Review Readiness output is incomplete")
+                path_value = report["path"]
+                result = read_readiness(Path(path_value))
+                if (report.get("readiness_sha256") != result.sha256
+                        or report.get("subject_sha256") != result.subject.sha256):
+                    raise CLIError("fresh Review Readiness output differs from its saved record")
+                return result
+
+            try:
+                result = apply_phase_rework(
+                    github, root, args.issue,
+                    readiness_factory=(readiness_factory
+                                       if all(path is not None for path in input_paths) else None),
+                )
+                _json(result)
+                return 0
+            except (PhaseReworkLifecycleError, CLIError, ADCError, GitError, GitHubError, OSError, ValueError) as exc:
                 return _blocked_result((str(exc),))
 
         if args.verb == "phase-evidence":
@@ -5202,121 +5730,7 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.verb == "advance":
             github = GitHub(repository)
-            issue = github.issue(args.issue)
-            if issue.get("state") != "open" or issue.get("pull_request") is not None:
-                raise CLIError("Issue advance requires an open Issue, not a pull request")
-            label_rows = issue.get("labels")
-            if not isinstance(label_rows, list) or any(not isinstance(item, dict) for item in label_rows):
-                raise CLIError("Issue label readback is invalid")
-            labels = [item.get("name") for item in label_rows]
-            if any(not isinstance(label, str) for label in labels):
-                raise CLIError("Issue label readback contains an invalid name")
-            phase = parse_phase_labels(labels)
-            attention = parse_attention_labels(labels)
-            skip_reasons = _phase_skip_reasons(args.skip_phase)
-            kind = IssueKind(args.kind)
-            bootstrap = (repository.casefold() == BOOTSTRAP_REPOSITORY.casefold()
-                         and args.issue in PHASE_EVIDENCE_BOOTSTRAP_ISSUES)
-            kind_labels = [label.removeprefix("kind:") for label in labels if label.startswith("kind:")]
-            if not bootstrap and (len(kind_labels) != 1 or kind_labels[0] != kind.value):
-                raise CLIError("--kind must match the Issue's unique verified kind:* label")
-            if bootstrap and kind_labels and (len(kind_labels) != 1 or kind_labels[0] != kind.value):
-                raise CLIError("Bootstrap Issue kind label conflicts with --kind")
-            target = Phase(args.target)
-            evidence_required = (not bootstrap and kind in {IssueKind.SINGLE, IssueKind.CHILD}
-                                 and target in {Phase.SPECIFICATION, Phase.DESIGN, Phase.READY})
-            ordinary_issue = (not bootstrap and kind in {IssueKind.SINGLE, IssueKind.CHILD})
-            root: Path | None = None
-            approved_adc = None
-            ordinary_context = None
-            if ordinary_issue:
-                if args.root is None:
-                    raise CLIError("ordinary Issue phase transitions require --root for Activation and ADC verification")
-                root = _repo_root(str(args.root)).resolve()
-                ordinary_context = verify_ordinary_issue_context(
-                    github, root, args.issue, kind,
-                    require_binding=target in {Phase.EXECUTION, Phase.VERIFICATION},
-                )
-                approved_adc = ordinary_context.verified_adc
-                if target is Phase.EXECUTION:
-                    verify_ready_preparation(
-                        github, root, args.issue, kind, verified_context=ordinary_context,
-                    )
-            if evidence_required:
-                if args.phase_evidence_comment_id is None:
-                    raise CLIError("specification, design, and ready transitions require --phase-evidence-comment-id")
-                verify_phase_evidence(github, root, args.issue, args.phase_evidence_comment_id,
-                                      phase, target, skip_reasons)
-            graph_validated = False
-            if kind is IssueKind.PARENT and phase is Phase.REQUIREMENTS and target is Phase.READY:
-                validate_native_issue_graph(github, args.issue)
-                graph_validated = True
-            next_state = advance(PhaseState(args.issue, kind, phase, attention), target,
-                                 skip_reasons=skip_reasons, issue_graph_validated=graph_validated)
-            kept = [label for label in labels if not label.startswith(("phase:", "attention:"))]
-            kept.append(f"phase:{next_state.phase.value}")
-            kept.extend(f"attention:{item.value}" for item in sorted(next_state.attention, key=lambda x: x.value))
-            if ordinary_issue and root is not None:
-                latest_context = verify_ordinary_issue_context(
-                    github, root, args.issue, kind,
-                    require_binding=target in {Phase.EXECUTION, Phase.VERIFICATION},
-                )
-                latest_adc = latest_context.verified_adc
-                if (approved_adc is None or latest_adc.pointer != approved_adc.pointer
-                        or latest_adc.contract.sha256 != approved_adc.contract.sha256):
-                    raise CLIError("approved ADC pointer or generation changed before the phase label write")
-                if target is Phase.EXECUTION:
-                    verify_ready_preparation(
-                        github, root, args.issue, kind, verified_context=latest_context,
-                    )
-            if evidence_required and root is not None:
-                verify_phase_evidence(github, root, args.issue, args.phase_evidence_comment_id,
-                                      phase, target, skip_reasons)
-            latest = github.issue(args.issue)
-            if (latest.get("number") != args.issue or latest.get("state") != "open"
-                    or latest.get("pull_request") is not None or latest.get("labels") != label_rows
-                    or latest.get("body") != issue.get("body")
-                    or latest.get("repository_url") != issue.get("repository_url")):
-                raise CLIError("Issue state changed before the phase label write")
-            write_error: GitHubError | None = None
-            try:
-                github.replace_issue_labels(args.issue, kept)
-            except GitHubError as exc:
-                # The same complete readback is required after both a normal response
-                # and a lost/failed response; the exception alone cannot establish whether
-                # GitHub applied the PUT.
-                write_error = exc
-            try:
-                final_issue = github.issue(args.issue)
-                _validate_issue_advance_readback(
-                    final_issue, original_issue=issue, repository=repository,
-                    issue_number=args.issue, expected_labels=kept, kind=kind,
-                    target=next_state.phase, attention=next_state.attention,
-                    ordinary=ordinary_issue,
-                )
-                if ordinary_issue and root is not None:
-                    final_context = verify_ordinary_issue_context(
-                        github, root, args.issue, kind,
-                        require_binding=target in {Phase.EXECUTION, Phase.VERIFICATION},
-                    )
-                    final_adc = final_context.verified_adc
-                    _validate_issue_advance_readback(
-                        final_context.issue, original_issue=issue, repository=repository,
-                        issue_number=args.issue, expected_labels=kept, kind=kind,
-                        target=next_state.phase, attention=next_state.attention,
-                        ordinary=True,
-                    )
-                    if (approved_adc is None or final_adc.pointer != approved_adc.pointer
-                            or final_adc.contract.sha256 != approved_adc.contract.sha256):
-                        raise CLIError("approved ADC pointer or generation changed after the phase label write")
-            except (ADCError, GitHubError, PhaseEvidenceError, CLIError, OSError, UnicodeError, ValueError) as exc:
-                raise CLIError(
-                    f"BLOCKED after phase label write: {exc}; the label PUT may already have applied; "
-                    "no automatic rollback or retry was attempted"
-                ) from (write_error or exc)
-            _json({"status": "ADVANCED", "issue": args.issue, "from": phase.value,
-                   "to": next_state.phase.value, "attention": sorted(x.value for x in next_state.attention)})
-            return 0
+            return _advance_issue_with_adc_session(args, repository, github)
 
         if args.verb == "integration-check":
             root = _runtime_root(args)

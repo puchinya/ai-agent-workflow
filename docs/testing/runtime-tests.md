@@ -2,7 +2,8 @@
 <!-- agent-doc-schema: 2 -->
 # Runtime and CLI Test Specification
 
-- Status: Issue #63 is OPEN at `phase:requirements`. Current approved ADC comment #6471580482 has SHA-256 `22ec1585a11d9a791eaf9b0e89baf604775e5168b3f5844a290485a7aab5d218`; its Phase V2 Intent/Applied pair is #6472026312/#6472411402. The V3 recovery generations remain #6469356263/#6469538910 and #6469619562/#6470070164. PR #64 HEAD immediately before this documentation update was `5d1267f1ba436d3681ea261372aca6ea084a757e`; it had no current-head Independent Review V2, Readiness PASS, or User Review record. These changes require fresh exact-HEAD evidence.
+- Historical progress snapshot: before the later exception close, Issue #63 was OPEN at `phase:requirements`; its then-current ADC was comment #6471580482 and PR #64 HEAD was `5d1267f1ba436d3681ea261372aca6ea084a757e`. This snapshot and its historical evidence are retained for traceability only.
+- Current reconciliation (2026-11-21): PR #64 is MERGED and Issue #63 is CLOSED under the one-time development exception. This was not normal P-ASES Final Delivery success. Ruleset and Activation V2 work remains with Issue #71.
 - Owning specification: ../specs/
 
 The stable RT test IDs preserve the earlier traceability graph. Current CLI cases use the namespaced P-ASES routes. Procedures for APIs that the Runtime Specification marks legacy are regression conditions for retained internal behavior, not public-command compatibility requirements.
@@ -59,6 +60,22 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
     - [2.23.1 ORA-RT-023 Expected result](#2231-ora-rt-023-expected-result)
   - [2.24 TST-RT-024 Strict Phase restart authorization parsing](#224-tst-rt-024-strict-phase-restart-authorization-parsing)
     - [2.24.1 ORA-RT-024 Expected result](#2241-ora-rt-024-expected-result)
+  - [2.25 TST-RT-025 Issue #71 epoch-2 predecessor fixture and local Admin guard](#225-tst-rt-025-issue-71-epoch-2-predecessor-fixture-and-local-admin-guard)
+    - [2.25.1 ORA-RT-025 Expected result](#2251-ora-rt-025-expected-result)
+  - [2.26 TST-RT-026 Issue #71 epoch-3 CLI and generation reader](#226-tst-rt-026-issue-71-epoch-3-cli-and-generation-reader)
+    - [2.26.1 ORA-RT-026 Expected result](#2261-ora-rt-026-expected-result)
+  - [2.27 TST-RT-027 Issue #71 successor ADC Phase rework CLI](#227-tst-rt-027-issue-71-successor-adc-phase-rework-cli)
+    - [2.27.1 ORA-RT-027 Expected result](#2271-ora-rt-027-expected-result)
+  - [2.28 TST-RT-028 Issue #71 pending rework Recovery CLI](#228-tst-rt-028-issue-71-pending-rework-recovery-cli)
+    - [2.28.1 ORA-RT-028 Expected result](#2281-ora-rt-028-expected-result)
+  - [2.29 TST-RT-029 Issue #71 Applied timestamp reconciliation CLI](#229-tst-rt-029-issue-71-applied-timestamp-reconciliation-cli)
+    - [2.29.1 ORA-RT-029 Expected result](#2291-ora-rt-029-expected-result)
+  - [2.30 TST-RT-030 Combined ADC receipts and Issue #71 User Review identity](#230-tst-rt-030-combined-adc-receipts-and-issue-71-user-review-identity)
+    - [2.30.1 ORA-RT-030 Expected result](#2301-ora-rt-030-expected-result)
+  - [2.31 TST-RT-031 Issue #71 timestamp continuation context read](#231-tst-rt-031-issue-71-timestamp-continuation-context-read)
+    - [2.31.1 ORA-RT-031 Expected result](#2311-ora-rt-031-expected-result)
+  - [2.32 TST-RT-032 Bounded and sanitized GitHub API child timeout](#232-tst-rt-032-bounded-and-sanitized-github-api-child-timeout)
+    - [2.32.1 ORA-RT-032 Expected result](#2321-ora-rt-032-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -111,6 +128,22 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
 - [ORA-RT-023](#ora-rt-023) — 2.23.1 ORA-RT-023 Expected result
 - [TST-RT-024](#tst-rt-024) — 2.24 TST-RT-024 Strict Phase restart authorization parsing
 - [ORA-RT-024](#ora-rt-024) — 2.24.1 ORA-RT-024 Expected result
+- [TST-RT-025](#tst-rt-025) — 2.25 TST-RT-025 Issue #71 epoch-2 predecessor fixture and local Admin guard
+- [ORA-RT-025](#ora-rt-025) — 2.25.1 ORA-RT-025 Expected result
+- [TST-RT-026](#tst-rt-026) — 2.26 TST-RT-026 Issue #71 epoch-3 CLI and generation reader
+- [ORA-RT-026](#ora-rt-026) — 2.26.1 ORA-RT-026 Expected result
+- [TST-RT-027](#tst-rt-027) — 2.27 TST-RT-027 Issue #71 successor ADC Phase rework CLI
+- [ORA-RT-027](#ora-rt-027) — 2.27.1 ORA-RT-027 Expected result
+- [TST-RT-028](#tst-rt-028) — 2.28 TST-RT-028 Issue #71 pending rework Recovery CLI
+- [ORA-RT-028](#ora-rt-028) — 2.28.1 ORA-RT-028 Expected result
+- [TST-RT-029](#tst-rt-029) — 2.29 TST-RT-029 Issue #71 Applied timestamp reconciliation CLI
+- [ORA-RT-029](#ora-rt-029) — 2.29.1 ORA-RT-029 Expected result
+- [TST-RT-030](#tst-rt-030) — 2.30 TST-RT-030 Combined ADC receipts and Issue #71 User Review identity
+- [ORA-RT-030](#ora-rt-030) — 2.30.1 ORA-RT-030 Expected result
+- [TST-RT-031](#tst-rt-031) — 2.31 TST-RT-031 Issue #71 timestamp continuation context read
+- [ORA-RT-031](#ora-rt-031) — 2.31.1 ORA-RT-031 Expected result
+- [TST-RT-032](#tst-rt-032) — 2.32 TST-RT-032 Bounded and sanitized GitHub API child timeout
+- [ORA-RT-032](#ora-rt-032) — 2.32.1 ORA-RT-032 Expected result
 <!-- heading-map:end -->
 
 
@@ -325,12 +358,12 @@ Plan digests change when any bound input changes, including setup generation. Ac
 <a id="tst-rt-018"></a>
 ### 2.18 TST-RT-018 Temporary child-process credential isolation
 
-**Setup and action:** Use fake `gh` children and a subprocess recorder to inspect every argument, environment mapping, output stream, and client state. Device auth is the default: fake successful and failed `gh auth login` calls, verify the exact argv, mode-0700 one-time `GH_CONFIG_DIR`, runner-managed PTY display of the challenge, host permission-verification failure, later API use of the same directory, and cleanup on normal return, exception, SIGINT, and handled SIGTERM. For explicit nonstandard `pat` fallback, enter a marker credential through the injectable owner-controlled TTY input boundary. Vary all four standard/enterprise token variables and the parent `GH_CONFIG_DIR`; assert they are removed from isolated children and parent/default `gh` state is byte-for-byte unchanged. Cover identity/admin mismatch, 403, stale plan and failed device login as zero Ruleset writes, plus ambiguous request recovery as read-only. In a Cloud-like environment, permit the runner-managed PTY to display a device challenge without requiring an owner-local TTY; if that capability is unavailable, assert `ADMIN_DEVICE_LOGIN_UNAVAILABLE` without an Admin API call. Inspect `os.environ`, unrelated child environments, temporary files, logs, and object representation before, during, and after both modes.
+**Setup and action:** Use fake `gh` children and a subprocess recorder to inspect every argument, environment mapping, output stream, and client state. Device auth is the only mode: fake successful and failed `gh auth login` calls, verify the exact argv, owner-local interactive confirmation, mode-0700 one-time `GH_CONFIG_DIR`, authenticated owner identity, later API use of the same directory, and cleanup on normal return, exception, SIGINT, and handled SIGTERM. Verify PAT and every unsupported auth mode block before login or client creation. Vary all four standard/enterprise token variables and the parent `GH_CONFIG_DIR`; assert ambient tokens are removed from isolated children and parent/default `gh` state is byte-for-byte unchanged. Cover identity/admin mismatch, 401/403/429/5xx, incomplete reads, stale plan, remote marker, non-TTY, declined confirmation, and failed device login as zero Ruleset writes, plus ambiguous request recovery as read-only. Inspect `os.environ`, unrelated child environments, temporary files, logs, and object representation during and after the device session.
 
 <a id="ora-rt-018"></a>
 #### 2.18.1 ORA-RT-018 Expected result
 
-Only the `gh api` child process for the active authenticated client receives the Admin authentication context: PAT fallback uses its designated child-only token override; device mode uses its private per-command `GH_CONFIG_DIR`, with ambient token variables removed. The normal parent `gh` environment, configuration, and unrelated children remain unchanged. PAT bytes never appear in argv, logs, JSON, files, object representation, `os.environ`, another subprocess, or later ordinary requests. The device OAuth token exists only in its private temporary GitHub CLI config while the session is active; cleanup removes that directory but does not revoke the GitHub-side grant. Device login uses a runner-managed interactive PTY when required and does not require an owner-local TTY. It never silently falls back. If the runner cannot present the challenge, return `ADMIN_DEVICE_LOGIN_UNAVAILABLE` and make no Admin API request. Normal return, API error, exception, SIGINT, and handled SIGTERM clear client bindings and remove only the private device config. Same-OS-user subprocesses are not a strong sandbox. Identity/admin mismatch, 403, stale plan, and unavailable device login cause zero Ruleset writes; an interrupted or ambiguous write follows durable-intent recovery and never triggers a second POST/PUT.
+Only the `gh api` child process inside an active owner-verified device session receives Admin access through its private per-command `GH_CONFIG_DIR`, with ambient token variables removed. The normal parent `gh` environment, configuration, and unrelated children remain unchanged. PAT, App, Network-secret, ordinary credential, SDK, direct REST, and alternate writer routes are unavailable. The device OAuth token exists only in its private temporary GitHub CLI config while the session is active; cleanup removes that directory but does not revoke the GitHub-side grant. Cloud, hosted, CI, SSH/remote, noninteractive, declined-confirmation, or unknown-control contexts block before Admin reads/writes. Normal return, API error, exception, SIGINT, and handled SIGTERM clear client bindings and remove only the private device config. Same-OS-user subprocesses are not a strong sandbox. Identity/admin mismatch, 401/403/429/5xx, incomplete read, stale plan, and unavailable device login cause zero Ruleset writes; an interrupted or ambiguous write follows durable-intent recovery and never triggers a second POST/PUT.
 
 <a id="tst-rt-019"></a>
 ### 2.19 TST-RT-019 Exact chat approval, V3 history, and transport boundary
@@ -405,3 +438,83 @@ For a valid joined-child result, runtime ingestion accepts missing optional host
 Only one unique canonical marker outside fenced code in the current approved ADC yields a typed authorization. All malformed, ambiguous, stale, out-of-scope, or prose-only inputs fail closed before any GitHub write.
 
 The existing phase artifact-impact parser also accepts `Test Oracles and traceability:` as the test-oracle role label. It maps to the same exact `docs/testing/` path validation as `Testing:` and does not alter document-role semantics. A restart Applied record activates `PASES_PHASE_DECISION_V2`; history collection recognizes reserved V1/V2 decision candidates and malformed restart marker candidates through direct/list/direct readback, including leading whitespace and separated comment hyphens, and rejects malformed, edited, or unauthored records. Current-generation lookup performs the verified read even when its initial candidate set is empty, compares the initially enumerated candidate IDs/bodies with its verified readback, and blocks if evidence appears or disappears between those reads. With no restart record, malformed decision candidates and canonical orphan V2 fail closed while valid V1-only history remains compatible. Before a later phase label can produce NOOP, every historical V2 receipt is rechecked against ADC-declared artifacts, the recorded commit's regular blobs and SHA-256 values, ADC skip reasons, and the READY traceability validator. Authorized skipped spec/design targets are read from that receipt commit; executable sources are fetched only for current ADC requirement rows. READY lookup binds V2 to the Applied ID and digest. The preceding V1 serializer remains byte-for-byte unchanged.
+
+<a id="tst-rt-025"></a>
+### 2.25 TST-RT-025 Issue #71 epoch-2 predecessor fixture and local Admin guard
+
+**Setup and action:** Use fake GitHub/Git/Admin clients and a complete historical Issue #71 epoch-2 V2 predecessor fixture. Exercise all scoped CLI and direct-runtime live Activation/Ruleset entrypoints under local interactive Codex, local interactive Claude Code and an owner-controlled local VM with the same typed local-host confirmation, then under Cloud, hosted, CI, SSH/remote, noninteractive, declined confirmation and unknown contexts. Vary authenticated actor, repository Admin permission, current ADC, epoch attachment, branch HEAD, and complete policy reads. For Admin children inspect argv and environment for a fresh private GH_CONFIG_DIR and removal of all four ambient token names; inject 401, 403, 404 with incomplete and complete policy sources, 429, 5xx, malformed JSON and incomplete pagination. Attempt ordinary credential, PAT, App, network-secret, SDK, direct REST and second-writer fallbacks. Verify PRBinding V4/checkpoint V3 epoch linkage and separate Ruleset-plan and Setup-PR approvals. Current epoch-3 CLI and generation-reader behavior is specified separately in TST-RT-026. Record every GitHub method, Admin child, approval path and write.
+
+<a id="ora-rt-025"></a>
+#### 2.25.1 ORA-RT-025 Expected result
+
+Only the three owner-controlled local interactive contexts with explicit confirmation, the authenticated owner and a fully verified current Admin policy read proceed through the same guard. Cloud, hosted, CI, remote, noninteractive and unknown contexts stop before a write. Admin children use the isolated device config and receive none of the four ambient token variables; no fallback or alternate API writer is attempted. Incomplete reads and 401/403/429/5xx are unavailable. A legacy-protection 404 is NOT_CONFIGURED only with complete consistent repository, actor, branch, effective-rule and Ruleset readback. A current exact plan and separate RULESET_PLAN_APPLY decision are required before the sole Ruleset writer; Setup PR merge requires separate exact-HEAD PR_MERGE authority. Missing chat provenance, stale epoch, or any blocker yields zero Ruleset, PR, Activation, and Issue writes.
+
+<a id="tst-rt-026"></a>
+### 2.26 TST-RT-026 Issue #71 epoch-3 CLI and generation reader
+
+**Setup and action:** Parse issue phase-epoch-rebaseline and exercise its fixed Issue/repository dispatch, required root, failure reporting, verified-epoch reader, active Phase generation, and Phase Evidence integration. Fake stale ADC, malformed local epoch/attachment, wrong branch/base, duplicate or edited journal comments, and non-#71 requests. Assert no generic V1 Binding or Issue #63 route is selected.
+
+<a id="ora-rt-026"></a>
+#### 2.26.1 ORA-RT-026 Expected result
+
+Only Issue #71 with the exact approved ADC and validated epoch-3 journal/attachment reaches the dedicated route. Stale, malformed, duplicated, wrong-branch, or wrong-Issue evidence blocks closed; ordinary V1 and Issue #63 behavior remains unchanged.
+
+<a id="tst-rt-027"></a>
+### 2.27 TST-RT-027 Issue #71 successor ADC Phase rework CLI
+
+**Setup and action:** Parse `issue phase-rework`, require the exact Issue #71 worktree root, and exercise dispatch with complete, missing, and partial current evidence inputs. Stub readiness recomputation to return fresh PASS, stale PASS, and blocked results. Verify the initial route recomputes readiness before Intent only, then reuses the Intent-bound PASS while rereading the live subject; the Recovery route uses the pinned stored PASS without invoking Readiness recomputation. Bind actual local/remote/PR HEAD and current ADC; never invoke Admin, Activation, Issue #63, or PR merge routes.
+
+<a id="ora-rt-027"></a>
+#### 2.27.1 ORA-RT-027 Expected result
+
+The CLI accepts only the Issue #71 dedicated route and complete evidence input set for first application. Stale/blocked readiness and partial input sets block before writes. After Intent, it never recomputes Readiness; the exact stored PASS is revalidated. Recovery never retries a potentially sent label request. All outputs identify exact current evidence and report no merge or Admin authority.
+
+<a id="tst-rt-028"></a>
+### 2.28 TST-RT-028 Issue #71 pending rework Recovery CLI
+
+**Historical recovery-reader specification superseded by the direct-current-ADC and timestamp checks in TST-RT-029/031.** **Setup and action:** Invoke the public `issue phase-rework` route with the exact Recovery ADC, pending Intent, original Readiness, local Intent marker, and recovery branch fixtures. Assert complete ADC-chain verification and exact-byte recovery-marker parsing, exact original Authorization/Intent binding, and no call to the Readiness factory after Intent. With no gate inputs, verify that the route appends only the current PRBinding/checkpoint pair locally and makes no GitHub write. Check exact ADC/epoch/PR/HEAD lineage, preserved PR title/body digest, and zero-write idempotent retry; stale binding, metadata, checkpoint, and ref drift must block. With gates supplied, require the current binding before labels-before/no-marker (one marker and one PUT), labels-before/marker (zero PUT), labels-after/marker (Applied-only recovery), labels-after/no-marker (block), ambiguous PUT before and after server application, and malformed/missing local attempt markers. Mutate each pinned Issue/owner/ADC/epoch/branch/base/PR/HEAD/Intent/Readiness identity and assert zero additional POST/PUT calls. Verify duplicate Intent creation is unreachable under the Recovery ADC.
+
+<a id="ora-rt-028"></a>
+#### 2.28.1 ORA-RT-028 Expected result
+
+Recovery accepts only the exact current approved successor and its one pending Intent. Before code gates, the no-input route may append only one exact current V4 PRBinding and V3 checkpoint locally; it cannot change PR metadata or Issue state. A gated continuation requires that current binding. Before-state without a marker permits one marked complete-label PUT; a present marker prevents retries. After-state with the exact marker permits an Applied append only. Mismatches and ambiguous before-state outcomes make no further Issue writes, and no fresh Readiness is generated while Intent is incomplete.
+
+<a id="tst-rt-029"></a>
+### 2.29 TST-RT-029 Issue #71 Applied timestamp reconciliation CLI
+
+**Historical pre-correction wording; TST-F01-092 and TST-RT-031 specify current-only validation.** **Setup and action:** Invoke the public `issue phase-rework` route with the approved timestamp-recovery ADC, exact existing Intent/Applied records, original Readiness, attempt markers, and current PRBinding. Verify that the route validates the complete ADC chain, the bounded timestamp pair, exact journal digests, and local markers. Assert that the current-binding path returns NOOP without invoking Readiness recomputation or any GitHub label/comment write. Exercise the no-gate local PRBinding/checkpoint repair separately and assert zero GitHub writes.
+
+<a id="ora-rt-029"></a>
+#### 2.29.1 ORA-RT-029 Expected result
+
+The CLI accepts only the exact timestamp-recovery successor and its pinned Applied record. Applied reconciliation with the current binding is a read-only NOOP. Without the binding, it may append only local immutable binding/checkpoint evidence. Neither path writes Issue labels/comments or recomputes Readiness.
+
+<a id="tst-rt-030"></a>
+### 2.30 TST-RT-030 Combined ADC receipts and Issue #71 User Review identity
+
+**Setup and action:** Unit-test the combined marker's exact pointer/length/digest gate, canonical duplicate and malformed-marker rejection, complete ordered history links, current-document snapshot, generic Artifact impact parsing, and marker-derived one-child path boundary. Exercise historical Phase receipt overrides with exact current ADC/generation/HEAD subjects and wrong-ID, wrong-SHA, wrong-commit, stale-document, duplicate, and conflicting cases. Inject a preflight failure into design→ready and assert zero comment or label writes. For both CLI User Review start and V3 owner authorization, verify only the exact current ADC pointer and current marker before using its returned authorization; vary profile, verifier, PR number/title/body/author/base/HEAD, ADC, Issue phase/body, session, Readiness, and feedback. Validate the V3 phase-rework reader against the directly verified current ADC and current marker, require the prior V2 pair to remain byte-identical, and exercise one-shot V3 Intent/Applied, exact-retry NOOP, and fail-closed partial or stale states. Supply LF and CRLF variants of the pinned profile and require identical canonical SHA-256; reject bare CR and all non-newline content changes. Confirm Issue #71 routes do not pin the consumer to an older ADC, reject CLI/file consent, require the typed direct-chat grant, target only Issue #71, and never request Issue #63. Preserve Issue #63 plan and relay compatibility tests.
+
+<a id="ora-rt-030"></a>
+#### 2.30.1 ORA-RT-030 Expected result
+
+Only a complete canonical marker for the directly verified current ADC passes; superseded ADC bodies and predecessor chains are not read. Historical receipt continuations bind current generation and HEAD; current documents match their separately authorized snapshot; every malformed, duplicated, or stale Artifact impact declaration stops before writes. Issue #71 V3 rework preserves the old V2 pair, binds the current ADC pointer and exact subject, and is one-shot with read-only handling of partial or ambiguous state. Issue #71 User Review start and V3 authorization both use the live current ADC pointer/current marker and accept no stale generation pin; they retain all exact subject checks, publish or read only through the bound Issue #71 route, and never touch Issue #63. Issue #63 regressions retain their prior results.
+
+<a id="tst-rt-031"></a>
+### 2.31 TST-RT-031 Issue #71 timestamp continuation context read
+
+**Setup and action:** Run `context show` using the exact current approved timestamp-continuation ADC, its directly named current comment, immutable V3 origin, current-marker-pinned V2 records, post-origin V3 journal, current Issue labels, and PR subject. Do not fetch superseded ADC bodies or traverse the predecessor chain. Verify graph-derived acceptance of `phase:requirements` and each declared successor state through `phase:user-review`; vary current pointer, direct predecessor declaration and optional `(N bytes)` suffix, origin identity, marker start/parent, timestamp boundaries, labels, branch, PR title/body, and binding/checkpoint fingerprints. Assert context inspection is read-only and does not append comments or update labels.
+
+<a id="ora-rt-031"></a>
+#### 2.31.1 ORA-RT-031 Expected result
+
+Only the exact direct current ADC comment, direct predecessor pointer, immutable origin, marker-derived continuation boundary, authorized event/publication windows, current graph phase, and bound PR metadata pass. No superseded ADC body or chain is read. A mismatch reports a bounded blocked/stale state without GitHub writes. A valid current binding is read back without exposing local workspace paths.
+
+<a id="tst-rt-032"></a>
+### 2.32 TST-RT-032 Bounded and sanitized GitHub API child timeout
+
+**Setup and action:** Mock both `GitHub.request()` and `GitHub._graphql()` `subprocess.run` calls to capture the timeout and raise `TimeoutExpired` containing synthetic token, query, variables, payload, stdout, and stderr text. Verify both children receive exactly the configured finite timeout; REST errors name only the HTTP method, validated endpoint, and timeout, while GraphQL errors name the operation and timeout. Ensure messages and chained exception output exclude all synthetic private text. Assert neither path retries. Exercise a real short-lived helper process in a bounded subprocess test to confirm standard-library timeout handling terminates and reaps the child and returns promptly.
+
+<a id="ora-rt-032"></a>
+#### 2.32.1 ORA-RT-032 Expected result
+
+Every GitHub API child, including REST and GraphQL, has the fixed 30-second bound. Timeout becomes a sanitized `GitHubError`; no credential, payload, query, variables, stdout/stderr, timeout detail, or chained exception diagnostic escapes, and no request is blindly retried.

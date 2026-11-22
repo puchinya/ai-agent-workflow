@@ -13,7 +13,10 @@ from pathlib import Path
 from typing import Any, Mapping, NamedTuple
 from urllib.parse import urlsplit
 
-from .adc import ADCError, VerifiedADC, verify_adc
+from .adc import (
+    ADCError, VerifiedADC, adc_forward_generation_session,
+    refresh_adc_forward_generation_session, verify_adc,
+)
 from .gate_policy import BOOTSTRAP_REPOSITORY, GatePolicyError, read_gate_selection, select_gate
 from .consumer_activation import ConsumerActivationError, read_consumer_activation_history
 from .github import GitHub, GitHubError
@@ -71,6 +74,8 @@ BRACED_DOC_PATH = re.compile(
     r"(docs/(?:specs|design|testing)/[A-Za-z0-9._/-]*?)\{([^{}]+)\}([A-Za-z0-9._/-]*)"
 )
 DOC_PATH = re.compile(r"(?<![A-Za-z0-9_.-])docs/(?:specs|design|testing)/[A-Za-z0-9._/-]+")
+DOCUMENTS_IMPACT_LINE = re.compile(r"(?im)^ *[-*] *Documents: *(.*?) *$")
+ALL_DOC_PATH = re.compile(r"docs/[A-Za-z0-9._/-]+")
 
 
 def _unique_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -293,6 +298,22 @@ def _artifact_impacts(verified: VerifiedADC) -> tuple[dict[str, tuple[str, ...]]
         if role in lines:
             raise PhaseEvidenceError(f"approved ADC duplicates its {match.group(1)} artifact impact")
         lines[role] = match.group(2).strip()
+    if not lines:
+        documents_matches = list(DOCUMENTS_IMPACT_LINE.finditer(text))
+        if documents_matches:
+            if len(documents_matches) != 1:
+                raise PhaseEvidenceError("approved ADC duplicates its Documents artifact impact")
+            declarations = {role: [] for role in DOCUMENT_ROLES}
+            for path in ALL_DOC_PATH.findall(documents_matches[0].group(1)):
+                if path.startswith(DOCUMENT_ROOTS["specification"]):
+                    declarations["specification"].append(path)
+                elif path.startswith(DOCUMENT_ROOTS["design"]):
+                    declarations["design"].append(path)
+                elif path.startswith(DOCUMENT_ROOTS["test-oracle"]):
+                    declarations["test-oracle"].append(path)
+                elif not path.startswith("docs/status/"):
+                    raise PhaseEvidenceError(f"approved ADC Documents path is outside supported artifact roots: {path}")
+            lines = {role: ", ".join(paths) for role, paths in declarations.items()}
     if set(lines) != DOCUMENT_ROLES:
         canonical_matches = list(CANONICAL_IMPACT_LINE.finditer(text))
         if len(canonical_matches) != 1:
@@ -383,9 +404,22 @@ def _kind_from_issue(issue: dict[str, Any]) -> tuple[IssueKind, list[str]]:
 
 def _verify_frozen_binding(github: GitHub, root: Path, issue_number: int, verified: VerifiedADC,
                            branch_ref: str, commit_sha: str) -> None:
+    from .current_epoch import CurrentEpochError, epoch_paths, read_current_epoch
+    epoch_file, attachment_file = epoch_paths(root, issue_number)
+    if (epoch_file.exists() or epoch_file.is_symlink()
+            or attachment_file.exists() or attachment_file.is_symlink()):
+        try:
+            epoch = read_current_epoch(github, root, issue_number, verified)
+            if (epoch.repository.casefold() != github.repo.casefold()
+                    or epoch.issue_number != issue_number or epoch.branch_ref != branch_ref
+                    or not is_ancestor(root, epoch.base_sha40, commit_sha)):
+                raise PhaseEvidenceError("execution epoch differs from the current Issue, branch, or HEAD")
+            return
+        except (CurrentEpochError, GitError, GitHubError, OSError) as exc:
+            raise PhaseEvidenceError(f"a valid current execution epoch is required: {exc}") from exc
     path = execution_binding_path(root.resolve(), issue_number)
     if not path.exists():
-        if issue_number != 63 or not (
+        if not (
                 (root / ".p_ases" / "state" / str(issue_number) / "execution-adoption.json").exists()
                 or (root / ".p_ases" / "state" / str(issue_number) / "workspace-attachment.json").exists()):
             raise PhaseEvidenceError("a valid frozen Issue ExecutionBinding is required when no adopted epoch exists")
@@ -397,7 +431,7 @@ def _verify_frozen_binding(github: GitHub, root: Path, issue_number: int, verifi
             )
             adopted = adopted_readback["epoch"]
             current_binding = adopted_readback["pr_binding"]
-            if (issue_number != 63 or adopted.repository.casefold() != github.repo.casefold()
+            if (adopted.repository.casefold() != github.repo.casefold()
                     or adopted.issue_number != issue_number
                     or current_binding.adoption_id != adopted.adoption_id
                     or current_binding.adc_comment_id != verified.pointer.comment_id
@@ -760,13 +794,24 @@ def _verify_predecessor_receipt(github: GitHub, root: Path, issue_number: int,
                                 adc_reasons: Mapping[str, str],
                                 documents_by_path: Mapping[str, Mapping[str, str]],
                                 previous_sha: str | None,
-                                phase_generation: tuple[int, str] | None) -> tuple[PhaseDecision, str]:
+                                phase_generation: tuple[int, str] | None,
+                                receipt_override: tuple[int, PhaseDecision] | None = None
+                                ) -> tuple[PhaseDecision, str]:
     source, target = edge
-    _comment_id, prior = _find_receipt(
-        github, issue_number, source=source, target=target,
-        adc_comment_id=verified.pointer.comment_id, adc_sha256=verified.contract.sha256,
-        phase_generation=phase_generation,
-    )
+    if receipt_override is None:
+        _comment_id, prior = _find_receipt(
+            github, issue_number, source=source, target=target,
+            adc_comment_id=verified.pointer.comment_id, adc_sha256=verified.contract.sha256,
+            phase_generation=phase_generation,
+        )
+    else:
+        _comment_id, prior = receipt_override
+        if (_receipt_subject(prior.payload) != (
+                github.repo, issue_number, source.value, target.value,
+                verified.pointer.comment_id, verified.contract.sha256,
+                *(phase_generation if phase_generation is not None else (None, None)))
+                or prior.payload.get("commit_sha40") != current_sha):
+            raise PhaseEvidenceError("precomputed predecessor receipt does not bind the current authorized subject")
     payload = prior.payload
     if (payload["branch_ref"] != branch_ref or payload["issue_kind"] != kind.value
             or payload["repository"].casefold() != github.repo.casefold()
@@ -808,9 +853,20 @@ def _verify_predecessor_receipt(github: GitHub, root: Path, issue_number: int,
     return prior, payload["commit_sha40"]
 
 
+def _active_phase_generation_subject(github: GitHub, root: Path, issue_number: int,
+                                    verified: VerifiedADC) -> tuple[int, str] | None:
+    try:
+        from .phase_restart import PhaseRestartError, current_phase_generation
+        active_generation = current_phase_generation(github, root, issue_number, verified)
+    except PhaseRestartError as exc:
+        raise PhaseEvidenceError(f"active Phase generation is invalid: {exc}") from exc
+    return ((active_generation.comment_id, active_generation.sha256) if active_generation else None)
+
+
 def _collect_payload(github: GitHub, root: Path, issue_number: int, source: Phase, target: Phase,
                      skips: Mapping[str, str], *, check_source_phase: bool = True,
                      verified_context: VerifiedOrdinaryIssueContext | None = None,
+                     predecessor_receipts: Mapping[tuple[Phase, Phase], tuple[int, PhaseDecision]] | None = None,
                      ) -> tuple[PhaseDecision, dict[str, Any], VerifiedADC, str, str]:
     if type(issue_number) is not int or issue_number < 1:
         raise PhaseEvidenceError("Issue number must be a positive integer")
@@ -818,16 +874,14 @@ def _collect_payload(github: GitHub, root: Path, issue_number: int, source: Phas
                if verified_context is None else
                _reuse_verified_context(github, root, issue_number, None, verified_context))
     issue, verified, kind, branch_ref, local_sha, _binding_verified = context
+    comment_count = issue.get("comments") if isinstance(issue, dict) else None
+    if type(comment_count) is not int or comment_count < 0:
+        raise PhaseEvidenceError("current Issue comment count is unavailable")
     labels = [row.get("name") for row in issue.get("labels", []) if isinstance(row, dict)]
     if check_source_phase and parse_phase_labels(labels) is not source:
         raise PhaseEvidenceError("Issue phase label differs from the requested evidence source phase")
     declared_paths, adc_reasons = _artifact_impacts(verified)
-    try:
-        from .phase_restart import PhaseRestartError, current_phase_generation
-        active_generation = current_phase_generation(github, root, issue_number, verified)
-    except PhaseRestartError as exc:
-        raise PhaseEvidenceError(f"active Phase generation is invalid: {exc}") from exc
-    generation_subject = (active_generation.comment_id, active_generation.sha256) if active_generation else None
+    generation_subject = _active_phase_generation_subject(github, root, issue_number, verified)
     skip_reasons = _expected_skip_reasons(source, target, skips, adc_reasons)
     if source is Phase.REQUIREMENTS and target is Phase.DESIGN and "specification" not in skip_reasons:
         raise PhaseEvidenceError("requirements to design requires an approved specification skip reason")
@@ -890,11 +944,12 @@ def _collect_payload(github: GitHub, root: Path, issue_number: int, source: Phas
         _prior, previous_sha = _verify_predecessor_receipt(
             github, Path(root), issue_number, edge, verified, kind, branch_ref, local_sha,
             declared_paths, adc_reasons, documents_by_path, previous_sha, generation_subject,
+            (predecessor_receipts or {}).get(edge),
         )
 
     documents = sorted(documents_by_path.values(), key=lambda row: row["path"])
     payload = {
-        "schema": SENTINEL_V2 if active_generation else SENTINEL,
+        "schema": SENTINEL_V2 if generation_subject is not None else SENTINEL,
         "repository": github.repo,
         "issue_number": issue_number,
         "issue_kind": kind.value,
@@ -907,9 +962,8 @@ def _collect_payload(github: GitHub, root: Path, issue_number: int, source: Phas
         "documents": documents,
         "skip_reasons": skip_reasons,
     }
-    if active_generation is not None:
-        payload["phase_generation_comment_id"] = active_generation.comment_id
-        payload["phase_generation_sha256"] = active_generation.sha256
+    if generation_subject is not None:
+        payload["phase_generation_comment_id"], payload["phase_generation_sha256"] = generation_subject
     decision = PhaseDecision(_validate_payload(payload))
     return decision, issue, verified, branch_ref, local_sha
 
@@ -1301,6 +1355,12 @@ def verify_ready_preparation(github: GitHub, root: Path, issue_number: int,
 
 def refresh_ready_phase_evidence(github: GitHub, root: Path, issue_number: int
                                 ) -> tuple[int, ReadyPhaseRefresh | PhaseDecision, str]:
+    with adc_forward_generation_session(github, issue_number):
+        return _refresh_ready_phase_evidence(github, root, issue_number)
+
+
+def _refresh_ready_phase_evidence(github: GitHub, root: Path, issue_number: int
+                                 ) -> tuple[int, ReadyPhaseRefresh | PhaseDecision, str]:
     """Append a current-HEAD READY attestation without changing Issue labels."""
     context = verify_ordinary_issue_context(github, root, issue_number, require_binding=True)
     issue, verified, kind, branch_ref, _commit_sha, _binding_verified = context
@@ -1336,6 +1396,7 @@ def refresh_ready_phase_evidence(github: GitHub, root: Path, issue_number: int
         predecessor_body_sha256=hashlib.sha256(previous_body.encode("utf-8")).hexdigest(),
     )
     # Refresh the live subject immediately before the one permitted append.
+    refresh_adc_forward_generation_session(github, issue_number)
     latest_context = verify_ordinary_issue_context(github, root, issue_number, kind, require_binding=True)
     latest_issue, latest_verified, _latest_kind, latest_branch, _latest_sha, _binding_verified = latest_context
     if (latest_verified.pointer != verified.pointer or latest_verified.contract.sha256 != verified.contract.sha256
@@ -1361,6 +1422,7 @@ def refresh_ready_phase_evidence(github: GitHub, root: Path, issue_number: int
         raise PhaseEvidenceError("ready refresh history changed before publication")
 
     def verify_published_subject() -> None:
+        refresh_adc_forward_generation_session(github, issue_number)
         after_context = verify_ordinary_issue_context(
             github, root, issue_number, kind, require_binding=True,
         )
@@ -1379,6 +1441,7 @@ def refresh_ready_phase_evidence(github: GitHub, root: Path, issue_number: int
         created = github.create_issue_comment(issue_number, record.body())
         comment_id = created.get("id") if isinstance(created, dict) else None
     except GitHubError as exc:
+        refresh_adc_forward_generation_session(github, issue_number)
         recovered = _read_ready_refresh_history(github, issue_number)
         matches = [(comment_id, item) for comment_id, item, body in recovered if body == record.body()]
         if len(matches) != 1:
@@ -1388,6 +1451,7 @@ def refresh_ready_phase_evidence(github: GitHub, root: Path, issue_number: int
         return comment_id, record, "RECOVERED"
     if type(comment_id) is not int or comment_id < 1:
         raise PhaseEvidenceError("ready refresh returned an invalid Issue comment ID")
+    refresh_adc_forward_generation_session(github, issue_number)
     refreshed_history = _read_ready_refresh_history(github, issue_number)
     matches = [(row_id, item, body) for row_id, item, body in refreshed_history if body == record.body()]
     if len(matches) != 1 or matches[0][0] != comment_id:
@@ -1474,9 +1538,20 @@ def _readback(github: GitHub, issue_number: int, comment_id: int, expected_body:
 def publish_phase_evidence(github: GitHub, root: Path, issue_number: int,
                            source: Phase, target: Phase,
                            skip_reasons: Mapping[str, str] | None = None) -> tuple[int, PhaseDecision]:
+    with adc_forward_generation_session(github, issue_number):
+        return _publish_phase_evidence(github, root, issue_number, source, target, skip_reasons)
+
+
+def _publish_phase_evidence(github: GitHub, root: Path, issue_number: int,
+                            source: Phase, target: Phase,
+                            skip_reasons: Mapping[str, str] | None = None) -> tuple[int, PhaseDecision]:
     skips = skip_reasons or {}
     decision, issue, verified, branch_ref, commit_sha = _collect_payload(
-        github, root, issue_number, source, target, skips)
+        github, root, issue_number, source, target, skips,
+    )
+    comment_count = issue.get("comments") if isinstance(issue, dict) else None
+    if type(comment_count) is not int or comment_count < 0:
+        raise PhaseEvidenceError("current Issue comment count is unavailable")
     body = decision.body()
     try:
         comments = github.issue_comments(issue_number)
@@ -1498,17 +1573,35 @@ def publish_phase_evidence(github: GitHub, root: Path, issue_number: int,
         comment_id = row.get("id")
     else:
         try:
-            latest_issue = github.issue(issue_number)
-            latest_adc = verify_adc(github, issue_number)
-            latest_branch = github.branch(branch_ref)
-            latest_sha = latest_branch.get("commit", {}).get("sha") if isinstance(latest_branch.get("commit"), dict) else None
-            if (latest_issue.get("state") != "open" or latest_issue.get("labels") != issue.get("labels")
-                    or latest_adc.pointer.comment_id != verified.pointer.comment_id
-                    or latest_adc.contract.sha256 != verified.contract.sha256 or latest_sha != commit_sha):
-                raise PhaseEvidenceError("Issue, approved ADC, or branch changed before phase evidence publication")
+            refresh_adc_forward_generation_session(github, issue_number)
+            latest_decision, latest_issue, latest_adc, latest_branch, latest_sha = _collect_payload(
+                github, root, issue_number, source, target, skips,
+            )
+            live_issue = github.issue(issue_number)
+            if (not isinstance(live_issue, dict)
+                    or live_issue.get("number") != issue_number
+                    or live_issue.get("state") != "open"
+                    or live_issue.get("body") != issue.get("body")
+                    or live_issue.get("labels") != issue.get("labels")
+                    or live_issue.get("repository_url") != issue.get("repository_url")
+                    or live_issue.get("comments") != comment_count):
+                raise PhaseEvidenceError("Issue changed between Phase preflight and publication")
+            if (latest_decision.body() != body or latest_issue.get("number") != issue_number
+                    or latest_issue.get("state") != "open"
+                    or latest_issue.get("labels") != issue.get("labels")
+                    or latest_issue.get("body") != issue.get("body")
+                    or latest_issue.get("repository_url") != issue.get("repository_url")
+                    or latest_issue.get("comments") != comment_count
+                    or latest_adc.pointer != verified.pointer
+                    or latest_adc.contract.sha256 != verified.contract.sha256
+                    or latest_branch != branch_ref or latest_sha != commit_sha):
+                raise PhaseEvidenceError(
+                    "Issue, PRBinding, ADC, branch, or HEAD changed before Phase evidence publication"
+                )
             created = github.create_issue_comment(issue_number, body)
             comment_id = created.get("id") if isinstance(created, dict) else None
         except GitHubError as exc:
+            refresh_adc_forward_generation_session(github, issue_number)
             # A lost POST response is recoverable only by finding this exact body once.
             try:
                 matches = [row for row in github.issue_comments(issue_number)
@@ -1520,12 +1613,15 @@ def publish_phase_evidence(github: GitHub, root: Path, issue_number: int,
             comment_id = matches[0].get("id")
     if type(comment_id) is not int or comment_id < 1:
         raise PhaseEvidenceError("phase evidence publication returned an invalid Comment ID")
-    return comment_id, _readback(github, issue_number, comment_id, body)
+    refresh_adc_forward_generation_session(github, issue_number)
+    result = _readback(github, issue_number, comment_id, body)
+    return comment_id, result
 
 
 def verify_phase_evidence(github: GitHub, root: Path, issue_number: int, comment_id: int,
                           source: Phase, target: Phase,
                           skip_reasons: Mapping[str, str] | None = None) -> PhaseDecision:
-    decision, _issue, _verified, _branch_ref, _commit_sha = _collect_payload(
-        github, root, issue_number, source, target, skip_reasons or {})
-    return _readback(github, issue_number, comment_id, decision.body())
+    with adc_forward_generation_session(github, issue_number):
+        decision, _issue, _verified, _branch_ref, _commit_sha = _collect_payload(
+            github, root, issue_number, source, target, skip_reasons or {})
+        return _readback(github, issue_number, comment_id, decision.body())

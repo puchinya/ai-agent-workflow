@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from .adc import ADCPointer, ADCError, VerifiedADC, verify_adc, verify_adc_generation
+from .adc import ADCPointer, ADCError, VerifiedADC, verify_adc
 from .execution import ExecutionBinding, ExecutionError, binding_digest, read_binding_history
 from .github import GitHub, GitHubError
 from .git import GitError, current_branch, head_sha40, is_ancestor
@@ -84,6 +84,18 @@ class PhaseGeneration:
     binding_generation: int
     binding_generation_id: int
     binding_sha256: str
+
+
+@dataclass(frozen=True)
+class EpochPhaseGeneration:
+    """Phase generation sourced from a validated Issue-neutral execution epoch."""
+
+    comment_id: int
+    sha256: str
+    adc_comment_id: int
+    adc_sha256: str
+    epoch_id: str
+    epoch_sha256: str
 
 
 @dataclass(frozen=True)
@@ -412,7 +424,8 @@ def _record_generation(record: RestartRecord) -> tuple[int, str]:
 
 def _validate_history(github: GitHub, issue: dict[str, Any], repository_id: int,
                       bindings: tuple[ExecutionBinding, ...], history: _History,
-                      *, allow_pending_adc_comment_id: int | None = None) -> tuple[RestartRecord, ...]:
+                      *, verified_adc: VerifiedADC,
+                      allow_pending_adc_comment_id: int | None = None) -> tuple[RestartRecord, ...]:
     issue_number, issue_id = issue.get("number"), issue.get("id")
     ordered = sorted(history.restarts, key=lambda record: record.comment_id)
     if tuple(ordered) != history.restarts:
@@ -493,17 +506,17 @@ def _validate_history(github: GitHub, issue: dict[str, Any], repository_id: int,
                 or binding.issue_number != issue_number
                 or binding_digest(binding) != payload["binding_sha256"]):
             raise PhaseRestartError("Phase restart history does not match its immutable Binding generation")
-        try:
-            old_adc = verify_adc_generation(
-                github, issue_number, payload["adc_comment_id"], payload["adc_sha256"], state="approved",
-            )
-            old_auth = parse_authorization(old_adc.contract.content, issue_number)
-        except (ADCError, GitHubError) as exc:
-            raise PhaseRestartError(f"Phase restart history ADC readback failed: {exc}") from exc
-        if (old_adc.pointer.byte_length != payload["adc_byte_length"]
-                or old_auth.sha256 != payload["authorization_sha256"]
-                or old_auth.reason != payload["reason"]):
-            raise PhaseRestartError("Phase restart history no longer matches its approved ADC authorization")
+        # Superseded ADC comments are no longer reread or validated. Their
+        # completed Phase records remain local append-only evidence but never
+        # authorize a new transition. Only the current ADC may do that.
+        if payload["adc_comment_id"] == verified_adc.pointer.comment_id:
+            current_auth = parse_authorization(verified_adc.contract.content, issue_number)
+            if (verified_adc.pointer.state != "approved"
+                    or verified_adc.pointer.sha256 != payload["adc_sha256"]
+                    or verified_adc.pointer.byte_length != payload["adc_byte_length"]
+                    or current_auth.sha256 != payload["authorization_sha256"]
+                    or current_auth.reason != payload["reason"]):
+                raise PhaseRestartError("current restart record does not match the approved ADC")
 
         if applied is not None:
             if (applied.comment_id <= intent.comment_id
@@ -539,8 +552,6 @@ def _binding_history(root: Path, issue_number: int) -> tuple[ExecutionBinding, .
 def _live_subject(github: GitHub, root: Path, issue_number: int, *, require_execution_phase: bool) -> _LiveSubject:
     if type(issue_number) is not int or issue_number < 1:
         raise PhaseRestartError("Issue number must be positive")
-    if issue_number == 63:
-        raise PhaseRestartError("Issue #63 must use its existing specialized phase-rebaseline route")
     try:
         metadata = github.repository_metadata()
         full_name = metadata.get("full_name")
@@ -615,7 +626,7 @@ def _validate_journal(github: GitHub, subject: _LiveSubject, history: _History,
                       *, allow_pending_adc_comment_id: int | None = None) -> tuple[RestartRecord, ...]:
     return _validate_history(
         github, subject.issue, subject.repository_id, subject.bindings, history,
-        allow_pending_adc_comment_id=allow_pending_adc_comment_id,
+        verified_adc=subject.verified_adc, allow_pending_adc_comment_id=allow_pending_adc_comment_id,
     )
 
 
@@ -722,8 +733,20 @@ def _validated_current_journal(github: GitHub, subject: _LiveSubject,
 
 
 def current_phase_generation(github: GitHub, root: Path, issue_number: int,
-                             verified_adc: VerifiedADC) -> PhaseGeneration | None:
+                             verified_adc: VerifiedADC) -> PhaseGeneration | EpochPhaseGeneration | None:
     """Return the exact active restart Applied record for the current ADC/Binding, if any."""
+    from .current_epoch import CurrentEpochError, epoch_paths, read_current_epoch
+    epoch_file, attachment_file = epoch_paths(root, issue_number)
+    if (epoch_file.exists() or epoch_file.is_symlink()
+            or attachment_file.exists() or attachment_file.is_symlink()):
+        try:
+            epoch = read_current_epoch(github, root, issue_number, verified_adc)
+        except (CurrentEpochError, GitHubError, GitError, OSError, ValueError) as exc:
+            raise PhaseRestartError(f"active execution epoch is invalid: {exc}") from exc
+        return EpochPhaseGeneration(
+            epoch.applied_comment_id, epoch.applied_body_sha256,
+            epoch.adc_comment_id, epoch.adc_sha256, epoch.epoch_id, epoch.sha256,
+        )
     bindings = _binding_history(root, issue_number)
     binding = bindings[-1]
     if (binding.repository.casefold() != github.repo.casefold() or binding.issue_number != issue_number
@@ -946,8 +969,6 @@ def restart_issue_phase(github: GitHub, root: Path, issue_number: int) -> dict[s
 
     if parse_phase_labels(subject.labels) is not Phase.EXECUTION:
         raise PhaseRestartError("restart applies only when the current label is phase:execution")
-    if issue_number == 63:
-        raise PhaseRestartError("Issue #63 must use its existing specialized phase-rebaseline route")
     intent_payload = _intent_payload(subject, history)
     _validate_record_payload(intent_payload, INTENT_SCHEMA)
     intent = _post_once(github, issue_number, INTENT_SCHEMA, intent_payload)

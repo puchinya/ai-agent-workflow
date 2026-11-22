@@ -20,6 +20,9 @@ class GitHubError(RuntimeError):
         self.status_code = status_code
 
 
+GITHUB_API_TIMEOUT_SECONDS = 30
+
+
 def _positive_int(value: Any, label: str) -> int:
     if type(value) is not int or value < 1:
         raise GitHubError(f"{label} must be a positive integer")
@@ -31,7 +34,6 @@ class GitHub:
     repo: str
     _api_request_count: int = field(default=0, init=False, repr=False)
     _api_elapsed_ms: float = field(default=0.0, init=False, repr=False)
-    _admin_token_override: str | None = field(default=None, init=False, repr=False)
     _admin_config_dir: str | None = field(default=None, init=False, repr=False)
 
     @property
@@ -71,8 +73,12 @@ class GitHub:
             result = subprocess.run(
                 argv, input=input_text, text=True, encoding="utf-8", errors="replace",
                 check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                env=child_env,
+                env=child_env, timeout=GITHUB_API_TIMEOUT_SECONDS,
             )
+        except subprocess.TimeoutExpired as exc:
+            raise GitHubError(
+                f"GitHub API {verb} {endpoint} timed out after {GITHUB_API_TIMEOUT_SECONDS} seconds"
+            ) from None
         except OSError as exc:
             raise GitHubError(f"could not start GitHub API client: {exc}") from exc
         finally:
@@ -93,13 +99,7 @@ class GitHub:
     def _child_environment(self) -> dict[str, str]:
         """Apply this client's scoped auth boundary to every gh API subprocess."""
         child_env = os.environ.copy()
-        if self._admin_token_override is not None and self._admin_config_dir is not None:
-            raise GitHubError("Admin client cannot combine token and isolated gh-config authentication")
-        if self._admin_token_override is not None:
-            for name in ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"):
-                child_env.pop(name, None)
-            child_env["GH_TOKEN"] = self._admin_token_override
-        elif self._admin_config_dir is not None:
+        if self._admin_config_dir is not None:
             for name in ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"):
                 child_env.pop(name, None)
             child_env["GH_CONFIG_DIR"] = self._admin_config_dir
@@ -149,6 +149,36 @@ class GitHub:
     def issue_comments(self, number: int) -> list[dict[str, Any]]:
         number = _positive_int(number, "Issue number")
         return self._paginate(f"{self.prefix}/issues/{number}/comments")
+
+    def issue_comment_pages_newest(self, number: int, total_comments: int):
+        """Read Issue comment pages newest-first without enumerating old ADC history.
+
+        The caller must use the comment count from the Issue snapshot and check
+        that it has not changed after selecting the current ADC pointer.
+        """
+        number = _positive_int(number, "Issue number")
+        if type(total_comments) is not int or total_comments < 0:
+            raise GitHubError("Issue comment count must be a non-negative integer")
+        last_page = max(1, (total_comments + 99) // 100)
+        previous_page_min: int | None = None
+        for page in range(last_page, 0, -1):
+            result = self.request(
+                "GET", f"{self.prefix}/issues/{number}/comments?per_page=100&page={page}",
+            )
+            expected_count = min(100, total_comments - ((page - 1) * 100))
+            if (not isinstance(result, list)
+                    or any(not isinstance(row, dict) for row in result)
+                    or len(result) != expected_count):
+                raise GitHubError("Issue comment page is incomplete or malformed for the snapshot count")
+            ids = [row.get("id") for row in result]
+            if (any(type(identifier) is not int or identifier < 1 for identifier in ids)
+                    or ids != sorted(set(ids))
+                    or (previous_page_min is not None and ids
+                        and ids[-1] >= previous_page_min)):
+                raise GitHubError("Issue comment page order or IDs are invalid")
+            if ids:
+                previous_page_min = ids[0]
+            yield result
 
     def repository_labels(self) -> list[dict[str, Any]]:
         """Read existing repository labels without creating or changing definitions."""
@@ -314,7 +344,7 @@ class GitHub:
         result = self.request("GET", f"{self.prefix}/collaborators/{quote(login, safe='')}/permission")
         user = result.get("user") if isinstance(result, dict) else None
         if (not isinstance(result, dict) or result.get("permission") not in
-                {"admin", "maintain", "write", "triage", "read"}
+                {"admin", "maintain", "write", "triage", "read", "none"}
                 or not isinstance(user, dict) or type(user.get("id")) is not int or user["id"] < 1
                 or not isinstance(user.get("login"), str) or user["login"].casefold() != login.casefold()
                 or user.get("type") != "User"):
@@ -367,7 +397,12 @@ class GitHub:
                 ["gh", "api", "graphql", "--input", "-"], input=body, text=True,
                 encoding="utf-8", errors="replace", check=False,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self._child_environment(),
+                timeout=GITHUB_API_TIMEOUT_SECONDS,
             )
+        except subprocess.TimeoutExpired:
+            raise GitHubError(
+                f"GitHub GraphQL operation timed out after {GITHUB_API_TIMEOUT_SECONDS} seconds"
+            ) from None
         except OSError as exc:
             raise GitHubError(f"could not start GitHub GraphQL client: {exc}") from exc
         if result.returncode:

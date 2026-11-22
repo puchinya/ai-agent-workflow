@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from dataclasses import dataclass
@@ -14,6 +15,20 @@ from .verification import RequiredCheckPolicy, VerificationError
 
 class ProfileError(ValueError):
     pass
+
+
+def canonical_project_profile_sha256(raw: bytes) -> str:
+    """Hash canonical UTF-8 profile bytes, normalizing only CRLF line endings."""
+    if not isinstance(raw, bytes):
+        raise ProfileError("project configuration bytes are required")
+    canonical = raw.replace(b"\r\n", b"\n")
+    if b"\r" in canonical:
+        raise ProfileError("project configuration contains a bare carriage return")
+    try:
+        canonical.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise ProfileError("project configuration is not valid UTF-8") from exc
+    return hashlib.sha256(canonical).hexdigest()
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
