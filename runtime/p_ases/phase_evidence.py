@@ -874,6 +874,9 @@ def _collect_payload(github: GitHub, root: Path, issue_number: int, source: Phas
                if verified_context is None else
                _reuse_verified_context(github, root, issue_number, None, verified_context))
     issue, verified, kind, branch_ref, local_sha, _binding_verified = context
+    comment_count = issue.get("comments") if isinstance(issue, dict) else None
+    if type(comment_count) is not int or comment_count < 0:
+        raise PhaseEvidenceError("current Issue comment count is unavailable")
     labels = [row.get("name") for row in issue.get("labels", []) if isinstance(row, dict)]
     if check_source_phase and parse_phase_labels(labels) is not source:
         raise PhaseEvidenceError("Issue phase label differs from the requested evidence source phase")
@@ -1546,6 +1549,9 @@ def _publish_phase_evidence(github: GitHub, root: Path, issue_number: int,
     decision, issue, verified, branch_ref, commit_sha = _collect_payload(
         github, root, issue_number, source, target, skips,
     )
+    comment_count = issue.get("comments") if isinstance(issue, dict) else None
+    if type(comment_count) is not int or comment_count < 0:
+        raise PhaseEvidenceError("current Issue comment count is unavailable")
     body = decision.body()
     try:
         comments = github.issue_comments(issue_number)
@@ -1577,13 +1583,15 @@ def _publish_phase_evidence(github: GitHub, root: Path, issue_number: int,
                     or live_issue.get("state") != "open"
                     or live_issue.get("body") != issue.get("body")
                     or live_issue.get("labels") != issue.get("labels")
-                    or live_issue.get("repository_url") != issue.get("repository_url")):
+                    or live_issue.get("repository_url") != issue.get("repository_url")
+                    or live_issue.get("comments") != comment_count):
                 raise PhaseEvidenceError("Issue changed between Phase preflight and publication")
             if (latest_decision.body() != body or latest_issue.get("number") != issue_number
                     or latest_issue.get("state") != "open"
                     or latest_issue.get("labels") != issue.get("labels")
                     or latest_issue.get("body") != issue.get("body")
                     or latest_issue.get("repository_url") != issue.get("repository_url")
+                    or latest_issue.get("comments") != comment_count
                     or latest_adc.pointer != verified.pointer
                     or latest_adc.contract.sha256 != verified.contract.sha256
                     or latest_branch != branch_ref or latest_sha != commit_sha):

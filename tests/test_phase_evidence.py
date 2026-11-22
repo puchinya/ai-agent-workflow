@@ -86,7 +86,8 @@ class GenericPhaseEvidenceTests(unittest.TestCase):
 
     def test_publish_uses_current_issue_and_adc_for_arbitrary_issue(self):
         issue = {"number": 128, "state": "open", "labels": [{"name": "phase:specification"}],
-                 "body": "unchanged", "repository_url": "https://api.github.com/repos/octo/repo"}
+                 "body": "unchanged", "comments": 0,
+                 "repository_url": "https://api.github.com/repos/octo/repo"}
         pointer = SimpleNamespace(comment_id=6902977193, state="approved", sha256=ADC_SHA)
         verified = SimpleNamespace(pointer=pointer, contract=SimpleNamespace(sha256=ADC_SHA))
         github = SimpleNamespace(
@@ -116,7 +117,8 @@ class GenericPhaseEvidenceTests(unittest.TestCase):
 
     def test_publish_stale_issue_blocks_before_post(self):
         issue = {"number": 128, "state": "open", "labels": [{"name": "phase:specification"}],
-                 "body": "initial", "repository_url": "https://api.github.com/repos/octo/repo"}
+                 "body": "initial", "comments": 0,
+                 "repository_url": "https://api.github.com/repos/octo/repo"}
         changed = {**issue, "body": "concurrent edit"}
         pointer = SimpleNamespace(comment_id=6902977193, state="approved", sha256=ADC_SHA)
         verified = SimpleNamespace(pointer=pointer, contract=SimpleNamespace(sha256=ADC_SHA))
@@ -136,6 +138,33 @@ class GenericPhaseEvidenceTests(unittest.TestCase):
             session.return_value.__exit__ = lambda _self, _type, _exc, _tb: False
             # The preflight must use a fresh live Issue snapshot, not only the initial payload.
             with self.assertRaises(module.PhaseEvidenceError):
+                module.publish_phase_evidence(
+                    github, Path(directory), 128, Phase.REQUIREMENTS, Phase.SPECIFICATION,
+                )
+        github.create_issue_comment.assert_not_called()
+
+    def test_publish_comment_count_change_blocks_before_post(self):
+        issue = {"number": 128, "state": "open", "labels": [{"name": "phase:specification"}],
+                 "body": "unchanged", "comments": 0,
+                 "repository_url": "https://api.github.com/repos/octo/repo"}
+        changed = {**issue, "comments": 1}
+        pointer = SimpleNamespace(comment_id=6902977193, state="approved", sha256=ADC_SHA)
+        verified = SimpleNamespace(pointer=pointer, contract=SimpleNamespace(sha256=ADC_SHA))
+        github = SimpleNamespace(
+            repo=REPOSITORY, issue_comments=Mock(return_value=[]),
+            issue=Mock(return_value=changed),
+            branch=Mock(return_value={"commit": {"sha": HEAD}}),
+            create_issue_comment=Mock(),
+        )
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(module, "_collect_payload", return_value=(
+                    decision(), issue, verified, "pases/work", HEAD)), \
+                patch.object(module, "verify_adc", return_value=verified), \
+                patch.object(module, "refresh_adc_forward_generation_session"), \
+                patch.object(module, "adc_forward_generation_session") as session:
+            session.return_value.__enter__ = lambda _self: None
+            session.return_value.__exit__ = lambda _self, _type, _exc, _tb: False
+            with self.assertRaisesRegex(module.PhaseEvidenceError, "Issue changed"):
                 module.publish_phase_evidence(
                     github, Path(directory), 128, Phase.REQUIREMENTS, Phase.SPECIFICATION,
                 )

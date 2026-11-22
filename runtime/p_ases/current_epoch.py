@@ -504,6 +504,11 @@ def read_current_epoch(github: GitHub, root: Path, issue_number: int,
     # potentially stale generation selected from a changed pagination count.
     if github.issue(issue_number).get("comments") != count:
         raise CurrentEpochError("current Issue comment count changed during epoch lookup")
+    refreshed = verify_adc(github, issue_number)
+    if (refreshed.pointer != current.pointer
+            or refreshed.contract.sha256 != current.contract.sha256
+            or refreshed.pointer.state != current.pointer.state):
+        raise CurrentEpochError("current ADC pointer changed during epoch lookup")
     return ActiveExecutionEpoch(
         epoch, current.pointer.comment_id, current.pointer.sha256, active_id, active_sha,
     ).validate()

@@ -866,6 +866,7 @@ class PhaseEvidenceCollectionTests(unittest.TestCase):
             def issue(self, number):
                 return {
                     "number": number, "state": "open", "pull_request": None,
+                    "comments": len(self.comments),
                     "repository_url": f"https://api.github.com/repos/{repository}",
                     "labels": [{"name": "kind:single"}, {"name": f"phase:{self.phase.value}"}],
                 }

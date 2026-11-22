@@ -98,7 +98,7 @@ class LocalExecutionTests(unittest.TestCase):
                 local_execution.require_local_activation_execution()
         local_execution._AUTHORIZED.reset(token)
 
-    def test_isolated_device_client_requires_active_owner_verified_session(self):
+    def test_private_owner_config_does_not_activate_direct_runtime_admin_client(self):
         with tempfile.TemporaryDirectory() as parent:
             config = Path(parent) / "gh-config"
             config.mkdir(mode=0o700)
@@ -108,42 +108,9 @@ class LocalExecutionTests(unittest.TestCase):
                 repo=REPOSITORY, _admin_config_dir=str(config),
                 authenticated_user=Mock(return_value={"id": 3744776, "type": "User"}),
             )
-            with self.assertRaisesRegex(local_execution.LocalExecutionError, "outside its verified device session"):
+            with self.assertRaisesRegex(
+                    local_execution.LocalExecutionError, "outside its verified device session"):
                 local_execution.require_isolated_device_admin_client(client)
-            with patch("p_ases.local_execution._require_private_device_config"):
-                with local_execution.verified_device_admin_session(client):
-                    local_execution.require_isolated_device_admin_client(client)
-            with self.assertRaisesRegex(local_execution.LocalExecutionError, "outside its verified device session"):
-                local_execution.require_isolated_device_admin_client(client)
-            client.authenticated_user.assert_called_once_with()
-
-    def test_wrong_authenticated_owner_never_enters_device_session(self):
-        with tempfile.TemporaryDirectory() as parent:
-            config = Path(parent) / "gh-config"
-            config.mkdir(mode=0o700)
-            if os.name == "posix":
-                os.chmod(config, stat.S_IRWXU)
-            client = SimpleNamespace(
-                repo=REPOSITORY, _admin_config_dir=str(config),
-                authenticated_user=Mock(return_value={"id": 42, "type": "User"}),
-            )
-            with patch("p_ases.local_execution._require_private_device_config"):
-                with self.assertRaisesRegex(local_execution.LocalExecutionError, "not the repository owner"):
-                    with local_execution.verified_device_admin_session(client):
-                        self.fail("wrong owner must not enter")
-
-    def test_device_session_rejects_nonprivate_config_before_owner_read(self):
-        with tempfile.TemporaryDirectory() as parent:
-            config = Path(parent) / "gh-config"
-            config.mkdir(mode=0o700)
-            client = SimpleNamespace(
-                repo=REPOSITORY, _admin_config_dir=str(config),
-                authenticated_user=Mock(return_value={"id": 3744776, "type": "User"}),
-            )
-            with patch("p_ases.local_execution.stat.S_IMODE", return_value=0o755):
-                with self.assertRaisesRegex(local_execution.LocalExecutionError, "GH_CONFIG_DIR must be private mode 0700"):
-                    with local_execution.verified_device_admin_session(client):
-                        self.fail("nonprivate device config must not enter")
             client.authenticated_user.assert_not_called()
 
     def test_direct_runtime_guards_block_before_any_github_read_or_write(self):

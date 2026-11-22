@@ -21,7 +21,8 @@ from typing import Any, Callable, Iterator
 
 from .github import GitHub
 from .local_execution import (
-    LocalExecutionError, require_local_activation_execution, verified_device_admin_session,
+    LocalExecutionError, _ACTIVE_ADMIN_CLIENT, _require_private_device_config,
+    require_local_activation_execution,
 )
 
 
@@ -166,10 +167,31 @@ def _isolated_device_client(
             raise AdminAuthError("Admin GitHub factory returned an invalid client")
         github._admin_config_dir = str(config_dir)
         try:
-            with verified_device_admin_session(github):
-                yield github
+            if github.repo != repo:
+                raise LocalExecutionError(
+                    "ADMIN_DEVICE_AUTH_REQUIRED: Admin session targets another repository"
+                )
+            if getattr(github, "_admin_token_override", None) is not None:
+                raise LocalExecutionError("ADMIN_DEVICE_AUTH_REQUIRED: token fallback is disabled")
+            _require_private_device_config(github)
+            try:
+                actor = github.authenticated_user()
+            except Exception as exc:
+                raise LocalExecutionError(
+                    "ADMIN_DEVICE_AUTH_REQUIRED: authenticated owner readback failed"
+                ) from exc
+            if (not isinstance(actor, dict) or actor.get("id") != 3744776
+                    or actor.get("type") != "User"):
+                raise LocalExecutionError(
+                    "ADMIN_DEVICE_AUTH_REQUIRED: authenticated identity is not the repository owner"
+                )
         except LocalExecutionError as exc:
             raise AdminAuthError(str(exc)) from exc
+        active_token = _ACTIVE_ADMIN_CLIENT.set(id(github))
+        try:
+            yield github
+        finally:
+            _ACTIVE_ADMIN_CLIENT.reset(active_token)
     except BaseException:
         primary_error = True
         raise

@@ -99,7 +99,7 @@ The dependency direction is CLI -> domain modules -> injected GitHub/process bou
 7. Commit local state with atomic replacement only after remote verification, or keep old verified bytes on failure.
 8. Clean temporary files in `finally` paths and print bounded diagnostics. Hook diagnostics stay silent on success and emit only a redacted combined tail of at most 16 KiB on failure. Post-switch failures preserve and report the switched branch.
 
-Issue #71's successor-ADC bootstrap keeps execution origin separate from current authority. The epoch reader verifies the original ADC attachment and complete approved successor chain; its active view combines the unchanged epoch digest with the current ADC pointer and active Phase Applied record. The dedicated `issue phase-rework` route rechecks current Issue, ADC, branch, remote branch, and PR identities around a single authorized verification-to-requirements label update. Generic Issue and Issue #63 paths do not use this reader or transition.
+Issue #71's successor-ADC bootstrap keeps execution origin separate from current authority. The epoch reader verifies the immutable execution origin and resolves only the directly current approved ADC pointer; its active view combines the unchanged epoch digest with that current pointer and active Phase Applied record. The dedicated `issue phase-rework` route rechecks current Issue, ADC, branch, remote branch, and PR identities around a single authorized verification-to-requirements label update. Generic Issue and Issue #63 paths do not use this reader or transition.
 
 <a id="des-rt-003"></a>
 <a id="des-rt-003-implementation-base-resolution-ownership"></a>

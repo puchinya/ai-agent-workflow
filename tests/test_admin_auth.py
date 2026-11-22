@@ -19,6 +19,9 @@ from p_ases.admin_auth import (  # noqa: E402
     temporary_admin_client,
 )
 from p_ases.github import GitHub
+from p_ases.local_execution import (
+    LocalExecutionError, require_isolated_device_admin_client,
+)
 
 
 class AdminAuthenticationTests(unittest.TestCase):
@@ -120,7 +123,7 @@ class AdminAuthenticationTests(unittest.TestCase):
 
         with self.local_environment(), self.allow_test_device_session(), patch.dict(os.environ, token_env), \
              patch("p_ases.admin_auth._secure_private_config", side_effect=self.secure_test_config), \
-             patch("p_ases.local_execution._require_private_device_config"), \
+             patch("p_ases.admin_auth._require_private_device_config"), \
              patch("p_ases.admin_auth.subprocess.Popen", side_effect=fake_popen), \
              patch("p_ases.github.subprocess.run", side_effect=fake_api_run), \
              patch("p_ases.admin_auth.sys.stdout", Mock(isatty=lambda: True)):
@@ -134,6 +137,7 @@ class AdminAuthenticationTests(unittest.TestCase):
                 if os.name == "posix":
                     self.assertEqual(stat.S_IMODE(config_dir.stat().st_mode), 0o700)
                 self.assertEqual(github._admin_config_dir, str(config_dir))
+                require_isolated_device_admin_client(github)
                 github.request("GET", "user")
                 github._graphql("query { viewer { login } }", {})
                 self.assertEqual(calls[1][0], ["gh", "api", "--method", "GET", "user"])
@@ -156,7 +160,53 @@ class AdminAuthenticationTests(unittest.TestCase):
                 self.assertIsNotNone(calls[0][2])
             self.assertFalse(config_dir.exists())
             self.assertIsNone(github._admin_config_dir)
+            with self.assertRaisesRegex(
+                    LocalExecutionError, "outside its verified device session"):
+                require_isolated_device_admin_client(github)
             self.assertEqual({key: os.environ.get(key) for key in token_env}, parent_before)
+
+    def test_wrong_authenticated_owner_never_enters_device_session(self):
+        config_dirs = []
+
+        def fake_popen(_argv, **kwargs):
+            config_dirs.append(Path(kwargs["env"]["GH_CONFIG_DIR"]))
+            return self.fake_process()
+
+        api = Mock(return_value=Mock(
+            returncode=0, stdout='{"id":42,"login":"other","type":"User"}', stderr="",
+        ))
+        with self.local_environment(), self.allow_test_device_session(), \
+             patch("p_ases.admin_auth._secure_private_config", side_effect=self.secure_test_config), \
+             patch("p_ases.admin_auth.subprocess.Popen", side_effect=fake_popen), \
+             patch("p_ases.github.subprocess.run", api), \
+             patch("p_ases.admin_auth.sys.stdout", Mock(isatty=lambda: True)):
+            with self.assertRaisesRegex(AdminAuthError, "not the repository owner"):
+                with temporary_admin_client(
+                    "puchinya/ai-agent-workflow",
+                    stdin=Mock(isatty=lambda: True), github_factory=GitHub,
+                ):
+                    self.fail("a non-owner device identity must not become an Admin session")
+        api.assert_called_once()
+        self.assertEqual(len(config_dirs), 1)
+        self.assertFalse(config_dirs[0].exists())
+
+    def test_nonprivate_device_config_blocks_before_owner_read(self):
+        api = Mock(side_effect=AssertionError("owner read must not run"))
+        with self.local_environment(), self.allow_test_device_session(), \
+             patch("p_ases.admin_auth._secure_private_config", side_effect=self.secure_test_config), \
+             patch("p_ases.admin_auth._require_private_device_config",
+                   side_effect=LocalExecutionError(
+                       "ADMIN_DEVICE_AUTH_REQUIRED: GH_CONFIG_DIR must be private mode 0700")), \
+             patch("p_ases.admin_auth.subprocess.Popen", return_value=self.fake_process()), \
+             patch("p_ases.github.subprocess.run", api), \
+             patch("p_ases.admin_auth.sys.stdout", Mock(isatty=lambda: True)):
+            with self.assertRaisesRegex(AdminAuthError, "private mode 0700"):
+                with temporary_admin_client(
+                    "puchinya/ai-agent-workflow",
+                    stdin=Mock(isatty=lambda: True), github_factory=GitHub,
+                ):
+                    self.fail("a nonprivate device config must not become an Admin session")
+        api.assert_not_called()
 
     def test_cloud_device_flow_blocks_before_tty_or_login(self):
         factory = Mock(side_effect=AssertionError("Cloud device mode must not create a client"))
@@ -220,7 +270,7 @@ class AdminAuthenticationTests(unittest.TestCase):
 
                 with self.allow_test_device_session(), \
                      patch("p_ases.admin_auth._secure_private_config", side_effect=self.secure_test_config), \
-                     patch("p_ases.local_execution._require_private_device_config"), \
+                     patch("p_ases.admin_auth._require_private_device_config"), \
                      patch("p_ases.admin_auth.subprocess.Popen", side_effect=fake_popen), \
                      patch("p_ases.admin_auth.sys.stdout", Mock(isatty=lambda: True)):
                     with self.assertRaisesRegex(AdminAuthError, "ADMIN_DEVICE_LOGIN_UNAVAILABLE"):
@@ -257,7 +307,7 @@ class AdminAuthenticationTests(unittest.TestCase):
         with self.local_environment(), self.allow_test_device_session(), \
              patch.dict(os.environ, {"GH_TOKEN": "ambient-gh"}), \
              patch("p_ases.admin_auth._secure_private_config", side_effect=self.secure_test_config), \
-             patch("p_ases.local_execution._require_private_device_config"), \
+             patch("p_ases.admin_auth._require_private_device_config"), \
              patch("p_ases.admin_auth.subprocess.Popen", side_effect=fake_popen), \
              patch("p_ases.github.subprocess.run", side_effect=fake_api_run), \
              patch("p_ases.admin_auth.sys.stdout", Mock(isatty=lambda: True)):

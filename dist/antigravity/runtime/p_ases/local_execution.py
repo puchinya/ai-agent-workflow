@@ -10,9 +10,8 @@ import contextvars
 import os
 import stat
 import sys
-from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, Mapping
 
 
 class LocalExecutionError(ValueError):
@@ -83,27 +82,6 @@ def _require_private_device_config(github: Any) -> None:
             raise LocalExecutionError("ADMIN_DEVICE_AUTH_REQUIRED: GH_CONFIG_DIR must be private mode 0700")
     except OSError as exc:
         raise LocalExecutionError("ADMIN_DEVICE_AUTH_REQUIRED: private GH_CONFIG_DIR is unavailable") from exc
-
-
-@contextmanager
-def verified_device_admin_session(github: Any) -> Iterator[None]:
-    """Mark only a device-authenticated, owner-verified Admin client as active."""
-    if getattr(github, "repo", None) != "puchinya/ai-agent-workflow":
-        raise LocalExecutionError("ADMIN_DEVICE_AUTH_REQUIRED: Admin session targets another repository")
-    if getattr(github, "_admin_token_override", None) is not None:
-        raise LocalExecutionError("ADMIN_DEVICE_AUTH_REQUIRED: token fallback is disabled")
-    _require_private_device_config(github)
-    try:
-        actor = github.authenticated_user()
-    except Exception as exc:
-        raise LocalExecutionError("ADMIN_DEVICE_AUTH_REQUIRED: authenticated owner readback failed") from exc
-    if (not isinstance(actor, dict) or actor.get("id") != 3744776 or actor.get("type") != "User"):
-        raise LocalExecutionError("ADMIN_DEVICE_AUTH_REQUIRED: authenticated identity is not the repository owner")
-    token = _ACTIVE_ADMIN_CLIENT.set(id(github))
-    try:
-        yield
-    finally:
-        _ACTIVE_ADMIN_CLIENT.reset(token)
 
 
 def require_isolated_device_admin_client(github: Any) -> None:

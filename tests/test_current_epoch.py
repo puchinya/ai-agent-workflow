@@ -136,9 +136,10 @@ class CurrentEpochTests(unittest.TestCase):
             "work_directory": str(self.root.resolve()),
         }
         self.save()
-        self.current_adc = SimpleNamespace(pointer=SimpleNamespace(
-            comment_id=77, sha256="8" * 64, state="approved",
-        ))
+        self.current_adc = SimpleNamespace(
+            pointer=SimpleNamespace(comment_id=77, sha256="8" * 64, state="approved"),
+            contract=SimpleNamespace(sha256="8" * 64),
+        )
 
     def save(self):
         epoch, attachment = epoch_paths(self.root, self.issue)
@@ -146,10 +147,12 @@ class CurrentEpochTests(unittest.TestCase):
         epoch.write_bytes(canonical(self.epoch))
         attachment.write_bytes(canonical(self.attachment))
 
-    def read(self, github):
+    def read(self, github, refreshed_adc=None):
+        fresh = self.current_adc if refreshed_adc is None else refreshed_adc
         with patch("p_ases.current_epoch.current_branch", return_value=self.epoch["branch_ref"]), \
                 patch("p_ases.current_epoch.head_sha40", return_value="c" * 40), \
-                patch("p_ases.current_epoch.is_ancestor", return_value=True):
+                patch("p_ases.current_epoch.is_ancestor", return_value=True), \
+                patch("p_ases.current_epoch.verify_adc", return_value=fresh):
             return read_current_epoch(github, self.root, self.issue, self.current_adc)
 
     def _reseal_local_epoch(self):
@@ -271,6 +274,16 @@ class CurrentEpochTests(unittest.TestCase):
         github.comment_pages = [[{"id": 90, "body": "Unrelated comment"}]]
         with self.assertRaisesRegex(CurrentEpochError, "origin was not found"):
             self.read(github)
+        self.assertEqual(github.direct_calls, [41, 40])
+
+    def test_changed_current_adc_pointer_blocks_stale_verified_input(self):
+        github = FakeGitHub(self.origin, self.intent)
+        changed = SimpleNamespace(
+            pointer=SimpleNamespace(comment_id=78, sha256="9" * 64, state="approved"),
+            contract=SimpleNamespace(sha256="9" * 64),
+        )
+        with self.assertRaisesRegex(CurrentEpochError, "current ADC pointer changed"):
+            self.read(github, changed)
         self.assertEqual(github.direct_calls, [41, 40])
 
     def test_changed_comment_count_blocks_stale_generation(self):
