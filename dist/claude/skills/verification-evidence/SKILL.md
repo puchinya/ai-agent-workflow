@@ -15,7 +15,7 @@ Owner: runtime/p_ases/verification_plan.py, oracle_trace.py, verification.py, an
 3. Collect observations only for the exact repository, Issue, PR, HEAD, and Plan.
 4. Re-evaluate final evidence after implementation changes. Empty plans and skipped checks remain non-passing.
 5. Publish only the recomputed exact-subject result and read it back.
-6. For a pre-User-Review, in-scope correction from verification, the distinct `issue verification-rework` operation requires `--plan` pointing to the current canonical frozen Plan and a failure artifact matching the repository, Issue, PR, ADC comment/digest, Plan SHA and HEAD. Never treat a failure from a different Plan as correction authority. Revalidate the Plan and normative source digests before label mutation or Applied recovery; after a new HEAD regenerate the entire required gate set.
+6. For a pre-User-Review, in-scope correction from verification, the distinct `issue verification-rework` operation requires `--plan` pointing to the current canonical frozen Plan and a failure artifact matching the repository, Issue, PR, ADC comment/digest, Plan SHA and HEAD. Never treat a failure from a different Plan as correction authority. Revalidate the canonical Plan and complete independent Oracle/Test/requirement coverage using the ordinary Verification evaluator, and live-recompute any claimed mandatory FAIL from current evidence and trusted checks before label mutation or Applied recovery; after a new HEAD regenerate the entire required gate set.
 
 ## CLI
 

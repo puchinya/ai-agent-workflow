@@ -592,7 +592,12 @@ def _read_history(github: Any, issue_number: int = ISSUE_NUMBER) -> tuple[tuple[
         selected = []
         for row in rows:
             body = row.get("body") if isinstance(row, dict) else None
-            if _has_owner_decision_marker(body):
+            user = row.get("user") if isinstance(row, dict) else None
+            # Public Issue comments, even with a reserved marker, cannot become
+            # authoritative owner operations or poison the owner decision chain.
+            if (_has_owner_decision_marker(body)
+                    and isinstance(user, dict) and user.get("type") == "User"
+                    and user.get("id") == OWNER_ID):
                 selected.append(row)
         return selected
     first = marked(initial)

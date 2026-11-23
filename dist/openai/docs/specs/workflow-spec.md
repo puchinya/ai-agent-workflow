@@ -487,12 +487,12 @@ The exact approved ADC and its single valid typed authorization are the sole app
 <a id="req-f79-001"></a>
 <a id="req-f79-001-bounded-phase-correction"></a>
 ### 10.1 REQ-F79-001 Bounded phase correction
-Normal `advance` never accepts an unconditional backward edge. Only `issue verification-rework` may take an ordinary Issue from verification to execution using current in-scope blocking category-A or failed mandatory Verification evidence, before User Review starts. B/C/D alone are not correction authority.
+Normal `advance` never accepts an unconditional backward edge. Only `issue verification-rework` may take an ordinary Issue from verification to execution using current in-scope blocking category-A or a live-recomputed failed mandatory Verification result, never an uncorroborated synthetic FAIL receipt, before User Review starts. B/C/D alone are not correction authority.
 
 <a id="req-f79-002"></a>
 <a id="req-f79-002-immutable-correction-history"></a>
 ### 10.2 REQ-F79-002 Immutable correction history
-A trusted owner/executor's canonical Intent and Applied records bind Issue, approved ADC, frozen Binding, PR/head/base, active Phase receipt, current Verification Plan, exact evidence, and complete label sets. Public outsider comments are not state. An unknown GitHub response permits only verified, write-free readback/recovery, never blind replay.
+A GitHub-authenticated owner/collaborator's canonical Intent and Applied records bind Issue, approved ADC, frozen Binding, PR/head/base, active Phase receipt, current Verification Plan, exact evidence, and complete label sets. Public outsider comments are not state. Historical trusted authors are checked against their GitHub-recorded author association, not the current caller token, so executor handoff preserves all cycles; a collaborator may recover a predecessor's pending Intent with its own authenticated Applied author identity. An unknown GitHub response permits only verified, write-free readback/recovery, never blind replay.
 
 <a id="req-f79-003"></a>
 <a id="req-f79-003-current-head-progress-and-evidence"></a>
@@ -507,12 +507,12 @@ A is an explicit ADC violation, B a material ADC ambiguity, C a new requirement,
 <a id="req-f79-005"></a>
 <a id="req-f79-005-user-review-boundary"></a>
 ### 10.5 REQ-F79-005 User Review boundary
-A started User Review session, including interrupted startup, prohibits verification rework; generic continuation or APPROVED is not edit/push permission. Only exact authenticated CHANGES_REQUESTED enters the existing User Review rework route. Previous review evidence is not reused after HEAD change.
+A started User Review session, including interrupted startup, prohibits verification rework; outsider Issue comments imitating reserved User Review schema markers are ignored, while only authenticated canonical owner carriers bind remote decisions; generic continuation or APPROVED is not edit/push permission. Only exact authenticated CHANGES_REQUESTED enters the existing User Review rework route. Previous review evidence is not reused after HEAD change.
 
 <a id="req-f79-006"></a>
 <a id="req-f79-006-explicit-ordinary-merge-authority"></a>
 ### 10.6 REQ-F79-006 Explicit ordinary merge authority
-A normal PR_MERGE plan requires verified current Final Delivery, a distinct exact-HEAD owner grant, approved PR head/base (ref and SHA), merge method, closure association, and exact final-delivery subject/digest. Reject base or gate drift before the single merge attempt and in post-merge readback. Do not combine User Review with merge approval or involve #57/#63 Activation-specific completion.
+A normal PR_MERGE plan requires verified current Final Delivery, a distinct exact-HEAD owner grant, approved PR head/base (ref and SHA), merge method, closure association, and exact final-delivery subject/digest. Reject base or gate drift before the single merge attempt and in post-merge readback. Verified owner PR_MERGE carrier comments are technical authorization evidence rather than new human User Review questions; user-authored normal comments and outsider forgeries remain in the complete feedback surface. Do not combine User Review with merge approval or involve #57/#63 Activation-specific completion.
 
 <a id="req-f79-007"></a>
 <a id="req-f79-007-contract-and-distribution-synchronization"></a>

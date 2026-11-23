@@ -24,9 +24,13 @@ from .phase_restart import (
 )
 from .phases import Phase, PhaseError, parse_phase_labels, parse_attention_labels
 from .user_review import UserReviewError, read_review_session
+from .user_review_relay import (
+    UserReviewRelayError, has_user_review_decision_marker,
+    parse_user_review_decision, _identity as _review_decision_identity,
+)
 from .verification import VerificationError, VerificationResult
 from .work import WorkError, parse_issue_association
-from .verification_plan import PlanError, read_plan, verify_plan_sources
+from .verification_plan import PlanError, read_plan
 
 INTENT_SCHEMA = "PASES_VERIFICATION_REWORK_INTENT_V1"
 APPLIED_SCHEMA = "PASES_VERIFICATION_REWORK_APPLIED_V1"
@@ -87,7 +91,10 @@ def _fingerprint(row: Any, repo: str, issue: int) -> tuple[Any, ...]:
     if any(not isinstance(a, str) or a.casefold() != e.casefold()
            for a, e in zip(actual, urls, strict=True)):
         raise VerificationReworkError("rework journal carrier has mismatched Issue origin")
-    return comment_id, body, created, updated, user["id"], user["login"].casefold(), *actual
+    role = row.get("author_association")
+    if role not in {"OWNER", "COLLABORATOR"}:
+        raise VerificationReworkError("rework journal author is not the repository owner/collaborator")
+    return comment_id, body, created, updated, user["id"], user["login"].casefold(), role, *actual
 
 
 def _parse_record(row: dict[str, Any], repo: str, issue: int) -> ReworkRecord:
@@ -177,45 +184,50 @@ def _unique_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def _trusted_rework_authors(github: GitHub) -> frozenset[int]:
-    """Repository owner and authenticated executor are the only journal authorities.
-
-    Public Issue commenters must not influence workflow state by posting a marker.
-    Authentication and immutable author IDs come from GitHub, not comment bodies.
-    """
+def _repository_owner_id(github: GitHub) -> int:
+    """Stable GitHub owner identity, independent of the current caller's token."""
     try:
         metadata = github.repository_metadata()
-        actor = github.authenticated_user()
     except GitHubError as exc:
-        raise VerificationReworkError("trusted rework actor identity is unavailable") from exc
+        raise VerificationReworkError("repository owner identity is unavailable") from exc
     owner = metadata.get("owner") if isinstance(metadata, dict) else None
     if (not isinstance(owner, dict) or owner.get("type") != "User"
-            or type(owner.get("id")) is not int or owner["id"] < 1
-            or not isinstance(actor, dict) or actor.get("type") != "User"
-            or type(actor.get("id")) is not int or actor["id"] < 1):
-        raise VerificationReworkError("trusted rework actor identity is invalid")
-    return frozenset({owner["id"], actor["id"]})
+            or type(owner.get("id")) is not int or owner["id"] < 1):
+        raise VerificationReworkError("repository owner identity is invalid")
+    return owner["id"]
+
+
+def _trusted_rework_comment(row: dict[str, Any], owner_id: int) -> bool:
+    """Use GitHub's recorded role at publication, not the current executor.
+
+    OWNER must match the repository owner ID; COLLABORATOR identifies a
+    repository-authorized participant. CONTRIBUTOR/NONE and arbitrary public
+    Issue authors never own journal history.
+    """
+    user = row.get("user")
+    if (not isinstance(user, dict) or user.get("type") != "User"
+            or type(user.get("id")) is not int or user["id"] < 1):
+        return False
+    association = row.get("author_association")
+    return (association == "OWNER" and user["id"] == owner_id
+            or association == "COLLABORATOR")
 
 
 def read_rework_history(github: GitHub, issue_number: int) -> tuple[ReworkRecord, ...]:
     """Two full list snapshots with direct reads for trusted journal carriers."""
-    trusted_ids: frozenset[int] | None = None
+    owner_id: int | None = None
 
     def selected() -> list[dict[str, Any]]:
-        nonlocal trusted_ids
+        nonlocal owner_id
         rows = github.issue_comments(issue_number)
         candidates = [row for row in rows
                       if isinstance(row, dict) and isinstance(row.get("body"), str)
                       and row["body"].startswith(PREFIX)]
         if not candidates:
             return []
-        if trusted_ids is None:
-            trusted_ids = _trusted_rework_authors(github)
-        return [row for row in candidates
-                if isinstance(row.get("user"), dict)
-                and row["user"].get("type") == "User"
-                and type(row["user"].get("id")) is int
-                and row["user"]["id"] in trusted_ids]
+        if owner_id is None:
+            owner_id = _repository_owner_id(github)
+        return [row for row in candidates if _trusted_rework_comment(row, owner_id)]
     try:
         first = selected()
         ids = [row.get("id") for row in first]
@@ -255,7 +267,7 @@ def read_rework_history(github: GitHub, issue_number: int) -> tuple[ReworkRecord
                     record.payload["intent_sha256"] != pending.sha256):
                 raise VerificationReworkError("orphan or mismatched rework Applied record")
             for key, value in pending.payload.items():
-                if key not in {"schema", "created_at"} and record.payload.get(key) != value:
+                if key not in {"schema", "created_at", "actor_id"} and record.payload.get(key) != value:
                     raise VerificationReworkError("rework Applied does not match its exact Intent")
             pending = None
             completed = record
@@ -294,12 +306,31 @@ def _post_once(github: GitHub, issue: int, schema: str, value: dict[str, Any]) -
     return matched[0]
 
 
-def _require_review_not_started(root: Path, issue: int, pr: int, adc_sha256: str,
-                                comments: list[dict[str, Any]]) -> None:
+def _require_review_not_started(github: GitHub, root: Path, issue: int, pr: int,
+                                adc_sha256: str, comments: list[dict[str, Any]]) -> None:
+    # Only canonical, GitHub-authenticated owner decisions can establish a
+    # remote User Review boundary. Outsider marker comments are ordinary prose.
+    owner_id: int | None = None
     for row in comments:
         body = row.get("body") if isinstance(row, dict) else None
-        if isinstance(body, str) and (body.startswith("<!-- PASES_USER_REVIEW_DECISION_")
-                                     or body.startswith('{"schema":"PASES_USER_REVIEW_DECISION_')):
+        if not has_user_review_decision_marker(body):
+            continue
+        if owner_id is None:
+            owner_id = _repository_owner_id(github)
+        author = row.get("user") if isinstance(row, dict) else None
+        if (not isinstance(author, dict) or author.get("id") != owner_id
+                or author.get("type") != "User"):
+            continue
+        try:
+            identity = _review_decision_identity(row, github.repo, issue, owner_id)
+            direct = github.issue_comment(issue, identity[0])
+            if _review_decision_identity(direct, github.repo, issue, owner_id) != identity:
+                raise VerificationReworkError("User Review decision changed during readback")
+            decision = parse_user_review_decision(body)
+        except (GitHubError, UserReviewRelayError) as exc:
+            raise VerificationReworkError("trusted User Review decision is invalid or unreadable") from exc
+        if (decision["issue_number"] == issue and decision["pr_number"] == pr
+                and decision["adc_sha256"] == adc_sha256):
             raise VerificationReworkError(
                 "User Review decision already exists; use exact CHANGES_REQUESTED lifecycle"
             )
@@ -326,7 +357,8 @@ def _require_review_not_started(root: Path, issue: int, pr: int, adc_sha256: str
 
 def _evidence(path: Path, *, root: Path, repository: str, issue: int, pr: int, head: str,
               adc_comment_id: int, adc_sha256: str, plan_sha256: str,
-              finding_id: str) -> tuple[str, str]:
+              finding_id: str, github: GitHub | None = None,
+              plan_path: Path | None = None) -> tuple[str, str]:
     location = Path(path).absolute()
     if (not location.is_relative_to(root) or path_has_symlink(location)
             or not location.is_file()):
@@ -348,6 +380,22 @@ def _evidence(path: Path, *, root: Path, repository: str, issue: int, pr: int, h
             verification = VerificationResult.from_bytes(data)
             if verification.status != "FAIL" or finding_id != "mandatory-check":
                 raise VerificationReworkError("rework requires a failing mandatory Verification result")
+            if github is None or plan_path is None:
+                raise VerificationReworkError("mandatory-check rework requires live verification authority")
+            # Canonical FAIL JSON alone is insufficient: recompute actual
+            # mandatory Evidence and trusted Check Runs at this exact HEAD.
+            import argparse
+            from .cli import CLIError, _calculate_verification
+            try:
+                observed, _refs = _calculate_verification(
+                    argparse.Namespace(issue=issue, pr=pr, head=head, plan=plan_path),
+                    repository, root, github,
+                )
+            except (ADCError, CLIError, GitError, GitHubError, PlanError,
+                    VerificationError, OSError, ValueError) as exc:
+                raise VerificationReworkError("current mandatory Verification cannot be independently reproduced") from exc
+            if observed != verification or observed.status != "FAIL":
+                raise VerificationReworkError("failing receipt is not the live mandatory Verification result")
             identity = verification.subject
             evidence_type = "verification_FAIL"
         else:
@@ -392,27 +440,37 @@ def _refresh(github: GitHub, subject: Any, pr_number: int) -> tuple[str, ...]:
     return tuple(sorted(labels))
 
 
-def _applied(intent: ReworkRecord) -> dict[str, Any]:
+def _applied(intent: ReworkRecord, *, executor_user_id: int) -> dict[str, Any]:
     result = {key: value for key, value in intent.payload.items() if key not in {"schema", "created_at"}}
-    return {**result, "schema": APPLIED_SCHEMA, "intent_comment_id": intent.comment_id,
+    # A currently authorized collaborator may finish an interrupted previous
+    # executor's label update. Both immutable comments retain their actual
+    # GitHub-authenticated author identities.
+    return {**result, "schema": APPLIED_SCHEMA, "actor_id": executor_user_id,
+            "intent_comment_id": intent.comment_id,
             "intent_sha256": intent.sha256, "applied_at": _time()}
 
 
 def _current_plan(root: Path, path: Path, subject: Any) -> str:
+    """Use the same frozen Plan/Oracle/Test gate as ordinary Verification."""
     location = Path(path).absolute()
     if (not location.is_relative_to(root) or path_has_symlink(location)
             or not location.is_file()):
         raise VerificationReworkError("Verification Plan must be a regular file under the current worktree")
+    # CLI owns normative requirement coverage, Oracle/Test trace, and
+    # canonical frozen Plan path validation. Import lazily to avoid a cycle.
+    from .cli import CLIError, _load_plan, _plans_root
     try:
         plan = read_plan(location.read_bytes())
-        if (plan.repository != subject.repository
-                or plan.issue_number != subject.issue_number
-                or plan.adc_comment_id != subject.verified_adc.pointer.comment_id
-                or plan.adc_sha256 != subject.verified_adc.contract.sha256):
-            raise VerificationReworkError("Verification Plan does not match the active ADC/Issue")
-        verify_plan_sources(root, plan)
-    except (OSError, PlanError) as exc:
-        raise VerificationReworkError("current Verification Plan or frozen source is invalid") from exc
+        expected = _plans_root(root, subject.issue_number) / f"{plan.sha256}.json"
+        if location != expected:
+            raise VerificationReworkError("Verification Plan is not the canonical frozen Issue Plan")
+        checked, _required, _oracles, _tests = _load_plan(
+            root, subject.repository, subject.issue_number, location, subject.verified_adc,
+        )
+        if checked != plan:
+            raise VerificationReworkError("frozen Verification Plan changed during validation")
+    except (OSError, PlanError, CLIError) as exc:
+        raise VerificationReworkError("current Verification Plan/Oracle/Test coverage is invalid") from exc
     return plan.sha256
 
 
@@ -455,7 +513,6 @@ def verification_rework(
                 or intent.payload["plan_sha256"] != plan_sha256
                 or intent.payload["pr_head_sha40"] != subject.head_sha40
                 or intent.payload["pr_number"] != pr_number
-                or intent.actor_id != subject.executor_user_id
                 or intent.payload["finding_id"] != finding_id or intent.payload["reason"] != reason):
             raise VerificationReworkError("pending rework Intent does not match the current immutable subject")
         if labels == tuple(intent.payload["labels_before"]):
@@ -467,7 +524,7 @@ def verification_rework(
         if _current_plan(root, plan_path, subject) != plan_sha256:
             raise VerificationReworkError("pending rework Plan changed before Applied recovery")
         _require_review_not_started(
-            root, issue_number, pr_number, subject.verified_adc.contract.sha256, comments,
+            github, root, issue_number, pr_number, subject.verified_adc.contract.sha256, comments,
         )
         if _phase_generation(github, subject) != (
                 intent.payload["phase_generation_comment_id"],
@@ -478,11 +535,12 @@ def verification_rework(
             pr=pr_number, head=subject.head_sha40, adc_comment_id=current_adc,
             adc_sha256=subject.verified_adc.contract.sha256,
             plan_sha256=plan_sha256, finding_id=finding_id,
+            github=github, plan_path=plan_path,
         )
         if (evidence_type != intent.payload["evidence_type"]
                 or evidence_sha256 != intent.payload["evidence_sha256"]):
             raise VerificationReworkError("pending rework failing evidence has changed")
-        record = _post_once(github, issue_number, APPLIED_SCHEMA, _applied(intent))
+        record = _post_once(github, issue_number, APPLIED_SCHEMA, _applied(intent, executor_user_id=subject.executor_user_id))
         return {"status": "RECOVERED", "issue": issue_number, "label_write_count": 0,
                 "intent_comment_id": intent.comment_id,
                 "applied_comment_id": record.comment_id, "rework_cycle": cycles + 1}
@@ -495,13 +553,14 @@ def verification_rework(
     if any(row.schema == APPLIED_SCHEMA and row.payload["adc_comment_id"] == current_adc
            and row.payload["pr_head_sha40"] == subject.head_sha40 for row in history):
         raise VerificationReworkError("BLOCKED_REWORK_NO_PROGRESS: this HEAD already had a correction")
-    _require_review_not_started(root, issue_number, pr_number, subject.verified_adc.contract.sha256, comments)
+    _require_review_not_started(github, root, issue_number, pr_number, subject.verified_adc.contract.sha256, comments)
     phase_comment_id, phase_sha256 = _phase_generation(github, subject)
     evidence_type, evidence_sha256 = _evidence(
         evidence, root=root, repository=subject.repository, issue=issue_number,
         pr=pr_number, head=subject.head_sha40, adc_comment_id=current_adc,
         adc_sha256=subject.verified_adc.contract.sha256,
         plan_sha256=plan_sha256, finding_id=finding_id,
+        github=github, plan_path=plan_path,
     )
     prev = next((row for row in reversed(history) if row.schema == APPLIED_SCHEMA), None)
     after_labels = sorted([x for x in labels if x != "phase:verification"] + ["phase:execution"])
@@ -550,7 +609,7 @@ def verification_rework(
     if _current_plan(root, plan_path, current) != plan_sha256:
         raise VerificationReworkError("Verification Plan or normative sources changed after the Intent")
     _require_review_not_started(
-        root, issue_number, pr_number, subject.verified_adc.contract.sha256,
+        github, root, issue_number, pr_number, subject.verified_adc.contract.sha256,
         github.issue_comments(issue_number),
     )
     latest_type, latest_digest = _evidence(
@@ -558,6 +617,7 @@ def verification_rework(
         pr=pr_number, head=subject.head_sha40, adc_comment_id=current_adc,
         adc_sha256=subject.verified_adc.contract.sha256,
         plan_sha256=plan_sha256, finding_id=finding_id,
+        github=github, plan_path=plan_path,
     )
     if (latest_type, latest_digest) != (evidence_type, evidence_sha256):
         raise VerificationReworkError("failing evidence changed after the Intent")
@@ -575,7 +635,7 @@ def verification_rework(
             or after.binding_sha256 != subject.binding_sha256
             or after.labels != latest):
         raise VerificationReworkError("rework subject changed after the label write")
-    record = _post_once(github, issue_number, APPLIED_SCHEMA, _applied(intent))
+    record = _post_once(github, issue_number, APPLIED_SCHEMA, _applied(intent, executor_user_id=subject.executor_user_id))
     return {"status": "APPLIED", "issue": issue_number, "label_write_count": 1,
             "intent_comment_id": intent.comment_id, "applied_comment_id": record.comment_id,
             "rework_cycle": cycles + 1}

@@ -25,7 +25,7 @@ from .admin_auth import AdminAuthError, temporary_admin_client
 from .owner_authorization import (
     OwnerAuthorizationError, authorize_chat_confirmed_plan, authorize_plan, create_authorization_plan,
     issue63_deferred_merge_details, ordinary_merge_details, read_authorization_plan,
-    resume_authorization, write_authorization_plan,
+    resume_authorization, write_authorization_plan, _read_history as _verified_owner_history,
 )
 from .owner_authorization import capture_direct_chat_confirmation
 from .consumer_activation import (
@@ -172,7 +172,10 @@ from .user_review import (
     review_session_path, write_feedback_snapshot, write_parent_feedback_snapshot,
     write_parent_review_session, write_review_session,
 )
-from .owner_consent import OwnerDecisionError, read_verified_owner_decision
+from .owner_consent import (
+    OwnerDecisionError, read_verified_owner_decision,
+    _has_owner_decision_marker, OWNER_ID as _TRUSTED_OWNER_ID,
+)
 from .phase_rebaseline import PhaseRebaselineError, rebaseline_issue_phase
 from .user_review_relay import (
     UserReviewDecisionHistory, UserReviewRelayApproval, UserReviewRelayError,
@@ -2258,6 +2261,25 @@ def _review_payload_from_github(github: GitHub, subject: UserReviewSubject,
                                 *, observed_at: str) -> FeedbackSnapshot:
     verification_subject = subject.verification_subject
     issue_comments = github.issue_comments(verification_subject.issue_number)
+    # Verified PR_MERGE operation comments are machine authorization records,
+    # not new human questions about the reviewed PR. Exclude *only* these
+    # authenticated, direct/list/direct-verified owner carriers. All ordinary
+    # human feedback (including owner-authored prose) remains in the snapshot.
+    candidates = [row for row in issue_comments
+                  if isinstance(row, dict)
+                  and _has_owner_decision_marker(row.get("body"))
+                  and isinstance(row.get("user"), dict)
+                  and row["user"].get("id") == _TRUSTED_OWNER_ID
+                  and row["user"].get("type") == "User"]
+    if candidates:
+        history = _verified_owner_history(github, verification_subject.issue_number)
+        excluded = {comment_id for comment_id, decision in history
+                    if decision.operation == "PR_MERGE"
+                    and decision.pr_number == verification_subject.pr_number}
+        listed = {row.get("id") for row in issue_comments if isinstance(row, dict)}
+        if not excluded.issubset(listed):
+            raise GitHubError("verified PR_MERGE carrier changed during User Review feedback readback")
+        issue_comments = [row for row in issue_comments if row.get("id") not in excluded]
     pr_comments = github.pull_conversation_comments(verification_subject.pr_number)
     pr_reviews = github.pull_reviews(verification_subject.pr_number)
     diff_comments = github.pull_diff_comments(verification_subject.pr_number)
