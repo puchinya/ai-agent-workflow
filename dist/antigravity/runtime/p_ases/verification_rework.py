@@ -407,6 +407,21 @@ def verification_rework(
             )
         if labels != tuple(intent.payload["labels_after"]):
             raise VerificationReworkError("pending rework label state is ambiguous")
+        _require_review_not_started(
+            root, issue_number, pr_number, subject.verified_adc.contract.sha256, comments,
+        )
+        if _phase_generation(github, subject) != (
+                intent.payload["phase_generation_comment_id"],
+                intent.payload["phase_generation_sha256"]):
+            raise VerificationReworkError("pending rework Phase generation has changed")
+        evidence_type, evidence_sha256 = _evidence(
+            evidence, root=root, issue=issue_number, pr=pr_number,
+            head=subject.head_sha40, adc_sha256=subject.verified_adc.contract.sha256,
+            finding_id=finding_id,
+        )
+        if (evidence_type != intent.payload["evidence_type"]
+                or evidence_sha256 != intent.payload["evidence_sha256"]):
+            raise VerificationReworkError("pending rework failing evidence has changed")
         record = _post_once(github, issue_number, APPLIED_SCHEMA, _applied(intent))
         return {"status": "RECOVERED", "issue": issue_number, "label_write_count": 0,
                 "intent_comment_id": intent.comment_id,
