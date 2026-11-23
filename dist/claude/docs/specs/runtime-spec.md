@@ -31,6 +31,7 @@
   - [9.2 REQ-F01-004 Setup request and verification](#92-req-f01-004-setup-request-and-verification)
   - [9.3 REQ-F01-006 Historical Activation pin](#93-req-f01-006-historical-activation-pin)
   - [9.4 Runtime Ruleset management](#94-runtime-ruleset-management)
+- [10 Issue #79 — typed correction and ordinary merge CLI](#10-issue-79-typed-correction-and-ordinary-merge-cli)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -381,7 +382,8 @@ Owner operations use exact-scope V3 chat confirmation only when the host provide
 
 For `final_delivery.review_mode: solo_owner`, `consumer-activation-setup` and `consumer-activation-verify` use V2 setup, approval, and Activation records. V2 binds exact committed profile bytes, trusted Required Checks, Ruleset identity, and effective policy digest. V1 payload bytes and their `merged_at` effective time remain unchanged. Existing Gate Selections resolve through the strict Activation history prefix ending at their pinned record; new selection and successor issuance validate the full history.
 
-## Issue #79 — typed correction and ordinary merge CLI
+<a id="issue-79-typed-correction-and-ordinary-merge-cli"></a>
+## 10 Issue #79 — typed correction and ordinary merge CLI
 
 For ordinary open same-repository Issues only, `python -m p_ases issue verification-rework ISSUE --repo OWNER/REPO --root ROOT --pr PR --plan PLAN.json --evidence FAIL.json --finding-id ID --reason TEXT` validates the current approved ADC, frozen worktree Binding, active Phase generation, open same-repository exact-head PR/base, canonical current Verification Plan and its source digests, and a matching unresolved V3 category-A or failed mandatory Verification receipt. It refuses attention labels, prior User Review, B/C/D-only requests, a fourth correction, and incomplete/old-HEAD evidence. It records append-only `PASES_VERIFICATION_REWORK_INTENT_V1`, performs at most one complete-label replacement and records `PASES_VERIFICATION_REWORK_APPLIED_V1`. Unknown API outcomes are reconciled with direct/list/direct readback only. Untrusted public Issue comments do not constitute journal state.
 

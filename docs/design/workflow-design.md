@@ -30,6 +30,14 @@
 - [9 Alternatives considered](#9-alternatives-considered)
 - [10 Migration gate routing](#10-migration-gate-routing)
 - [11 DES-WF-006 Human review and final delivery](#11-des-wf-006-human-review-and-final-delivery)
+- [12 Issue #79 — design decisions and ownership](#12-issue-79-design-decisions-and-ownership)
+  - [12.1 DES-F79-001 Dedicated rework transition](#121-des-f79-001-dedicated-rework-transition)
+  - [12.2 DES-F79-002 Trusted journal and recovery](#122-des-f79-002-trusted-journal-and-recovery)
+  - [12.3 DES-F79-003 Head and generation gate](#123-des-f79-003-head-and-generation-gate)
+  - [12.4 DES-F79-004 Review classification compatibility](#124-des-f79-004-review-classification-compatibility)
+  - [12.5 DES-F79-005 Session boundary](#125-des-f79-005-session-boundary)
+  - [12.6 DES-F79-006 Exact merge approval](#126-des-f79-006-exact-merge-approval)
+  - [12.7 DES-F79-007 Stable document and package boundary](#127-des-f79-007-stable-document-and-package-boundary)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -51,6 +59,13 @@
 - [DES-WF-004](#des-wf-004) — 7 DES-WF-004 Failure handling
 - [DES-WF-005](#des-wf-005) — 8 DES-WF-005 Authorization boundary and PR handoff
 - [DES-WF-006](#des-wf-006) — 11 DES-WF-006 Human review and final delivery
+- [DES-F79-001](#des-f79-001) — 12.1 DES-F79-001 Dedicated rework transition
+- [DES-F79-002](#des-f79-002) — 12.2 DES-F79-002 Trusted journal and recovery
+- [DES-F79-003](#des-f79-003) — 12.3 DES-F79-003 Head and generation gate
+- [DES-F79-004](#des-f79-004) — 12.4 DES-F79-004 Review classification compatibility
+- [DES-F79-005](#des-f79-005) — 12.5 DES-F79-005 Session boundary
+- [DES-F79-006](#des-f79-006) — 12.6 DES-F79-006 Exact merge approval
+- [DES-F79-007](#des-f79-007) — 12.7 DES-F79-007 Stable document and package boundary
 <!-- heading-map:end -->
 
 
@@ -303,32 +318,40 @@ user_review.py owns the subject-bound human decision, immutable session start, a
 
 The CLI performs phase transitions only after re-reading the Issue and confirming its current labels. An in-scope request returns the same Issue to execution; an explicitly triaged new scope returns it to requirements. Finalize is a readback command and has no merge or close mutation. Parent final delivery remains blocked until child Integration and the separate parent review/activation gates are satisfied.
 
-## Issue #79 — design decisions and ownership
+<a id="issue-79-design-decisions-and-ownership"></a>
+## 12 Issue #79 — design decisions and ownership
 
 <a id="des-f79-001"></a>
-### DES-F79-001 Dedicated rework transition
+<a id="des-f79-001-dedicated-rework-transition"></a>
+### 12.1 DES-F79-001 Dedicated rework transition
 `verification_rework.verification_rework` owns the only typed backwards label replacement. The pure Phase graph remains conservative, and `phase_restart` continues to own the unrelated ADC-authorized execution-to-requirements path.
 
 <a id="des-f79-002"></a>
-### DES-F79-002 Trusted journal and recovery
+<a id="des-f79-002-trusted-journal-and-recovery"></a>
+### 12.2 DES-F79-002 Trusted journal and recovery
 `read_rework_history` filters Issue comments by the repository owner's and authenticated executor's GitHub user IDs before treating markers as records. Accepted entries require exact direct/list/direct readback and predecessor SHA. A pending Intent cannot be replaced; after an uncertain PUT the writer reads labels once, and only the identical after-state permits Applied recovery with no second PUT.
 
 <a id="des-f79-003"></a>
-### DES-F79-003 Head and generation gate
+<a id="des-f79-003-head-and-generation-gate"></a>
+### 12.3 DES-F79-003 Head and generation gate
 `require_rework_progress`, invoked by ordinary execution-to-verification `advance`, rejects a pending current-ADC Intent and enforces descendant HEAD progress since the latest Applied. Every new HEAD must rebuild all mandatory checks and fresh native independent review. A generation has a maximum of three completed corrections.
 
 <a id="des-f79-004"></a>
-### DES-F79-004 Review classification compatibility
+<a id="des-f79-004-review-classification-compatibility"></a>
+### 12.4 DES-F79-004 Review classification compatibility
 Only V3 `ReviewFindingV3` accepts category D; it may not set `blocks_readiness`. A and B remain blocking and C is explicitly triaged; V1/V2 schema and serializer behavior are unchanged.
 
 <a id="des-f79-005"></a>
-### DES-F79-005 Session boundary
+<a id="des-f79-005-session-boundary"></a>
+### 12.5 DES-F79-005 Session boundary
 The local immutable User Review session and authenticated decision records block the verification correction. Post-start edits remain governed by the separate CHANGES_REQUESTED path, never by an ordinary continuation or merged approval.
 
 <a id="des-f79-006"></a>
-### DES-F79-006 Exact merge approval
+<a id="des-f79-006-exact-merge-approval"></a>
+### 12.6 DES-F79-006 Exact merge approval
 `ordinary_merge_details` captures the PR's target base ref/SHA, method `merge`, head, closure association and title/body digests. At plan creation `_owner_merge_gate` must pass Final Delivery and freeze its result and subject hashes. Authorization stays Issue-local; before the one merge call the same gate, head and base are rechecked, with no blind retry on an uncertain response. Only #57/#63 retain specialized paths.
 
 <a id="des-f79-007"></a>
-### DES-F79-007 Stable document and package boundary
+<a id="des-f79-007-stable-document-and-package-boundary"></a>
+### 12.7 DES-F79-007 Stable document and package boundary
 `runtime/p_ases` owns authority; Skills orchestrate; three `dist/` packages are generated and checked. No new process engine, historical metadata rewrite or Activation dependency is introduced.

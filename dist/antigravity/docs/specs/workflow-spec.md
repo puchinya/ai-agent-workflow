@@ -46,6 +46,14 @@
   - [9.19 REQ-F01-035 Active Phase generation](#919-req-f01-035-active-phase-generation)
   - [9.20 REQ-F01-036 Issue #63 compatibility](#920-req-f01-036-issue-63-compatibility)
   - [9.21 REQ-F01-037 ADC is the sole Phase restart approval](#921-req-f01-037-adc-is-the-sole-phase-restart-approval)
+- [10 Issue #79 — bounded verification correction requirements](#10-issue-79-bounded-verification-correction-requirements)
+  - [10.1 REQ-F79-001 Bounded phase correction](#101-req-f79-001-bounded-phase-correction)
+  - [10.2 REQ-F79-002 Immutable correction history](#102-req-f79-002-immutable-correction-history)
+  - [10.3 REQ-F79-003 Current-HEAD progress and evidence](#103-req-f79-003-current-head-progress-and-evidence)
+  - [10.4 REQ-F79-004 Review triage](#104-req-f79-004-review-triage)
+  - [10.5 REQ-F79-005 User Review boundary](#105-req-f79-005-user-review-boundary)
+  - [10.6 REQ-F79-006 Explicit ordinary merge authority](#106-req-f79-006-explicit-ordinary-merge-authority)
+  - [10.7 REQ-F79-007 Contract and distribution synchronization](#107-req-f79-007-contract-and-distribution-synchronization)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -81,6 +89,13 @@
 - [REQ-F01-035](#req-f01-035) — 9.19 REQ-F01-035 Active Phase generation
 - [REQ-F01-036](#req-f01-036) — 9.20 REQ-F01-036 Issue #63 compatibility
 - [REQ-F01-037](#req-f01-037) — 9.21 REQ-F01-037 ADC is the sole Phase restart approval
+- [REQ-F79-001](#req-f79-001) — 10.1 REQ-F79-001 Bounded phase correction
+- [REQ-F79-002](#req-f79-002) — 10.2 REQ-F79-002 Immutable correction history
+- [REQ-F79-003](#req-f79-003) — 10.3 REQ-F79-003 Current-HEAD progress and evidence
+- [REQ-F79-004](#req-f79-004) — 10.4 REQ-F79-004 Review triage
+- [REQ-F79-005](#req-f79-005) — 10.5 REQ-F79-005 User Review boundary
+- [REQ-F79-006](#req-f79-006) — 10.6 REQ-F79-006 Explicit ordinary merge authority
+- [REQ-F79-007](#req-f79-007) — 10.7 REQ-F79-007 Contract and distribution synchronization
 <!-- heading-map:end -->
 
 
@@ -466,32 +481,40 @@ Keep Issue #63's specialized phase-rebaseline implementation, ADC/Owner checks, 
 
 The exact approved ADC and its single valid typed authorization are the sole approval for this one phase reset. No separate Owner plan, terminal input, approval comment, or chat confirmation is required. Intent/Applied comments are technical records, not approval. This authority cannot be reused for Ruleset, Activation, review, merge, or Issue closure.
 
-## Issue #79 — bounded verification correction requirements
+<a id="issue-79-bounded-verification-correction-requirements"></a>
+## 10 Issue #79 — bounded verification correction requirements
 
 <a id="req-f79-001"></a>
-### REQ-F79-001 Bounded phase correction
+<a id="req-f79-001-bounded-phase-correction"></a>
+### 10.1 REQ-F79-001 Bounded phase correction
 Normal `advance` never accepts an unconditional backward edge. Only `issue verification-rework` may take an ordinary Issue from verification to execution using current in-scope blocking category-A or failed mandatory Verification evidence, before User Review starts. B/C/D alone are not correction authority.
 
 <a id="req-f79-002"></a>
-### REQ-F79-002 Immutable correction history
+<a id="req-f79-002-immutable-correction-history"></a>
+### 10.2 REQ-F79-002 Immutable correction history
 A trusted owner/executor's canonical Intent and Applied records bind Issue, approved ADC, frozen Binding, PR/head/base, active Phase receipt, current Verification Plan, exact evidence, and complete label sets. Public outsider comments are not state. An unknown GitHub response permits only verified, write-free readback/recovery, never blind replay.
 
 <a id="req-f79-003"></a>
-### REQ-F79-003 Current-HEAD progress and evidence
+<a id="req-f79-003-current-head-progress-and-evidence"></a>
+### 10.3 REQ-F79-003 Current-HEAD progress and evidence
 At most three completed corrections per ADC generation. Pending Intent blocks ordinary execution-to-verification, and a completed correction requires a new descendant HEAD before re-verification. Verification, Acceptance, Self-Audit, independent review, CI, Readiness and User Review must all be regenerated for that HEAD; no cross-HEAD PASS cache.
 
 <a id="req-f79-004"></a>
-### REQ-F79-004 Review triage
+<a id="req-f79-004-review-triage"></a>
+### 10.4 REQ-F79-004 Review triage
 A is an explicit ADC violation, B a material ADC ambiguity, C a new requirement, and D optional improvement. Unresolved A/B block, a C blocks only when its current acceptance/security impact is specifically designated, and D never blocks. Findings cite a relevant obligation, reachable failure or observation; legacy review schemas remain byte-compatible.
 
 <a id="req-f79-005"></a>
-### REQ-F79-005 User Review boundary
+<a id="req-f79-005-user-review-boundary"></a>
+### 10.5 REQ-F79-005 User Review boundary
 A started User Review session, including interrupted startup, prohibits verification rework; generic continuation or APPROVED is not edit/push permission. Only exact authenticated CHANGES_REQUESTED enters the existing User Review rework route. Previous review evidence is not reused after HEAD change.
 
 <a id="req-f79-006"></a>
-### REQ-F79-006 Explicit ordinary merge authority
+<a id="req-f79-006-explicit-ordinary-merge-authority"></a>
+### 10.6 REQ-F79-006 Explicit ordinary merge authority
 A normal PR_MERGE plan requires verified current Final Delivery, a distinct exact-HEAD owner grant, approved PR head/base (ref and SHA), merge method, closure association, and exact final-delivery subject/digest. Reject base or gate drift before the single merge attempt and in post-merge readback. Do not combine User Review with merge approval or involve #57/#63 Activation-specific completion.
 
 <a id="req-f79-007"></a>
-### REQ-F79-007 Contract and distribution synchronization
+<a id="req-f79-007-contract-and-distribution-synchronization"></a>
+### 10.7 REQ-F79-007 Contract and distribution synchronization
 The current implementation authority is the approved ADC, not a separate Implementation Contract approval. Runtime CLI/Skills, normative specification/design, independent Oracles and generated OpenAI/Claude/Antigravity distributions must agree; historical evidence remains immutable.

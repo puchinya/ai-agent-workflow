@@ -59,6 +59,8 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
     - [2.23.1 ORA-RT-023 Expected result](#2231-ora-rt-023-expected-result)
   - [2.24 TST-RT-024 Strict Phase restart authorization parsing](#224-tst-rt-024-strict-phase-restart-authorization-parsing)
     - [2.24.1 ORA-RT-024 Expected result](#2241-ora-rt-024-expected-result)
+  - [2.25 TST-RT-025 Issue #79 exact correction and merge boundaries](#225-tst-rt-025-issue-79-exact-correction-and-merge-boundaries)
+    - [2.25.1 ORA-RT-025 Expected result](#2251-ora-rt-025-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -111,6 +113,8 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
 - [ORA-RT-023](#ora-rt-023) — 2.23.1 ORA-RT-023 Expected result
 - [TST-RT-024](#tst-rt-024) — 2.24 TST-RT-024 Strict Phase restart authorization parsing
 - [ORA-RT-024](#ora-rt-024) — 2.24.1 ORA-RT-024 Expected result
+- [TST-RT-025](#tst-rt-025) — 2.25 TST-RT-025 Issue #79 exact correction and merge boundaries
+- [ORA-RT-025](#ora-rt-025) — 2.25.1 ORA-RT-025 Expected result
 <!-- heading-map:end -->
 
 

@@ -67,6 +67,21 @@
     - [2.28.1 ORA-F01-018 Expected result](#2281-ora-f01-018-expected-result)
   - [2.29 TST-F01-031 Generic ADC-authorized Phase restart](#229-tst-f01-031-generic-adc-authorized-phase-restart)
     - [2.29.1 ORA-F01-031 Expected result](#2291-ora-f01-031-expected-result)
+- [3 Issue #79 — correction and delivery test Oracles](#3-issue-79-correction-and-delivery-test-oracles)
+  - [3.1 TST-F79-001 Dedicated correction](#31-tst-f79-001-dedicated-correction)
+    - [3.1.1 ORA-F79-001 Expected result](#311-ora-f79-001-expected-result)
+  - [3.2 TST-F79-002 Journal integrity and failure recovery](#32-tst-f79-002-journal-integrity-and-failure-recovery)
+    - [3.2.1 ORA-F79-002 Expected result](#321-ora-f79-002-expected-result)
+  - [3.3 TST-F79-003 Exact subject and no-progress](#33-tst-f79-003-exact-subject-and-no-progress)
+    - [3.3.1 ORA-F79-003 Expected result](#331-ora-f79-003-expected-result)
+  - [3.4 TST-F79-004 Optional review findings](#34-tst-f79-004-optional-review-findings)
+    - [3.4.1 ORA-F79-004 Expected result](#341-ora-f79-004-expected-result)
+  - [3.5 TST-F79-005 User Review session protection](#35-tst-f79-005-user-review-session-protection)
+    - [3.5.1 ORA-F79-005 Expected result](#351-ora-f79-005-expected-result)
+  - [3.6 TST-F79-006 Explicit merge-plan constraints](#36-tst-f79-006-explicit-merge-plan-constraints)
+    - [3.6.1 ORA-F79-006 Expected result](#361-ora-f79-006-expected-result)
+  - [3.7 TST-F79-007 Distribution and contract naming](#37-tst-f79-007-distribution-and-contract-naming)
+    - [3.7.1 ORA-F79-007 Expected result](#371-ora-f79-007-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -129,6 +144,20 @@
 - [ORA-F01-018](#ora-f01-018) — 2.28.1 ORA-F01-018 Expected result
 - [TST-F01-031](#tst-f01-031) — 2.29 TST-F01-031 Generic ADC-authorized Phase restart
 - [ORA-F01-031](#ora-f01-031) — 2.29.1 ORA-F01-031 Expected result
+- [TST-F79-001](#tst-f79-001) — 3.1 TST-F79-001 Dedicated correction
+- [ORA-F79-001](#ora-f79-001) — 3.1.1 ORA-F79-001 Expected result
+- [TST-F79-002](#tst-f79-002) — 3.2 TST-F79-002 Journal integrity and failure recovery
+- [ORA-F79-002](#ora-f79-002) — 3.2.1 ORA-F79-002 Expected result
+- [TST-F79-003](#tst-f79-003) — 3.3 TST-F79-003 Exact subject and no-progress
+- [ORA-F79-003](#ora-f79-003) — 3.3.1 ORA-F79-003 Expected result
+- [TST-F79-004](#tst-f79-004) — 3.4 TST-F79-004 Optional review findings
+- [ORA-F79-004](#ora-f79-004) — 3.4.1 ORA-F79-004 Expected result
+- [TST-F79-005](#tst-f79-005) — 3.5 TST-F79-005 User Review session protection
+- [ORA-F79-005](#ora-f79-005) — 3.5.1 ORA-F79-005 Expected result
+- [TST-F79-006](#tst-f79-006) — 3.6 TST-F79-006 Explicit merge-plan constraints
+- [ORA-F79-006](#ora-f79-006) — 3.6.1 ORA-F79-006 Expected result
+- [TST-F79-007](#tst-f79-007) — 3.7 TST-F79-007 Distribution and contract naming
+- [ORA-F79-007](#ora-f79-007) — 3.7.1 ORA-F79-007 Expected result
 <!-- heading-map:end -->
 
 
@@ -481,60 +510,75 @@ Only the exact two approved edges accept V3. The first records `execution -> req
 
 Only a current approved ADC with one exact canonical typed authorization permits an eligible ordinary Issue's `execution -> requirements` restart. Valid execution appends one Intent/Applied pair, updates the complete label set at most once, and establishes the current ADC/Binding/Applied phase generation. Exact completed replay is read-only only for the exact recorded labels or a fully verified same-generation forward chain; each receipt must pass historical artifact allowlist, authorized skip reason, regular blob digest, and READY traceability checks, with an immutable carrier authored by the authenticated User. Replay hydrates relevant linked skipped specification/design targets from the receipt commit and loads test sources only from current requirement rows; missing/tampered targets block and unrelated missing sources are ignored. Rollback and unrelated label edits block. Malformed edited restart or Phase Decision marker candidates also block instead of disappearing from history. A later Phase Decision supersedes an older Applied record as the next restart's immediate predecessor; an incomplete Intent from any ADC generation blocks further Phase work. V1/V2 Phase Decision bodies are collected using their canonical serializers and direct/list/direct history checks. Predecessor bytes remain identical, old receipts cannot pass current-generation checks, and Issue #63 behavior is unchanged.
 
-## Issue #79 — correction and delivery test Oracles
+<a id="issue-79-correction-and-delivery-test-oracles"></a>
+## 3 Issue #79 — correction and delivery test Oracles
 
 <a id="tst-f79-001"></a>
-### TST-F79-001 Dedicated correction
+<a id="tst-f79-001-dedicated-correction"></a>
+### 3.1 TST-F79-001 Dedicated correction
 
 <a id="ora-f79-001"></a>
-#### ORA-F79-001 Expected result
+<a id="ora-f79-001-expected-result"></a>
+#### 3.1.1 ORA-F79-001 Expected result
 
 From verification with a current failing in-scope A or mandatory check and no User Review, exactly one verification-to-execution label PUT is allowed; other states or B/C/D evidence create no write. `tests/test_verification_rework.py` covers positive and wrong-phase paths.
 
 <a id="tst-f79-002"></a>
-### TST-F79-002 Journal integrity and failure recovery
+<a id="tst-f79-002-journal-integrity-and-failure-recovery"></a>
+### 3.2 TST-F79-002 Journal integrity and failure recovery
 
 <a id="ora-f79-002"></a>
-#### ORA-F79-002 Expected result
+<a id="ora-f79-002-expected-result"></a>
+#### 3.2.1 ORA-F79-002 Expected result
 
 The trusted owner/executor journal records one Intent, one label update and one Applied. Third-party markers are ignored; edited accepted entries block. A lost PUT response does not cause a duplicate PUT, and an after-state can finish Applied without replacing prior evidence.
 
 <a id="tst-f79-003"></a>
-### TST-F79-003 Exact subject and no-progress
+<a id="tst-f79-003-exact-subject-and-no-progress"></a>
+### 3.3 TST-F79-003 Exact subject and no-progress
 
 <a id="ora-f79-003"></a>
-#### ORA-F79-003 Expected result
+<a id="ora-f79-003-expected-result"></a>
+#### 3.3.1 ORA-F79-003 Expected result
 
 Foreign repository, ADC ID, Plan digest or old HEAD evidence cannot initiate a rework; three completed corrections exhaust the budget. Pending Intent and same-HEAD post-Applied retries block execution-to-verification; a newer descendant HEAD can proceed only after mandatory fresh gates.
 
 <a id="tst-f79-004"></a>
-### TST-F79-004 Optional review findings
+<a id="tst-f79-004-optional-review-findings"></a>
+### 3.4 TST-F79-004 Optional review findings
 
 <a id="ora-f79-004"></a>
-#### ORA-F79-004 Expected result
+<a id="ora-f79-004-expected-result"></a>
+#### 3.4.1 ORA-F79-004 Expected result
 
 V3 D is accepted and nonblocking, A/B still block and only C may declare `blocks_readiness`. V1/V2 reject D and previously persisted schemas retain their behavior.
 
 <a id="tst-f79-005"></a>
-### TST-F79-005 User Review session protection
+<a id="tst-f79-005-user-review-session-protection"></a>
+### 3.5 TST-F79-005 User Review session protection
 
 <a id="ora-f79-005"></a>
-#### ORA-F79-005 Expected result
+<a id="ora-f79-005-expected-result"></a>
+#### 3.5.1 ORA-F79-005 Expected result
 
 A started or approved session blocks verification correction before any label or journal write; later edits require an authenticated CHANGES_REQUESTED transition and all new-HEAD verification/review gates.
 
 <a id="tst-f79-006"></a>
-### TST-F79-006 Explicit merge-plan constraints
+<a id="tst-f79-006-explicit-merge-plan-constraints"></a>
+### 3.6 TST-F79-006 Explicit merge-plan constraints
 
 <a id="ora-f79-006"></a>
-#### ORA-F79-006 Expected result
+<a id="ora-f79-006-expected-result"></a>
+#### 3.6.1 ORA-F79-006 Expected result
 
 Normal PR merge plans freeze exact PR target base, merge method and previously verified Final Delivery. Base-ref/base-SHA or delivery-digest drift blocks before a merge request or merge-intent write. Separate User Review approval alone never authorizes a merge; legacy #57/#63 paths are unchanged.
 
 <a id="tst-f79-007"></a>
-### TST-F79-007 Distribution and contract naming
+<a id="tst-f79-007-distribution-and-contract-naming"></a>
+### 3.7 TST-F79-007 Distribution and contract naming
 
 <a id="ora-f79-007"></a>
-#### ORA-F79-007 Expected result
+<a id="ora-f79-007-expected-result"></a>
+#### 3.7.1 ORA-F79-007 Expected result
 
 Canonical specs/design/test-oracles, current approved ADC terminology, Skills and three generated package trees have no drift under the repository's documentation, traceability and distribution check commands. Historical contract markers are preserved.

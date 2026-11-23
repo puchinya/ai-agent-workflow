@@ -26,6 +26,7 @@
   - [7.6 DES-F01-006 Historical Activation pin](#76-des-f01-006-historical-activation-pin)
   - [7.7 DES-F01-007 Successor Activation](#77-des-f01-007-successor-activation)
 - [8 Alternatives considered](#8-alternatives-considered)
+- [9 Issue #79 — verification correction and merge boundaries](#9-issue-79-verification-correction-and-merge-boundaries)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -190,7 +191,8 @@ The fixed policy names each accepted child base/head pair. Merging an upstream P
 - GitHub mutations carry user data as structured JSON over stdin and never interpolate payloads into a shell command. Explicit local hook strings run in the user's shell because the profile is trusted configuration; child output is suppressed by default, with an opt-in redacted diagnostic tail for failures.
 - Parallel hook execution would destroy declared order and complicate failure evidence. Hooks remain sequential.
 
-## Issue #79 — verification correction and merge boundaries
+<a id="issue-79-verification-correction-and-merge-boundaries"></a>
+## 9 Issue #79 — verification correction and merge boundaries
 
 The sole verification-to-execution correction writer is `runtime/p_ases/verification_rework.py`; it is not a general Phase graph back edge. A frozen current `VerificationPlan`, the ADC, Binding and Phase generation plus an exact failed subject authorize Intent creation; an authenticated owner/executor ID is required for each interpreted journal carrier. Untrusted marker comments are ignored prior to parsing. Canonical Intent and Applied bodies and predecessor hashes are direct/list/direct readback-checked. The complete label update is attempted once only, and loss of its response cannot cause a second PUT. Any pending Intent prevents ordinary advance; recovery of an after-state must verify Plan and failing evidence before appending Applied. The next verification requires a new descendant commit and fresh evidence.
 
