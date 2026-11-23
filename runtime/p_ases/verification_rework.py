@@ -175,13 +175,39 @@ def _unique_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
+def _trusted_rework_authors(github: GitHub) -> frozenset[int]:
+    """Repository owner and authenticated executor are the only journal authorities.
+
+    Public Issue commenters must not influence workflow state by posting a marker.
+    Authentication and immutable author IDs come from GitHub, not comment bodies.
+    """
+    try:
+        metadata = github.repository_metadata()
+        actor = github.authenticated_user()
+    except GitHubError as exc:
+        raise VerificationReworkError("trusted rework actor identity is unavailable") from exc
+    owner = metadata.get("owner") if isinstance(metadata, dict) else None
+    if (not isinstance(owner, dict) or owner.get("type") != "User"
+            or type(owner.get("id")) is not int or owner["id"] < 1
+            or not isinstance(actor, dict) or actor.get("type") != "User"
+            or type(actor.get("id")) is not int or actor["id"] < 1):
+        raise VerificationReworkError("trusted rework actor identity is invalid")
+    return frozenset({owner["id"], actor["id"]})
+
+
 def read_rework_history(github: GitHub, issue_number: int) -> tuple[ReworkRecord, ...]:
-    """Two full list snapshots with direct reads before and after every carrier."""
+    """Two full list snapshots with direct reads for trusted journal carriers."""
+    trusted_ids = _trusted_rework_authors(github)
+
     def selected() -> list[dict[str, Any]]:
         rows = github.issue_comments(issue_number)
         return [row for row in rows
                 if isinstance(row, dict) and isinstance(row.get("body"), str)
-                and row["body"].startswith(PREFIX)]
+                and row["body"].startswith(PREFIX)
+                and isinstance(row.get("user"), dict)
+                and row["user"].get("type") == "User"
+                and type(row["user"].get("id")) is int
+                and row["user"]["id"] in trusted_ids]
     try:
         first = selected()
         ids = [row.get("id") for row in first]
@@ -519,9 +545,12 @@ def require_rework_progress(github: GitHub, root: Path, issue_number: int,
                             *, current_head: str, adc_comment_id: int) -> None:
     """Forbid same-HEAD execution->verification after a committed correction."""
     history = read_rework_history(github, issue_number)
-    previous = next((row for row in reversed(history)
-                     if row.schema == APPLIED_SCHEMA and
-                     row.payload["adc_comment_id"] == adc_comment_id), None)
+    active = [row for row in history if row.payload["adc_comment_id"] == adc_comment_id]
+    if active and active[-1].schema == INTENT_SCHEMA:
+        raise VerificationReworkError(
+            "BLOCKED_REWORK_PENDING: incomplete Intent must be recovered before verification"
+        )
+    previous = next((row for row in reversed(active) if row.schema == APPLIED_SCHEMA), None)
     if previous is None:
         return
     old_head = previous.payload["pr_head_sha40"]
