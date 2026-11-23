@@ -123,6 +123,7 @@ A row is complete only when each linked stable ID resolves to its owning documen
 | [REQ-F79-005](../specs/workflow-spec.md#req-f79-005) | [DES-F79-005](../design/workflow-design.md#des-f79-005) | [ORA-F79-005](pases-lifecycle-tests.md#ora-f79-005) | [TST-F79-005](pases-lifecycle-tests.md#tst-f79-005) | [session boundary tests](../../tests/test_verification_rework.py) |
 | [REQ-F79-006](../specs/workflow-spec.md#req-f79-006) | [DES-F79-006](../design/workflow-design.md#des-f79-006) | [ORA-F79-006](pases-lifecycle-tests.md#ora-f79-006) | [TST-F79-006](pases-lifecycle-tests.md#tst-f79-006) | [merge authorization tests](../../tests/test_issue79_generic_merge.py) |
 | [REQ-F79-007](../specs/workflow-spec.md#req-f79-007) | [DES-F79-007](../design/workflow-design.md#des-f79-007) | [ORA-F79-007](pases-lifecycle-tests.md#ora-f79-007) | [TST-F79-007](pases-lifecycle-tests.md#tst-f79-007) | [generated mirror and docs checks](../../tools/build_dist.py) |
+| [REQ-F79-002](../specs/workflow-spec.md#req-f79-002) | [DES-F79-002](../design/workflow-design.md#des-f79-002) | [ORA-RT-025](runtime-tests.md#ora-rt-025) | [TST-RT-025](runtime-tests.md#tst-rt-025) | [runtime rework and merge regressions](../../tests/test_verification_rework.py), [merge gate tests](../../tests/test_issue79_generic_merge.py) |
 
 <a id="artifact-impact"></a>
 ## 3 Artifact impact
