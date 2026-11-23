@@ -15,9 +15,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases.github import GitHubError
+from p_ases.evidence_store import VerificationSubject
+from p_ases.verification import VerificationResult
 from p_ases.verification_rework import (
     APPLIED_SCHEMA, INTENT_SCHEMA, VerificationReworkError, MAX_CYCLES,
-    read_rework_history, require_rework_progress, verification_rework,
+    _evidence, read_rework_history, require_rework_progress, verification_rework,
 )
 
 REPO = "puchinya/ai-agent-workflow"
@@ -248,6 +250,41 @@ class VerificationReworkTests(unittest.TestCase):
         copied = self.github.create_issue_comment(79, self.github.comments[-1]["body"])
         copied["user"] = {"id": 999999, "login": "outsider", "type": "User"}
         self.assertEqual(len(read_rework_history(self.github, 79)), 2)
+
+    def test_failing_evidence_must_match_repository_adc_comment_and_plan(self):
+        expected = {
+            "repository": REPO,
+            "issue_number": 79,
+            "pr_number": 80,
+            "adc_comment_id": 7099602476,
+            "adc_sha256": ADC_SHA,
+            "plan_sha256": "1" * 64,
+            "pr_head_sha40": HEAD,
+        }
+        file = self.root / "verification-result.json"
+        for wrong_field, wrong_value in (
+                (None, None),
+                ("repository", "attacker/other"),
+                ("plan_sha256", "2" * 64),
+                ("adc_comment_id", 999)):
+            subject = VerificationSubject(**{
+                **expected, **({wrong_field: wrong_value} if wrong_field else {})
+            }).validate()
+            result = VerificationResult(
+                "FAIL", subject, (), None, None, (), ("Mandatory check failed",)
+            ).validate()
+            file.write_bytes(result.to_bytes())
+            options = {
+                "root": self.root, "repository": REPO, "issue": 79, "pr": 80,
+                "head": HEAD, "adc_comment_id": 7099602476, "adc_sha256": ADC_SHA,
+                "plan_sha256": "1" * 64, "finding_id": "mandatory-check",
+            }
+            if wrong_field is None:
+                self.assertEqual(_evidence(file, **options)[0], "verification_FAIL")
+            else:
+                with self.subTest(wrong_field=wrong_field):
+                    with self.assertRaisesRegex(VerificationReworkError, "current ADC/PR/HEAD"):
+                        _evidence(file, **options)
 
     def test_wrong_phase_blocks_without_writes(self):
         self.github.labels = ["kind:single", "phase:ready"]
