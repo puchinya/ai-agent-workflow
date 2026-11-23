@@ -585,6 +585,8 @@ def verification_rework(
     _parse_record({
         "id": 1, "body": _body(INTENT_SCHEMA, payload),
         "user": {"id": subject.executor_user_id, "login": "validated-user", "type": "User"},
+        "author_association": ("OWNER" if subject.executor_user_id == _repository_owner_id(github)
+                               else "COLLABORATOR"),
         "created_at": payload["created_at"], "updated_at": payload["created_at"],
         "url": f"https://api.github.com/repos/{subject.repository}/issues/comments/1",
         "issue_url": f"https://api.github.com/repos/{subject.repository}/issues/{issue_number}",
