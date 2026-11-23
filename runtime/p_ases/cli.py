@@ -2781,6 +2781,9 @@ def _merge_readback(github: GitHub, plan: dict[str, Any]) -> dict[str, Any]:
                 or hashlib.sha256(str(pr.get("title", "")).encode("utf-8")).hexdigest()
                    != plan["details"]["pr_title_sha256"]):
             raise OwnerAuthorizationError("ordinary merged PR does not match the exact approved association")
+        if (not isinstance(base, dict)
+                or base.get("ref") != plan["details"]["pr_base_ref"]):
+            raise OwnerAuthorizationError("merged ordinary PR targets a different base branch")
         target_issue = github.issue(target)
         if (target_issue.get("number") != target
                 or target_issue.get("repository_url") != "https://api.github.com/repos/puchinya/ai-agent-workflow"
@@ -2888,20 +2891,32 @@ def _perform_authorized_merge(args: argparse.Namespace, root: Path, github: GitH
                 "merge_request_repeated": False, "recovered_from_intent": True}
 
     gates = _owner_merge_gate(args, root, github, plan)
+    if plan["target_issue_number"] not in {57, 63}:
+        if (gates["final_delivery_sha256"] != plan["details"]["final_delivery_sha256"]
+                or hashlib.sha256(_canonical(gates["subject"])).hexdigest()
+                   != plan["details"]["final_delivery_subject_sha256"]):
+            raise OwnerAuthorizationError("ordinary merge Final Delivery changed after explicit approval")
     if plan["target_issue_number"] != 57:
         target = plan["target_issue_number"]
         live_details = (issue63_deferred_merge_details(
             github, pr_number=plan["pr_number"], pr_head_sha40=plan["pr_head_sha40"])
             if target == 63 else ordinary_merge_details(
                 github, issue_number=target, pr_number=plan["pr_number"],
-                pr_head_sha40=plan["pr_head_sha40"]))
+                pr_head_sha40=plan["pr_head_sha40"],
+                final_delivery_sha256=plan["details"]["final_delivery_sha256"],
+                final_delivery_subject_sha256=plan["details"]["final_delivery_subject_sha256"]))
         if live_details != plan["details"]:
             raise OwnerAuthorizationError("PR association or metadata changed before merge")
     current = github.pull_request(plan["pr_number"])
     head = current.get("head") if isinstance(current, dict) else None
+    base = current.get("base") if isinstance(current, dict) else None
     if (current.get("state") != "open" or current.get("merged") is True
-            or not isinstance(head, dict) or head.get("sha") != plan["pr_head_sha40"]):
-        raise OwnerAuthorizationError("PR changed or merged before the one permitted merge request")
+            or not isinstance(head, dict) or head.get("sha") != plan["pr_head_sha40"]
+            or (plan["target_issue_number"] not in {57, 63}
+                and (not isinstance(base, dict)
+                     or base.get("ref") != plan["details"]["pr_base_ref"]
+                     or base.get("sha") != plan["details"]["pr_base_sha40"]))):
+        raise OwnerAuthorizationError("PR HEAD or target base changed before the one permitted merge request")
     intent = {
         "schema": "PASES_PR_MERGE_ATTEMPT_V1", "plan_sha256": plan["plan_sha256"],
         "owner_decision_comment_id": decision.get("owner_decision_comment_id"),
