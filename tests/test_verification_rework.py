@@ -19,7 +19,8 @@ from p_ases.evidence_store import VerificationSubject
 from p_ases.verification import VerificationResult
 from p_ases.verification_rework import (
     APPLIED_SCHEMA, INTENT_SCHEMA, VerificationReworkError, MAX_CYCLES,
-    _evidence, read_rework_history, require_rework_progress, verification_rework,
+    _current_plan, _evidence, _require_review_not_started, read_rework_history,
+    require_rework_progress, verification_rework,
 )
 
 REPO = "puchinya/ai-agent-workflow"
@@ -38,13 +39,15 @@ class FakeGitHub:
         self.label_puts = 0
         self.lost_put = lost_put
         self.head = HEAD
+        self.actor_id = 3744776
+        self.author_association = "OWNER"
 
     def repository_metadata(self):
         return {"full_name": REPO, "id": 1401910271,
                 "owner": {"id": 3744776, "login": "puchinya", "type": "User"}}
 
     def authenticated_user(self):
-        return {"id": 3744776, "login": "puchinya", "type": "User"}
+        return {"id": self.actor_id, "login": "actor", "type": "User"}
 
     def issue(self, number):
         return {
@@ -76,7 +79,8 @@ class FakeGitHub:
         row = {
             "id": cid, "body": body, "created_at": "2026-11-23T12:01:01Z",
             "updated_at": "2026-11-23T12:01:01Z",
-            "user": {"id": 3744776, "login": "puchinya", "type": "User"},
+            "user": {"id": self.actor_id, "login": "puchinya", "type": "User"},
+            "author_association": self.author_association,
             "url": f"https://api.github.com/repos/{REPO}/issues/comments/{cid}",
             "issue_url": f"https://api.github.com/repos/{REPO}/issues/79",
             "html_url": f"https://github.com/{REPO}/issues/79#issuecomment-{cid}",
@@ -109,7 +113,7 @@ class VerificationReworkTests(unittest.TestCase):
             repository=REPO, repository_id=1401910271, issue_number=79, issue_id=7900,
             labels=tuple(sorted(self.github.labels)), verified_adc=verified,
             binding=binding, binding_sha256=BIND_SHA, binding_generation=1,
-            head_sha40=self.github.head, branch_ref="fix/issue79", executor_user_id=3744776,
+            head_sha40=self.github.head, branch_ref="fix/issue79", executor_user_id=self.github.actor_id,
             issue=self.github.issue(79),
         )
 
@@ -279,12 +283,98 @@ class VerificationReworkTests(unittest.TestCase):
                 "head": HEAD, "adc_comment_id": 7099602476, "adc_sha256": ADC_SHA,
                 "plan_sha256": "1" * 64, "finding_id": "mandatory-check",
             }
+            options.update({"github": self.github, "plan_path": self.root / "plan.json"})
             if wrong_field is None:
-                self.assertEqual(_evidence(file, **options)[0], "verification_FAIL")
+                with patch("p_ases.cli._calculate_verification", return_value=(result, [])):
+                    self.assertEqual(_evidence(file, **options)[0], "verification_FAIL")
             else:
                 with self.subTest(wrong_field=wrong_field):
-                    with self.assertRaisesRegex(VerificationReworkError, "current ADC/PR/HEAD"):
-                        _evidence(file, **options)
+                    with patch("p_ases.cli._calculate_verification", return_value=(result, [])):
+                        with self.assertRaisesRegex(VerificationReworkError, "current ADC/PR/HEAD"):
+                            _evidence(file, **options)
+
+    def test_live_mandatory_fail_proof_rejects_fabricated_receipt(self):
+        subject = VerificationSubject(
+            REPO, 79, 80, 7099602476, ADC_SHA, "1" * 64, HEAD,
+        ).validate()
+        fabricated = VerificationResult(
+            "FAIL", subject, (), None, None, (), ("Mandatory check failed",)
+        ).validate()
+        file = self.root / "synthetic.json"
+        file.write_bytes(fabricated.to_bytes())
+        options = {
+            "root": self.root, "repository": REPO, "issue": 79, "pr": 80,
+            "head": HEAD, "adc_comment_id": 7099602476, "adc_sha256": ADC_SHA,
+            "plan_sha256": "1" * 64, "finding_id": "mandatory-check",
+            "github": self.github, "plan_path": self.root / "plan.json",
+        }
+        with patch("p_ases.cli._calculate_verification", side_effect=ValueError("no trusted check provenance")):
+            with self.assertRaisesRegex(VerificationReworkError, "cannot be independently reproduced"):
+                _evidence(file, **options)
+        with patch("p_ases.cli._calculate_verification", return_value=(
+                VerificationResult("PASS", subject, (), "2" * 64, "3" * 64,
+                                   ("4" * 64,), ()).validate(), []
+        )):
+            with self.assertRaisesRegex(VerificationReworkError, "not the live mandatory"):
+                _evidence(file, **options)
+        self.assertEqual(self.github.label_puts, 0)
+
+    def test_full_plan_loader_and_canonical_path_are_mandatory(self):
+        plan = SimpleNamespace(sha256="1" * 64, repository=REPO, issue_number=79)
+        canonical = self.root / ".p_ases" / "plans" / "79" / f"{plan.sha256}.json"
+        canonical.parent.mkdir(parents=True)
+        canonical.write_bytes(b"canonical stub")
+        with patch("p_ases.verification_rework.read_plan", return_value=plan), \\
+                patch("p_ases.cli._load_plan", return_value=(plan, ("REQ-1",), (), ())) as full:
+            self.assertEqual(_current_plan(self.root, canonical, self.subject()), "1" * 64)
+            self.assertEqual(full.call_count, 1)
+            with self.assertRaisesRegex(VerificationReworkError, "not the canonical"):
+                _current_plan(self.root, self.root / "other.json", self.subject())
+        # Valid self-hashed Plan bytes alone are insufficient: the existing
+        # normative requirement / Oracle / Test evaluator must also accept it.
+        with patch("p_ases.verification_rework.read_plan", return_value=plan), \\
+                patch("p_ases.cli._load_plan", side_effect=ValueError("missing Oracle")):
+            with self.assertRaisesRegex(ValueError, "missing Oracle"):
+                _current_plan(self.root, canonical, self.subject())
+
+    def test_trusted_journal_survives_executor_handoff(self):
+        self.github.actor_id = 10
+        self.github.author_association = "COLLABORATOR"
+        self.run_rework()
+        self.github.actor_id = 11
+        self.github.author_association = "COLLABORATOR"
+        self.assertEqual(len(read_rework_history(self.github, 79)), 2)
+        with self.assertRaisesRegex(VerificationReworkError, "NO_PROGRESS"):
+            require_rework_progress(self.github, self.root, 79,
+                                    current_head=HEAD, adc_comment_id=7099602476)
+        self.github.labels = ["kind:single", "phase:verification"]
+        self.github.head = "d" * 40
+        self.assertEqual(self.run_rework()["rework_cycle"], 2)
+        self.assertEqual([row.actor_id for row in read_rework_history(self.github, 79)],
+                         [10, 10, 11, 11])
+
+    def test_new_collaborator_recovers_prior_executor_intent_without_second_put(self):
+        self.github.actor_id = 10
+        self.github.author_association = "COLLABORATOR"
+        self.github.lost_put = "before"
+        with self.assertRaises(VerificationReworkError):
+            self.run_rework()
+        self.github.labels = ["kind:single", "phase:execution"]
+        self.github.actor_id = 11
+        self.github.lost_put = None
+        self.assertEqual(self.run_rework()["status"], "RECOVERED")
+        self.assertEqual(self.github.label_puts, 1)
+        self.assertEqual([row.actor_id for row in read_rework_history(self.github, 79)], [10, 11])
+
+    def test_outsider_fake_user_review_decision_cannot_block_rework(self):
+        row = self.github.create_issue_comment(
+            79, '{"schema":"PASES_USER_REVIEW_DECISION_FAKE"}',
+        )
+        row["user"] = {"id": 9999, "type": "User", "login": "outsider"}
+        row["author_association"] = "NONE"
+        _require_review_not_started(self.github, self.root, 79, 80, ADC_SHA,
+                                    self.github.issue_comments(79))
+        self.assertEqual(self.run_rework()["status"], "APPLIED")
 
     def test_wrong_phase_blocks_without_writes(self):
         self.github.labels = ["kind:single", "phase:ready"]
