@@ -41,4 +41,4 @@ python -m p_ases user-review record 32 42 path/to/host-event.json --repo OWNER/R
 
 Edited/deleted feedback history, unresolved threads, stale HEAD, missing user decision, wrong-mode approval carrier, mismatched owner identity, noncanonical Issue permalink, or incomplete Acceptance blocks approval. The current CLI intentionally fails closed for untrusted direct-chat payloads. Output subject, synchronized feedback, decision, and blockers. User Review is not merge authorization.
 
-Next owners: integration-validation handles parent feedback; delivery-control keeps merge permission separate. See the [User Review specification](../../../docs/specs/workflow-spec.md).
+Next owners: integration-validation handles parent feedback; delivery-control keeps merge permission separate. See the [User Review specification](../../docs/specs/workflow-spec.md).
