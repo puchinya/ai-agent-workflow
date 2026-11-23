@@ -29,8 +29,8 @@ INTENT_SCHEMA = "PASES_VERIFICATION_REWORK_INTENT_V1"
 APPLIED_SCHEMA = "PASES_VERIFICATION_REWORK_APPLIED_V1"
 PREFIX = "<!-- PASES_VERIFICATION_REWORK_"
 MAX_CYCLES = 3
-SHA40 = re.compile(r"[0-9a-f]{40}\\Z")
-SHA256 = re.compile(r"[0-9a-f]{64}\\Z")
+SHA40 = re.compile(r"[0-9a-f]{40}\Z")
+SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
 
 class VerificationReworkError(ValueError):
@@ -55,7 +55,7 @@ def _canonical(value: Any) -> str:
 
 
 def _body(schema: str, value: dict[str, Any]) -> str:
-    return f"<!-- {schema}\\n{_canonical(value)}\\n-->"
+    return f"<!-- {schema}\n{_canonical(value)}\n-->"
 
 
 def _time() -> str:
@@ -89,11 +89,11 @@ def _fingerprint(row: Any, repo: str, issue: int) -> tuple[Any, ...]:
 
 def _parse_record(row: dict[str, Any], repo: str, issue: int) -> ReworkRecord:
     comment_id, body, _created, _updated, actor_id, *_ = _fingerprint(row, repo, issue)
-    schema = (INTENT_SCHEMA if body.startswith(f"<!-- {INTENT_SCHEMA}\\n")
-              else APPLIED_SCHEMA if body.startswith(f"<!-- {APPLIED_SCHEMA}\\n") else None)
-    if schema is None or not body.endswith("\\n-->"):
+    schema = (INTENT_SCHEMA if body.startswith(f"<!-- {INTENT_SCHEMA}\n")
+              else APPLIED_SCHEMA if body.startswith(f"<!-- {APPLIED_SCHEMA}\n") else None)
+    if schema is None or not body.endswith("\n-->"):
         raise VerificationReworkError("unknown or malformed rework journal marker")
-    raw = body[len(f"<!-- {schema}\\n"):-len("\\n-->")]
+    raw = body[len(f"<!-- {schema}\n"):-len("\n-->")]
     try:
         value = json.loads(raw, object_pairs_hook=_unique_fields)
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
