@@ -264,7 +264,7 @@ def read_rework_history(github: GitHub, issue_number: int) -> tuple[ReworkRecord
                     record.payload["intent_sha256"] != pending.sha256):
                 raise VerificationReworkError("orphan or mismatched rework Applied record")
             for key, value in pending.payload.items():
-                if key not in {"schema", "created_at"} and record.payload.get(key) != value:
+                if key not in {"schema", "created_at", "actor_id"} and record.payload.get(key) != value:
                     raise VerificationReworkError("rework Applied does not match its exact Intent")
             pending = None
             completed = record
@@ -437,9 +437,13 @@ def _refresh(github: GitHub, subject: Any, pr_number: int) -> tuple[str, ...]:
     return tuple(sorted(labels))
 
 
-def _applied(intent: ReworkRecord) -> dict[str, Any]:
+def _applied(intent: ReworkRecord, *, executor_user_id: int) -> dict[str, Any]:
     result = {key: value for key, value in intent.payload.items() if key not in {"schema", "created_at"}}
-    return {**result, "schema": APPLIED_SCHEMA, "intent_comment_id": intent.comment_id,
+    # A currently authorized collaborator may finish an interrupted previous
+    # executor's label update. Both immutable comments retain their actual
+    # GitHub-authenticated author identities.
+    return {**result, "schema": APPLIED_SCHEMA, "actor_id": executor_user_id,
+            "intent_comment_id": intent.comment_id,
             "intent_sha256": intent.sha256, "applied_at": _time()}
 
 
@@ -506,7 +510,6 @@ def verification_rework(
                 or intent.payload["plan_sha256"] != plan_sha256
                 or intent.payload["pr_head_sha40"] != subject.head_sha40
                 or intent.payload["pr_number"] != pr_number
-                or intent.actor_id != subject.executor_user_id
                 or intent.payload["finding_id"] != finding_id or intent.payload["reason"] != reason):
             raise VerificationReworkError("pending rework Intent does not match the current immutable subject")
         if labels == tuple(intent.payload["labels_before"]):
@@ -534,7 +537,7 @@ def verification_rework(
         if (evidence_type != intent.payload["evidence_type"]
                 or evidence_sha256 != intent.payload["evidence_sha256"]):
             raise VerificationReworkError("pending rework failing evidence has changed")
-        record = _post_once(github, issue_number, APPLIED_SCHEMA, _applied(intent))
+        record = _post_once(github, issue_number, APPLIED_SCHEMA, _applied(intent, executor_user_id=subject.executor_user_id))
         return {"status": "RECOVERED", "issue": issue_number, "label_write_count": 0,
                 "intent_comment_id": intent.comment_id,
                 "applied_comment_id": record.comment_id, "rework_cycle": cycles + 1}
@@ -629,7 +632,7 @@ def verification_rework(
             or after.binding_sha256 != subject.binding_sha256
             or after.labels != latest):
         raise VerificationReworkError("rework subject changed after the label write")
-    record = _post_once(github, issue_number, APPLIED_SCHEMA, _applied(intent))
+    record = _post_once(github, issue_number, APPLIED_SCHEMA, _applied(intent, executor_user_id=subject.executor_user_id))
     return {"status": "APPLIED", "issue": issue_number, "label_write_count": 1,
             "intent_comment_id": intent.comment_id, "applied_comment_id": record.comment_id,
             "rework_cycle": cycles + 1}
