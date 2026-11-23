@@ -30,7 +30,7 @@ from .user_review_relay import (
 )
 from .verification import VerificationError, VerificationResult
 from .work import WorkError, parse_issue_association
-from .verification_plan import PlanError, read_plan, verify_plan_sources
+from .verification_plan import PlanError, read_plan
 
 INTENT_SCHEMA = "PASES_VERIFICATION_REWORK_INTENT_V1"
 APPLIED_SCHEMA = "PASES_VERIFICATION_REWORK_APPLIED_V1"
@@ -91,7 +91,10 @@ def _fingerprint(row: Any, repo: str, issue: int) -> tuple[Any, ...]:
     if any(not isinstance(a, str) or a.casefold() != e.casefold()
            for a, e in zip(actual, urls, strict=True)):
         raise VerificationReworkError("rework journal carrier has mismatched Issue origin")
-    return comment_id, body, created, updated, user["id"], user["login"].casefold(), *actual
+    role = row.get("author_association")
+    if role not in {"OWNER", "COLLABORATOR"}:
+        raise VerificationReworkError("rework journal author is not the repository owner/collaborator")
+    return comment_id, body, created, updated, user["id"], user["login"].casefold(), role, *actual
 
 
 def _parse_record(row: dict[str, Any], repo: str, issue: int) -> ReworkRecord:
@@ -382,13 +385,13 @@ def _evidence(path: Path, *, root: Path, repository: str, issue: int, pr: int, h
             # Canonical FAIL JSON alone is insufficient: recompute actual
             # mandatory Evidence and trusted Check Runs at this exact HEAD.
             import argparse
-            from .cli import _calculate_verification
+            from .cli import CLIError, _calculate_verification
             try:
                 observed, _refs = _calculate_verification(
                     argparse.Namespace(issue=issue, pr=pr, head=head, plan=plan_path),
                     repository, root, github,
                 )
-            except (ADCError, GitError, GitHubError, PlanError,
+            except (ADCError, CLIError, GitError, GitHubError, PlanError,
                     VerificationError, OSError, ValueError) as exc:
                 raise VerificationReworkError("current mandatory Verification cannot be independently reproduced") from exc
             if observed != verification or observed.status != "FAIL":
@@ -455,7 +458,7 @@ def _current_plan(root: Path, path: Path, subject: Any) -> str:
         raise VerificationReworkError("Verification Plan must be a regular file under the current worktree")
     # CLI owns normative requirement coverage, Oracle/Test trace, and
     # canonical frozen Plan path validation. Import lazily to avoid a cycle.
-    from .cli import _load_plan, _plans_root
+    from .cli import CLIError, _load_plan, _plans_root
     try:
         plan = read_plan(location.read_bytes())
         expected = _plans_root(root, subject.issue_number) / f"{plan.sha256}.json"
@@ -466,7 +469,7 @@ def _current_plan(root: Path, path: Path, subject: Any) -> str:
         )
         if checked != plan:
             raise VerificationReworkError("frozen Verification Plan changed during validation")
-    except (OSError, PlanError) as exc:
+    except (OSError, PlanError, CLIError) as exc:
         raise VerificationReworkError("current Verification Plan/Oracle/Test coverage is invalid") from exc
     return plan.sha256
 
