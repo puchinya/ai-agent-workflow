@@ -324,16 +324,17 @@ class VerificationReworkTests(unittest.TestCase):
         canonical = self.root / ".p_ases" / "plans" / "79" / f"{plan.sha256}.json"
         canonical.parent.mkdir(parents=True)
         canonical.write_bytes(b"canonical stub")
-        with patch("p_ases.verification_rework.read_plan", return_value=plan), \\
-                patch("p_ases.cli._load_plan", return_value=(plan, ("REQ-1",), (), ())) as full:
+        (self.root / "other.json").write_bytes(b"fake Plan")
+        with (patch("p_ases.verification_rework.read_plan", return_value=plan),
+              patch("p_ases.cli._load_plan", return_value=(plan, ("REQ-1",), (), ())) as full):
             self.assertEqual(_current_plan(self.root, canonical, self.subject()), "1" * 64)
             self.assertEqual(full.call_count, 1)
             with self.assertRaisesRegex(VerificationReworkError, "not the canonical"):
                 _current_plan(self.root, self.root / "other.json", self.subject())
         # Valid self-hashed Plan bytes alone are insufficient: the existing
         # normative requirement / Oracle / Test evaluator must also accept it.
-        with patch("p_ases.verification_rework.read_plan", return_value=plan), \\
-                patch("p_ases.cli._load_plan", side_effect=ValueError("missing Oracle")):
+        with (patch("p_ases.verification_rework.read_plan", return_value=plan),
+              patch("p_ases.cli._load_plan", side_effect=ValueError("missing Oracle"))):
             with self.assertRaisesRegex(ValueError, "missing Oracle"):
                 _current_plan(self.root, canonical, self.subject())
 
