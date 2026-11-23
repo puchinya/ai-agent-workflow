@@ -13,7 +13,12 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
 
-from p_ases.cli import _merge_readback, _owner_merge_gate, _perform_authorized_merge
+from p_ases.cli import (
+    _merge_readback, _owner_merge_gate, _perform_authorized_merge,
+    _review_payload_from_github,
+)
+from p_ases.evidence_store import VerificationSubject
+from p_ases.user_review import UserReviewSubject
 from p_ases.owner_authorization import (
     OwnerAuthorizationError, authorize_chat_confirmed_plan,
     capture_direct_chat_confirmation, create_authorization_plan,
@@ -65,6 +70,18 @@ class OrdinaryGitHub:
         if number != 79:
             raise AssertionError("cross-Issue decision read")
         return next(row for row in self.comments if row["id"] == comment_id)
+
+    def pull_conversation_comments(self, number):
+        return []
+
+    def pull_reviews(self, number):
+        return []
+
+    def pull_diff_comments(self, number):
+        return []
+
+    def pull_review_threads(self, number):
+        return []
 
     def create_issue_comment(self, number, body):
         if number != 79:
@@ -227,6 +244,47 @@ class OrdinaryMergeAuthorizationTests(unittest.TestCase):
             github.base_ref = "release"
             with self.assertRaisesRegex(OwnerAuthorizationError, "different base branch"):
                 _merge_readback(github, plan)
+
+    def test_owner_merge_grant_does_not_invalidate_user_review_feedback(self):
+        github = OrdinaryGitHub()
+        reviewed = UserReviewSubject(
+            VerificationSubject(REPO, 79, 80, 7099602476,
+                                "a" * 64, "1" * 64, HEAD).validate(),
+            "2" * 64,
+        ).validate()
+        before = _review_payload_from_github(
+            github, reviewed, observed_at="2026-11-23T11:59:00Z"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan = self.plan(github, root)
+            grant = capture_direct_chat_confirmation(
+                plan, response="承認する", user_role="user", same_conversation=True,
+            )
+            with (patch("p_ases.owner_authorization.worktree_clean", return_value=True),
+                  patch("p_ases.owner_authorization.head_sha40", return_value=HEAD)):
+                decision = authorize_chat_confirmed_plan(github, root, plan, grant)
+            self.assertEqual(decision["status"], "AUTHORIZED")
+            # The exact GitHub owner authorization is not human review feedback.
+            after = _review_payload_from_github(
+                github, reviewed, observed_at="2026-11-23T12:02:00Z"
+            )
+            self.assertEqual(after.events, before.events)
+            self.assertEqual(after.unresolved_thread_ids, before.unresolved_thread_ids)
+            # Ordinary owner feedback still counts and invalidates old snapshot.
+            github.create_issue_comment(79, "Additional concerns with the implementation.")
+            later = _review_payload_from_github(
+                github, reviewed, observed_at="2026-11-23T12:04:00Z"
+            )
+            self.assertEqual(len(later.events), 1)
+            self.assertEqual(later.events[0].kind, "questions")
+            # An outsider spoof of the reserved marker is NOT excluded.
+            third = github.create_issue_comment(79, github.comments[0]["body"])
+            third["user"] = {"id": 9999, "login": "outsider", "type": "User"}
+            remaining = _review_payload_from_github(
+                github, reviewed, observed_at="2026-11-23T12:05:00Z"
+            )
+            self.assertEqual(len(remaining.events), 2)
 
     def test_explicit_chat_grant_is_exact_subject_and_single_use(self):
         github = OrdinaryGitHub()
