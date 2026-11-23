@@ -260,7 +260,10 @@ def issue63_deferred_merge_details(github: Any, *, pr_number: int,
 
 
 def ordinary_merge_details(github: Any, *, issue_number: int,
-                           pr_number: int, pr_head_sha40: str) -> dict[str, Any]:
+                           pr_number: int, pr_head_sha40: str,
+                           final_delivery_sha256: str | None = None,
+                           final_delivery_subject_sha256: str | None = None,
+                           ) -> dict[str, Any]:
     """Freeze an ordinary Issue's exact standalone auto-close association.
 
     This path deliberately does not adopt Issue #57 setup or Issue #63's
@@ -276,6 +279,16 @@ def ordinary_merge_details(github: Any, *, issue_number: int,
             or not isinstance(pr.get("head"), dict)
             or pr["head"].get("sha") != pr_head_sha40):
         raise OwnerAuthorizationError("ordinary merge requires the exact open non-draft PR HEAD")
+    base = pr.get("base")
+    base_repo = base.get("repo") if isinstance(base, dict) else None
+    head_repo = pr["head"].get("repo")
+    if (not isinstance(base, dict) or not isinstance(base_repo, dict)
+            or base_repo.get("full_name") != REPOSITORY
+            or not isinstance(head_repo, dict) or head_repo.get("full_name") != REPOSITORY
+            or not isinstance(base.get("ref"), str) or not base["ref"]
+            or not isinstance(base.get("sha"), str)
+            or SHA40.fullmatch(base["sha"]) is None):
+        raise OwnerAuthorizationError("ordinary merge requires an exact same-repository target base")
     body, title = pr.get("body"), pr.get("title")
     if not isinstance(body, str) or not isinstance(title, str) or not title.strip():
         raise OwnerAuthorizationError("ordinary PR title/body is incomplete")
@@ -285,12 +298,26 @@ def ordinary_merge_details(github: Any, *, issue_number: int,
         raise OwnerAuthorizationError(f"ordinary PR Issue association is invalid: {exc}") from exc
     if association != "auto_close":
         raise OwnerAuthorizationError("ordinary PR must use a standalone Closes #N association")
-    return {
+    details = {
         "target_issue_number": issue_number,
         "association_mode": "auto_close",
         "pr_body_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
         "pr_title_sha256": hashlib.sha256(title.encode("utf-8")).hexdigest(),
+        "pr_base_ref": base["ref"],
+        "pr_base_sha40": base["sha"],
+        "merge_method": "merge",
     }
+    if final_delivery_sha256 is None and final_delivery_subject_sha256 is None:
+        # Identity-only preflight. A persisted approval plan must include both
+        # checked final-delivery digests and is validated separately below.
+        return details
+    if (not isinstance(final_delivery_sha256, str)
+            or SHA256.fullmatch(final_delivery_sha256) is None
+            or not isinstance(final_delivery_subject_sha256, str)
+            or SHA256.fullmatch(final_delivery_subject_sha256) is None):
+        raise OwnerAuthorizationError("ordinary merge requires exact Final Delivery hashes")
+    return {**details, "final_delivery_sha256": final_delivery_sha256,
+            "final_delivery_subject_sha256": final_delivery_subject_sha256}
 
 
 def create_authorization_plan(
@@ -348,6 +375,8 @@ def create_authorization_plan(
                 expected_details = ordinary_merge_details(
                     github, issue_number=target_issue_number, pr_number=pr_number,
                     pr_head_sha40=pr_head_sha40,
+                    final_delivery_sha256=details.get("final_delivery_sha256"),
+                    final_delivery_subject_sha256=details.get("final_delivery_subject_sha256"),
                 )
             if details != expected_details:
                 raise OwnerAuthorizationError("PR merge plan no longer matches its exact subject")
@@ -458,12 +487,19 @@ def _validate_plan(value: Any) -> dict[str, Any]:
         if target not in {57, 63}:
             if (not _positive(target) or plan["issue_number"] != target
                     or set(details) != {"target_issue_number", "association_mode",
-                                        "pr_body_sha256", "pr_title_sha256"}
+                                        "pr_body_sha256", "pr_title_sha256",
+                                        "pr_base_ref", "pr_base_sha40", "merge_method",
+                                        "final_delivery_sha256", "final_delivery_subject_sha256"}
                     or details.get("target_issue_number") != target
                     or details.get("association_mode") != "auto_close"
+                    or details.get("merge_method") != "merge"
+                    or not isinstance(details.get("pr_base_ref"), str) or not details["pr_base_ref"]
+                    or not isinstance(details.get("pr_base_sha40"), str)
+                    or SHA40.fullmatch(details["pr_base_sha40"]) is None
                     or any(not isinstance(details.get(field), str)
                            or SHA256.fullmatch(details[field]) is None
-                           for field in ("pr_body_sha256", "pr_title_sha256"))):
+                           for field in ("pr_body_sha256", "pr_title_sha256",
+                                         "final_delivery_sha256", "final_delivery_subject_sha256"))):
                 raise OwnerAuthorizationError("ordinary PR merge plan is not an exact auto-close subject")
     if plan["operation"] == "USER_REVIEW":
         if (set(details) != {"review_session_sha256", "readiness_sha256", "adc_sha256",

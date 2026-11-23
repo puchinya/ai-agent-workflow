@@ -26,6 +26,7 @@ from .phases import Phase, PhaseError, parse_phase_labels, parse_attention_label
 from .user_review import UserReviewError, read_review_session
 from .verification import VerificationError, VerificationResult
 from .work import WorkError, parse_issue_association
+from .verification_plan import PlanError, read_plan, verify_plan_sources
 
 INTENT_SCHEMA = "PASES_VERIFICATION_REWORK_INTENT_V1"
 APPLIED_SCHEMA = "PASES_VERIFICATION_REWORK_APPLIED_V1"
@@ -108,7 +109,7 @@ def _parse_record(row: dict[str, Any], repo: str, issue: int) -> ReworkRecord:
         "adc_comment_id", "adc_sha256", "binding_sha256", "binding_generation",
         "pr_number", "pr_head_sha40", "pr_base_ref", "branch_ref",
         "phase_generation_comment_id", "phase_generation_sha256",
-        "labels_before", "labels_after", "reason", "evidence_sha256",
+        "plan_sha256", "labels_before", "labels_after", "reason", "evidence_sha256",
         "evidence_type", "finding_id", "actor_id", "predecessor_comment_id",
         "predecessor_sha256",
     }
@@ -134,6 +135,7 @@ def _parse_record(row: dict[str, Any], repo: str, issue: int) -> ReworkRecord:
             or value["phase_generation_comment_id"] < 1):
         raise VerificationReworkError("current Phase generation ID is invalid")
     for key, pattern in (("adc_sha256", SHA256), ("binding_sha256", SHA256),
+                         ("plan_sha256", SHA256),
                          ("phase_generation_sha256", SHA256),
                          ("pr_head_sha40", SHA40), ("evidence_sha256", SHA256)):
         if not isinstance(value.get(key), str) or pattern.fullmatch(value[key]) is None:
@@ -175,13 +177,45 @@ def _unique_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
+def _trusted_rework_authors(github: GitHub) -> frozenset[int]:
+    """Repository owner and authenticated executor are the only journal authorities.
+
+    Public Issue commenters must not influence workflow state by posting a marker.
+    Authentication and immutable author IDs come from GitHub, not comment bodies.
+    """
+    try:
+        metadata = github.repository_metadata()
+        actor = github.authenticated_user()
+    except GitHubError as exc:
+        raise VerificationReworkError("trusted rework actor identity is unavailable") from exc
+    owner = metadata.get("owner") if isinstance(metadata, dict) else None
+    if (not isinstance(owner, dict) or owner.get("type") != "User"
+            or type(owner.get("id")) is not int or owner["id"] < 1
+            or not isinstance(actor, dict) or actor.get("type") != "User"
+            or type(actor.get("id")) is not int or actor["id"] < 1):
+        raise VerificationReworkError("trusted rework actor identity is invalid")
+    return frozenset({owner["id"], actor["id"]})
+
+
 def read_rework_history(github: GitHub, issue_number: int) -> tuple[ReworkRecord, ...]:
-    """Two full list snapshots with direct reads before and after every carrier."""
+    """Two full list snapshots with direct reads for trusted journal carriers."""
+    trusted_ids: frozenset[int] | None = None
+
     def selected() -> list[dict[str, Any]]:
+        nonlocal trusted_ids
         rows = github.issue_comments(issue_number)
-        return [row for row in rows
-                if isinstance(row, dict) and isinstance(row.get("body"), str)
-                and row["body"].startswith(PREFIX)]
+        candidates = [row for row in rows
+                      if isinstance(row, dict) and isinstance(row.get("body"), str)
+                      and row["body"].startswith(PREFIX)]
+        if not candidates:
+            return []
+        if trusted_ids is None:
+            trusted_ids = _trusted_rework_authors(github)
+        return [row for row in candidates
+                if isinstance(row.get("user"), dict)
+                and row["user"].get("type") == "User"
+                and type(row["user"].get("id")) is int
+                and row["user"]["id"] in trusted_ids]
     try:
         first = selected()
         ids = [row.get("id") for row in first]
@@ -290,8 +324,9 @@ def _require_review_not_started(root: Path, issue: int, pr: int, adc_sha256: str
             )
 
 
-def _evidence(path: Path, *, root: Path, issue: int, pr: int, head: str,
-              adc_sha256: str, finding_id: str) -> tuple[str, str]:
+def _evidence(path: Path, *, root: Path, repository: str, issue: int, pr: int, head: str,
+              adc_comment_id: int, adc_sha256: str, plan_sha256: str,
+              finding_id: str) -> tuple[str, str]:
     location = Path(path).absolute()
     if (not location.is_relative_to(root) or path_has_symlink(location)
             or not location.is_file()):
@@ -319,8 +354,10 @@ def _evidence(path: Path, *, root: Path, issue: int, pr: int, head: str,
             raise VerificationReworkError("rework evidence schema is unsupported")
     except (OSError, UnicodeError, json.JSONDecodeError, AuditError, VerificationError) as exc:
         raise VerificationReworkError("rework evidence is malformed or unreadable") from exc
-    if (identity.issue_number != issue or identity.pr_number != pr
-            or identity.pr_head_sha40 != head or identity.adc_sha256 != adc_sha256):
+    if (identity.repository != repository or identity.issue_number != issue
+            or identity.pr_number != pr or identity.pr_head_sha40 != head
+            or identity.adc_comment_id != adc_comment_id
+            or identity.adc_sha256 != adc_sha256 or identity.plan_sha256 != plan_sha256):
         raise VerificationReworkError("rework evidence does not match the current ADC/PR/HEAD")
     return evidence_type, hashlib.sha256(data).hexdigest()
 
@@ -361,9 +398,27 @@ def _applied(intent: ReworkRecord) -> dict[str, Any]:
             "intent_sha256": intent.sha256, "applied_at": _time()}
 
 
+def _current_plan(root: Path, path: Path, subject: Any) -> str:
+    location = Path(path).absolute()
+    if (not location.is_relative_to(root) or path_has_symlink(location)
+            or not location.is_file()):
+        raise VerificationReworkError("Verification Plan must be a regular file under the current worktree")
+    try:
+        plan = read_plan(location.read_bytes())
+        if (plan.repository != subject.repository
+                or plan.issue_number != subject.issue_number
+                or plan.adc_comment_id != subject.verified_adc.pointer.comment_id
+                or plan.adc_sha256 != subject.verified_adc.contract.sha256):
+            raise VerificationReworkError("Verification Plan does not match the active ADC/Issue")
+        verify_plan_sources(root, plan)
+    except (OSError, PlanError) as exc:
+        raise VerificationReworkError("current Verification Plan or frozen source is invalid") from exc
+    return plan.sha256
+
+
 def verification_rework(
     github: GitHub, root: Path, issue_number: int, pr_number: int,
-    evidence: Path, finding_id: str, reason: str,
+    evidence: Path, finding_id: str, reason: str, plan_path: Path,
 ) -> dict[str, Any]:
     """Perform a bounded, resumable verification->execution correction."""
     root = Path(root).resolve()
@@ -382,6 +437,7 @@ def verification_rework(
         comments = github.issue_comments(issue_number)
     except (PhaseRestartError, PhaseError, GitHubError) as exc:
         raise VerificationReworkError(str(exc)) from exc
+    plan_sha256 = _current_plan(root, plan_path, subject)
     last = history[-1] if history else None
     current_adc = subject.verified_adc.pointer.comment_id
     cycles = sum(row.schema == APPLIED_SCHEMA and row.payload["adc_comment_id"] == current_adc
@@ -396,6 +452,7 @@ def verification_rework(
         intent = last
         if (intent.payload["adc_comment_id"] != current_adc
                 or intent.payload["binding_sha256"] != subject.binding_sha256
+                or intent.payload["plan_sha256"] != plan_sha256
                 or intent.payload["pr_head_sha40"] != subject.head_sha40
                 or intent.payload["pr_number"] != pr_number
                 or intent.actor_id != subject.executor_user_id
@@ -407,6 +464,8 @@ def verification_rework(
             )
         if labels != tuple(intent.payload["labels_after"]):
             raise VerificationReworkError("pending rework label state is ambiguous")
+        if _current_plan(root, plan_path, subject) != plan_sha256:
+            raise VerificationReworkError("pending rework Plan changed before Applied recovery")
         _require_review_not_started(
             root, issue_number, pr_number, subject.verified_adc.contract.sha256, comments,
         )
@@ -415,9 +474,10 @@ def verification_rework(
                 intent.payload["phase_generation_sha256"]):
             raise VerificationReworkError("pending rework Phase generation has changed")
         evidence_type, evidence_sha256 = _evidence(
-            evidence, root=root, issue=issue_number, pr=pr_number,
-            head=subject.head_sha40, adc_sha256=subject.verified_adc.contract.sha256,
-            finding_id=finding_id,
+            evidence, root=root, repository=subject.repository, issue=issue_number,
+            pr=pr_number, head=subject.head_sha40, adc_comment_id=current_adc,
+            adc_sha256=subject.verified_adc.contract.sha256,
+            plan_sha256=plan_sha256, finding_id=finding_id,
         )
         if (evidence_type != intent.payload["evidence_type"]
                 or evidence_sha256 != intent.payload["evidence_sha256"]):
@@ -438,8 +498,10 @@ def verification_rework(
     _require_review_not_started(root, issue_number, pr_number, subject.verified_adc.contract.sha256, comments)
     phase_comment_id, phase_sha256 = _phase_generation(github, subject)
     evidence_type, evidence_sha256 = _evidence(
-        evidence, root=root, issue=issue_number, pr=pr_number, head=subject.head_sha40,
-        adc_sha256=subject.verified_adc.contract.sha256, finding_id=finding_id,
+        evidence, root=root, repository=subject.repository, issue=issue_number,
+        pr=pr_number, head=subject.head_sha40, adc_comment_id=current_adc,
+        adc_sha256=subject.verified_adc.contract.sha256,
+        plan_sha256=plan_sha256, finding_id=finding_id,
     )
     prev = next((row for row in reversed(history) if row.schema == APPLIED_SCHEMA), None)
     after_labels = sorted([x for x in labels if x != "phase:verification"] + ["phase:execution"])
@@ -452,7 +514,7 @@ def verification_rework(
         "pr_number": pr_number, "pr_head_sha40": subject.head_sha40,
         "pr_base_ref": subject.binding.base_ref, "branch_ref": subject.branch_ref,
         "phase_generation_comment_id": phase_comment_id, "phase_generation_sha256": phase_sha256,
-        "labels_before": list(labels), "labels_after": after_labels,
+        "plan_sha256": plan_sha256, "labels_before": list(labels), "labels_after": after_labels,
         "reason": reason, "evidence_sha256": evidence_sha256,
         "evidence_type": evidence_type, "finding_id": finding_id,
         "actor_id": subject.executor_user_id,
@@ -485,13 +547,17 @@ def verification_rework(
         raise VerificationReworkError("rework subject changed before the label write")
     if _phase_generation(github, current) != (phase_comment_id, phase_sha256):
         raise VerificationReworkError("active Phase generation changed after the Intent")
+    if _current_plan(root, plan_path, current) != plan_sha256:
+        raise VerificationReworkError("Verification Plan or normative sources changed after the Intent")
     _require_review_not_started(
         root, issue_number, pr_number, subject.verified_adc.contract.sha256,
         github.issue_comments(issue_number),
     )
     latest_type, latest_digest = _evidence(
-        evidence, root=root, issue=issue_number, pr=pr_number, head=subject.head_sha40,
-        adc_sha256=subject.verified_adc.contract.sha256, finding_id=finding_id,
+        evidence, root=root, repository=subject.repository, issue=issue_number,
+        pr=pr_number, head=subject.head_sha40, adc_comment_id=current_adc,
+        adc_sha256=subject.verified_adc.contract.sha256,
+        plan_sha256=plan_sha256, finding_id=finding_id,
     )
     if (latest_type, latest_digest) != (evidence_type, evidence_sha256):
         raise VerificationReworkError("failing evidence changed after the Intent")
@@ -519,9 +585,12 @@ def require_rework_progress(github: GitHub, root: Path, issue_number: int,
                             *, current_head: str, adc_comment_id: int) -> None:
     """Forbid same-HEAD execution->verification after a committed correction."""
     history = read_rework_history(github, issue_number)
-    previous = next((row for row in reversed(history)
-                     if row.schema == APPLIED_SCHEMA and
-                     row.payload["adc_comment_id"] == adc_comment_id), None)
+    active = [row for row in history if row.payload["adc_comment_id"] == adc_comment_id]
+    if active and active[-1].schema == INTENT_SCHEMA:
+        raise VerificationReworkError(
+            "BLOCKED_REWORK_PENDING: incomplete Intent must be recovered before verification"
+        )
+    previous = next((row for row in reversed(active) if row.schema == APPLIED_SCHEMA), None)
     if previous is None:
         return
     old_head = previous.payload["pr_head_sha40"]

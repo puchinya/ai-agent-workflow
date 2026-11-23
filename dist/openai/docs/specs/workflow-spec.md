@@ -465,3 +465,33 @@ Keep Issue #63's specialized phase-rebaseline implementation, ADC/Owner checks, 
 ### 9.21 REQ-F01-037 ADC is the sole Phase restart approval
 
 The exact approved ADC and its single valid typed authorization are the sole approval for this one phase reset. No separate Owner plan, terminal input, approval comment, or chat confirmation is required. Intent/Applied comments are technical records, not approval. This authority cannot be reused for Ruleset, Activation, review, merge, or Issue closure.
+
+## Issue #79 — bounded verification correction requirements
+
+<a id="req-f79-001"></a>
+### REQ-F79-001 Bounded phase correction
+Normal `advance` never accepts an unconditional backward edge. Only `issue verification-rework` may take an ordinary Issue from verification to execution using current in-scope blocking category-A or failed mandatory Verification evidence, before User Review starts. B/C/D alone are not correction authority.
+
+<a id="req-f79-002"></a>
+### REQ-F79-002 Immutable correction history
+A trusted owner/executor's canonical Intent and Applied records bind Issue, approved ADC, frozen Binding, PR/head/base, active Phase receipt, current Verification Plan, exact evidence, and complete label sets. Public outsider comments are not state. An unknown GitHub response permits only verified, write-free readback/recovery, never blind replay.
+
+<a id="req-f79-003"></a>
+### REQ-F79-003 Current-HEAD progress and evidence
+At most three completed corrections per ADC generation. Pending Intent blocks ordinary execution-to-verification, and a completed correction requires a new descendant HEAD before re-verification. Verification, Acceptance, Self-Audit, independent review, CI, Readiness and User Review must all be regenerated for that HEAD; no cross-HEAD PASS cache.
+
+<a id="req-f79-004"></a>
+### REQ-F79-004 Review triage
+A is an explicit ADC violation, B a material ADC ambiguity, C a new requirement, and D optional improvement. Unresolved A/B block, a C blocks only when its current acceptance/security impact is specifically designated, and D never blocks. Findings cite a relevant obligation, reachable failure or observation; legacy review schemas remain byte-compatible.
+
+<a id="req-f79-005"></a>
+### REQ-F79-005 User Review boundary
+A started User Review session, including interrupted startup, prohibits verification rework; generic continuation or APPROVED is not edit/push permission. Only exact authenticated CHANGES_REQUESTED enters the existing User Review rework route. Previous review evidence is not reused after HEAD change.
+
+<a id="req-f79-006"></a>
+### REQ-F79-006 Explicit ordinary merge authority
+A normal PR_MERGE plan requires verified current Final Delivery, a distinct exact-HEAD owner grant, approved PR head/base (ref and SHA), merge method, closure association, and exact final-delivery subject/digest. Reject base or gate drift before the single merge attempt and in post-merge readback. Do not combine User Review with merge approval or involve #57/#63 Activation-specific completion.
+
+<a id="req-f79-007"></a>
+### REQ-F79-007 Contract and distribution synchronization
+The current implementation authority is the approved ADC, not a separate Implementation Contract approval. Runtime CLI/Skills, normative specification/design, independent Oracles and generated OpenAI/Claude/Antigravity distributions must agree; historical evidence remains immutable.

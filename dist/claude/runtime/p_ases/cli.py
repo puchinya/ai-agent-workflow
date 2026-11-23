@@ -2446,10 +2446,23 @@ def _owner_authorization_plan_command(args: argparse.Namespace, repository: str,
                 or args.pr is None or args.head is None or args.target_issue is None):
             raise OwnerAuthorizationError("PR_MERGE plan requires --pr, --head, and --target-issue")
         pr_number, pr_head, target_issue = args.pr, args.head, args.target_issue
-        details = (issue63_deferred_merge_details(github, pr_number=pr_number, pr_head_sha40=pr_head)
-                   if target_issue == 63 else {"target_issue_number": target_issue}
-                   if target_issue == 57 else ordinary_merge_details(
-                       github, issue_number=target_issue, pr_number=pr_number, pr_head_sha40=pr_head))
+        if target_issue not in {57, 63}:
+            gate = _owner_merge_gate(
+                args, root, github,
+                {"target_issue_number": target_issue, "pr_number": pr_number,
+                 "pr_head_sha40": pr_head},
+            )
+            gate_sha = gate["final_delivery_sha256"]
+            if not isinstance(gate_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", gate_sha):
+                raise OwnerAuthorizationError("ordinary merge plan requires a complete Final Delivery digest")
+            details = ordinary_merge_details(
+                github, issue_number=target_issue, pr_number=pr_number, pr_head_sha40=pr_head,
+                final_delivery_sha256=gate_sha,
+                final_delivery_subject_sha256=hashlib.sha256(_canonical(gate["subject"])).hexdigest(),
+            )
+        else:
+            details = (issue63_deferred_merge_details(github, pr_number=pr_number, pr_head_sha40=pr_head)
+                       if target_issue == 63 else {"target_issue_number": target_issue})
         subject_value = {"repository": repository, "target_issue_number": target_issue,
                          "pr_number": pr_number, "pr_head_sha40": pr_head}
         if target_issue != 57:
@@ -2526,7 +2539,9 @@ def _validate_owner_authorization_source(args: argparse.Namespace, plan: dict[st
         ) if target == 63 else {"target_issue_number": target}
                    if target == 57 else ordinary_merge_details(
                        github, issue_number=target, pr_number=plan["pr_number"],
-                       pr_head_sha40=plan["pr_head_sha40"]))
+                       pr_head_sha40=plan["pr_head_sha40"],
+                       final_delivery_sha256=plan["details"]["final_delivery_sha256"],
+                       final_delivery_subject_sha256=plan["details"]["final_delivery_subject_sha256"]))
         expected_value = {"repository": repository, "target_issue_number": target,
                           "pr_number": plan["pr_number"], "pr_head_sha40": plan["pr_head_sha40"]}
         if target != 57:
@@ -2766,6 +2781,9 @@ def _merge_readback(github: GitHub, plan: dict[str, Any]) -> dict[str, Any]:
                 or hashlib.sha256(str(pr.get("title", "")).encode("utf-8")).hexdigest()
                    != plan["details"]["pr_title_sha256"]):
             raise OwnerAuthorizationError("ordinary merged PR does not match the exact approved association")
+        if (not isinstance(base, dict)
+                or base.get("ref") != plan["details"]["pr_base_ref"]):
+            raise OwnerAuthorizationError("merged ordinary PR targets a different base branch")
         target_issue = github.issue(target)
         if (target_issue.get("number") != target
                 or target_issue.get("repository_url") != "https://api.github.com/repos/puchinya/ai-agent-workflow"
@@ -2873,20 +2891,32 @@ def _perform_authorized_merge(args: argparse.Namespace, root: Path, github: GitH
                 "merge_request_repeated": False, "recovered_from_intent": True}
 
     gates = _owner_merge_gate(args, root, github, plan)
+    if plan["target_issue_number"] not in {57, 63}:
+        if (gates["final_delivery_sha256"] != plan["details"]["final_delivery_sha256"]
+                or hashlib.sha256(_canonical(gates["subject"])).hexdigest()
+                   != plan["details"]["final_delivery_subject_sha256"]):
+            raise OwnerAuthorizationError("ordinary merge Final Delivery changed after explicit approval")
     if plan["target_issue_number"] != 57:
         target = plan["target_issue_number"]
         live_details = (issue63_deferred_merge_details(
             github, pr_number=plan["pr_number"], pr_head_sha40=plan["pr_head_sha40"])
             if target == 63 else ordinary_merge_details(
                 github, issue_number=target, pr_number=plan["pr_number"],
-                pr_head_sha40=plan["pr_head_sha40"]))
+                pr_head_sha40=plan["pr_head_sha40"],
+                final_delivery_sha256=plan["details"]["final_delivery_sha256"],
+                final_delivery_subject_sha256=plan["details"]["final_delivery_subject_sha256"]))
         if live_details != plan["details"]:
             raise OwnerAuthorizationError("PR association or metadata changed before merge")
     current = github.pull_request(plan["pr_number"])
     head = current.get("head") if isinstance(current, dict) else None
+    base = current.get("base") if isinstance(current, dict) else None
     if (current.get("state") != "open" or current.get("merged") is True
-            or not isinstance(head, dict) or head.get("sha") != plan["pr_head_sha40"]):
-        raise OwnerAuthorizationError("PR changed or merged before the one permitted merge request")
+            or not isinstance(head, dict) or head.get("sha") != plan["pr_head_sha40"]
+            or (plan["target_issue_number"] not in {57, 63}
+                and (not isinstance(base, dict)
+                     or base.get("ref") != plan["details"]["pr_base_ref"]
+                     or base.get("sha") != plan["details"]["pr_base_sha40"]))):
+        raise OwnerAuthorizationError("PR HEAD or target base changed before the one permitted merge request")
     intent = {
         "schema": "PASES_PR_MERGE_ATTEMPT_V1", "plan_sha256": plan["plan_sha256"],
         "owner_decision_comment_id": decision.get("owner_decision_comment_id"),
@@ -4439,6 +4469,8 @@ def _parser() -> argparse.ArgumentParser:
     rework.add_argument("--repo", help="repository owner/name; defaults to origin")
     rework.add_argument("--root", type=Path, required=True)
     rework.add_argument("--pr", type=_positive_number, required=True)
+    rework.add_argument("--plan", type=Path, required=True,
+                        help="current frozen Verification Plan for the failing exact-HEAD evidence")
     rework.add_argument("--evidence", type=Path, required=True,
                         help="exact-HEAD failing V3 independent review or Verification JSON")
     rework.add_argument("--finding-id", required=True,
@@ -4670,7 +4702,19 @@ def _parser() -> argparse.ArgumentParser:
     owner_plan.add_argument("--pr", type=_positive_number, help="exact PR number for PR_MERGE")
     owner_plan.add_argument("--head", help="exact current PR HEAD SHA-40 for PR_MERGE")
     owner_plan.add_argument("--target-issue", type=_positive_number,
-                            help="Issue closed by the exact PR (57 for Activation or 63 for implementation)")
+                            help="Issue closed by the PR (57/63 use their legacy procedures)")
+    owner_plan.add_argument("--delivery-plan", type=Path,
+                            help="frozen Verification Plan for ordinary PR_MERGE")
+    owner_plan.add_argument("--verification", type=Path,
+                            help="current Verification for ordinary PR_MERGE")
+    owner_plan.add_argument("--acceptance", type=Path,
+                            help="current Acceptance for ordinary PR_MERGE")
+    owner_plan.add_argument("--self-audit", type=Path,
+                            help="current Self-Audit for ordinary PR_MERGE")
+    owner_plan.add_argument("--independent-review", type=Path,
+                            help="current Independent Review for ordinary PR_MERGE")
+    owner_plan.add_argument("--user-review-record", type=Path,
+                            help="approved User Review result for ordinary PR_MERGE")
     owner_plan.add_argument("--output", required=True, type=Path, help="create-only canonical plan path")
     owner_plan.add_argument("--repo", help="repository owner/name; defaults to origin")
     owner_plan.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
@@ -5216,7 +5260,7 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 result = verification_rework(
                     GitHub(repository), root, args.issue, args.pr,
-                    args.evidence, args.finding_id, args.reason,
+                    args.evidence, args.finding_id, args.reason, args.plan,
                 )
                 _json(result)
                 return 0

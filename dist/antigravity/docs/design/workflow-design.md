@@ -302,3 +302,33 @@ user_review.py owns the subject-bound human decision, immutable session start, a
 `integration.py` owns the fixed parent child set, native dependency DAG, merged PR/Issue readback, main ancestry, and typed Integration Verification/Acceptance evidence. `parent_gate.py` owns shared reconstruction of these evidence bundles from GitHub Actions run, job, step, and Check Run APIs; the #26 comments are discoverable pointers/cache and cannot prove execution on their own. This resolves Git's self-reference conflict by keeping proof outside the named commit, while deletion or edit fails closed. `delivery parent-evidence <issue> <kind> <run-id>` reconstructs new evidence from those API records and requires the latest matching run and attempt on exact main. New Verification requires all four configured matrix jobs, App ID 15368, and successful compile, committed/generated distribution checks, unit tests, documentation validation, distribution build/validation, generated-path stability, and committed-diff whitespace steps. New Acceptance requires the latest exact-main `parent-integration.yml` workflow_dispatch run and successful specification/design/test-oracle traceability, exact 16-Skill package, generated-distribution consistency, and distribution validation. Each referenced job Check Run URL must name the same repository and resolve to that App's completed/success Check Run on the exact SHA. The reader rejects caller-supplied PASS JSON even when all supplied artifact hashes match. When validating an already-issued Activation, `parent_gate.py` uses the exact run ID/attempt embedded in the referenced V2 evidence comment and the attempt-specific GitHub Actions run/jobs APIs; it verifies that attempt's workflow, event, branch, repository, SHA, jobs, steps, and Check Runs without comparing it to the latest attempt. If the historical attempt cannot be fetched or any API provenance is incomplete, it blocks with no comment/cache fallback. Thus retries do not erase valid historical evidence while issuance still rejects stale results. Each Activation read emits a debug diagnostic with the GitHub API request count and cumulative client-observed latency; these metrics do not affect or skip evidence checks. Since parent #26 predates ADC pointer journals, the shared module obtains its pinned ADC digest and source declaration from the approved child #31 ADC and verifies the pinned migration-contract source. The Issue evidence comment remains editable/deletable GitHub storage: exact comment ID/body/actor/repository/subject are double-read, detected mutation blocks, and no intrinsic immutability is claimed. The dedicated parent-label migration remains read-only by default and mutates labels only under explicit `--apply`; parent delivery never applies it implicitly. After Integration PASS, parent User Review binds the ADC, six child merge pairs, and Integration result digest; approval never activates, closes, or merges the parent.
 
 The CLI performs phase transitions only after re-reading the Issue and confirming its current labels. An in-scope request returns the same Issue to execution; an explicitly triaged new scope returns it to requirements. Finalize is a readback command and has no merge or close mutation. Parent final delivery remains blocked until child Integration and the separate parent review/activation gates are satisfied.
+
+## Issue #79 — design decisions and ownership
+
+<a id="des-f79-001"></a>
+### DES-F79-001 Dedicated rework transition
+`verification_rework.verification_rework` owns the only typed backwards label replacement. The pure Phase graph remains conservative, and `phase_restart` continues to own the unrelated ADC-authorized execution-to-requirements path.
+
+<a id="des-f79-002"></a>
+### DES-F79-002 Trusted journal and recovery
+`read_rework_history` filters Issue comments by the repository owner's and authenticated executor's GitHub user IDs before treating markers as records. Accepted entries require exact direct/list/direct readback and predecessor SHA. A pending Intent cannot be replaced; after an uncertain PUT the writer reads labels once, and only the identical after-state permits Applied recovery with no second PUT.
+
+<a id="des-f79-003"></a>
+### DES-F79-003 Head and generation gate
+`require_rework_progress`, invoked by ordinary execution-to-verification `advance`, rejects a pending current-ADC Intent and enforces descendant HEAD progress since the latest Applied. Every new HEAD must rebuild all mandatory checks and fresh native independent review. A generation has a maximum of three completed corrections.
+
+<a id="des-f79-004"></a>
+### DES-F79-004 Review classification compatibility
+Only V3 `ReviewFindingV3` accepts category D; it may not set `blocks_readiness`. A and B remain blocking and C is explicitly triaged; V1/V2 schema and serializer behavior are unchanged.
+
+<a id="des-f79-005"></a>
+### DES-F79-005 Session boundary
+The local immutable User Review session and authenticated decision records block the verification correction. Post-start edits remain governed by the separate CHANGES_REQUESTED path, never by an ordinary continuation or merged approval.
+
+<a id="des-f79-006"></a>
+### DES-F79-006 Exact merge approval
+`ordinary_merge_details` captures the PR's target base ref/SHA, method `merge`, head, closure association and title/body digests. At plan creation `_owner_merge_gate` must pass Final Delivery and freeze its result and subject hashes. Authorization stays Issue-local; before the one merge call the same gate, head and base are rechecked, with no blind retry on an uncertain response. Only #57/#63 retain specialized paths.
+
+<a id="des-f79-007"></a>
+### DES-F79-007 Stable document and package boundary
+`runtime/p_ases` owns authority; Skills orchestrate; three `dist/` packages are generated and checked. No new process engine, historical metadata rewrite or Activation dependency is introduced.
