@@ -535,6 +535,11 @@ class IndependentReviewV3:
             raise AuditError("Independent review with unresolved blocking findings cannot PASS")
         if any(item.status != "PASS" for item in self.review_units) and self.verdict == "PASS":
             raise AuditError("Independent review with failed review units cannot PASS")
+        if (self.verdict != "PASS" and not self.blocking_findings
+                and all(item.status == "PASS" for item in self.review_units)):
+            raise AuditError(
+                "Independent review without failed units or blocking A/B/C findings must PASS"
+            )
         return self
 
     @property

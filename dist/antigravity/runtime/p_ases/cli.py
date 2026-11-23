@@ -2809,8 +2809,8 @@ def _merge_readback(github: GitHub, plan: dict[str, Any]) -> dict[str, Any]:
         target_issue = github.issue(target)
         if (target_issue.get("number") != target
                 or target_issue.get("repository_url") != "https://api.github.com/repos/puchinya/ai-agent-workflow"
-                or target_issue.get("state") not in {"open", "closed"}):
-            raise OwnerAuthorizationError("ordinary merged Issue state cannot be read back")
+                or target_issue.get("state") != "closed"):
+            raise OwnerAuthorizationError("ordinary merge did not close the exact target Issue; read-only recovery required")
     return {"pr_number": plan["pr_number"], "head_sha40": plan["pr_head_sha40"],
             "merge_commit_sha40": pr["merge_commit_sha"], "merged_by_id": merger["id"],
             "issue_state": ("open" if plan["target_issue_number"] == 63 else

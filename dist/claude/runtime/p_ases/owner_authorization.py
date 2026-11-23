@@ -259,6 +259,50 @@ def issue63_deferred_merge_details(github: Any, *, pr_number: int,
     }
 
 
+def _ordinary_merge_autoclose_scope(github: Any, *, issue_number: int,
+                                    pr_number: int, title: str) -> str:
+    """Bind the full commit list; reject every unexpected auto-close carrier."""
+    def validate_closer_text(value: str) -> None:
+        all_refs = closing_issue_references(value)
+        local_refs = closing_issue_references(value, REPOSITORY)
+        if all_refs != local_refs or any(number != issue_number for number in all_refs):
+            raise OwnerAuthorizationError("ordinary merge metadata could auto-close a different Issue")
+
+    validate_closer_text(title)
+    commits = github.pull_request_commits(pr_number)
+    if not isinstance(commits, list) or not commits:
+        raise OwnerAuthorizationError("ordinary merge requires complete PR commit history")
+    rows: list[dict[str, str]] = []
+    for row in commits:
+        commit = row.get("commit") if isinstance(row, dict) else None
+        if (not isinstance(row, dict) or not isinstance(row.get("sha"), str)
+                or SHA40.fullmatch(row["sha"]) is None
+                or not isinstance(commit, dict) or not isinstance(commit.get("message"), str)):
+            raise OwnerAuthorizationError("ordinary merge PR commit history is incomplete")
+        message = commit["message"]
+        validate_closer_text(message)
+        rows.append({"sha": row["sha"], "message": message})
+
+    closing = github.pull_request_closing_issues(pr_number)
+    if (not isinstance(closing, list) or len(closing) != 1
+            or not isinstance(closing[0], dict)
+            or closing[0].get("number") != issue_number
+            or not isinstance(closing[0].get("repository"), str)
+            or closing[0]["repository"].casefold() != REPOSITORY.casefold()):
+        raise OwnerAuthorizationError("ordinary PR GitHub closing-Issue set is not this sole target")
+    references = github.issue_pull_request_cross_references(issue_number)
+    if not isinstance(references, list):
+        raise OwnerAuthorizationError("ordinary Issue cross-reference history is unavailable")
+    for row in references:
+        if not isinstance(row, dict):
+            raise OwnerAuthorizationError("ordinary Issue cross-reference history is malformed")
+        if (row.get("pr_number") == pr_number
+                and str(row.get("repository", "")).casefold() == REPOSITORY.casefold()
+                and row.get("will_close_target") is False):
+            raise OwnerAuthorizationError("GitHub does not confirm the ordinary PR closes its target Issue")
+    return hashlib.sha256(_canonical(rows)).hexdigest()
+
+
 def ordinary_merge_details(github: Any, *, issue_number: int,
                            pr_number: int, pr_head_sha40: str,
                            final_delivery_sha256: str | None = None,
@@ -289,6 +333,12 @@ def ordinary_merge_details(github: Any, *, issue_number: int,
             or not isinstance(base.get("sha"), str)
             or SHA40.fullmatch(base["sha"]) is None):
         raise OwnerAuthorizationError("ordinary merge requires an exact same-repository target base")
+    metadata = github.repository_metadata()
+    if (not isinstance(metadata, dict)
+            or not isinstance(metadata.get("default_branch"), str)
+            or not metadata["default_branch"]
+            or base["ref"] != metadata["default_branch"]):
+        raise OwnerAuthorizationError("ordinary auto-close merge requires the repository default branch")
     body, title = pr.get("body"), pr.get("title")
     if not isinstance(body, str) or not isinstance(title, str) or not title.strip():
         raise OwnerAuthorizationError("ordinary PR title/body is incomplete")
@@ -298,11 +348,19 @@ def ordinary_merge_details(github: Any, *, issue_number: int,
         raise OwnerAuthorizationError(f"ordinary PR Issue association is invalid: {exc}") from exc
     if association != "auto_close":
         raise OwnerAuthorizationError("ordinary PR must use a standalone Closes #N association")
+    try:
+        commits_sha256 = _ordinary_merge_autoclose_scope(
+            github, issue_number=issue_number, pr_number=pr_number, title=title,
+        )
+    except (GitHubError, WorkError) as exc:
+        raise OwnerAuthorizationError("ordinary merge auto-close metadata is unavailable") from exc
     details = {
         "target_issue_number": issue_number,
         "association_mode": "auto_close",
         "pr_body_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
         "pr_title_sha256": hashlib.sha256(title.encode("utf-8")).hexdigest(),
+        "pr_commits_sha256": commits_sha256,
+        "closing_issue_numbers": [issue_number],
         "pr_base_ref": base["ref"],
         "pr_base_sha40": base["sha"],
         "merge_method": "merge",
@@ -487,18 +545,19 @@ def _validate_plan(value: Any) -> dict[str, Any]:
         if target not in {57, 63}:
             if (not _positive(target) or plan["issue_number"] != target
                     or set(details) != {"target_issue_number", "association_mode",
-                                        "pr_body_sha256", "pr_title_sha256",
-                                        "pr_base_ref", "pr_base_sha40", "merge_method",
+                                        "pr_body_sha256", "pr_title_sha256", "pr_commits_sha256",
+                                        "closing_issue_numbers", "pr_base_ref", "pr_base_sha40", "merge_method",
                                         "final_delivery_sha256", "final_delivery_subject_sha256"}
                     or details.get("target_issue_number") != target
                     or details.get("association_mode") != "auto_close"
+                    or details.get("closing_issue_numbers") != [target]
                     or details.get("merge_method") != "merge"
                     or not isinstance(details.get("pr_base_ref"), str) or not details["pr_base_ref"]
                     or not isinstance(details.get("pr_base_sha40"), str)
                     or SHA40.fullmatch(details["pr_base_sha40"]) is None
                     or any(not isinstance(details.get(field), str)
                            or SHA256.fullmatch(details[field]) is None
-                           for field in ("pr_body_sha256", "pr_title_sha256",
+                           for field in ("pr_body_sha256", "pr_title_sha256", "pr_commits_sha256",
                                          "final_delivery_sha256", "final_delivery_subject_sha256"))):
                 raise OwnerAuthorizationError("ordinary PR merge plan is not an exact auto-close subject")
     if plan["operation"] == "USER_REVIEW":
