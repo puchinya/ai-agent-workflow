@@ -15,7 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
 
 from p_ases.github import GitHubError
-from p_ases.evidence_store import VerificationSubject
+from p_ases.evidence_store import VerificationSubject, EvidenceError
+from p_ases.oracle_trace import OracleTraceError
 from p_ases.verification import VerificationResult
 from p_ases.verification_rework import (
     APPLIED_SCHEMA, INTENT_SCHEMA, VerificationReworkError, MAX_CYCLES,
@@ -308,7 +309,8 @@ class VerificationReworkTests(unittest.TestCase):
             "plan_sha256": "1" * 64, "finding_id": "mandatory-check",
             "github": self.github, "plan_path": self.root / "plan.json",
         }
-        with patch("p_ases.cli._calculate_verification", side_effect=ValueError("no trusted check provenance")):
+        with patch("p_ases.cli._calculate_verification",
+                   side_effect=EvidenceError("no trusted check provenance")):
             with self.assertRaisesRegex(VerificationReworkError, "cannot be independently reproduced"):
                 _evidence(file, **options)
         with patch("p_ases.cli._calculate_verification", return_value=(
@@ -334,8 +336,8 @@ class VerificationReworkTests(unittest.TestCase):
         # Valid self-hashed Plan bytes alone are insufficient: the existing
         # normative requirement / Oracle / Test evaluator must also accept it.
         with (patch("p_ases.verification_rework.read_plan", return_value=plan),
-              patch("p_ases.cli._load_plan", side_effect=ValueError("missing Oracle"))):
-            with self.assertRaisesRegex(ValueError, "missing Oracle"):
+              patch("p_ases.cli._load_plan", side_effect=OracleTraceError("missing Oracle"))):
+            with self.assertRaisesRegex(VerificationReworkError, "coverage is invalid"):
                 _current_plan(self.root, canonical, self.subject())
 
     def test_trusted_journal_survives_executor_handoff(self):
