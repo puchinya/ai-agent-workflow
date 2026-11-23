@@ -134,8 +134,8 @@ class OrdinaryMergeAuthorizationTests(unittest.TestCase):
             self.assertEqual(plan["details"]["merge_method"], "merge")
             self.assertEqual(plan["details"]["final_delivery_sha256"], GATE_SHA)
             github.base_ref = "release"
-            with patch("p_ases.owner_authorization.worktree_clean", return_value=True), \\
-                    patch("p_ases.owner_authorization.head_sha40", return_value=HEAD):
+            with (patch("p_ases.owner_authorization.worktree_clean", return_value=True),
+                    patch("p_ases.owner_authorization.head_sha40", return_value=HEAD)):
                 with self.assertRaisesRegex(OwnerAuthorizationError, "plan no longer matches"):
                     create_authorization_plan(
                         github, Path(directory), operation="PR_MERGE",
