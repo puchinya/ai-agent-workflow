@@ -128,4 +128,4 @@ Parent label migration is preflight-only unless the explicit apply option is sup
 
 Stale evidence, missing required checks, wrong App ID, draft/foreign PR, blocked user review, or unavailable branch protection is not ready. Report the exact blocker and evidence refs. Never merge, tag, publish a Release, activate the parent, or close #26 under this Issue #32 contract.
 
-Next owners: integration-validation supplies parent gates; user-review supplies current feedback. See the [delivery design](../../../docs/design/workflow-design.md).
+Next owners: integration-validation supplies parent gates; user-review supplies current feedback. See the [delivery design](../../docs/design/workflow-design.md).
