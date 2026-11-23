@@ -24,6 +24,10 @@ from .phase_restart import (
 )
 from .phases import Phase, PhaseError, parse_phase_labels, parse_attention_labels
 from .user_review import UserReviewError, read_review_session
+from .user_review_relay import (
+    UserReviewRelayError, has_user_review_decision_marker,
+    parse_user_review_decision, _identity as _review_decision_identity,
+)
 from .verification import VerificationError, VerificationResult
 from .work import WorkError, parse_issue_association
 from .verification_plan import PlanError, read_plan, verify_plan_sources
@@ -177,45 +181,50 @@ def _unique_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def _trusted_rework_authors(github: GitHub) -> frozenset[int]:
-    """Repository owner and authenticated executor are the only journal authorities.
-
-    Public Issue commenters must not influence workflow state by posting a marker.
-    Authentication and immutable author IDs come from GitHub, not comment bodies.
-    """
+def _repository_owner_id(github: GitHub) -> int:
+    """Stable GitHub owner identity, independent of the current caller's token."""
     try:
         metadata = github.repository_metadata()
-        actor = github.authenticated_user()
     except GitHubError as exc:
-        raise VerificationReworkError("trusted rework actor identity is unavailable") from exc
+        raise VerificationReworkError("repository owner identity is unavailable") from exc
     owner = metadata.get("owner") if isinstance(metadata, dict) else None
     if (not isinstance(owner, dict) or owner.get("type") != "User"
-            or type(owner.get("id")) is not int or owner["id"] < 1
-            or not isinstance(actor, dict) or actor.get("type") != "User"
-            or type(actor.get("id")) is not int or actor["id"] < 1):
-        raise VerificationReworkError("trusted rework actor identity is invalid")
-    return frozenset({owner["id"], actor["id"]})
+            or type(owner.get("id")) is not int or owner["id"] < 1):
+        raise VerificationReworkError("repository owner identity is invalid")
+    return owner["id"]
+
+
+def _trusted_rework_comment(row: dict[str, Any], owner_id: int) -> bool:
+    """Use GitHub's recorded role at publication, not the current executor.
+
+    OWNER must match the repository owner ID; COLLABORATOR identifies a
+    repository-authorized participant. CONTRIBUTOR/NONE and arbitrary public
+    Issue authors never own journal history.
+    """
+    user = row.get("user")
+    if (not isinstance(user, dict) or user.get("type") != "User"
+            or type(user.get("id")) is not int or user["id"] < 1):
+        return False
+    association = row.get("author_association")
+    return (association == "OWNER" and user["id"] == owner_id
+            or association == "COLLABORATOR")
 
 
 def read_rework_history(github: GitHub, issue_number: int) -> tuple[ReworkRecord, ...]:
     """Two full list snapshots with direct reads for trusted journal carriers."""
-    trusted_ids: frozenset[int] | None = None
+    owner_id: int | None = None
 
     def selected() -> list[dict[str, Any]]:
-        nonlocal trusted_ids
+        nonlocal owner_id
         rows = github.issue_comments(issue_number)
         candidates = [row for row in rows
                       if isinstance(row, dict) and isinstance(row.get("body"), str)
                       and row["body"].startswith(PREFIX)]
         if not candidates:
             return []
-        if trusted_ids is None:
-            trusted_ids = _trusted_rework_authors(github)
-        return [row for row in candidates
-                if isinstance(row.get("user"), dict)
-                and row["user"].get("type") == "User"
-                and type(row["user"].get("id")) is int
-                and row["user"]["id"] in trusted_ids]
+        if owner_id is None:
+            owner_id = _repository_owner_id(github)
+        return [row for row in candidates if _trusted_rework_comment(row, owner_id)]
     try:
         first = selected()
         ids = [row.get("id") for row in first]
@@ -294,12 +303,31 @@ def _post_once(github: GitHub, issue: int, schema: str, value: dict[str, Any]) -
     return matched[0]
 
 
-def _require_review_not_started(root: Path, issue: int, pr: int, adc_sha256: str,
-                                comments: list[dict[str, Any]]) -> None:
+def _require_review_not_started(github: GitHub, root: Path, issue: int, pr: int,
+                                adc_sha256: str, comments: list[dict[str, Any]]) -> None:
+    # Only canonical, GitHub-authenticated owner decisions can establish a
+    # remote User Review boundary. Outsider marker comments are ordinary prose.
+    owner_id: int | None = None
     for row in comments:
         body = row.get("body") if isinstance(row, dict) else None
-        if isinstance(body, str) and (body.startswith("<!-- PASES_USER_REVIEW_DECISION_")
-                                     or body.startswith('{"schema":"PASES_USER_REVIEW_DECISION_')):
+        if not has_user_review_decision_marker(body):
+            continue
+        if owner_id is None:
+            owner_id = _repository_owner_id(github)
+        author = row.get("user") if isinstance(row, dict) else None
+        if (not isinstance(author, dict) or author.get("id") != owner_id
+                or author.get("type") != "User"):
+            continue
+        try:
+            identity = _review_decision_identity(row, github.repo, issue, owner_id)
+            direct = github.issue_comment(issue, identity[0])
+            if _review_decision_identity(direct, github.repo, issue, owner_id) != identity:
+                raise VerificationReworkError("User Review decision changed during readback")
+            decision = parse_user_review_decision(body)
+        except (GitHubError, UserReviewRelayError) as exc:
+            raise VerificationReworkError("trusted User Review decision is invalid or unreadable") from exc
+        if (decision["issue_number"] == issue and decision["pr_number"] == pr
+                and decision["adc_sha256"] == adc_sha256):
             raise VerificationReworkError(
                 "User Review decision already exists; use exact CHANGES_REQUESTED lifecycle"
             )
@@ -467,7 +495,7 @@ def verification_rework(
         if _current_plan(root, plan_path, subject) != plan_sha256:
             raise VerificationReworkError("pending rework Plan changed before Applied recovery")
         _require_review_not_started(
-            root, issue_number, pr_number, subject.verified_adc.contract.sha256, comments,
+            github, root, issue_number, pr_number, subject.verified_adc.contract.sha256, comments,
         )
         if _phase_generation(github, subject) != (
                 intent.payload["phase_generation_comment_id"],
@@ -495,7 +523,7 @@ def verification_rework(
     if any(row.schema == APPLIED_SCHEMA and row.payload["adc_comment_id"] == current_adc
            and row.payload["pr_head_sha40"] == subject.head_sha40 for row in history):
         raise VerificationReworkError("BLOCKED_REWORK_NO_PROGRESS: this HEAD already had a correction")
-    _require_review_not_started(root, issue_number, pr_number, subject.verified_adc.contract.sha256, comments)
+    _require_review_not_started(github, root, issue_number, pr_number, subject.verified_adc.contract.sha256, comments)
     phase_comment_id, phase_sha256 = _phase_generation(github, subject)
     evidence_type, evidence_sha256 = _evidence(
         evidence, root=root, repository=subject.repository, issue=issue_number,
@@ -550,7 +578,7 @@ def verification_rework(
     if _current_plan(root, plan_path, current) != plan_sha256:
         raise VerificationReworkError("Verification Plan or normative sources changed after the Intent")
     _require_review_not_started(
-        root, issue_number, pr_number, subject.verified_adc.contract.sha256,
+        github, root, issue_number, pr_number, subject.verified_adc.contract.sha256,
         github.issue_comments(issue_number),
     )
     latest_type, latest_digest = _evidence(
