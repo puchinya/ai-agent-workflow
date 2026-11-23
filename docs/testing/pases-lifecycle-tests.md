@@ -480,3 +480,61 @@ Only the exact two approved edges accept V3. The first records `execution -> req
 #### 2.29.1 ORA-F01-031 Expected result
 
 Only a current approved ADC with one exact canonical typed authorization permits an eligible ordinary Issue's `execution -> requirements` restart. Valid execution appends one Intent/Applied pair, updates the complete label set at most once, and establishes the current ADC/Binding/Applied phase generation. Exact completed replay is read-only only for the exact recorded labels or a fully verified same-generation forward chain; each receipt must pass historical artifact allowlist, authorized skip reason, regular blob digest, and READY traceability checks, with an immutable carrier authored by the authenticated User. Replay hydrates relevant linked skipped specification/design targets from the receipt commit and loads test sources only from current requirement rows; missing/tampered targets block and unrelated missing sources are ignored. Rollback and unrelated label edits block. Malformed edited restart or Phase Decision marker candidates also block instead of disappearing from history. A later Phase Decision supersedes an older Applied record as the next restart's immediate predecessor; an incomplete Intent from any ADC generation blocks further Phase work. V1/V2 Phase Decision bodies are collected using their canonical serializers and direct/list/direct history checks. Predecessor bytes remain identical, old receipts cannot pass current-generation checks, and Issue #63 behavior is unchanged.
+
+## Issue #79 — correction and delivery test Oracles
+
+<a id="tst-f79-001"></a>
+### TST-F79-001 Dedicated correction
+
+<a id="ora-f79-001"></a>
+#### ORA-F79-001 Expected result
+
+From verification with a current failing in-scope A or mandatory check and no User Review, exactly one verification-to-execution label PUT is allowed; other states or B/C/D evidence create no write. `tests/test_verification_rework.py` covers positive and wrong-phase paths.
+
+<a id="tst-f79-002"></a>
+### TST-F79-002 Journal integrity and failure recovery
+
+<a id="ora-f79-002"></a>
+#### ORA-F79-002 Expected result
+
+The trusted owner/executor journal records one Intent, one label update and one Applied. Third-party markers are ignored; edited accepted entries block. A lost PUT response does not cause a duplicate PUT, and an after-state can finish Applied without replacing prior evidence.
+
+<a id="tst-f79-003"></a>
+### TST-F79-003 Exact subject and no-progress
+
+<a id="ora-f79-003"></a>
+#### ORA-F79-003 Expected result
+
+Foreign repository, ADC ID, Plan digest or old HEAD evidence cannot initiate a rework; three completed corrections exhaust the budget. Pending Intent and same-HEAD post-Applied retries block execution-to-verification; a newer descendant HEAD can proceed only after mandatory fresh gates.
+
+<a id="tst-f79-004"></a>
+### TST-F79-004 Optional review findings
+
+<a id="ora-f79-004"></a>
+#### ORA-F79-004 Expected result
+
+V3 D is accepted and nonblocking, A/B still block and only C may declare `blocks_readiness`. V1/V2 reject D and previously persisted schemas retain their behavior.
+
+<a id="tst-f79-005"></a>
+### TST-F79-005 User Review session protection
+
+<a id="ora-f79-005"></a>
+#### ORA-F79-005 Expected result
+
+A started or approved session blocks verification correction before any label or journal write; later edits require an authenticated CHANGES_REQUESTED transition and all new-HEAD verification/review gates.
+
+<a id="tst-f79-006"></a>
+### TST-F79-006 Explicit merge-plan constraints
+
+<a id="ora-f79-006"></a>
+#### ORA-F79-006 Expected result
+
+Normal PR merge plans freeze exact PR target base, merge method and previously verified Final Delivery. Base-ref/base-SHA or delivery-digest drift blocks before a merge request or merge-intent write. Separate User Review approval alone never authorizes a merge; legacy #57/#63 paths are unchanged.
+
+<a id="tst-f79-007"></a>
+### TST-F79-007 Distribution and contract naming
+
+<a id="ora-f79-007"></a>
+#### ORA-F79-007 Expected result
+
+Canonical specs/design/test-oracles, current approved ADC terminology, Skills and three generated package trees have no drift under the repository's documentation, traceability and distribution check commands. Historical contract markers are preserved.
