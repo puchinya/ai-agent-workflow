@@ -188,6 +188,29 @@ class VerificationReworkTests(unittest.TestCase):
                 current_head="f" * 40, adc_comment_id=7099602476,
             )
 
+    def test_three_corrections_per_adc_generation_are_bounded(self):
+        for cycle in range(MAX_CYCLES):
+            self.github.labels = ["kind:single", "phase:verification"]
+            self.github.head = f"{cycle + 1:040x}"
+            result = self.run_rework()
+            self.assertEqual(result["rework_cycle"], cycle + 1)
+        self.assertEqual((self.github.label_puts, self.github.comment_posts), (MAX_CYCLES, 2 * MAX_CYCLES))
+        self.github.labels = ["kind:single", "phase:verification"]
+        self.github.head = "e" * 40
+        with self.assertRaisesRegex(VerificationReworkError, "BLOCKED_REWORK_LIMIT"):
+            self.run_rework()
+        self.assertEqual((self.github.label_puts, self.github.comment_posts), (MAX_CYCLES, 2 * MAX_CYCLES))
+
+    def test_live_pr_head_change_prevents_any_rework_write(self):
+        def changed_pr(number):
+            pr = FakeGitHub.pull_request(self.github, number)
+            pr["head"]["sha"] = "d" * 40
+            return pr
+        self.github.pull_request = changed_pr
+        with self.assertRaisesRegex(VerificationReworkError, "stale or mismatched"):
+            self.run_rework()
+        self.assertEqual((self.github.label_puts, self.github.comment_posts), (0, 0))
+
     def test_wrong_phase_blocks_without_writes(self):
         self.github.labels = ["kind:single", "phase:ready"]
         with self.assertRaisesRegex(VerificationReworkError, "phase:verification"):
