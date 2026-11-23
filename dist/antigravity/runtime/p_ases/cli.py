@@ -24,7 +24,8 @@ from .adc import (
 from .admin_auth import AdminAuthError, temporary_admin_client
 from .owner_authorization import (
     OwnerAuthorizationError, authorize_chat_confirmed_plan, authorize_plan, create_authorization_plan,
-    issue63_deferred_merge_details, read_authorization_plan, resume_authorization, write_authorization_plan,
+    issue63_deferred_merge_details, ordinary_merge_details, read_authorization_plan,
+    resume_authorization, write_authorization_plan,
 )
 from .owner_authorization import capture_direct_chat_confirmation
 from .consumer_activation import (
@@ -2443,10 +2444,12 @@ def _owner_authorization_plan_command(args: argparse.Namespace, repository: str,
             raise OwnerAuthorizationError("PR_MERGE plan requires --pr, --head, and --target-issue")
         pr_number, pr_head, target_issue = args.pr, args.head, args.target_issue
         details = (issue63_deferred_merge_details(github, pr_number=pr_number, pr_head_sha40=pr_head)
-                   if target_issue == 63 else {"target_issue_number": target_issue})
+                   if target_issue == 63 else {"target_issue_number": target_issue}
+                   if target_issue == 57 else ordinary_merge_details(
+                       github, issue_number=target_issue, pr_number=pr_number, pr_head_sha40=pr_head))
         subject_value = {"repository": repository, "target_issue_number": target_issue,
                          "pr_number": pr_number, "pr_head_sha40": pr_head}
-        if target_issue == 63:
+        if target_issue != 57:
             subject_value["details"] = details
         subject_sha256 = hashlib.sha256(_canonical(subject_value)).hexdigest()
     elif operation == "EXECUTION_ADOPTION":
@@ -2466,13 +2469,15 @@ def _owner_authorization_plan_command(args: argparse.Namespace, repository: str,
         raise OwnerAuthorizationError("unsupported owner authorization operation")
     plan = create_authorization_plan(
         github, root, operation=operation, subject_sha256=subject_sha256,
-        issue_number=63, target_issue_number=target_issue,
+        issue_number=(target_issue if operation == "PR_MERGE"
+                      and target_issue not in {57, 63} else 63),
+        target_issue_number=target_issue,
         pr_number=pr_number, pr_head_sha40=pr_head, details=details,
     )
     write_authorization_plan(args.output, plan)
     _json({"status": "PLANNED", "operation": operation, "output": str(args.output),
            "subject_sha256": subject_sha256, "plan_sha256": plan["plan_sha256"],
-           "repository": repository, "issue": 63, "target_issue": target_issue,
+           "repository": repository, "issue": plan["issue_number"], "target_issue": target_issue,
            "pr": pr_number, "head": pr_head, "chat_signature": False})
     return 0
 
@@ -2515,10 +2520,13 @@ def _validate_owner_authorization_source(args: argparse.Namespace, plan: dict[st
         target = plan["target_issue_number"]
         details = (issue63_deferred_merge_details(
             github, pr_number=plan["pr_number"], pr_head_sha40=plan["pr_head_sha40"],
-        ) if target == 63 else {"target_issue_number": target})
+        ) if target == 63 else {"target_issue_number": target}
+                   if target == 57 else ordinary_merge_details(
+                       github, issue_number=target, pr_number=plan["pr_number"],
+                       pr_head_sha40=plan["pr_head_sha40"]))
         expected_value = {"repository": repository, "target_issue_number": target,
                           "pr_number": plan["pr_number"], "pr_head_sha40": plan["pr_head_sha40"]}
-        if target == 63:
+        if target != 57:
             expected_value["details"] = details
         expected = hashlib.sha256(_canonical(expected_value)).hexdigest()
         if expected != plan["subject_sha256"] or details != plan["details"]:
@@ -2739,7 +2747,7 @@ def _merge_readback(github: GitHub, plan: dict[str, Any]) -> dict[str, Any]:
         merge_message = merge_commit.get("message")
         if not isinstance(merge_message, str) or closing_issue_references(merge_message):
             raise OwnerAuthorizationError("merged PR commit message contains an auto-close reference or is unreadable")
-    else:
+    elif plan["target_issue_number"] == 57:
         from .consumer_activation import SETUP_MARKER_V2, _decode
         try:
             payload = _decode(body, SETUP_MARKER_V2, "Activation Setup PR", allow_trailer=True)
@@ -2747,9 +2755,23 @@ def _merge_readback(github: GitHub, plan: dict[str, Any]) -> dict[str, Any]:
             raise OwnerAuthorizationError("merged PR is not the exact Activation Setup PR") from exc
         if payload.get("activation_issue_number") != 57:
             raise OwnerAuthorizationError("merged Activation Setup PR does not bind Issue #57")
+    else:
+        target = plan["target_issue_number"]
+        if (not isinstance(body, str)
+                or parse_issue_association(body, target) != "auto_close"
+                or hashlib.sha256(body.encode("utf-8")).hexdigest() != plan["details"]["pr_body_sha256"]
+                or hashlib.sha256(str(pr.get("title", "")).encode("utf-8")).hexdigest()
+                   != plan["details"]["pr_title_sha256"]):
+            raise OwnerAuthorizationError("ordinary merged PR does not match the exact approved association")
+        target_issue = github.issue(target)
+        if (target_issue.get("number") != target
+                or target_issue.get("repository_url") != "https://api.github.com/repos/puchinya/ai-agent-workflow"
+                or target_issue.get("state") not in {"open", "closed"}):
+            raise OwnerAuthorizationError("ordinary merged Issue state cannot be read back")
     return {"pr_number": plan["pr_number"], "head_sha40": plan["pr_head_sha40"],
             "merge_commit_sha40": pr["merge_commit_sha"], "merged_by_id": merger["id"],
-            "issue_state": "open" if plan["target_issue_number"] == 63 else None}
+            "issue_state": ("open" if plan["target_issue_number"] == 63 else
+                            target_issue["state"] if plan["target_issue_number"] not in {57, 63} else None)}
 
 
 def _owner_merge_gate(args: argparse.Namespace, root: Path, github: GitHub,
@@ -2760,9 +2782,10 @@ def _owner_merge_gate(args: argparse.Namespace, root: Path, github: GitHub,
                 "independent_review", "user_review_record")
     missing = [f"--{name.replace('_', '-')}" for name in required if getattr(args, name, None) is None]
     if missing:
-        raise OwnerAuthorizationError("PR #64 merge requires fresh Final Delivery evidence: " + ", ".join(missing))
+        raise OwnerAuthorizationError(f"PR #{plan['pr_number']} merge requires fresh Final Delivery evidence: "
+                                      + ", ".join(missing))
     final_args = argparse.Namespace(
-        issue=63, pr=plan["pr_number"], head=plan["pr_head_sha40"],
+        issue=plan["target_issue_number"], pr=plan["pr_number"], head=plan["pr_head_sha40"],
         plan=args.delivery_plan, readiness=args.readiness, verification=args.verification,
         acceptance=args.acceptance, self_audit=args.self_audit,
         independent_review=args.independent_review, user_review_record=args.user_review_record,
@@ -2801,11 +2824,11 @@ def _owner_merge_gate(args: argparse.Namespace, root: Path, github: GitHub,
             or not final_policy_shape_ok
             or not isinstance(final.get("subject"), dict)
             or final["subject"].get("repository") != "puchinya/ai-agent-workflow"
-            or final["subject"].get("issue_number") != 63
+            or final["subject"].get("issue_number") != plan["target_issue_number"]
             or final["subject"].get("pr_number") != plan["pr_number"]
             or final["subject"].get("pr_head_sha40") != plan["pr_head_sha40"]
             or final.get("blockers")):
-        raise OwnerAuthorizationError("PR #64 Final Delivery gates are not PASS for this exact merge plan")
+        raise OwnerAuthorizationError("Final Delivery gates are not PASS for this exact merge plan")
     return {"status": final["status"], "final_delivery_sha256": final.get("final_delivery_sha256"),
             "final_delivery_schema": final_schema,
             "subject": final["subject"]}
@@ -2847,12 +2870,15 @@ def _perform_authorized_merge(args: argparse.Namespace, root: Path, github: GitH
                 "merge_request_repeated": False, "recovered_from_intent": True}
 
     gates = _owner_merge_gate(args, root, github, plan)
-    if plan["target_issue_number"] == 63:
-        live_details = issue63_deferred_merge_details(
-            github, pr_number=plan["pr_number"], pr_head_sha40=plan["pr_head_sha40"],
-        )
+    if plan["target_issue_number"] != 57:
+        target = plan["target_issue_number"]
+        live_details = (issue63_deferred_merge_details(
+            github, pr_number=plan["pr_number"], pr_head_sha40=plan["pr_head_sha40"])
+            if target == 63 else ordinary_merge_details(
+                github, issue_number=target, pr_number=plan["pr_number"],
+                pr_head_sha40=plan["pr_head_sha40"]))
         if live_details != plan["details"]:
-            raise OwnerAuthorizationError("Issue #63 close association, commits, or planned message changed before merge")
+            raise OwnerAuthorizationError("PR association or metadata changed before merge")
     current = github.pull_request(plan["pr_number"])
     head = current.get("head") if isinstance(current, dict) else None
     if (current.get("state") != "open" or current.get("merged") is True
