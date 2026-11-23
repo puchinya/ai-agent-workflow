@@ -13,7 +13,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
 
-from p_ases.cli import _perform_authorized_merge
+from p_ases.cli import _merge_readback, _owner_merge_gate, _perform_authorized_merge
 from p_ases.owner_authorization import (
     OwnerAuthorizationError, authorize_chat_confirmed_plan,
     capture_direct_chat_confirmation, create_authorization_plan,
@@ -174,6 +174,59 @@ class OrdinaryMergeAuthorizationTests(unittest.TestCase):
                         _perform_authorized_merge(argparse.Namespace(), root, github, plan, decision)
                 self.assertFalse((root / ".p_ases" / "delivery").exists(),
                                  "failure must occur before the merge attempt record")
+
+    def test_merge_gate_readback_binds_the_exact_final_delivery_subject(self):
+        import json
+        github = OrdinaryGitHub()
+        with tempfile.TemporaryDirectory() as directory:
+            plan = self.plan(github, Path(directory))
+            final = {
+                "schema": "PASES_FINAL_DELIVERY_V3",
+                "status": "READY_FOR_EXPLICIT_MERGE_AUTHORIZATION",
+                "review_mode": "solo_owner",
+                "branch_protection_sha256": None,
+                "user_review_sha256": "3" * 64,
+                "required_check_result_sha256": "4" * 64,
+                "merge_authorized": False,
+                "final_delivery_sha256": GATE_SHA,
+                "subject": {"repository": REPO, "issue_number": 79,
+                            "pr_number": 80, "pr_head_sha40": HEAD},
+                "blockers": [],
+            }
+            def evaluate(_args, _repository, _root, _github):
+                print(json.dumps(final))
+                return 0
+            args = argparse.Namespace(
+                readiness="readiness", delivery_plan="plan",
+                verification="verification", acceptance="acceptance",
+                self_audit="self-audit", independent_review="independent-review",
+                user_review_record="user-review",
+            )
+            with patch("p_ases.cli._delivery_final", side_effect=evaluate):
+                result = _owner_merge_gate(args, Path(directory), github, plan)
+            self.assertEqual(result["final_delivery_sha256"], GATE_SHA)
+            self.assertEqual(result["subject"], final["subject"])
+            final["status"] = "BLOCKED"
+            with patch("p_ases.cli._delivery_final", side_effect=evaluate):
+                with self.assertRaisesRegex(OwnerAuthorizationError, "not PASS"):
+                    _owner_merge_gate(args, Path(directory), github, plan)
+
+    def test_merged_readback_rejects_target_branch_change(self):
+        class MergedGitHub(OrdinaryGitHub):
+            def pull_request(self, number):
+                row = super().pull_request(number)
+                row.update(state="closed", merged=True, merge_commit_sha="c" * 40,
+                           merged_by={"id": 3744776, "login": "puchinya", "type": "User"})
+                return row
+        github = MergedGitHub()
+        with tempfile.TemporaryDirectory() as directory:
+            # The plan is created from the open PR before its merge.
+            open_github = OrdinaryGitHub()
+            plan = self.plan(open_github, Path(directory))
+            self.assertEqual(_merge_readback(github, plan)["pr_number"], 80)
+            github.base_ref = "release"
+            with self.assertRaisesRegex(OwnerAuthorizationError, "different base branch"):
+                _merge_readback(github, plan)
 
     def test_explicit_chat_grant_is_exact_subject_and_single_use(self):
         github = OrdinaryGitHub()
