@@ -37,6 +37,13 @@ class FakeGitHub:
         self.lost_put = lost_put
         self.head = HEAD
 
+    def repository_metadata(self):
+        return {"full_name": REPO, "id": 1401910271,
+                "owner": {"id": 3744776, "login": "puchinya", "type": "User"}}
+
+    def authenticated_user(self):
+        return {"id": 3744776, "login": "puchinya", "type": "User"}
+
     def issue(self, number):
         return {
             "id": 7900, "number": number, "state": "open",
@@ -108,11 +115,13 @@ class VerificationReworkTests(unittest.TestCase):
         with patch("p_ases.verification_rework._live_subject", side_effect=lambda *_a, **_k: self.subject()), \
                 patch("p_ases.verification_rework._require_review_not_started"), \
                 patch("p_ases.verification_rework._phase_generation", return_value=(6000, "f" * 64)), \
+                patch("p_ases.verification_rework._current_plan", return_value="1" * 64), \
                 patch("p_ases.verification_rework._evidence",
                       return_value=("independent_review_A", "e" * 64)):
             return verification_rework(
                 self.github, self.root, 79, 80,
                 self.root / "review.json", "F-01", "Correct a confirmed ADC violation",
+                self.root / "plan.json",
             )
 
     def test_one_intent_one_label_update_one_applied_then_noop(self):
@@ -163,12 +172,14 @@ class VerificationReworkTests(unittest.TestCase):
         with patch("p_ases.verification_rework._live_subject", side_effect=lambda *_a, **_k: self.subject()), \
                 patch("p_ases.verification_rework._require_review_not_started",
                       side_effect=VerificationReworkError("User Review started")), \
+                patch("p_ases.verification_rework._current_plan", return_value="1" * 64), \
                 patch("p_ases.verification_rework._evidence",
                       return_value=("independent_review_A", "e" * 64)):
             with self.assertRaisesRegex(VerificationReworkError, "User Review started"):
                 verification_rework(
                     self.github, self.root, 79, 80,
                     self.root / "review.json", "F-01", "Fix an ADC violation",
+                    self.root / "plan.json",
                 )
         self.assertEqual((self.github.comment_posts, self.github.label_puts), (0, 0))
 
@@ -210,6 +221,33 @@ class VerificationReworkTests(unittest.TestCase):
         with self.assertRaisesRegex(VerificationReworkError, "stale or mismatched"):
             self.run_rework()
         self.assertEqual((self.github.label_puts, self.github.comment_posts), (0, 0))
+
+
+    def test_pending_intent_blocks_execution_to_verification_without_progress(self):
+        self.github.lost_put = "before"
+        with self.assertRaises(VerificationReworkError):
+            self.run_rework()
+        self.github.labels = ["kind:single", "phase:execution"]
+        with self.assertRaisesRegex(VerificationReworkError, "BLOCKED_REWORK_PENDING"):
+            require_rework_progress(
+                self.github, self.root, 79,
+                current_head="f" * 40, adc_comment_id=7099602476,
+            )
+        self.assertEqual(self.github.comment_posts, 1)
+        self.assertEqual(self.github.label_puts, 1)
+
+    def test_untrusted_marker_comments_do_not_poison_rework_history(self):
+        suspicious = self.github.create_issue_comment(
+            79, "<!-- PASES_VERIFICATION_REWORK_UNKNOWN\\nmalformed\\n-->",
+        )
+        suspicious["user"] = {"id": 999999, "login": "outsider", "type": "User"}
+        self.assertEqual(read_rework_history(self.github, 79), ())
+        self.assertEqual(self.run_rework()["status"], "APPLIED")
+        self.assertEqual(len(read_rework_history(self.github, 79)), 2)
+        # Even an exact canonical carrier from an outsider is not authoritative.
+        copied = self.github.create_issue_comment(79, self.github.comments[-1]["body"])
+        copied["user"] = {"id": 999999, "login": "outsider", "type": "User"}
+        self.assertEqual(len(read_rework_history(self.github, 79)), 2)
 
     def test_wrong_phase_blocks_without_writes(self):
         self.github.labels = ["kind:single", "phase:ready"]
