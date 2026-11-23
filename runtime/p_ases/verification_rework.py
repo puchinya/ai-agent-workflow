@@ -16,6 +16,8 @@ from typing import Any
 
 from .adc import ADCError, verify_adc
 from .audits import AuditError, IndependentReviewV3, read_independent_review
+from .evidence_store import EvidenceError
+from .oracle_trace import OracleTraceError
 from .git import GitError, is_ancestor
 from .github import GitHub, GitHubError
 from .path_safety import path_has_symlink
@@ -391,8 +393,8 @@ def _evidence(path: Path, *, root: Path, repository: str, issue: int, pr: int, h
                     argparse.Namespace(issue=issue, pr=pr, head=head, plan=plan_path),
                     repository, root, github,
                 )
-            except (ADCError, CLIError, GitError, GitHubError, PlanError,
-                    VerificationError, OSError, ValueError) as exc:
+            except (ADCError, CLIError, EvidenceError, OracleTraceError, GitError,
+                    GitHubError, PlanError, VerificationError, OSError, ValueError) as exc:
                 raise VerificationReworkError("current mandatory Verification cannot be independently reproduced") from exc
             if observed != verification or observed.status != "FAIL":
                 raise VerificationReworkError("failing receipt is not the live mandatory Verification result")
@@ -469,7 +471,7 @@ def _current_plan(root: Path, path: Path, subject: Any) -> str:
         )
         if checked != plan:
             raise VerificationReworkError("frozen Verification Plan changed during validation")
-    except (OSError, PlanError, CLIError) as exc:
+    except (OSError, PlanError, CLIError, OracleTraceError) as exc:
         raise VerificationReworkError("current Verification Plan/Oracle/Test coverage is invalid") from exc
     return plan.sha256
 
