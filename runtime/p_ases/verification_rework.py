@@ -354,7 +354,8 @@ def _require_review_not_started(github: GitHub, root: Path, issue: int, pr: int,
 
 def _evidence(path: Path, *, root: Path, repository: str, issue: int, pr: int, head: str,
               adc_comment_id: int, adc_sha256: str, plan_sha256: str,
-              finding_id: str) -> tuple[str, str]:
+              finding_id: str, github: GitHub | None = None,
+              plan_path: Path | None = None) -> tuple[str, str]:
     location = Path(path).absolute()
     if (not location.is_relative_to(root) or path_has_symlink(location)
             or not location.is_file()):
@@ -376,6 +377,22 @@ def _evidence(path: Path, *, root: Path, repository: str, issue: int, pr: int, h
             verification = VerificationResult.from_bytes(data)
             if verification.status != "FAIL" or finding_id != "mandatory-check":
                 raise VerificationReworkError("rework requires a failing mandatory Verification result")
+            if github is None or plan_path is None:
+                raise VerificationReworkError("mandatory-check rework requires live verification authority")
+            # Canonical FAIL JSON alone is insufficient: recompute actual
+            # mandatory Evidence and trusted Check Runs at this exact HEAD.
+            import argparse
+            from .cli import _calculate_verification
+            try:
+                observed, _refs = _calculate_verification(
+                    argparse.Namespace(issue=issue, pr=pr, head=head, plan=plan_path),
+                    repository, root, github,
+                )
+            except (ADCError, GitError, GitHubError, PlanError,
+                    VerificationError, OSError, ValueError) as exc:
+                raise VerificationReworkError("current mandatory Verification cannot be independently reproduced") from exc
+            if observed != verification or observed.status != "FAIL":
+                raise VerificationReworkError("failing receipt is not the live mandatory Verification result")
             identity = verification.subject
             evidence_type = "verification_FAIL"
         else:
@@ -427,20 +444,26 @@ def _applied(intent: ReworkRecord) -> dict[str, Any]:
 
 
 def _current_plan(root: Path, path: Path, subject: Any) -> str:
+    """Use the same frozen Plan/Oracle/Test gate as ordinary Verification."""
     location = Path(path).absolute()
     if (not location.is_relative_to(root) or path_has_symlink(location)
             or not location.is_file()):
         raise VerificationReworkError("Verification Plan must be a regular file under the current worktree")
+    # CLI owns normative requirement coverage, Oracle/Test trace, and
+    # canonical frozen Plan path validation. Import lazily to avoid a cycle.
+    from .cli import _load_plan, _plans_root
     try:
         plan = read_plan(location.read_bytes())
-        if (plan.repository != subject.repository
-                or plan.issue_number != subject.issue_number
-                or plan.adc_comment_id != subject.verified_adc.pointer.comment_id
-                or plan.adc_sha256 != subject.verified_adc.contract.sha256):
-            raise VerificationReworkError("Verification Plan does not match the active ADC/Issue")
-        verify_plan_sources(root, plan)
+        expected = _plans_root(root, subject.issue_number) / f"{plan.sha256}.json"
+        if location != expected:
+            raise VerificationReworkError("Verification Plan is not the canonical frozen Issue Plan")
+        checked, _required, _oracles, _tests = _load_plan(
+            root, subject.repository, subject.issue_number, location, subject.verified_adc,
+        )
+        if checked != plan:
+            raise VerificationReworkError("frozen Verification Plan changed during validation")
     except (OSError, PlanError) as exc:
-        raise VerificationReworkError("current Verification Plan or frozen source is invalid") from exc
+        raise VerificationReworkError("current Verification Plan/Oracle/Test coverage is invalid") from exc
     return plan.sha256
 
 
@@ -506,6 +529,7 @@ def verification_rework(
             pr=pr_number, head=subject.head_sha40, adc_comment_id=current_adc,
             adc_sha256=subject.verified_adc.contract.sha256,
             plan_sha256=plan_sha256, finding_id=finding_id,
+            github=github, plan_path=plan_path,
         )
         if (evidence_type != intent.payload["evidence_type"]
                 or evidence_sha256 != intent.payload["evidence_sha256"]):
@@ -530,6 +554,7 @@ def verification_rework(
         pr=pr_number, head=subject.head_sha40, adc_comment_id=current_adc,
         adc_sha256=subject.verified_adc.contract.sha256,
         plan_sha256=plan_sha256, finding_id=finding_id,
+        github=github, plan_path=plan_path,
     )
     prev = next((row for row in reversed(history) if row.schema == APPLIED_SCHEMA), None)
     after_labels = sorted([x for x in labels if x != "phase:verification"] + ["phase:execution"])
@@ -586,6 +611,7 @@ def verification_rework(
         pr=pr_number, head=subject.head_sha40, adc_comment_id=current_adc,
         adc_sha256=subject.verified_adc.contract.sha256,
         plan_sha256=plan_sha256, finding_id=finding_id,
+        github=github, plan_path=plan_path,
     )
     if (latest_type, latest_digest) != (evidence_type, evidence_sha256):
         raise VerificationReworkError("failing evidence changed after the Intent")
