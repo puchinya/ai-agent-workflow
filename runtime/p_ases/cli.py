@@ -2446,10 +2446,23 @@ def _owner_authorization_plan_command(args: argparse.Namespace, repository: str,
                 or args.pr is None or args.head is None or args.target_issue is None):
             raise OwnerAuthorizationError("PR_MERGE plan requires --pr, --head, and --target-issue")
         pr_number, pr_head, target_issue = args.pr, args.head, args.target_issue
-        details = (issue63_deferred_merge_details(github, pr_number=pr_number, pr_head_sha40=pr_head)
-                   if target_issue == 63 else {"target_issue_number": target_issue}
-                   if target_issue == 57 else ordinary_merge_details(
-                       github, issue_number=target_issue, pr_number=pr_number, pr_head_sha40=pr_head))
+        if target_issue not in {57, 63}:
+            gate = _owner_merge_gate(
+                args, root, github,
+                {"target_issue_number": target_issue, "pr_number": pr_number,
+                 "pr_head_sha40": pr_head},
+            )
+            gate_sha = gate["final_delivery_sha256"]
+            if not isinstance(gate_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", gate_sha):
+                raise OwnerAuthorizationError("ordinary merge plan requires a complete Final Delivery digest")
+            details = ordinary_merge_details(
+                github, issue_number=target_issue, pr_number=pr_number, pr_head_sha40=pr_head,
+                final_delivery_sha256=gate_sha,
+                final_delivery_subject_sha256=hashlib.sha256(_canonical(gate["subject"])).hexdigest(),
+            )
+        else:
+            details = (issue63_deferred_merge_details(github, pr_number=pr_number, pr_head_sha40=pr_head)
+                       if target_issue == 63 else {"target_issue_number": target_issue})
         subject_value = {"repository": repository, "target_issue_number": target_issue,
                          "pr_number": pr_number, "pr_head_sha40": pr_head}
         if target_issue != 57:
@@ -2526,7 +2539,9 @@ def _validate_owner_authorization_source(args: argparse.Namespace, plan: dict[st
         ) if target == 63 else {"target_issue_number": target}
                    if target == 57 else ordinary_merge_details(
                        github, issue_number=target, pr_number=plan["pr_number"],
-                       pr_head_sha40=plan["pr_head_sha40"]))
+                       pr_head_sha40=plan["pr_head_sha40"],
+                       final_delivery_sha256=plan["details"]["final_delivery_sha256"],
+                       final_delivery_subject_sha256=plan["details"]["final_delivery_subject_sha256"]))
         expected_value = {"repository": repository, "target_issue_number": target,
                           "pr_number": plan["pr_number"], "pr_head_sha40": plan["pr_head_sha40"]}
         if target != 57:
