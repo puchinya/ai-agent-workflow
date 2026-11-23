@@ -25,6 +25,7 @@ flowchart TD
     design --> ready
     ready --> exec[execution]
     exec --> verify[verification]
+    verify -->|User Review前の認可済み再作業| exec
     verify --> review[user-review]
     review -->|同一スコープの修正| exec
     review -->|新しいスコープ| req
@@ -33,7 +34,7 @@ flowchart TD
   end
 ```
 
-点線の矢印は条件付きスキップを表します。製品動作を新規に定義・変更する場合は`specification`が必要で、重要な技術判断を行う場合は`design`が必要です。省略時はそれぞれ独立した理由を記録します。テスト仕様、Oracle、Verification Planは`ready`の前に確定する成果物で、独立したIssue phaseではありません。要求・判断の変更が生じた場合は、依存する後続作業の前に正本へ差し戻します。
+点線の矢印は条件付きスキップを表します。製品動作を新規に定義・変更する場合は`specification`が必要で、重要な技術判断を行う場合は`design`が必要です。省略時はそれぞれ独立した理由を記録します。テスト仕様、Oracle、Verification Planは`ready`の前に確定する成果物で、独立したIssue phaseではありません。要求・判断の変更が生じた場合は、依存する後続作業の前に正本へ差し戻します。User Review開始前に限り、現行HEADのVerification失敗または未解決の分類Aレビュー指摘を根拠として、専用の`issue verification-rework`で同一ADC世代につき最大3回の追記型再作業を行えます。HEAD変更後は検証とfreshな子エージェントによる独立レビューをやり直します。分類D（任意改善）はブロッカーにせず、User Review開始後の修正は本人の`CHANGES_REQUESTED`を要します。
 
 | Phase | 役割 |
 | --- | --- |
