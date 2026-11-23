@@ -464,6 +464,8 @@ def verification_rework(
             )
         if labels != tuple(intent.payload["labels_after"]):
             raise VerificationReworkError("pending rework label state is ambiguous")
+        if _current_plan(root, plan_path, subject) != plan_sha256:
+            raise VerificationReworkError("pending rework Plan changed before Applied recovery")
         _require_review_not_started(
             root, issue_number, pr_number, subject.verified_adc.contract.sha256, comments,
         )
@@ -545,6 +547,8 @@ def verification_rework(
         raise VerificationReworkError("rework subject changed before the label write")
     if _phase_generation(github, current) != (phase_comment_id, phase_sha256):
         raise VerificationReworkError("active Phase generation changed after the Intent")
+    if _current_plan(root, plan_path, current) != plan_sha256:
+        raise VerificationReworkError("Verification Plan or normative sources changed after the Intent")
     _require_review_not_started(
         root, issue_number, pr_number, subject.verified_adc.contract.sha256,
         github.issue_comments(issue_number),
