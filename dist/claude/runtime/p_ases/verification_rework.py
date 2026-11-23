@@ -19,7 +19,9 @@ from .audits import AuditError, IndependentReviewV3, read_independent_review
 from .git import GitError, is_ancestor
 from .github import GitHub, GitHubError
 from .path_safety import path_has_symlink
-from .phase_restart import PhaseRestartError, _live_subject
+from .phase_restart import (
+    PhaseRestartError, _live_subject, _validated_current_journal, _active_generation_before,
+)
 from .phases import Phase, PhaseError, parse_phase_labels, parse_attention_labels
 from .user_review import UserReviewError, read_review_session
 from .verification import VerificationError, VerificationResult
@@ -105,6 +107,7 @@ def _parse_record(row: dict[str, Any], repo: str, issue: int) -> ReworkRecord:
         "schema", "repository", "repository_id", "issue_number", "issue_id",
         "adc_comment_id", "adc_sha256", "binding_sha256", "binding_generation",
         "pr_number", "pr_head_sha40", "pr_base_ref", "branch_ref",
+        "phase_generation_comment_id", "phase_generation_sha256",
         "labels_before", "labels_after", "reason", "evidence_sha256",
         "evidence_type", "finding_id", "actor_id", "predecessor_comment_id",
         "predecessor_sha256",
@@ -127,7 +130,11 @@ def _parse_record(row: dict[str, Any], repo: str, issue: int) -> ReworkRecord:
             or not isinstance(value.get("branch_ref"), str) or not value["branch_ref"]
             or not isinstance(value.get("pr_base_ref"), str) or not value["pr_base_ref"]):
         raise VerificationReworkError("rework journal identity or reason is invalid")
+    if (type(value.get("phase_generation_comment_id")) is not int
+            or value["phase_generation_comment_id"] < 1):
+        raise VerificationReworkError("current Phase generation ID is invalid")
     for key, pattern in (("adc_sha256", SHA256), ("binding_sha256", SHA256),
+                         ("phase_generation_sha256", SHA256),
                          ("pr_head_sha40", SHA40), ("evidence_sha256", SHA256)):
         if not isinstance(value.get(key), str) or pattern.fullmatch(value[key]) is None:
             raise VerificationReworkError(f"rework {key} is invalid")
@@ -219,6 +226,20 @@ def read_rework_history(github: GitHub, issue_number: int) -> tuple[ReworkRecord
             pending = None
             completed = record
     return tuple(records)
+
+
+def _phase_generation(github: GitHub, subject: Any) -> tuple[int, str]:
+    try:
+        history = _validated_current_journal(
+            github, subject, allow_pending_adc_comment_id=subject.verified_adc.pointer.comment_id,
+        )
+        comment_id, digest = _active_generation_before(history)
+    except PhaseRestartError as exc:
+        raise VerificationReworkError("current Phase generation history is invalid") from exc
+    if (type(comment_id) is not int or comment_id < 1
+            or not isinstance(digest, str) or SHA256.fullmatch(digest) is None):
+        raise VerificationReworkError("verification correction requires a current committed Phase receipt")
+    return comment_id, digest
 
 
 def _post_once(github: GitHub, issue: int, schema: str, value: dict[str, Any]) -> ReworkRecord:
@@ -400,6 +421,7 @@ def verification_rework(
            and row.payload["pr_head_sha40"] == subject.head_sha40 for row in history):
         raise VerificationReworkError("BLOCKED_REWORK_NO_PROGRESS: this HEAD already had a correction")
     _require_review_not_started(root, issue_number, pr_number, subject.verified_adc.contract.sha256, comments)
+    phase_comment_id, phase_sha256 = _phase_generation(github, subject)
     evidence_type, evidence_sha256 = _evidence(
         evidence, root=root, issue=issue_number, pr=pr_number, head=subject.head_sha40,
         adc_sha256=subject.verified_adc.contract.sha256, finding_id=finding_id,
@@ -414,6 +436,7 @@ def verification_rework(
         "binding_generation": subject.binding_generation, "binding_sha256": subject.binding_sha256,
         "pr_number": pr_number, "pr_head_sha40": subject.head_sha40,
         "pr_base_ref": subject.binding.base_ref, "branch_ref": subject.branch_ref,
+        "phase_generation_comment_id": phase_comment_id, "phase_generation_sha256": phase_sha256,
         "labels_before": list(labels), "labels_after": after_labels,
         "reason": reason, "evidence_sha256": evidence_sha256,
         "evidence_type": evidence_type, "finding_id": finding_id,
@@ -445,6 +468,18 @@ def verification_rework(
             or not current_history or current_history[-1].body != intent.body
             or current_history[-1].comment_id != intent.comment_id):
         raise VerificationReworkError("rework subject changed before the label write")
+    if _phase_generation(github, current) != (phase_comment_id, phase_sha256):
+        raise VerificationReworkError("active Phase generation changed after the Intent")
+    _require_review_not_started(
+        root, issue_number, pr_number, subject.verified_adc.contract.sha256,
+        github.issue_comments(issue_number),
+    )
+    latest_type, latest_digest = _evidence(
+        evidence, root=root, issue=issue_number, pr=pr_number, head=subject.head_sha40,
+        adc_sha256=subject.verified_adc.contract.sha256, finding_id=finding_id,
+    )
+    if (latest_type, latest_digest) != (evidence_type, evidence_sha256):
+        raise VerificationReworkError("failing evidence changed after the Intent")
     write_error = None
     try:
         github.replace_issue_labels(issue_number, after_labels)
