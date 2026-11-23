@@ -107,6 +107,7 @@ class VerificationReworkTests(unittest.TestCase):
     def run_rework(self):
         with patch("p_ases.verification_rework._live_subject", side_effect=lambda *_a, **_k: self.subject()), \
                 patch("p_ases.verification_rework._require_review_not_started"), \
+                patch("p_ases.verification_rework._phase_generation", return_value=(6000, "f" * 64)), \
                 patch("p_ases.verification_rework._evidence",
                       return_value=("independent_review_A", "e" * 64)):
             return verification_rework(
