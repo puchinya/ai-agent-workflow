@@ -107,6 +107,9 @@ from .phase_evidence import (
     verify_phase_evidence,
 )
 from .phase_restart import PhaseRestartError, restart_issue_phase
+from .verification_rework import (
+    VerificationReworkError, verification_rework, require_rework_progress,
+)
 from .oracle_trace import (
     OracleDefinition, OracleTraceError, TestDefinition, validate_plan_oracles,
     validate_plan_tests,
@@ -4428,6 +4431,20 @@ def _parser() -> argparse.ArgumentParser:
     phase_restart.add_argument("--repo", help="repository owner/name; defaults to origin")
     phase_restart.add_argument("--root", type=Path, required=True,
                                 help="bound Issue worktree containing its current ExecutionBinding history")
+    rework = issue_commands.add_parser(
+        "verification-rework",
+        help="append/recover a bounded exact-HEAD verification-to-execution correction",
+    )
+    rework.add_argument("issue", type=_positive_number)
+    rework.add_argument("--repo", help="repository owner/name; defaults to origin")
+    rework.add_argument("--root", type=Path, required=True)
+    rework.add_argument("--pr", type=_positive_number, required=True)
+    rework.add_argument("--evidence", type=Path, required=True,
+                        help="exact-HEAD failing V3 independent review or Verification JSON")
+    rework.add_argument("--finding-id", required=True,
+                        help="unresolved A finding ID or mandatory-check for failed Verification")
+    rework.add_argument("--reason", required=True,
+                        help="concrete in-scope correction, 1-500 characters")
     validate_plan = issue_commands.add_parser("validate-split")
     validate_plan.add_argument("plan", type=Path)
     validate_plan.add_argument("--repo", help="repository owner/name; defaults to origin")
@@ -5194,6 +5211,18 @@ def main(argv: list[str] | None = None) -> int:
             except PhaseRestartError as exc:
                 return _blocked_result((str(exc),))
 
+        if args.verb == "verification-rework":
+            root = _repo_root(str(args.root)).resolve()
+            try:
+                result = verification_rework(
+                    GitHub(repository), root, args.issue, args.pr,
+                    args.evidence, args.finding_id, args.reason,
+                )
+                _json(result)
+                return 0
+            except VerificationReworkError as exc:
+                return _blocked_result((str(exc),))
+
         if args.verb == "phase-evidence":
             root = _repo_root(str(args.root)).resolve()
             github = GitHub(repository)
@@ -5268,6 +5297,15 @@ def main(argv: list[str] | None = None) -> int:
                     verify_ready_preparation(
                         github, root, args.issue, kind, verified_context=ordinary_context,
                     )
+                if phase is Phase.EXECUTION and target is Phase.VERIFICATION:
+                    try:
+                        require_rework_progress(
+                            github, root, args.issue,
+                            current_head=ordinary_context.head_sha40,
+                            adc_comment_id=approved_adc.pointer.comment_id,
+                        )
+                    except VerificationReworkError as exc:
+                        return _blocked_result((str(exc),))
             if evidence_required:
                 if args.phase_evidence_comment_id is None:
                     raise CLIError("specification, design, and ready transitions require --phase-evidence-comment-id")
