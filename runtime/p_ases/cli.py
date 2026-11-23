@@ -5301,7 +5301,7 @@ def main(argv: list[str] | None = None) -> int:
                     try:
                         require_rework_progress(
                             github, root, args.issue,
-                            current_head=ordinary_context.head_sha40,
+                            current_head=ordinary_context.commit_sha40,
                             adc_comment_id=approved_adc.pointer.comment_id,
                         )
                     except VerificationReworkError as exc:
