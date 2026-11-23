@@ -329,7 +329,7 @@ The CLI performs phase transitions only after re-reading the Issue and confirmin
 <a id="des-f79-002"></a>
 <a id="des-f79-002-trusted-journal-and-recovery"></a>
 ### 12.2 DES-F79-002 Trusted journal and recovery
-`read_rework_history` filters Issue comments by the repository owner's and authenticated executor's GitHub user IDs before treating markers as records. Accepted entries require exact direct/list/direct readback and predecessor SHA. A pending Intent cannot be replaced; after an uncertain PUT the writer reads labels once, and only the identical after-state permits Applied recovery with no second PUT.
+`read_rework_history` filters Issue comments by stable GitHub OWNER/COLLABORATOR author associations before treating markers as records; the current caller identity does not erase past executor history. Interrupted Intent recovery by an authorized successor records the successor's actual Applied author without rewriting the predecessor's Intent. Accepted entries require exact direct/list/direct readback and predecessor SHA. A pending Intent cannot be replaced; after an uncertain PUT the writer reads labels once, and only the identical after-state permits Applied recovery with no second PUT.
 
 <a id="des-f79-003"></a>
 <a id="des-f79-003-head-and-generation-gate"></a>
@@ -344,12 +344,12 @@ Only V3 `ReviewFindingV3` accepts category D; it may not set `blocks_readiness`.
 <a id="des-f79-005"></a>
 <a id="des-f79-005-session-boundary"></a>
 ### 12.5 DES-F79-005 Session boundary
-The local immutable User Review session and authenticated decision records block the verification correction. Post-start edits remain governed by the separate CHANGES_REQUESTED path, never by an ordinary continuation or merged approval.
+The local immutable User Review session and canonical authenticated owner decision carriers block the verification correction; untrusted third-party reserved-marker text has no authority. Post-start edits remain governed by the separate CHANGES_REQUESTED path, never by an ordinary continuation or merged approval.
 
 <a id="des-f79-006"></a>
 <a id="des-f79-006-exact-merge-approval"></a>
 ### 12.6 DES-F79-006 Exact merge approval
-`ordinary_merge_details` captures the PR's target base ref/SHA, method `merge`, head, closure association and title/body digests. At plan creation `_owner_merge_gate` must pass Final Delivery and freeze its result and subject hashes. Authorization stays Issue-local; before the one merge call the same gate, head and base are rechecked, with no blind retry on an uncertain response. Only #57/#63 retain specialized paths.
+`ordinary_merge_details` captures the PR's target base ref/SHA, method `merge`, head, closure association and title/body digests. At plan creation `_owner_merge_gate` must pass Final Delivery and freeze its result and subject hashes. Authorization stays Issue-local. Machine PR_MERGE decisions are filtered from User Review feedback only after verified immutable owner decision history readback, while genuine feedback still invalidates a stale approval; before the one merge call the same gate, head and base are rechecked, with no blind retry on an uncertain response. Only #57/#63 retain specialized paths.
 
 <a id="des-f79-007"></a>
 <a id="des-f79-007-stable-document-and-package-boundary"></a>
