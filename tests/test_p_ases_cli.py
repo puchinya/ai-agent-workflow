@@ -816,6 +816,9 @@ class PasesCLITests(unittest.TestCase):
             def issue(self, _number):
                 return copy.deepcopy(self.record)
 
+            def issue_comments(self, _number):
+                return []
+
             def replace_issue_labels(self, _number, labels):
                 self.writes += 1
                 self.record["labels"] = [{"name": label} for label in labels]
@@ -851,6 +854,9 @@ class PasesCLITests(unittest.TestCase):
 
                 def issue(self, _number):
                     return copy.deepcopy(self.record)
+
+            def issue_comments(self, _number):
+                return []
 
                 def replace_issue_labels(self, _number, labels):
                     self.writes += 1
@@ -889,6 +895,9 @@ class PasesCLITests(unittest.TestCase):
             def issue(self, _number):
                 return copy.deepcopy(self.record)
 
+            def issue_comments(self, _number):
+                return []
+
             def replace_issue_labels(self, _number, labels):
                 self.writes += 1
                 self.record["labels"] = [{"name": label} for label in labels]
@@ -921,6 +930,9 @@ class PasesCLITests(unittest.TestCase):
 
             def issue(self, _number):
                 return copy.deepcopy(self.record)
+
+            def issue_comments(self, _number):
+                return []
 
             def replace_issue_labels(self, _number, labels):
                 self.record["labels"] = [{"name": label} for label in labels]
