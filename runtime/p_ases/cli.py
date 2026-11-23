@@ -4469,6 +4469,8 @@ def _parser() -> argparse.ArgumentParser:
     rework.add_argument("--repo", help="repository owner/name; defaults to origin")
     rework.add_argument("--root", type=Path, required=True)
     rework.add_argument("--pr", type=_positive_number, required=True)
+    rework.add_argument("--plan", type=Path, required=True,
+                        help="current frozen Verification Plan for the failing exact-HEAD evidence")
     rework.add_argument("--evidence", type=Path, required=True,
                         help="exact-HEAD failing V3 independent review or Verification JSON")
     rework.add_argument("--finding-id", required=True,
@@ -4700,7 +4702,19 @@ def _parser() -> argparse.ArgumentParser:
     owner_plan.add_argument("--pr", type=_positive_number, help="exact PR number for PR_MERGE")
     owner_plan.add_argument("--head", help="exact current PR HEAD SHA-40 for PR_MERGE")
     owner_plan.add_argument("--target-issue", type=_positive_number,
-                            help="Issue closed by the exact PR (57 for Activation or 63 for implementation)")
+                            help="Issue closed by the PR (57/63 use their legacy procedures)")
+    owner_plan.add_argument("--delivery-plan", type=Path,
+                            help="frozen Verification Plan for ordinary PR_MERGE")
+    owner_plan.add_argument("--verification", type=Path,
+                            help="current Verification for ordinary PR_MERGE")
+    owner_plan.add_argument("--acceptance", type=Path,
+                            help="current Acceptance for ordinary PR_MERGE")
+    owner_plan.add_argument("--self-audit", type=Path,
+                            help="current Self-Audit for ordinary PR_MERGE")
+    owner_plan.add_argument("--independent-review", type=Path,
+                            help="current Independent Review for ordinary PR_MERGE")
+    owner_plan.add_argument("--user-review-record", type=Path,
+                            help="approved User Review result for ordinary PR_MERGE")
     owner_plan.add_argument("--output", required=True, type=Path, help="create-only canonical plan path")
     owner_plan.add_argument("--repo", help="repository owner/name; defaults to origin")
     owner_plan.add_argument("--root", type=Path, help="repository root; defaults to the current checkout")
@@ -5246,7 +5260,7 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 result = verification_rework(
                     GitHub(repository), root, args.issue, args.pr,
-                    args.evidence, args.finding_id, args.reason,
+                    args.evidence, args.finding_id, args.reason, args.plan,
                 )
                 _json(result)
                 return 0
