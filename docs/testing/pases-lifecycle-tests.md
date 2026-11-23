@@ -531,7 +531,7 @@ From verification with a current failing in-scope A or mandatory check and no Us
 <a id="ora-f79-002-expected-result"></a>
 #### 3.2.1 ORA-F79-002 Expected result
 
-The trusted owner/executor journal records one Intent, one label update and one Applied. Third-party markers are ignored; edited accepted entries block. A lost PUT response does not cause a duplicate PUT, and an after-state can finish Applied without replacing prior evidence.
+The GitHub-verified owner/collaborator journal records one Intent, one label update and one Applied, retaining prior actors after a collaborator handoff and naming the successor on recovered Applied. Third-party markers are ignored; edited accepted entries block. A lost PUT response does not cause a duplicate PUT, and an after-state can finish Applied without replacing prior evidence.
 
 <a id="tst-f79-003"></a>
 <a id="tst-f79-003-exact-subject-and-no-progress"></a>
@@ -541,7 +541,7 @@ The trusted owner/executor journal records one Intent, one label update and one 
 <a id="ora-f79-003-expected-result"></a>
 #### 3.3.1 ORA-F79-003 Expected result
 
-Foreign repository, ADC ID, Plan digest or old HEAD evidence cannot initiate a rework; three completed corrections exhaust the budget. Pending Intent and same-HEAD post-Applied retries block execution-to-verification; a newer descendant HEAD can proceed only after mandatory fresh gates.
+Foreign repository, ADC ID, noncanonical or coverage-incomplete Plan, synthetic unverifiable FAIL or old HEAD evidence cannot initiate a rework; three completed corrections exhaust the budget. Pending Intent and same-HEAD post-Applied retries block execution-to-verification; a newer descendant HEAD can proceed only after mandatory fresh gates.
 
 <a id="tst-f79-004"></a>
 <a id="tst-f79-004-optional-review-findings"></a>
