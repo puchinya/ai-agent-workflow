@@ -67,6 +67,21 @@
     - [2.28.1 ORA-F01-018 Expected result](#2281-ora-f01-018-expected-result)
   - [2.29 TST-F01-031 Generic ADC-authorized Phase restart](#229-tst-f01-031-generic-adc-authorized-phase-restart)
     - [2.29.1 ORA-F01-031 Expected result](#2291-ora-f01-031-expected-result)
+- [3 Issue #79 — correction and delivery test Oracles](#3-issue-79-correction-and-delivery-test-oracles)
+  - [3.1 TST-F79-001 Dedicated correction](#31-tst-f79-001-dedicated-correction)
+    - [3.1.1 ORA-F79-001 Expected result](#311-ora-f79-001-expected-result)
+  - [3.2 TST-F79-002 Journal integrity and failure recovery](#32-tst-f79-002-journal-integrity-and-failure-recovery)
+    - [3.2.1 ORA-F79-002 Expected result](#321-ora-f79-002-expected-result)
+  - [3.3 TST-F79-003 Exact subject and no-progress](#33-tst-f79-003-exact-subject-and-no-progress)
+    - [3.3.1 ORA-F79-003 Expected result](#331-ora-f79-003-expected-result)
+  - [3.4 TST-F79-004 Optional review findings](#34-tst-f79-004-optional-review-findings)
+    - [3.4.1 ORA-F79-004 Expected result](#341-ora-f79-004-expected-result)
+  - [3.5 TST-F79-005 User Review session protection](#35-tst-f79-005-user-review-session-protection)
+    - [3.5.1 ORA-F79-005 Expected result](#351-ora-f79-005-expected-result)
+  - [3.6 TST-F79-006 Explicit merge-plan constraints](#36-tst-f79-006-explicit-merge-plan-constraints)
+    - [3.6.1 ORA-F79-006 Expected result](#361-ora-f79-006-expected-result)
+  - [3.7 TST-F79-007 Distribution and contract naming](#37-tst-f79-007-distribution-and-contract-naming)
+    - [3.7.1 ORA-F79-007 Expected result](#371-ora-f79-007-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -129,6 +144,20 @@
 - [ORA-F01-018](#ora-f01-018) — 2.28.1 ORA-F01-018 Expected result
 - [TST-F01-031](#tst-f01-031) — 2.29 TST-F01-031 Generic ADC-authorized Phase restart
 - [ORA-F01-031](#ora-f01-031) — 2.29.1 ORA-F01-031 Expected result
+- [TST-F79-001](#tst-f79-001) — 3.1 TST-F79-001 Dedicated correction
+- [ORA-F79-001](#ora-f79-001) — 3.1.1 ORA-F79-001 Expected result
+- [TST-F79-002](#tst-f79-002) — 3.2 TST-F79-002 Journal integrity and failure recovery
+- [ORA-F79-002](#ora-f79-002) — 3.2.1 ORA-F79-002 Expected result
+- [TST-F79-003](#tst-f79-003) — 3.3 TST-F79-003 Exact subject and no-progress
+- [ORA-F79-003](#ora-f79-003) — 3.3.1 ORA-F79-003 Expected result
+- [TST-F79-004](#tst-f79-004) — 3.4 TST-F79-004 Optional review findings
+- [ORA-F79-004](#ora-f79-004) — 3.4.1 ORA-F79-004 Expected result
+- [TST-F79-005](#tst-f79-005) — 3.5 TST-F79-005 User Review session protection
+- [ORA-F79-005](#ora-f79-005) — 3.5.1 ORA-F79-005 Expected result
+- [TST-F79-006](#tst-f79-006) — 3.6 TST-F79-006 Explicit merge-plan constraints
+- [ORA-F79-006](#ora-f79-006) — 3.6.1 ORA-F79-006 Expected result
+- [TST-F79-007](#tst-f79-007) — 3.7 TST-F79-007 Distribution and contract naming
+- [ORA-F79-007](#ora-f79-007) — 3.7.1 ORA-F79-007 Expected result
 <!-- heading-map:end -->
 
 
@@ -409,13 +438,13 @@ Only a host-created and host-joined dedicated child can supply Independent Revie
 <a id="tst-ur-008-independent-review-blockers-and-host-provenance"></a>
 ### 2.23 TST-UR-008 Independent Review blockers and host provenance
 
-**Setup and action:** Against the host workflow, inject: (1) an unresolved A or B finding, a reviewer-designated blocking C finding, or a failed checklist item; (2) a child reviewed on an older HEAD followed by a new commit; (3) spawn unavailable, spawn/join failure, timeout, or unknown completion; (4) a genuine joined child result with each host identifier absent in turn, then all identifiers present and matching; (5) an available implementation-binding mismatch, a same-context reviewer identity, malformed identity, or malformed child artifact; (6) an attempted same-agent second prompt, human fallback, or User Review substitution; (7) repeated retry on the same HEAD without progress; (8) an active adapter unable to spawn/join a native child; (9) absent/stale Phase, Binding, Verification, Acceptance, Self-Audit, or Required CI evidence; (10) a missing Binding file with no independently authenticated original tuple, including attempted `work recover`; (11) Readiness invoked in requirements/specification/design/ready/execution; (12) wrong-phase User Review start, missing/stale session or Readiness subject, interrupted session recovery, and a verification-to-execution back edge. Observe review/readiness results, confidence and missing-ID reporting, User Review writes, Issue label updates, exit codes, and all host claims.
+**Setup and action:** Against the host workflow, inject: (1) an unresolved A or B finding, a reviewer-designated blocking C finding, or a failed checklist item; (2) a child reviewed on an older HEAD followed by a new commit; (3) spawn unavailable, spawn/join failure, timeout, or unknown completion; (4) a genuine joined child result with each host identifier absent in turn, then all identifiers present and matching; (5) an available implementation-binding mismatch, a same-context reviewer identity, malformed identity, or malformed child artifact; (6) an attempted same-agent second prompt, human fallback, or User Review substitution; (7) repeated retry on the same HEAD without progress; (8) an active adapter unable to spawn/join a native child; (9) absent/stale Phase, Binding, Verification, Acceptance, Self-Audit, or Required CI evidence; (10) a missing Binding file with no independently authenticated original tuple, including attempted `work recover`; (11) Readiness invoked in requirements/specification/design/ready/execution; (12) wrong-phase User Review start, missing/stale session or Readiness subject, interrupted session recovery, and a verification-to-execution back edge. Extend this with Issue #79 cases: a V3 D finding is nonblocking (and cannot set `blocks_readiness`), whereas unresolved A/B or blocking C remain blocking; a documented failing mandatory Verification or unresolved A finding at the current HEAD permits one dedicated `verification-rework` Intent/label update/Applied. Inject an edited, orphaned, stale-HEAD or duplicate journal, wrong ADC/PR/Binding, missing current Phase receipt, an existing User Review session, 3 completed corrections, an unchanged HEAD after correction, lost label PUT before and after application, and a disputed GitHub response; verify exact 0/1 write counts and no old-HEAD PASS reuse. Observe review/readiness results, confidence and missing-ID reporting, User Review writes, Issue label updates, exit codes, and all host claims.
 
 <a id="ora-ur-008"></a>
 <a id="ora-ur-008-expected-result"></a>
 #### 2.23.1 ORA-UR-008 Expected result
 
-Missing host IDs by themselves do not block when a dedicated fresh child was actually spawned and joined and its exact-subject result is valid. Such a result is stored as `PASES_INDEPENDENT_REVIEW_V3` with `LIMITED` confidence and explicit missing-ID fields; complete matching IDs yield `HIGH`. A missing child result, unavailable native spawn/join, failed or unknown completion, malformed/stale evidence, incomplete review-unit set, known same-context identity, available mismatching binding, unresolved blocking finding, or failed checklist still prevents Readiness PASS and User Review start. A single/child Readiness result can PASS only in `verification`, or in `user-review` when the immutable session binds the same exact subject and Readiness SHA. A new session or feedback snapshot is never written in a wrong phase; a missing or stale session in `user-review` blocks. Interruption recovery reuses the same session timestamp and performs normal phase readback. `PENDING` remains exit code 2 and is reported as waiting only after the session, full feedback snapshot, and `phase:user-review` are verified. Verification has no implicit backward edge; rework requires `BLOCKED_PHASE_REWORK_DECISION_REQUIRED` and a separate decision. A HEAD change during execution requires a new child; same-HEAD retries require progress. Existing V1/V2 review bytes and digest validation remain unchanged; V3 confidence does not claim host authentication. No final User Review approval is fabricated.
+Missing host IDs by themselves do not block when a dedicated fresh child was actually spawned and joined and its exact-subject result is valid. Such a result is stored as `PASES_INDEPENDENT_REVIEW_V3` with `LIMITED` confidence and explicit missing-ID fields; complete matching IDs yield `HIGH`. A missing child result, unavailable native spawn/join, failed or unknown completion, malformed/stale evidence, incomplete review-unit set, known same-context identity, available mismatching binding, unresolved blocking finding, or failed checklist still prevents Readiness PASS and User Review start. A single/child Readiness result can PASS only in `verification`, or in `user-review` when the immutable session binds the same exact subject and Readiness SHA. A new session or feedback snapshot is never written in a wrong phase; a missing or stale session in `user-review` blocks. Interruption recovery reuses the same session timestamp and performs normal phase readback. `PENDING` remains exit code 2 and is reported as waiting only after the session, full feedback snapshot, and `phase:user-review` are verified. Verification has no implicit backward edge in `advance`. The explicit, bounded `issue verification-rework` uses exact committed Phase/ADC/Binding/PR/HEAD and a verified failing evidence item; the two journal records and one label PUT are append-only and readback-checked. It permits at most three completed cycles per ADC generation, blocks without progress/after User Review starts, and requires a new descendant HEAD with fresh evidence before returning to verification. A failed/unknown PUT is never retried blindly; an after-state read can recover Applied with no second PUT. D remains nonblocking and legacy V1/V2 review evidence bytes are unchanged. A HEAD change during execution requires a new child; same-HEAD retries require progress. Existing V1/V2 review bytes and digest validation remain unchanged; V3 confidence does not claim host authentication. No final User Review approval is fabricated.
 
 <a id="tst-ur-009"></a>
 <a id="tst-ur-009-attention-safe-user-review-transition-and-e2e-recovery"></a>
@@ -480,3 +509,76 @@ Only the exact two approved edges accept V3. The first records `execution -> req
 #### 2.29.1 ORA-F01-031 Expected result
 
 Only a current approved ADC with one exact canonical typed authorization permits an eligible ordinary Issue's `execution -> requirements` restart. Valid execution appends one Intent/Applied pair, updates the complete label set at most once, and establishes the current ADC/Binding/Applied phase generation. Exact completed replay is read-only only for the exact recorded labels or a fully verified same-generation forward chain; each receipt must pass historical artifact allowlist, authorized skip reason, regular blob digest, and READY traceability checks, with an immutable carrier authored by the authenticated User. Replay hydrates relevant linked skipped specification/design targets from the receipt commit and loads test sources only from current requirement rows; missing/tampered targets block and unrelated missing sources are ignored. Rollback and unrelated label edits block. Malformed edited restart or Phase Decision marker candidates also block instead of disappearing from history. A later Phase Decision supersedes an older Applied record as the next restart's immediate predecessor; an incomplete Intent from any ADC generation blocks further Phase work. V1/V2 Phase Decision bodies are collected using their canonical serializers and direct/list/direct history checks. Predecessor bytes remain identical, old receipts cannot pass current-generation checks, and Issue #63 behavior is unchanged.
+
+<a id="issue-79-correction-and-delivery-test-oracles"></a>
+## 3 Issue #79 — correction and delivery test Oracles
+
+<a id="tst-f79-001"></a>
+<a id="tst-f79-001-dedicated-correction"></a>
+### 3.1 TST-F79-001 Dedicated correction
+
+<a id="ora-f79-001"></a>
+<a id="ora-f79-001-expected-result"></a>
+#### 3.1.1 ORA-F79-001 Expected result
+
+From verification with a current failing in-scope A or mandatory check and no User Review, exactly one verification-to-execution label PUT is allowed; other states or B/C/D evidence create no write. `tests/test_verification_rework.py` covers positive and wrong-phase paths.
+
+<a id="tst-f79-002"></a>
+<a id="tst-f79-002-journal-integrity-and-failure-recovery"></a>
+### 3.2 TST-F79-002 Journal integrity and failure recovery
+
+<a id="ora-f79-002"></a>
+<a id="ora-f79-002-expected-result"></a>
+#### 3.2.1 ORA-F79-002 Expected result
+
+The GitHub-verified owner/collaborator journal records one Intent, one label update and one Applied, retaining prior actors after a collaborator handoff and naming the successor on recovered Applied. Third-party markers are ignored; edited accepted entries block. A lost PUT response does not cause a duplicate PUT, and an after-state can finish Applied without replacing prior evidence.
+
+<a id="tst-f79-003"></a>
+<a id="tst-f79-003-exact-subject-and-no-progress"></a>
+### 3.3 TST-F79-003 Exact subject and no-progress
+
+<a id="ora-f79-003"></a>
+<a id="ora-f79-003-expected-result"></a>
+#### 3.3.1 ORA-F79-003 Expected result
+
+Foreign repository, ADC ID, noncanonical or coverage-incomplete Plan, synthetic unverifiable FAIL or old HEAD evidence cannot initiate a rework; three completed corrections exhaust the budget. Pending Intent and same-HEAD post-Applied retries block execution-to-verification; a newer descendant HEAD can proceed only after mandatory fresh gates.
+
+<a id="tst-f79-004"></a>
+<a id="tst-f79-004-optional-review-findings"></a>
+### 3.4 TST-F79-004 Optional review findings
+
+<a id="ora-f79-004"></a>
+<a id="ora-f79-004-expected-result"></a>
+#### 3.4.1 ORA-F79-004 Expected result
+
+V3 D is accepted and nonblocking. With all required review units PASS and only unresolved D (or nonblocking C), a FAIL/CONCERNS verdict is rejected as inconsistent rather than blocking Readiness; PASS is accepted. A/B still block and only C may declare `blocks_readiness`. V1/V2 reject D and previously persisted schemas retain their behavior.
+
+<a id="tst-f79-005"></a>
+<a id="tst-f79-005-user-review-session-protection"></a>
+### 3.5 TST-F79-005 User Review session protection
+
+<a id="ora-f79-005"></a>
+<a id="ora-f79-005-expected-result"></a>
+#### 3.5.1 ORA-F79-005 Expected result
+
+A started or approved session blocks verification correction before any label or journal write; later edits require an authenticated CHANGES_REQUESTED transition and all new-HEAD verification/review gates.
+
+<a id="tst-f79-006"></a>
+<a id="tst-f79-006-explicit-merge-plan-constraints"></a>
+### 3.6 TST-F79-006 Explicit merge-plan constraints
+
+<a id="ora-f79-006"></a>
+<a id="ora-f79-006-expected-result"></a>
+#### 3.6.1 ORA-F79-006 Expected result
+
+Normal PR merge plans freeze exact PR target base, merge method, complete PR commit-list digest and previously verified Final Delivery. Non-default bases, foreign close keywords in PR title/commits, extra GitHub closing targets, contradictory target cross-reference metadata and post-approval commit drift block before a merge request or merge-intent write. After a successful merge, an OPEN Issue never produces a completed MERGED status; read-only recovery becomes eligible when it is CLOSED. Base-ref/base-SHA or delivery-digest drift also blocks. Separate User Review approval alone never authorizes a merge; legacy #57/#63 paths are unchanged.
+
+<a id="tst-f79-007"></a>
+<a id="tst-f79-007-distribution-and-contract-naming"></a>
+### 3.7 TST-F79-007 Distribution and contract naming
+
+<a id="ora-f79-007"></a>
+<a id="ora-f79-007-expected-result"></a>
+#### 3.7.1 ORA-F79-007 Expected result
+
+Canonical specs/design/test-oracles, current approved ADC terminology, Skills and three generated package trees have no drift under the repository's documentation, traceability and distribution check commands. Historical contract markers are preserved.

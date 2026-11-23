@@ -449,8 +449,8 @@ class ReviewFindingV3:
 
     def validate(self) -> "ReviewFindingV3":
         _nonempty(self.finding_id, "Review finding ID")
-        if not isinstance(self.severity, str) or self.severity not in SEVERITIES:
-            raise AuditError("Review finding severity must be A, B, or C")
+        if not isinstance(self.severity, str) or self.severity not in {"A", "B", "C", "D"}:
+            raise AuditError("V3 review finding severity must be A, B, C, or D")
         if type(self.resolved) is not bool or type(self.blocks_readiness) is not bool:
             raise AuditError("Review finding flags must be boolean")
         if self.severity != "C" and self.blocks_readiness:
@@ -535,6 +535,11 @@ class IndependentReviewV3:
             raise AuditError("Independent review with unresolved blocking findings cannot PASS")
         if any(item.status != "PASS" for item in self.review_units) and self.verdict == "PASS":
             raise AuditError("Independent review with failed review units cannot PASS")
+        if (self.verdict != "PASS" and not self.blocking_findings
+                and all(item.status == "PASS" for item in self.review_units)):
+            raise AuditError(
+                "Independent review without failed units or blocking A/B/C findings must PASS"
+            )
         return self
 
     @property

@@ -59,6 +59,8 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
     - [2.23.1 ORA-RT-023 Expected result](#2231-ora-rt-023-expected-result)
   - [2.24 TST-RT-024 Strict Phase restart authorization parsing](#224-tst-rt-024-strict-phase-restart-authorization-parsing)
     - [2.24.1 ORA-RT-024 Expected result](#2241-ora-rt-024-expected-result)
+  - [2.25 TST-RT-025 Issue #79 exact correction and merge boundaries](#225-tst-rt-025-issue-79-exact-correction-and-merge-boundaries)
+    - [2.25.1 ORA-RT-025 Expected result](#2251-ora-rt-025-expected-result)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -111,6 +113,8 @@ The stable RT test IDs preserve the earlier traceability graph. Current CLI case
 - [ORA-RT-023](#ora-rt-023) — 2.23.1 ORA-RT-023 Expected result
 - [TST-RT-024](#tst-rt-024) — 2.24 TST-RT-024 Strict Phase restart authorization parsing
 - [ORA-RT-024](#ora-rt-024) — 2.24.1 ORA-RT-024 Expected result
+- [TST-RT-025](#tst-rt-025) — 2.25 TST-RT-025 Issue #79 exact correction and merge boundaries
+- [ORA-RT-025](#ora-rt-025) — 2.25.1 ORA-RT-025 Expected result
 <!-- heading-map:end -->
 
 
@@ -405,3 +409,13 @@ For a valid joined-child result, runtime ingestion accepts missing optional host
 Only one unique canonical marker outside fenced code in the current approved ADC yields a typed authorization. All malformed, ambiguous, stale, out-of-scope, or prose-only inputs fail closed before any GitHub write.
 
 The existing phase artifact-impact parser also accepts `Test Oracles and traceability:` as the test-oracle role label. It maps to the same exact `docs/testing/` path validation as `Testing:` and does not alter document-role semantics. A restart Applied record activates `PASES_PHASE_DECISION_V2`; history collection recognizes reserved V1/V2 decision candidates and malformed restart marker candidates through direct/list/direct readback, including leading whitespace and separated comment hyphens, and rejects malformed, edited, or unauthored records. Current-generation lookup performs the verified read even when its initial candidate set is empty, compares the initially enumerated candidate IDs/bodies with its verified readback, and blocks if evidence appears or disappears between those reads. With no restart record, malformed decision candidates and canonical orphan V2 fail closed while valid V1-only history remains compatible. Before a later phase label can produce NOOP, every historical V2 receipt is rechecked against ADC-declared artifacts, the recorded commit's regular blobs and SHA-256 values, ADC skip reasons, and the READY traceability validator. Authorized skipped spec/design targets are read from that receipt commit; executable sources are fetched only for current ADC requirement rows. READY lookup binds V2 to the Applied ID and digest. The preceding V1 serializer remains byte-for-byte unchanged.
+
+<a id="tst-rt-025"></a>
+### 2.25 TST-RT-025 Issue #79 exact correction and merge boundaries
+
+**Setup and action:** Using `tests/test_verification_rework.py`, inject pending Intent after a successful label write, executor A/B handoff and successor recovery without a repeated PUT, repeated advance at the same HEAD, outsider comments (malformed rework and fake User Review markers), foreign Verification Plan digest/repository/ADC comment, missing normative Oracle/Test trace, synthetic FAIL without live check/evidence corroboration, wrong PR HEAD, three completed corrections, lost POST/PUT responses and changed Phase receipts. Use `tests/test_issue79_generic_merge.py` to mutate a frozen target base and recomputed Final Delivery after plan approval; exercise the generic merge adapter without issuing a real remote merge. Exercise `tests/test_review_triage.py` against V3/V2 finding schemas and the readiness blocking predicate.
+
+<a id="ora-rt-025"></a>
+#### 2.25.1 ORA-RT-025 Expected result
+
+Only a matching approved subject and trusted actor may add one rework Intent, one complete-label PUT and one Applied. A missing Applied forbids ordinary advance until exact recovery; no second PUT occurs after uncertainty. Existing sessions, expired HEAD, foreign evidence, and excess cycles block. Optional D never blocks; historical review bytes do not change. An authenticated owner PR_MERGE comment must not invalidate previously approved exact User Review feedback; an ordinary post-approval human question must. A changed base/Final Delivery blocks ordinary PR merge before any attempt record or API mutation; approved Issue #57/#63 special cases remain intact.

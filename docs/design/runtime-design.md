@@ -26,6 +26,7 @@
   - [7.6 DES-F01-006 Historical Activation pin](#76-des-f01-006-historical-activation-pin)
   - [7.7 DES-F01-007 Successor Activation](#77-des-f01-007-successor-activation)
 - [8 Alternatives considered](#8-alternatives-considered)
+- [9 Issue #79 — verification correction and merge boundaries](#9-issue-79-verification-correction-and-merge-boundaries)
 <!-- contents:end -->
 
 <!-- heading-map:start -->
@@ -189,3 +190,10 @@ The fixed policy names each accepted child base/head pair. Merging an upstream P
 - A general HTTP client would need a new credential boundary. The existing authenticated `gh api` transport is explicit and testable.
 - GitHub mutations carry user data as structured JSON over stdin and never interpolate payloads into a shell command. Explicit local hook strings run in the user's shell because the profile is trusted configuration; child output is suppressed by default, with an opt-in redacted diagnostic tail for failures.
 - Parallel hook execution would destroy declared order and complicate failure evidence. Hooks remain sequential.
+
+<a id="issue-79-verification-correction-and-merge-boundaries"></a>
+## 9 Issue #79 — verification correction and merge boundaries
+
+The sole verification-to-execution correction writer is `runtime/p_ases/verification_rework.py`; it is not a general Phase graph back edge. A frozen current `VerificationPlan`, the ADC, Binding and Phase generation plus an exact failed subject authorize Intent creation; a stable GitHub OWNER/COLLABORATOR association and authenticated actor ID are required for each interpreted journal carrier, including historic participants after handoff. Untrusted marker comments are ignored prior to parsing. Canonical Intent and Applied bodies and predecessor hashes are direct/list/direct readback-checked. The complete label update is attempted once only, and loss of its response cannot cause a second PUT. Any pending Intent prevents ordinary advance; recovery of an after-state must verify the full canonical Plan/Oracle/Test trace and live-recomputed failing mandatory Evidence before appending Applied, with a successor's own authenticated actor ID if the original executor changed. The next verification requires a new descendant commit and fresh evidence.
+
+Ordinary owner merge plans extend `owner_authorization.ordinary_merge_details` without reusing Issue #57/#63's lifecycle. `cli._owner_merge_gate` runs before creating the plan, then again before the single merge request; the plan binds the Final Delivery digest/subject, branch and base SHA, title/body hashes and `merge` method. Before calling GitHub, compare the live base and HEAD against the approved plan. After merge, verify the intended target branch and the exact merged PR. A changed target or ambiguous result fails closed. Authenticated append-only PR_MERGE machine decision comments are excluded from the User Review human-feedback digest only after owner history verification; unrelated human or forged comments are not excluded. The GitHub merge API accepts an expected head SHA but does not provide an atomic expected-base-SHA condition; post-merge base readback detects a target ref mismatch, but changes exactly between the last base read and the merge request cannot be prevented with that API alone.

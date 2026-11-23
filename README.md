@@ -25,6 +25,7 @@ flowchart TD
     design --> ready
     ready --> exec[execution]
     exec --> verify[verification]
+    verify -->|bounded pre-review correction| exec
     verify --> review[user-review]
     review -->|in-scope changes| exec
     review -->|new scope| req
@@ -33,7 +34,7 @@ flowchart TD
   end
 ```
 
-Dotted arrows show conditional skips: specification is required when product behavior must be decided or changed, and design is required when material technical decisions must be made. Each skipped phase needs its own recorded justification. Test specifications, Oracles, and the Verification Plan are established before declaring readiness; they are artifacts, not an additional Issue phase. Changed requirements return to the relevant decision owner before dependent work proceeds.
+Dotted arrows show conditional skips: specification is required when product behavior must be decided or changed, and design is required when material technical decisions must be made. Each skipped phase needs its own recorded justification. Test specifications, Oracles, and the Verification Plan are established before declaring readiness; they are artifacts, not an additional Issue phase. Changed requirements return to the relevant decision owner before dependent work proceeds. After a failing exact-HEAD Verification or unresolved category-A independent finding, the dedicated `issue verification-rework` operation permits up to three append-only, approved-ADC-scope corrections before User Review starts. Each new HEAD must pass all technical gates and a fresh native child review; D (optional improvements) does not block. Once User Review begins, changes require the authenticated `CHANGES_REQUESTED` lifecycle.
 
 | Phase | Purpose |
 | --- | --- |

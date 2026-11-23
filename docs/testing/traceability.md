@@ -116,6 +116,15 @@ A row is complete only when each linked stable ID resolves to its owning documen
 | [REQ-F01-037](../specs/workflow-spec.md#req-f01-037) | [DES-F01-031](../design/workflow-design.md#des-f01-031) | [ORA-F01-031](pases-lifecycle-tests.md#ora-f01-031) | [TST-F01-031](pases-lifecycle-tests.md#tst-f01-031) | [Authorization parser tests](../../tests/test_phase_restart.py) |
 | [REQ-F01-031](../specs/workflow-spec.md#req-f01-031) | [DES-F01-031](../design/workflow-design.md#des-f01-031) | [ORA-RT-024](runtime-tests.md#ora-rt-024) | [TST-RT-024](runtime-tests.md#tst-rt-024) | [ADC artifact-impact parser tests](../../tests/test_issue_phases.py) |
 
+| [REQ-F79-001](../specs/workflow-spec.md#req-f79-001) | [DES-F79-001](../design/workflow-design.md#des-f79-001) | [ORA-F79-001](pases-lifecycle-tests.md#ora-f79-001) | [TST-F79-001](pases-lifecycle-tests.md#tst-f79-001) | [rework phase tests](../../tests/test_verification_rework.py) |
+| [REQ-F79-002](../specs/workflow-spec.md#req-f79-002) | [DES-F79-002](../design/workflow-design.md#des-f79-002) | [ORA-F79-002](pases-lifecycle-tests.md#ora-f79-002) | [TST-F79-002](pases-lifecycle-tests.md#tst-f79-002) | [rework journal tests](../../tests/test_verification_rework.py) |
+| [REQ-F79-003](../specs/workflow-spec.md#req-f79-003) | [DES-F79-003](../design/workflow-design.md#des-f79-003) | [ORA-F79-003](pases-lifecycle-tests.md#ora-f79-003) | [TST-F79-003](pases-lifecycle-tests.md#tst-f79-003) | [exact-HEAD tests](../../tests/test_verification_rework.py) |
+| [REQ-F79-004](../specs/workflow-spec.md#req-f79-004) | [DES-F79-004](../design/workflow-design.md#des-f79-004) | [ORA-F79-004](pases-lifecycle-tests.md#ora-f79-004) | [TST-F79-004](pases-lifecycle-tests.md#tst-f79-004) | [review classifier tests](../../tests/test_review_triage.py) |
+| [REQ-F79-005](../specs/workflow-spec.md#req-f79-005) | [DES-F79-005](../design/workflow-design.md#des-f79-005) | [ORA-F79-005](pases-lifecycle-tests.md#ora-f79-005) | [TST-F79-005](pases-lifecycle-tests.md#tst-f79-005) | [session boundary tests](../../tests/test_verification_rework.py) |
+| [REQ-F79-006](../specs/workflow-spec.md#req-f79-006) | [DES-F79-006](../design/workflow-design.md#des-f79-006) | [ORA-F79-006](pases-lifecycle-tests.md#ora-f79-006) | [TST-F79-006](pases-lifecycle-tests.md#tst-f79-006) | [merge authorization tests](../../tests/test_issue79_generic_merge.py) |
+| [REQ-F79-007](../specs/workflow-spec.md#req-f79-007) | [DES-F79-007](../design/workflow-design.md#des-f79-007) | [ORA-F79-007](pases-lifecycle-tests.md#ora-f79-007) | [TST-F79-007](pases-lifecycle-tests.md#tst-f79-007) | [generated mirror and docs checks](../../tools/build_dist.py) |
+| [REQ-F79-002](../specs/workflow-spec.md#req-f79-002) | [DES-F79-002](../design/workflow-design.md#des-f79-002) | [ORA-RT-025](runtime-tests.md#ora-rt-025) | [TST-RT-025](runtime-tests.md#tst-rt-025) | [runtime rework and merge regressions](../../tests/test_verification_rework.py), [merge gate tests](../../tests/test_issue79_generic_merge.py) |
+
 <a id="artifact-impact"></a>
 ## 3 Artifact impact
 
