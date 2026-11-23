@@ -25,7 +25,7 @@ Owner: runtime/p_ases/delivery.py and gate_policy.py. Inputs are current PR iden
 5. Verify ordinary auto-close or complete an authorized deferred Issue close with the finalize command.
 6. Present PR number, exact HEAD, technical checks, risks, and intended order before any merge request. A successful check is not user merge permission.
 
-Ordinary PR deliveries retain one standalone `Closes #N` line and GitHub's normal auto-close behavior. `Refs #N` is reserved for an explicitly deferred completion path whose Issue stays open after merge.
+Ordinary PR deliveries retain one standalone `Closes #N` line and GitHub's normal auto-close behavior. The generic `PR_MERGE` authorization plan binds the ordinary target Issue as its own carrier, the current open non-draft PR's exact HEAD, standalone close association, and title/body digests. Its chat-confirmed V3 Owner decision is separate from User Review and cannot be inferred from Readiness PASS. Every merge rechecks Final Delivery at that exact HEAD. Issue #57 Activation Setup and Issue #63 deferred-close legacy paths retain their separate special handling. If a verification-phase defect is found before User Review begins, use the bounded `issue verification-rework` correction and re-run all gates at the new HEAD; after User Review starts, only the authenticated CHANGES_REQUESTED lifecycle may authorize edits. `Refs #N` is reserved for an explicitly deferred completion path whose Issue stays open after merge.
 
 ## Consumer Activation request
 
@@ -128,4 +128,4 @@ Parent label migration is preflight-only unless the explicit apply option is sup
 
 Stale evidence, missing required checks, wrong App ID, draft/foreign PR, blocked user review, or unavailable branch protection is not ready. Report the exact blocker and evidence refs. Never merge, tag, publish a Release, activate the parent, or close #26 under this Issue #32 contract.
 
-Next owners: integration-validation supplies parent gates; user-review supplies current feedback. See the [delivery design](../../docs/design/workflow-design.md).
+Next owners: integration-validation supplies parent gates; user-review supplies current feedback. See the [delivery design](../../../docs/design/workflow-design.md).
