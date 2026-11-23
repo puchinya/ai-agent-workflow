@@ -502,7 +502,7 @@ At most three completed corrections per ADC generation. Pending Intent blocks or
 <a id="req-f79-004"></a>
 <a id="req-f79-004-review-triage"></a>
 ### 10.4 REQ-F79-004 Review triage
-A is an explicit ADC violation, B a material ADC ambiguity, C a new requirement, and D optional improvement. Unresolved A/B block, a C blocks only when its current acceptance/security impact is specifically designated, and D never blocks. Findings cite a relevant obligation, reachable failure or observation; legacy review schemas remain byte-compatible.
+A is an explicit ADC violation, B a material ADC ambiguity, C a new requirement, and D optional improvement. Unresolved A/B block, a C blocks only when its current acceptance/security impact is specifically designated, and D never blocks. If every required review unit passes and no unresolved blocking A/B/triaged C exists, a V3 FAIL or CONCERNS verdict is inconsistent and MUST be rejected rather than used to block Readiness; reviewers must correct the raw result without fabricating a PASS. Findings cite a relevant obligation, reachable failure or observation; legacy review schemas remain byte-compatible.
 
 <a id="req-f79-005"></a>
 <a id="req-f79-005-user-review-boundary"></a>
@@ -512,7 +512,7 @@ A started User Review session, including interrupted startup, prohibits verifica
 <a id="req-f79-006"></a>
 <a id="req-f79-006-explicit-ordinary-merge-authority"></a>
 ### 10.6 REQ-F79-006 Explicit ordinary merge authority
-A normal PR_MERGE plan requires verified current Final Delivery, a distinct exact-HEAD owner grant, approved PR head/base (ref and SHA), merge method, closure association, and exact final-delivery subject/digest. Reject base or gate drift before the single merge attempt and in post-merge readback. Verified owner PR_MERGE carrier comments are technical authorization evidence rather than new human User Review questions; user-authored normal comments and outsider forgeries remain in the complete feedback surface. Do not combine User Review with merge approval or involve #57/#63 Activation-specific completion.
+A normal PR_MERGE plan requires verified current Final Delivery, a distinct exact-HEAD owner grant, approved PR head/base (ref and SHA), merge method, closure association, and exact final-delivery subject/digest. Only the repository default branch is an eligible ordinary auto-close merge target. At planning and immediately before the one merge attempt, check PR title, all PR commit messages, GitHub computed closing-Issue references and target cross-reference metadata: unknown or foreign closing targets MUST block; commit-list identity is frozen in the owner plan. After merge, the exact target Issue MUST read back CLOSED; an OPEN Issue is incomplete and must not be reported as MERGED, with only read-only recovery allowed. Reject base or gate drift before the single merge attempt and in post-merge readback. Verified owner PR_MERGE carrier comments are technical authorization evidence rather than new human User Review questions; user-authored normal comments and outsider forgeries remain in the complete feedback surface. Do not combine User Review with merge approval or involve #57/#63 Activation-specific completion.
 
 <a id="req-f79-007"></a>
 <a id="req-f79-007-contract-and-distribution-synchronization"></a>

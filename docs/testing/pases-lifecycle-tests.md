@@ -551,7 +551,7 @@ Foreign repository, ADC ID, noncanonical or coverage-incomplete Plan, synthetic 
 <a id="ora-f79-004-expected-result"></a>
 #### 3.4.1 ORA-F79-004 Expected result
 
-V3 D is accepted and nonblocking, A/B still block and only C may declare `blocks_readiness`. V1/V2 reject D and previously persisted schemas retain their behavior.
+V3 D is accepted and nonblocking. With all required review units PASS and only unresolved D (or nonblocking C), a FAIL/CONCERNS verdict is rejected as inconsistent rather than blocking Readiness; PASS is accepted. A/B still block and only C may declare `blocks_readiness`. V1/V2 reject D and previously persisted schemas retain their behavior.
 
 <a id="tst-f79-005"></a>
 <a id="tst-f79-005-user-review-session-protection"></a>
@@ -571,7 +571,7 @@ A started or approved session blocks verification correction before any label or
 <a id="ora-f79-006-expected-result"></a>
 #### 3.6.1 ORA-F79-006 Expected result
 
-Normal PR merge plans freeze exact PR target base, merge method and previously verified Final Delivery. Base-ref/base-SHA or delivery-digest drift blocks before a merge request or merge-intent write. Separate User Review approval alone never authorizes a merge; legacy #57/#63 paths are unchanged.
+Normal PR merge plans freeze exact PR target base, merge method, complete PR commit-list digest and previously verified Final Delivery. Non-default bases, foreign close keywords in PR title/commits, extra GitHub closing targets, contradictory target cross-reference metadata and post-approval commit drift block before a merge request or merge-intent write. After a successful merge, an OPEN Issue never produces a completed MERGED status; read-only recovery becomes eligible when it is CLOSED. Base-ref/base-SHA or delivery-digest drift also blocks. Separate User Review approval alone never authorizes a merge; legacy #57/#63 paths are unchanged.
 
 <a id="tst-f79-007"></a>
 <a id="tst-f79-007-distribution-and-contract-naming"></a>

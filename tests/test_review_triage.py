@@ -9,7 +9,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime"))
 
-from p_ases.audits import AuditError, IndependentReviewV3, ReviewFinding, ReviewFindingV3
+from p_ases.audits import (
+    AuditError, IndependentReviewV3, ReviewFinding, ReviewFindingV3, ReviewUnitResult,
+)
+from p_ases.evidence_store import VerificationSubject
 
 
 class OptionalReviewFindingTests(unittest.TestCase):
@@ -25,6 +28,30 @@ class OptionalReviewFindingTests(unittest.TestCase):
             (), (optional,), "PASS", "LIMITED", None, None, None,
         )
         self.assertEqual(review.blocking_findings, ())
+
+    def test_v3_d_only_cannot_force_a_failing_or_concerns_verdict(self):
+        subject = VerificationSubject(
+            "puchinya/ai-agent-workflow", 79, 80, 7099602476,
+            "a" * 64, "1" * 64, "b" * 40,
+        ).validate()
+        unit = ReviewUnitResult("U-1", "PASS", ("test:verified",))
+        optional = ReviewFindingV3(
+            "F-1", "D", False, "Optional cleanup", "diff:unused.py:20", False,
+        )
+        for verdict in ("FAIL", "CONCERNS"):
+            review = IndependentReviewV3(
+                subject, "child", "writer", "context", "a" * 64,
+                (unit,), (optional,), verdict, "LIMITED", None, None, None,
+            )
+            with self.subTest(verdict=verdict), self.assertRaisesRegex(
+                AuditError, "without failed units or blocking"
+            ):
+                review.validate(("U-1",))
+        allowed = IndependentReviewV3(
+            subject, "child", "writer", "context", "a" * 64,
+            (unit,), (optional,), "PASS", "LIMITED", None, None, None,
+        )
+        self.assertEqual(allowed.validate(("U-1",)).blocking_findings, ())
 
     def test_v3_d_cannot_claim_readiness_blocker(self):
         with self.assertRaisesRegex(AuditError, "Only a reviewer-designated C"):

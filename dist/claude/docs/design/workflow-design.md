@@ -339,7 +339,7 @@ The CLI performs phase transitions only after re-reading the Issue and confirmin
 <a id="des-f79-004"></a>
 <a id="des-f79-004-review-classification-compatibility"></a>
 ### 12.4 DES-F79-004 Review classification compatibility
-Only V3 `ReviewFindingV3` accepts category D; it may not set `blocks_readiness`. A and B remain blocking and C is explicitly triaged; V1/V2 schema and serializer behavior are unchanged.
+Only V3 `ReviewFindingV3` accepts category D; it may not set `blocks_readiness`. A and B remain blocking and C is explicitly triaged. When all V3 units PASS and there are no blocking findings, a non-PASS verdict is invalid evidence (not a reason to block on D); the child must provide a consistent artifact. V1/V2 schema and serializer behavior are unchanged.
 
 <a id="des-f79-005"></a>
 <a id="des-f79-005-session-boundary"></a>
@@ -349,7 +349,7 @@ The local immutable User Review session and canonical authenticated owner decisi
 <a id="des-f79-006"></a>
 <a id="des-f79-006-exact-merge-approval"></a>
 ### 12.6 DES-F79-006 Exact merge approval
-`ordinary_merge_details` captures the PR's target base ref/SHA, method `merge`, head, closure association and title/body digests. At plan creation `_owner_merge_gate` must pass Final Delivery and freeze its result and subject hashes. Authorization stays Issue-local. Machine PR_MERGE decisions are filtered from User Review feedback only after verified immutable owner decision history readback, while genuine feedback still invalidates a stale approval; before the one merge call the same gate, head and base are rechecked, with no blind retry on an uncertain response. Only #57/#63 retain specialized paths.
+`ordinary_merge_details` captures the PR's target base ref/SHA, method `merge`, head, closure association, title/body digests, and complete PR commit-list digest. The normal path requires the repository default branch; it validates every PR-title/commit closer against its sole Issue and checks GitHub's computed closing set plus target cross-references at planning and again before merge. Mismatched or unavailable closure evidence blocks rather than selecting another issue. Post-merge readback requires that Issue to be CLOSED, otherwise completion is blocked pending read-only recovery. At plan creation `_owner_merge_gate` must pass Final Delivery and freeze its result and subject hashes. Authorization stays Issue-local. Machine PR_MERGE decisions are filtered from User Review feedback only after verified immutable owner decision history readback, while genuine feedback still invalidates a stale approval; before the one merge call the same gate, head and base are rechecked, with no blind retry on an uncertain response. Only #57/#63 retain specialized paths.
 
 <a id="des-f79-007"></a>
 <a id="des-f79-007-stable-document-and-package-boundary"></a>

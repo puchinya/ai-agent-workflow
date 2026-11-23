@@ -40,16 +40,21 @@ class OrdinaryGitHub:
         self.head = HEAD
         self.base_ref = "main"
         self.base_sha = "a" * 40
+        self.issue_state = "open"
+        self.commit_messages = ["Implement Issue #79 without other closing references"]
+        self.closing_issues = [{"number": 79, "repository": REPO}]
+        self.cross_references = [{"pr_number": 80, "repository": REPO,
+                                  "will_close_target": True}]
         self.comments = []
         self.posts = 0
 
     def repository_metadata(self):
-        return {"full_name": REPO, "id": 1401910271,
+        return {"full_name": REPO, "id": 1401910271, "default_branch": "main",
                 "owner": {"id": 3744776, "type": "User", "login": "puchinya"}}
 
     def issue(self, number):
-        return {"number": number, "state": "open", "pull_request": None,
-                "repository_url": f"https://api.github.com/repos/{REPO}"}
+        return {"number": number, "state": self.issue_state if number == 79 else "open",
+                "pull_request": None, "repository_url": f"https://api.github.com/repos/{REPO}"}
 
     def authenticated_user(self):
         return {"id": 3744776, "login": "puchinya", "type": "User"}
@@ -60,6 +65,16 @@ class OrdinaryGitHub:
                 "base": {"ref": self.base_ref, "sha": self.base_sha,
                          "repo": {"full_name": REPO}},
                 "title": self.title, "body": self.body}
+
+    def pull_request_commits(self, number):
+        return [{"sha": f"{i + 1:040x}", "commit": {"message": message}}
+                for i, message in enumerate(self.commit_messages)]
+
+    def pull_request_closing_issues(self, number):
+        return list(self.closing_issues)
+
+    def issue_pull_request_cross_references(self, number):
+        return list(self.cross_references)
 
     def issue_comments(self, number):
         if number != 79:
@@ -150,9 +165,54 @@ class OrdinaryMergeAuthorizationTests(unittest.TestCase):
             self.assertEqual(plan["details"]["pr_base_sha40"], "a" * 40)
             self.assertEqual(plan["details"]["merge_method"], "merge")
             self.assertEqual(plan["details"]["final_delivery_sha256"], GATE_SHA)
+            self.assertEqual(plan["details"]["closing_issue_numbers"], [79])
+            self.assertEqual(len(plan["details"]["pr_commits_sha256"]), 64)
             github.base_ref = "release"
             with (patch("p_ases.owner_authorization.worktree_clean", return_value=True),
                     patch("p_ases.owner_authorization.head_sha40", return_value=HEAD)):
+                with self.assertRaisesRegex(OwnerAuthorizationError, "default branch"):
+                    create_authorization_plan(
+                        github, Path(directory), operation="PR_MERGE",
+                        subject_sha256=plan["subject_sha256"], issue_number=79,
+                        target_issue_number=79, pr_number=80, pr_head_sha40=HEAD,
+                        details=plan["details"],
+                    )
+
+    def test_unrelated_auto_close_in_commit_or_title_blocks_before_authorization(self):
+        github = OrdinaryGitHub()
+        for changed_field, bad_text in (
+            ("commit_messages", ["Implement change", "Fixes #71"]),
+            ("title", "Implement #79 and Closes #71"),
+            ("commit_messages", ["Fixes other/repository#79"]),
+        ):
+            with self.subTest(field=changed_field, text=bad_text):
+                github.commit_messages = ["Implement Issue #79"]
+                github.title = "Issue 79 review/rework"
+                setattr(github, changed_field, bad_text)
+                with tempfile.TemporaryDirectory() as directory:
+                    with self.assertRaisesRegex(OwnerAuthorizationError, "different Issue"):
+                        self.plan(github, Path(directory))
+        self.assertEqual(github.posts, 0)
+
+    def test_github_closing_metadata_must_identify_only_the_target(self):
+        github = OrdinaryGitHub()
+        with tempfile.TemporaryDirectory() as directory:
+            github.closing_issues.append({"number": 71, "repository": REPO})
+            with self.assertRaisesRegex(OwnerAuthorizationError, "sole target"):
+                self.plan(github, Path(directory))
+            github.closing_issues = [{"number": 79, "repository": REPO}]
+            github.cross_references[0]["will_close_target"] = False
+            with self.assertRaisesRegex(OwnerAuthorizationError, "does not confirm"):
+                self.plan(github, Path(directory))
+            self.assertEqual(github.posts, 0)
+
+    def test_commit_history_change_after_approval_invalidates_plan(self):
+        github = OrdinaryGitHub()
+        with tempfile.TemporaryDirectory() as directory:
+            plan = self.plan(github, Path(directory))
+            github.commit_messages.append("Extra commit without close keywords")
+            with patch("p_ases.owner_authorization.worktree_clean", return_value=True), \
+                    patch("p_ases.owner_authorization.head_sha40", return_value=HEAD):
                 with self.assertRaisesRegex(OwnerAuthorizationError, "plan no longer matches"):
                     create_authorization_plan(
                         github, Path(directory), operation="PR_MERGE",
@@ -160,6 +220,14 @@ class OrdinaryMergeAuthorizationTests(unittest.TestCase):
                         target_issue_number=79, pr_number=80, pr_head_sha40=HEAD,
                         details=plan["details"],
                     )
+
+    def test_nondefault_target_is_rejected_before_approval(self):
+        github = OrdinaryGitHub()
+        github.base_ref = "release"
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(OwnerAuthorizationError, "default branch"):
+                self.plan(github, Path(directory))
+            self.assertEqual(github.posts, 0)
 
     def test_merge_rejects_changed_base_or_final_delivery_before_merge(self):
         for drift in ("base", "final_delivery"):
@@ -236,6 +304,7 @@ class OrdinaryMergeAuthorizationTests(unittest.TestCase):
                            merged_by={"id": 3744776, "login": "puchinya", "type": "User"})
                 return row
         github = MergedGitHub()
+        github.issue_state = "closed"
         with tempfile.TemporaryDirectory() as directory:
             # The plan is created from the open PR before its merge.
             open_github = OrdinaryGitHub()
@@ -244,6 +313,21 @@ class OrdinaryMergeAuthorizationTests(unittest.TestCase):
             github.base_ref = "release"
             with self.assertRaisesRegex(OwnerAuthorizationError, "different base branch"):
                 _merge_readback(github, plan)
+
+    def test_merged_pr_does_not_report_completion_while_issue_is_open(self):
+        class MergedGitHub(OrdinaryGitHub):
+            def pull_request(self, number):
+                row = super().pull_request(number)
+                row.update(state="closed", merged=True, merge_commit_sha="c" * 40,
+                           merged_by={"id": 3744776, "login": "puchinya", "type": "User"})
+                return row
+        with tempfile.TemporaryDirectory() as directory:
+            plan = self.plan(OrdinaryGitHub(), Path(directory))
+            github = MergedGitHub()  # GitHub auto-close not yet applied.
+            with self.assertRaisesRegex(OwnerAuthorizationError, "did not close"):
+                _merge_readback(github, plan)
+            github.issue_state = "closed"
+            self.assertEqual(_merge_readback(github, plan)["issue_state"], "closed")
 
     def test_owner_merge_grant_does_not_invalidate_user_review_feedback(self):
         github = OrdinaryGitHub()
