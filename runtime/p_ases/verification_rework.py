@@ -199,14 +199,20 @@ def _trusted_rework_authors(github: GitHub) -> frozenset[int]:
 
 def read_rework_history(github: GitHub, issue_number: int) -> tuple[ReworkRecord, ...]:
     """Two full list snapshots with direct reads for trusted journal carriers."""
-    trusted_ids = _trusted_rework_authors(github)
+    trusted_ids: frozenset[int] | None = None
 
     def selected() -> list[dict[str, Any]]:
+        nonlocal trusted_ids
         rows = github.issue_comments(issue_number)
-        return [row for row in rows
-                if isinstance(row, dict) and isinstance(row.get("body"), str)
-                and row["body"].startswith(PREFIX)
-                and isinstance(row.get("user"), dict)
+        candidates = [row for row in rows
+                      if isinstance(row, dict) and isinstance(row.get("body"), str)
+                      and row["body"].startswith(PREFIX)]
+        if not candidates:
+            return []
+        if trusted_ids is None:
+            trusted_ids = _trusted_rework_authors(github)
+        return [row for row in candidates
+                if isinstance(row.get("user"), dict)
                 and row["user"].get("type") == "User"
                 and type(row["user"].get("id")) is int
                 and row["user"]["id"] in trusted_ids]
